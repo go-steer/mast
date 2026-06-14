@@ -1,0 +1,39 @@
+# Binaries (when code lands post-fork).
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries.
+*.test
+
+# Coverage profiles + other test artifacts.
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Project-specific binaries (built from ./cmd/... and ./examples/... post-fork).
+/mast
+/cmd/mast/mast
+
+# AI assistant working state — never committed to this repo.
+.claude/
+
+# Per-user .agents/ state (if mast develops one post-fork).
+/.agents/sessions/
+/.agents/logs/
+
+# Local environment overrides.
+.env
+.env.local
+
+# Editor / IDE noise.
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Personal working notes — kept on disk but not in version control.
+TODO.md
