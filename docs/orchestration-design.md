@@ -77,6 +77,10 @@ specialists:                       # references .agents/specialists/*.tmpl
   - ServiceEndpointMissing
   - NodeNotReady
 
+skills:                            # skill bundles (see skills-design.md); coexists with specialists roster
+  - gke-triage                     # local .agents/skills/gke-triage.skill/
+  - google://gke-team/incident-triage@v1.2   # registry-discovered
+
 tool_catalog:                      # applied on top of task-class default
   builtin: [read_file, grep]
   mcp:
@@ -179,6 +183,7 @@ Why not B alone: real workloads (GKE incident triage: triage → verify → prop
 | Tool | What it does | Notes |
 |---|---|---|
 | `invoke_specialist(name, inputs)` | Runs one bundle-enumerated specialist as agent node | `WithUseSubBranch(true)` isolates specialist context |
+| `invoke_skill(name, inputs)` | Runs one bundle-enumerated skill as a callable tool | Skill body loaded into the tool's context; tool allowlist is the intersection of skill's `allowed_tools` and bundle's `tool_catalog` (see [`./skills-design.md`](./skills-design.md)) |
 | `run_shape_fan_out_fan_in(planner_fn, workers, joiner)` | Fan-out-fan-in sub-workflow | Workers must be from bundle's specialist roster |
 | `run_shape_pipeline(nodes)` | Sequential pipeline | Nodes may be specialists, tools, or `run_shape_*` results |
 | `run_shape_supervisor_workers(supervisor_body, workers)` | Supervisor+workers sub-workflow | Nested planners possible; budget composes |
@@ -342,6 +347,7 @@ Cost is the most operationally-sensitive signal; gets its own detection path:
 | Subsystem | Interaction with workloads | Interaction with planner | Interaction with learning |
 |---|---|---|---|
 | Specialists (`./specialists-design.md`) | Enumerated in `specialists:` roster; loaded per session | Vocabulary via `invoke_specialist` tool; `WithUseSubBranch` isolates | Specialist co-invocation patterns are strongest clustering signal |
+| Skills ([`./skills-design.md`](./skills-design.md)) | Enumerated in `skills:` roster (local + registry-discovered); loaded per session; tool allowlist intersected with `tool_catalog` | Vocabulary via `invoke_skill` tool | Skill usage patterns feed reducers; bundle-learning proposes skill additions based on published-catalog matches |
 | Reference-graph library (`./workflow-scaffolding-design.md`) | Available shapes referenced in `planner.reference_shapes` | Vocabulary via `run_shape_*` tools | Reference-graph selection patterns are learnable |
 | `mast-web` | Bundle browser + editor | Turn-by-turn planner visibility; HITL on plan review | Review UI for propose-new + refine-existing |
 | Attach mode | Envelope routing at entry | HITL escalation via `RequestInputEvent` | Proposals surface via attach events |

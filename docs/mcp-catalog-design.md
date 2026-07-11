@@ -8,16 +8,20 @@ Positioning.md open question #2: *"MCP server catalog: build or consume? Should 
 
 **Resolved:** consume, don't build. With one deliberate exception: **wiring config + starter deployments** for the MCP servers mast's audience most commonly uses.
 
-## Sibling protocol: MCP vs. A2A
+## Three curated surfaces: MCP vs. A2A vs. skills
 
-MCP and A2A are complementary, not competing. Concise distinction:
+MCP, A2A, and skills are complementary, not competing. Concise distinction:
 
 - **MCP is for tools** — structured function calls with defined input/output schemas. Synchronous request/response typical. Server-side is stateless per call (though may have state internally). Think: "call `get_k8s_resource(name=X)`, get back a K8s resource object."
 - **A2A is for agents** — task-based interactions with negotiable state, streaming, HITL support, long-running task lifecycle. Server-side maintains task state and can push updates or request input. Think: "submit a task 'investigate incident-X', receive updates as investigation progresses, respond to input requests, get final structured verdict."
+- **Skills are for callable task templates** ([`./skills-design.md`](./skills-design.md)) — declarative SKILL.md bundles combining a system prompt + tool needs + structured input/output schemas. Consumed from publishers (Google Agent Registry, GKE team, community, corporate); format-portable across agent frameworks. Think: "load the `gke-triage` skill from `google://gke-team/gke-triage@v1.2`; invoke it with `{pod, symptom}` inputs; receive `{root_cause, remediation, confidence}` back."
 
-A single mast agent can and typically will use both: MCP for tool calls within its own reasoning + A2A to invoke *other agents* (via [`./federation-design.md`](./federation-design.md)'s `invoke_remote_agent` with `a2a://...` reference). See [`./a2a-design.md`](./a2a-design.md) for A2A specifics.
+A single mast agent can and typically will use all three: MCP for tool calls within its own reasoning + A2A to invoke *other agents* (via [`./federation-design.md`](./federation-design.md)) + skills for callable task templates from the ecosystem catalog.
 
-The mast MCP catalog and the A2A ecosystem are separate curation surfaces — the MCP catalog names MCP servers; A2A registries (Google Agent Registry, kagent) name A2A agents.
+Three distinct curation surfaces:
+- **MCP catalog** (this doc) — mast validates wiring templates for MCP servers.
+- **A2A registries** (Google Agent Registry, kagent — [`./a2a-design.md`](./a2a-design.md)) — third-party curation of A2A-reachable agents.
+- **Skill catalogs** (Google Agent Registry lists these too — [`./skills-design.md`](./skills-design.md)) — publisher-curated SKILL.md bundles.
 
 ## Why "consume, don't build"
 

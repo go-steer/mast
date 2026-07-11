@@ -40,12 +40,19 @@ The canonical layout under `.agents/`:
     internal-scanner.yaml
     peer-mast-fleet.yaml
     ...
+  skills/                       # SKILL.md skill bundles (see skills-design.md)
+    gke-triage.skill/
+      SKILL.md
+    k8s-upgrade.skill/
+      SKILL.md
+    registry.yaml                # optional; for registry discovery
+    ...
   memory/                       # (future) memory reducers if we ever add file-based ones
   reducers/                     # (future) reserved
 mast.yaml                       # runtime config (or .mast/mast.yaml; both accepted)
 ```
 
-Directory names are canonical — mast looks for `specialists/`, `workloads/`, `mcp/`, `a2a/`, `remote/` (and any future additions) by those exact names under `.agents/`.
+Directory names are canonical — mast looks for `specialists/`, `workloads/`, `mcp/`, `a2a/`, `remote/`, `skills/` (and any future additions) by those exact names under `.agents/`.
 
 ## Discovery locations
 
@@ -76,6 +83,7 @@ Each subsystem directory is scanned per its own rules:
 | `mcp/` | `*.json` | No; flat directory |
 | `a2a/` | `*.yaml` (also `.yml`) | No; flat directory |
 | `remote/` | `*.yaml` (also `.yml`) | No; flat directory |
+| `skills/` | `*.skill/` (directories); `SKILL.md` inside each; also `registry.yaml` at top level | No skill-directory recursion; one skill per bundle dir |
 
 **Flat, not recursive.** Nested subdirectories are ignored (allows operators to organize source repos with subdirs like `specialists/archive/` for retired-but-kept files).
 

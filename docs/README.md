@@ -7,7 +7,7 @@ Design documentation for `mast` — the agent-infrastructure substrate for unatt
 1. **[`./positioning.md`](./positioning.md)** — the thesis. What `mast` is, what it isn't, what gets kept / cut / reshaped from core-agent's surface. Strategy, not implementation.
 2. **[`./fork-design.md`](./fork-design.md)** — the mechanics. How the fork actually happens: phasing, trigger conditions, sync discipline under (E)-sibling-products motivation, resolved decisions.
 3. **[mast-web's `web-design.md`](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md)** — the operator-facing UI. Why web (not terminal TUI); what we reuse from cogo-wasm2 and what we don't; stack decisions; deployment options.
-4. **[`./specialists-design.md`](./specialists-design.md)** — the subagent-as-tool subsystem replacing core-agent's skills. Schema, loader shape, composition with existing patterns.
+4. **[`./specialists-design.md`](./specialists-design.md)** — the subagent-as-tool subsystem for mast-authored subagents. Schema, loader shape, composition with existing patterns. Coexists with skills as complementary authoring model (see #16).
 5. **[`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md)** — the reference-graph library on ADK v2 primitives. Seven canonical shapes (fan-out-fan-in, sequential pipeline, supervisor+workers, autonomous loop, adversarial verifier, map-reduce, LLM-as-router) with domain wiring for mast's audience.
 6. **[`./orchestration-design.md`](./orchestration-design.md)** — the unattended orchestration story: workload bundles (declarative operational profiles under `.agents/workloads/*.yaml`), the planner (supervisor-body agent with reference-graph vocabulary), bundle learning (audit-derived refinement), and evaluation + regression harness. One doc, four subsystems, one story arc.
 7. **[`./durable-execution-design.md`](./durable-execution-design.md)** — the fourth pillar (unattended + library + multi-provider + durable). Pause/resume beyond HITL: programmatic pause, timed pause, external-signal pause, snapshot+replay, cross-runtime Python-ADK compat constraints.
@@ -19,6 +19,7 @@ Design documentation for `mast` — the agent-infrastructure substrate for unatt
 13. **[`./config-layout-design.md`](./config-layout-design.md)** — ties together `.agents/` file layout across specialists, workloads, MCP; discovery order; precedence rules; env-var overrides; hot-reload semantics.
 14. **[`./a2a-design.md`](./a2a-design.md)** — Agent-to-Agent protocol integration: mast as A2A server (expose workloads as A2A skills) and client (call external A2A agents). Framework integration with Google Agent Registry / Runtime, kagent.
 15. **[`./federation-design.md`](./federation-design.md)** — federation as pattern: one mast instance orchestrating N remote agents via multiple protocols (A2A, mast-native, HTTP/RPC). Planner's `invoke_remote_agent` vocabulary; topology archetypes (star / mesh / hierarchical); mast-to-mast handoff with cross-instance session state, HITL, durability.
+16. **[`./skills-design.md`](./skills-design.md)** — SKILL.md format support (reinstated 2026-07-01 after GKE + Google teams began publishing skills as first-class artifacts). Coexists with specialists as complementary authoring model — specialists for mast-authored subagents; skills for consumed published templates. Publisher/consumer split, Google Agent Registry integration, policy layering (allowlist intersection, budget caps).
 
 Each doc has a Resolved-decisions section at the bottom listing what's been settled in conversation; the rest is open for discussion.
 
@@ -61,7 +62,7 @@ A consolidated view (each doc's local resolved section is authoritative for its 
 | Phase 1 trigger = after #158-#161 + shared-memory stack | [`./fork-design.md`](./fork-design.md) |
 | CI/release infra = independent at start | [`./fork-design.md`](./fork-design.md) |
 | Interactive UI = web, not terminal | [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) + [`./positioning.md`](./positioning.md) |
-| Skills replaced by specialists subsystem | [`./specialists-design.md`](./specialists-design.md) + [`./fork-design.md`](./fork-design.md) |
+| ~~Skills replaced by specialists subsystem~~ *Reversed 2026-07-01: skills reinstated as first-class consumable; coexist with specialists as complementary authoring model. Rationale: GKE + Google teams publishing skills as first-class artifacts inverted the audience-fit assumption behind the cut.* | [`./skills-design.md`](./skills-design.md) + [`./specialists-design.md`](./specialists-design.md) |
 | Task-class profiles shaped by v2 agent modes (Chat/Task/SingleTurn) | [`./fork-design.md`](./fork-design.md) + [`./positioning.md`](./positioning.md) |
 | HITL is first-class on both plain `LlmAgent`s and workflows | [`./fork-design.md`](./fork-design.md) + [`./specialists-design.md`](./specialists-design.md) |
 | Workflow scaffolding = reference graphs on v2 primitives, not helper packages | [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) |
@@ -88,6 +89,10 @@ A consolidated view (each doc's local resolved section is authoritative for its 
 | Three federation protocol adapters: A2A, mast-native, HTTP/RPC | [`./federation-design.md`](./federation-design.md) |
 | Mast-native inter-instance protocol offers richer semantics than A2A within trusted fleets (session-state propagation, cross-instance HITL, native durability) | [`./federation-design.md`](./federation-design.md) |
 | Federation topologies: star, mesh, hierarchical; hybrids common | [`./federation-design.md`](./federation-design.md) |
+| Skills reinstated as first-class consumable (SKILL.md format) — coexist with specialists, complementary authoring models | [`./skills-design.md`](./skills-design.md) + [`./positioning.md`](./positioning.md) + [`./fork-design.md`](./fork-design.md) |
+| Specialists vs. skills = authoring model choice (mast-authored subagents vs. consumed published templates); both surface uniformly to planner | [`./skills-design.md`](./skills-design.md) + [`./specialists-design.md`](./specialists-design.md) |
+| Skill discovery via A2A registries (Google Agent Registry catalogs both agents + skills) | [`./skills-design.md`](./skills-design.md) + [`./a2a-design.md`](./a2a-design.md) |
+| Three curated surfaces: MCP tools, A2A agents, skill templates — complementary not competing | [`./mcp-catalog-design.md`](./mcp-catalog-design.md) |
 | Web UI = thin client over attach mode, not WASM-as-agent | [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) |
 | `mast-web` phases A+B+C don't gate on the fork trigger | [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) |
 | Docs split: mast-design here, mast-web design in mast-web repo | This README + redirect stubs in core-agent's `docs/mast/` |

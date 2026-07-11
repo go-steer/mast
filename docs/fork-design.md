@@ -113,6 +113,7 @@ Estimated size: ~500-1500 LOC. Written fresh; no v1 code carried forward. ~3-5 d
 | `pkg/tools/` (built-in tool surface) | ADK-touching lightly (tool.Tool contract unchanged); port with bash-search-gate applied (core-agent issue #158). |
 | `pkg/tools/agentic/` (Mechanism B wrappers) | ADK-independent aside from digest calls; straight port. |
 | `pkg/agent-card/` | ADK-independent; straight port. |
+| `pkg/skills/` + `adk/tool/skilltoolset` | ADK-touching (agent context on skill invocation); port for SKILL.md format support per [`./skills-design.md`](./skills-design.md). Reinstated 2026-07-01 after skill-publisher landscape (GKE + Google teams) inverted the audience-fit assumption behind the earlier cut. |
 
 Not ported (see "Packages not ported" below).
 
@@ -140,7 +141,7 @@ Estimated wall-clock: ~5-8 days in parallel with P1.2 completion.
 **Packages not ported:**
 
 - `pkg/agent/{agent,runner,loop,scheduler,checkpointer,compactor,autonomous,inbox}.go` — replaced by bucket 1 (lean core) + bucket 3 (autonomous+inbox as cyclic graphs, landing in Phase 2).
-- `pkg/skills/` + `adk/tool/skilltoolset` — skills subsystem cut per [`./specialists-design.md`](./specialists-design.md). Specialists replace the callable-subroutine use case.
+- ~~`pkg/skills/` + `adk/tool/skilltoolset` — skills subsystem cut~~ *Reversed 2026-07-01: skills reinstated as first-class consumable. See [`./skills-design.md`](./skills-design.md); moved to the bucket-2 port list (below) rather than the cut list.*
 - Any package or example targeting developer-laptop interactive-coding UX polish.
 - LSP / AST tooling references (none today, just preventative).
 - Documentation under `docs/site/content/docs/` that targets the developer-coding-assistant reader (site rewritten fresh in Phase 4).
@@ -270,7 +271,7 @@ This is more discipline than weekly cherry-pick batches; the upside is that dive
 - **Project name:** `mast`. Repo at `github.com/go-steer/mast`. Binary `mast`. Available, no collision in the agent/AI space.
 - **Interactive UI:** web, not terminal. Embedded terminal TUI dropped from mast's scope (the use case lives in core-agent, which keeps `core-agent-tui` as before). New project `mast-web` at `github.com/go-steer/mast-web` ports cogo-wasm2's rendering surface as a thin client over mast's existing attach-mode protocol. Architecture pattern is "browser-as-thin-client, mast-as-backend-agent" — *not* cogo-wasm2's "browser-WASM-as-agent + auth-proxy" pattern, which fits cogo's job but is structurally wrong for mast. See [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md).
 - **`core-agent-tui` disposition:** not forked. Mast doesn't ship a terminal TUI. Core-agent keeps `core-agent-tui` for its audience. **Compatibility (not shipping ≠ incompatible):** any attach-mode-compatible TUI, including `core-tui`, connects to `mast --attach-listen` unchanged for basic session-drive (Level 1: turn output, tool visibility, session listing, resume/abort). V2-enriched event fields (`IsolationScope`, `Output`, `Routes`, `RequestedInput`, `NodeInfo`) work if the TUI tolerates unknown JSON fields; else a small adapter is needed. V2-native features (HITL response-schema forms, planner turn detail, workflow-node visualization, federation/A2A task detail, snapshot/replay controls) surface only if the TUI has UI for them — mast delivers them via attach; rendering is the TUI's concern. `mast-web` remains the shipped + v2-feature-complete client.
-- **Skills → specialists:** core-agent's `pkg/skills/` (Anthropic-SKILL.md-compat loader) replaced in mast by `pkg/specialists/` (subagent-as-tool pattern with YAML frontmatter for budget/model/tool-allowlist). See `./specialists-design.md`.
+- **Skills → specialists:** ~~core-agent's `pkg/skills/` (Anthropic-SKILL.md-compat loader) replaced in mast by `pkg/specialists/`.~~ *Reversed 2026-07-01: skills reinstated as first-class consumable alongside specialists (not replaced by them). Rationale: GKE + broader Google teams publishing skills as first-class artifacts inverted the audience-fit assumption behind the cut — mast operators are exactly the audience skill publishers are targeting. Specialists and skills coexist as complementary authoring models (specialists = mast-authored subagents; skills = consumed published templates). See [`./skills-design.md`](./skills-design.md) for the reinstatement design and [`./specialists-design.md`](./specialists-design.md) for the coexistence framing.*
 
 **2026-07-01 (ADK v2 disposition):**
 
