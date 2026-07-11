@@ -68,6 +68,9 @@ tools:
         - get_k8s_logs
         - list_k8s_events
     - server: prometheus             # `tools:` empty/absent = all tools from this server
+  skills:                            # skills the specialist may invoke (see skills-design.md)
+    - gke-triage                     # local .agents/skills/gke-triage.skill/
+    - google://gke-team/incident-triage@v1.2   # registry-discovered
 ---
 
 You are a specialist for diagnosing ImagePullBackOff pod failures in Kubernetes.
@@ -96,12 +99,15 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | `tools.builtin` | []string | inherit all | Allowlist (not denylist) of core-agent built-in tools. Empty/absent = specialist sees all of parent's builtins. |
 | `tools.mcp[].server` | string | required if `mcp` set | MCP server name as configured in `.agents/mcp.json`. |
 | `tools.mcp[].tools` | []string | all | Allowlist of tools from this MCP server. Empty/absent = all tools from this server available to specialist. |
+| `tools.skills` | []string | inherit all | Allowlist of skills (SKILL.md bundles per [`./skills-design.md`](./skills-design.md)) the specialist may invoke. References resolve the same way as workload-bundle `skills:` entries (local name or registry URL). Empty/absent = specialist inherits all skills available in the workload bundle's `skills:` roster. Skill invocation from a specialist follows the standard three-way policy layering: skill's `allowed_tools` ∩ specialist's `tools` ∩ workload bundle's `tool_catalog` — narrowest wins. Skill budget hints get bounded by the specialist's `budget.max_cost_usd` (which itself is bounded by the bundle's `budget.max_cost_usd`). |
 
 ### Allowlist semantics, in plain text
 
-- **No `tools` block** → specialist inherits everything the parent has.
+- **No `tools` block** → specialist inherits everything the parent has (all builtins, all MCP tools, all skills from the workload bundle's roster).
 - **`tools.builtin: [read_file]`** → specialist sees only `read_file` from builtins; nothing else.
 - **`tools.mcp` listed, `tools.builtin` absent** → specialist inherits all builtins, only the listed MCP tools.
+- **`tools.skills: [gke-triage]`** → specialist can invoke only that skill from the bundle's roster; other bundle-enumerated skills invisible.
+- **`tools.skills: []`** (empty list, present) → specialist explicitly denied skill access even if bundle has skills.
 - **`tools: {}`** (empty block) → specialist sees zero tools. Useful for pure-reasoning specialists that just digest the parent's input.
 
 This is allowlist-by-design: enumerating the few tools a specialist *should* see is much easier than excluding the many it shouldn't.
@@ -196,6 +202,7 @@ A migration helper script (`scripts/migrate-skills-to-specialists.sh`) could aut
 4. **Model override means constructing a new provider client per specialist** if the specialist's model is on a different provider than the parent (Gemini specialist under a Claude parent). Likely acceptable cost, but worth noting and possibly limiting to "specialist model must be same provider as parent" for v1 simplicity. (Unchanged by v2.)
 5. **Specialist visibility in `mast-web`.** *2026-07-01 update:* v2's unified telemetry span tree means specialist invocations share one trace shape with regular tool calls and workflow-node executions. The UI question is now purely "which attribute do we filter on to render specialists distinctly" (`agent.type == "specialist"`, or by name-prefix), not "how do we correlate two separate span shapes." Simpler than pre-v2.
 6. **YAML parser choice.** `gopkg.in/yaml.v3` is what the existing skills loader uses; reuse for consistency unless there's a reason to switch.
+7. **Should specialists also declare `tools.a2a` / `tools.remote` allowlists?** By symmetry with `tools.skills` (added 2026-07-01 so specialists can invoke skills), specialists could theoretically also be given a curated allowlist of A2A agents and federated remote agents. Bias: not v0.1. Specialists are meant to be *bounded* subagents; granting arbitrary remote-agent access opens unbounded federation chains + cost blowup risks. Planner (`invoke_remote_agent`) remains the primary path for remote-agent dispatch. Revisit if operators consistently ask, and gate behind explicit per-specialist opt-in with tight budget caps.
 
 ## Out of scope
 
