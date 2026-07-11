@@ -1,13 +1,19 @@
 # mast specialists: design
 
-**Status:** draft, 2026-06-11 (updated 2026-07-01 — ADK v2 resolves several open questions and reshapes the schema slightly). Companion to [`./fork-design.md`](./fork-design.md) (which lists the specialists subsystem as the replacement for the skills surface in mast's scope), [`./positioning.md`](./positioning.md) (the thesis), and [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (the reference-graph library that instantiates specialists as agent nodes). This doc covers the specialist subsystem in detail — schema, loader, registration mechanics, and the open questions to resolve before phase 1 of the fork.
+**Status:** draft, 2026-06-11 (updated 2026-07-01 — ADK v2 resolves several open questions and reshapes the schema slightly; skills reinstated as first-class alongside specialists, so this doc is no longer framed as "the replacement for skills"). Companion to [`./fork-design.md`](./fork-design.md) (bucket 2 ports both `pkg/skills/` and `pkg/specialists/` — see [`./skills-design.md`](./skills-design.md) for the reinstatement rationale), [`./positioning.md`](./positioning.md) (the thesis), [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (the reference-graph library that instantiates specialists as agent nodes), and [`./skills-design.md`](./skills-design.md) (the complementary authoring model — specialists for mast-authored subagents; skills for consumed published templates). This doc covers the specialist subsystem in detail — schema, loader, registration mechanics, and the open questions to resolve before phase 1 of the fork.
 
-## Why specialists replace skills
+## Why specialists exist (and how they coexist with skills)
 
-In mast's scope, the skills subsystem (`pkg/skills/`) is being cut. The motivation:
+Specialists are one of two authoring models mast supports for callable-task-shaped work. The other is **skills** ([`./skills-design.md`](./skills-design.md)) — Anthropic-SKILL.md-format bundles consumed from publishers (Google Agent Registry, GKE team, community, corporate catalogs). Both surface to the planner as callable tools; the choice is *authoring model*, not consumer scope:
 
-- Core-agent's skills load Anthropic-SKILL-formatted bundles (`SKILL.md` with their published frontmatter) so users can drop existing Claude Code skills into a project. That's a real value-add **for core-agent's audience** (developers experimenting locally, cogo-shaped consumers). It's not mast's audience — mast operators write GKE runbooks, not Anthropic-compat skill bundles.
-- The "callable task template" pattern that skills serve is structurally better-served by ADK's existing `agenttool` package: each specialist is a full sub-agent (own system prompt, optionally own tools and model), wrapped as a callable tool the parent invokes when relevant. The specialist's reasoning stays in its own context (Mechanism B / digest pattern), and the parent only sees the final result.
+- **Specialists** = mast-authored subagents. Full control over budget, HITL policy, agent mode, tool allowlist, model override. Written for a specific deployment; live in the operator's config repo.
+- **Skills** = declarative task templates in a format-portable spec. Consumed from publishers; format works across Claude Code, other agent frameworks, and mast.
+
+Reach for specialists when you're authoring for a specific deployment and want mast-native control; reach for skills when you're consuming a published template. Most workloads use both.
+
+**Historical note.** An earlier design (2026-06-11) cut skills from mast's scope and framed specialists as *the* replacement, arguing skills were developer-laptop-shaped and not fit for mast's platform-team audience. That was reversed 2026-07-01 when GKE + Google teams began publishing skills as first-class artifacts for platform work — mast's audience is exactly the audience skill publishers are targeting. See [`./skills-design.md`](./skills-design.md) for reinstatement rationale.
+
+Regardless of which authoring model you use, the *structural* reason for the specialist pattern (subagent-as-tool with own context, budget bounds, mode-appropriate helper tools like `finish_task`) remains: it's the right shape for delegated task execution under ADK v2. Specialists deliver that shape with mast-native controls; skills deliver a compatible shape via the SKILL.md format.
 - The "agents as tools" pattern is already proven in [mastersingh24/gke-agent](https://github.com/mastersingh24/gke-agent), where `.tmpl` files under `templates/sub-agents/` are auto-loaded at startup, each wrapped via `llmagent.New` + `agenttool.New`, and added to the root orchestrator's tool list.
 
 Mast extends that pattern with a richer per-specialist config (budget, tool allowlist, model override) so operators don't have to choose between minimal-and-not-enough or having-to-write-Go for non-default specialists.

@@ -258,6 +258,8 @@ Google Agent Registry is Google's directory of A2A-reachable agents; Google Agen
 - **Discovery.** `.agents/a2a/registry.yaml` names Google Agent Registry as a source (per above); mast discovers other Google Registry–listed agents for planner invocation.
 - **Runtime targeting.** Mast agents deployable *to* Google Agent Runtime (as a managed hosting option) — deployment starter ships under `examples/deploy/gcp-agent-runtime/`.
 
+**Skill discovery.** Google Agent Registry also catalogs SKILL.md bundles alongside A2A agents (see [`./skills-design.md`](./skills-design.md)). Mast's skill loader uses the same registry endpoint + Google IAM auth as A2A discovery — one credential set covers both surfaces. Skill entries and agent entries are distinguished by resource-type in the registry response.
+
 ### kagent
 
 kagent is a Kubernetes-native agent framework with its own A2A-compatible registry:
