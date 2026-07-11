@@ -30,6 +30,7 @@ Public packages under `github.com/go-steer/mast/`:
 | `github.com/go-steer/mast/observability` | Metric registry; OTel wiring; standard attribute keys | Stable from v0.1 |
 | `github.com/go-steer/mast/mcp` | MCP client + transparent wrap | Stable from v0.1 |
 | `github.com/go-steer/mast/a2a` | A2A server + client + `TokenValidator` interface (see [`./a2a-design.md`](./a2a-design.md)) | Stable from v0.1 |
+| `github.com/go-steer/mast/agui` | AG-UI server + client; wraps community Go SDK (`github.com/ag-ui-protocol/ag-ui/sdks/community/go`) for consistent context propagation + observability spans; shares `TokenValidator` interface with `a2a` package (see [`./ag-ui-design.md`](./ag-ui-design.md)) | Interface stable from v0.1; SDK dependency tracked per pre-1.0 evolution |
 | `github.com/go-steer/mast/federation` | Federation adapter interface + built-in adapters (A2A / mast-native / HTTP/RPC) (see [`./federation-design.md`](./federation-design.md)) | Interface stable from v0.1; built-in adapters may add |
 | `github.com/go-steer/mast/skill` | SKILL.md format loader + `Registry` + `Source` extension point for custom skill sources (see [`./skills-design.md`](./skills-design.md)) | Stable from v0.1 |
 

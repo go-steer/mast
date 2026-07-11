@@ -8,19 +8,21 @@ Positioning.md open question #2: *"MCP server catalog: build or consume? Should 
 
 **Resolved:** consume, don't build. With one deliberate exception: **wiring config + starter deployments** for the MCP servers mast's audience most commonly uses.
 
-## Three curated surfaces: MCP vs. A2A vs. skills
+## Four curated surfaces: MCP vs. A2A vs. AG-UI vs. skills
 
-MCP, A2A, and skills are complementary, not competing. Concise distinction:
+MCP, A2A, AG-UI, and skills are complementary, not competing. Concise distinction — one for each corner of the interop surface:
 
-- **MCP is for tools** — structured function calls with defined input/output schemas. Synchronous request/response typical. Server-side is stateless per call (though may have state internally). Think: "call `get_k8s_resource(name=X)`, get back a K8s resource object."
-- **A2A is for agents** — task-based interactions with negotiable state, streaming, HITL support, long-running task lifecycle. Server-side maintains task state and can push updates or request input. Think: "submit a task 'investigate incident-X', receive updates as investigation progresses, respond to input requests, get final structured verdict."
-- **Skills are for callable task templates** ([`./skills-design.md`](./skills-design.md)) — declarative SKILL.md bundles combining a system prompt + tool needs + structured input/output schemas. Consumed from publishers (Google Agent Registry, GKE team, community, corporate); format-portable across agent frameworks. Think: "load the `gke-triage` skill from `google://gke-team/gke-triage@v1.2`; invoke it with `{pod, symptom}` inputs; receive `{root_cause, remediation, confidence}` back."
+- **MCP is for tools (agent → tool)** — structured function calls with defined input/output schemas. Synchronous request/response typical. Server-side is stateless per call (though may have state internally). Think: "call `get_k8s_resource(name=X)`, get back a K8s resource object."
+- **A2A is for agents (agent → agent)** — task-based interactions with negotiable state, streaming, HITL support, long-running task lifecycle. Server-side maintains task state and can push updates or request input. Think: "submit a task 'investigate incident-X', receive updates as investigation progresses, respond to input requests, get final structured verdict."
+- **AG-UI is for user-facing surfaces (agent → user)** ([`./ag-ui-design.md`](./ag-ui-design.md)) — event-streamed agent↔user interaction protocol; the ecosystem standard for chat interfaces (React apps via CopilotKit, chat-platform bots for Slack/Teams/Discord/Telegram/WhatsApp via CopilotKit's bot SDK). Think: "user types in a Slack channel; bot forwards as an AG-UI run to mast; mast streams AG-UI events back; bot renders them as Slack messages, tool-call cards, HITL approval buttons."
+- **Skills are for callable task templates (packaging)** ([`./skills-design.md`](./skills-design.md)) — declarative SKILL.md bundles combining a system prompt + tool needs + structured input/output schemas. Consumed from publishers (Google Agent Registry, GKE team, community, corporate); format-portable across agent frameworks. Think: "load the `gke-triage` skill from `google://gke-team/gke-triage@v1.2`; invoke it with `{pod, symptom}` inputs; receive `{root_cause, remediation, confidence}` back."
 
-A single mast agent can and typically will use all three: MCP for tool calls within its own reasoning + A2A to invoke *other agents* (via [`./federation-design.md`](./federation-design.md)) + skills for callable task templates from the ecosystem catalog.
+A single mast agent can and typically will use all four: MCP for tool calls within its own reasoning + A2A to invoke *other agents* (via [`./federation-design.md`](./federation-design.md)) + AG-UI to be reachable from CopilotKit / Slack / Teams / etc. + skills for callable task templates from the ecosystem catalog.
 
-Three distinct curation surfaces:
+Four distinct curation surfaces:
 - **MCP catalog** (this doc) — mast validates wiring templates for MCP servers.
 - **A2A registries** (Google Agent Registry, kagent — [`./a2a-design.md`](./a2a-design.md)) — third-party curation of A2A-reachable agents.
+- **AG-UI + CopilotKit ecosystem** ([`./ag-ui-design.md`](./ag-ui-design.md)) — no centralized registry; discovery is out-of-band, consumers are configured with mast's AG-UI endpoint URLs directly.
 - **Skill catalogs** (Google Agent Registry lists these too — [`./skills-design.md`](./skills-design.md)) — publisher-curated SKILL.md bundles.
 
 ## Why "consume, don't build"

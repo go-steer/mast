@@ -50,7 +50,9 @@ Every level of execution emits a span:
 - **Provider call** — one LLM call to Gemini / Claude / Vertex (spanning the raw HTTP request).
 - **A2A server task** — one A2A task hosted by mast, from submission to terminal state (see [`./a2a-design.md`](./a2a-design.md)).
 - **A2A client call** — one outbound A2A invocation to a remote agent, with `traceparent` propagation.
-- **Federation call** — one `invoke_remote_agent` invocation (spans the underlying protocol call whether A2A / mast-native / HTTP/RPC; see [`./federation-design.md`](./federation-design.md)).
+- **AG-UI server run** — one AG-UI run hosted by mast (from `RunAgentInput` receipt to `RunFinished` / interrupt / error), with per-event child spans for text messages / tool calls / state deltas (see [`./ag-ui-design.md`](./ag-ui-design.md)).
+- **AG-UI client call** — one outbound AG-UI invocation, with `traceparent` propagation.
+- **Federation call** — one `invoke_remote_agent` invocation (spans the underlying protocol call whether A2A / mast-native / HTTP/RPC / AG-UI; see [`./federation-design.md`](./federation-design.md)).
 
 ### Standard attribute vocabulary
 
@@ -149,6 +151,16 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 - `mast_a2a_server_auth_failures_total{reason}` — counter
 - `mast_a2a_client_calls_total{remote, skill, outcome}` — counter (outbound A2A calls)
 - `mast_a2a_client_call_duration_seconds{remote, skill}` — histogram
+
+**AG-UI:**
+- `mast_agui_runs_total{workload, outcome}` — counter (`outcome` ∈ `success` / `interrupt` / `error` / `cancelled`)
+- `mast_agui_run_duration_seconds{workload}` — histogram
+- `mast_agui_active_threads{workload}` — gauge
+- `mast_agui_interrupts_total{workload, reason}` — counter (per HITL / durability pause)
+- `mast_agui_reconnects_total{workload}` — counter (client disconnect + reconnect resume)
+- `mast_agui_client_calls_total{remote, outcome}` — counter (outbound AG-UI calls when mast is client)
+- `mast_agui_client_call_duration_seconds{remote}` — histogram
+- `mast_agui_server_auth_failures_total{reason}` — counter
 
 **Federation:**
 - `mast_federation_invocations_total{adapter, remote, outcome}` — counter
