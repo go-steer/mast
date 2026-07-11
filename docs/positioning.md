@@ -41,7 +41,7 @@ The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in t
 ### Keep verbatim (user-pinned + critical infrastructure)
 
 - **Interactive REPL** (small, useful for headless smoke testing and scripting). Embedded terminal TUI is *not* part of this scope — the interactive surface is web-based. User-confirmed 2026-06-11.
-- **Attach mode (HTTP/SSE)** (`pkg/attach/`). User-pinned. Critical for operating unattended deployments — the *primary* interactive transport, consumed by a web UI rather than a terminal TUI.
+- **Attach mode (HTTP/SSE)** (`pkg/attach/`). User-pinned. Critical for operating unattended deployments — the *primary* interactive transport. `mast-web` is the shipped and v2-feature-complete client; the protocol itself is client-agnostic and accepts any conformant consumer (attach-mode TUIs including `core-tui`, custom CLIs, third-party UIs). Not shipping a TUI is a productization decision, not a compatibility wall — see [`./fork-design.md`](./fork-design.md) `core-agent-tui` disposition for the compatibility levels.
 - **Web UI (`mast-web`)** — thin client over the attach protocol, separate repo, statics embedded into the mast binary via `go:embed`. Replaces the terminal TUI for mast's audience. See [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md).
 - **Specialists subsystem** (`pkg/specialists/`) — subagent-as-tool pattern using ADK's `agenttool`. `.tmpl` files with YAML frontmatter define specialists with budgets, model overrides, and tool allowlists. Replaces the skills surface from core-agent's scope. See `./specialists-design.md`.
 - **Multi-provider abstraction** (`pkg/providers/`): Gemini, Vertex, Anthropic, Anthropic-Vertex, echo, scripted. The multi-provider moat.
