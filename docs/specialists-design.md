@@ -1,6 +1,6 @@
 # mast specialists: design
 
-**Status:** draft, 2026-06-11 (moved into `go-steer/mast/docs/` 2026-06-13). Companion to [`./fork-design.md`](./fork-design.md) (which lists the specialists subsystem as the replacement for the skills surface in mast's scope) and [`./positioning.md`](./positioning.md) (the thesis). This doc covers the specialist subsystem in detail — schema, loader, registration mechanics, and the open questions to resolve before phase 1 of the fork.
+**Status:** draft, 2026-06-11 (updated 2026-07-01 — ADK v2 resolves several open questions and reshapes the schema slightly). Companion to [`./fork-design.md`](./fork-design.md) (which lists the specialists subsystem as the replacement for the skills surface in mast's scope), [`./positioning.md`](./positioning.md) (the thesis), and [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (the reference-graph library that instantiates specialists as agent nodes). This doc covers the specialist subsystem in detail — schema, loader, registration mechanics, and the open questions to resolve before phase 1 of the fork.
 
 ## Why specialists replace skills
 
@@ -41,6 +41,11 @@ budget:
   max_wallclock_seconds: 60          # default: 60
   max_cost_usd: 0.50                 # default: 0 (no specialist cap; inherits session ceiling)
 
+# Agent mode (optional; defaults to Task)
+# ADK v2 modes; Chat is deliberately not exposed for specialists
+# (specialists are sub-agents, not coordinators).
+mode: Task                           # options: Task, SingleTurn
+
 # Model override (optional; inherits parent if absent)
 model: gemini-2.5-flash              # full model ID; provider inferred from parent's config
 
@@ -80,6 +85,7 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | `budget.max_turns` | int | 5 | Specialist's internal LLM turn count cap. After this many turns, the specialist must return whatever it has. Matches `spawn_agent` default. |
 | `budget.max_wallclock_seconds` | int | 60 | Hard wall-clock cap; cuts off the specialist regardless of turn count. |
 | `budget.max_cost_usd` | float | 0 | Per-invocation cost ceiling. 0 = inherit session ceiling. Useful for cheap-but-frequently-invoked specialists where bounded per-call cost matters more than session-level. |
+| `mode` | string | `Task` | ADK v2 agent mode. Options: `Task` (default; auto-installs `finish_task` — specialist returns via `finish_task` argument), `SingleTurn` (one call, no `finish_task` needed — useful for lightweight classifier specialists consumed by the LLM-as-router shape in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) and by workload-bundle classifier-first dispatch in [`./orchestration-design.md`](./orchestration-design.md)). `Chat` is deliberately not exposed — specialists are sub-agents, not coordinators. |
 | `model` | string | inherit parent | Full model ID (`gemini-2.5-flash`, `claude-haiku-4-5`, etc.). Provider is inferred from the parent's resolved config. Common pattern: frontier parent dispatching to cheap-tier specialists for high-volume tasks. |
 | `tools.builtin` | []string | inherit all | Allowlist (not denylist) of core-agent built-in tools. Empty/absent = specialist sees all of parent's builtins. |
 | `tools.mcp[].server` | string | required if `mcp` set | MCP server name as configured in `.agents/mcp.json`. |
@@ -162,6 +168,10 @@ Specialists compose naturally with the patterns already shipped or designed:
 | Plan-first gate | Parent specifies its plan; specialists do not. Specialists are scoped narrowly enough that the parent's plan covers them. (Considered: forcing each specialist to plan internally too. Rejected — adds cost without correcting a measured failure mode.) |
 | Watchdog | Watches the *parent's* tool-call stream. Specialist-internal loops are bounded by the specialist's own budget caps. Watchdog signals don't propagate into specialist context — the cost ceiling does that job. |
 | Cost ceilings | Per-specialist `budget.max_cost_usd` composes with parent's per-turn and per-session ceilings. Specialist exceeding its budget returns to parent with a `budget_exceeded` result; parent decides whether to retry, escalate, or move on. |
+| Workflow scaffolding (post-v2) | Two composition patterns coexist. **(1) Specialist as agent node** — the registry exposes each specialist as a graph node the workflow scaffolding shapes drop in directly (primary composition, used by every reference graph in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md)). **(2) Specialist as `agenttool`** — parent decides mid-turn to invoke the specialist during its own reasoning (dynamic; not graph-position-bound). The choice is *when* the specialist is invoked, not which mechanism to use for what. `WithUseSubBranch(true)` on `RunNode` calls to specialist-as-agent-node isolates the specialist's context from the parent's, matching the isolation `agenttool` provides in the other pattern. |
+| Human-in-the-loop (post-v2) | Specialists can pause and request operator input via `workflow.NewRequestInputEvent` with a `session.RequestInput{InterruptID, Message, ResponseSchema}`. Response schema drives `mast-web`'s form generation. Resume is durable across process restarts, and works for specialists invoked as agent nodes; specialists invoked via `agenttool` from parent reasoning can also emit `RequestInputEvent` (v2 gain: HITL works on plain `LlmAgent`s, not just workflow-wrapped ones). Common use case: change-safety specialist escalates ambiguous approvals to an operator. |
+| Workload bundles (see [`./orchestration-design.md`](./orchestration-design.md)) | Bundles enumerate a `specialists:` roster — the set of specialists available in a given workload. Loader instantiates only the enumerated specialists per session (rather than the full `.agents/specialists/` directory), giving operators per-workload scope control. Planner invokes specialists via `invoke_specialist(name, inputs)`; plain-agent workloads invoke specialists directly via `agenttool`. `mode: SingleTurn` specialists are useful as bundle-scoped classifiers (e.g., a per-workload router that dispatches within the bundle). |
+| A2A / federation (see [`./a2a-design.md`](./a2a-design.md), [`./federation-design.md`](./federation-design.md)) | External remote agents (A2A, mast-native, HTTP/RPC) appear to the planner as another class of invocable tools via `invoke_remote_agent(reference, inputs)`. Distinct from specialists (which are in-process, budget-composed, direct tool access); complementary. Same planner treats both uniformly; choice depends on locality + trust. A local specialist can also be *published* as an A2A skill via the workload bundle's `a2a.expose` field — the specialist stays local, but becomes callable by external A2A clients through the wrapping workload. |
 
 ## Migration story (for core-agent users coming to mast)
 
@@ -174,26 +184,32 @@ A migration helper script (`scripts/migrate-skills-to-specialists.sh`) could aut
 
 ## Open questions
 
-1. **What does `agenttool.New` return to the parent?** If it returns the full transcript, we defeat the digest pattern. If it returns just the final assistant text, we need to make sure specialists are prompted to produce focused final summaries. Needs verification against the ADK API; may need a thin wrapper that enforces "specialist returns final text only."
-2. **Does `agenttool` natively enforce budgets** (max_turns, max_wallclock_seconds, max_cost_usd), or do we wrap it? `pkg/agent/background.go`'s `spawn_agent` already does this — likely composes.
-3. **MCP per-tool allowlist mechanism.** Does the existing MCP integration support filtering an MCP server's tool set per-agent? If the parent has full server access but the specialist should only see some tools, the underlying mechanism needs to support this. Likely yes via tool filtering, but worth confirming.
-4. **Model override means constructing a new provider client per specialist** if the specialist's model is on a different provider than the parent (Gemini specialist under a Claude parent). Likely acceptable cost, but worth noting and possibly limiting to "specialist model must be same provider as parent" for v1 simplicity.
-5. **Specialist visibility in `mast-web`.** Sidebar listing? Per-tool-call visualization that distinguishes "specialist invocation" from "regular tool call"? Worth thinking about for the UI design.
+1. ~~**What does `agenttool.New` return to the parent?**~~ **Resolved 2026-07-01 (ADK v2):** Task-mode agents auto-install a `finish_task` helper tool. Specialists return their focused final via `finish_task`'s argument, not the raw last-assistant-text. The digest pattern is preserved by construction — no wrapper needed. `SingleTurn`-mode specialists (schema `mode: SingleTurn`) return the single-turn output directly, also focused.
+2. **Does `agenttool` natively enforce budgets** (max_turns, max_wallclock_seconds, max_cost_usd)? *2026-07-01 update:* partly answered by v2. Per-node `Timeout` maps to `max_wallclock_seconds`; per-node `RetryConfig` bounds transient failures. `max_turns` still needs enforcement inside the specialist's own runtime (sub-agent turn count); `max_cost_usd` still needs the mast-side cost interceptor because ADK doesn't track USD. `pkg/agent/background.go`'s `spawn_agent` composition still applies for the remainder.
+3. **MCP per-tool allowlist mechanism.** Does the existing MCP integration support filtering an MCP server's tool set per-agent? If the parent has full server access but the specialist should only see some tools, the underlying mechanism needs to support this. Likely yes via tool filtering, but worth confirming. (Unchanged by v2 — orthogonal to the workflow-engine surface.)
+4. **Model override means constructing a new provider client per specialist** if the specialist's model is on a different provider than the parent (Gemini specialist under a Claude parent). Likely acceptable cost, but worth noting and possibly limiting to "specialist model must be same provider as parent" for v1 simplicity. (Unchanged by v2.)
+5. **Specialist visibility in `mast-web`.** *2026-07-01 update:* v2's unified telemetry span tree means specialist invocations share one trace shape with regular tool calls and workflow-node executions. The UI question is now purely "which attribute do we filter on to render specialists distinctly" (`agent.type == "specialist"`, or by name-prefix), not "how do we correlate two separate span shapes." Simpler than pre-v2.
 6. **YAML parser choice.** `gopkg.in/yaml.v3` is what the existing skills loader uses; reuse for consistency unless there's a reason to switch.
 
 ## Out of scope
 
 - **Hot-reload of specialist files at runtime.** v2 if needed.
-- **Specialist composition** (specialist A calling specialist B). Possible in theory via `agenttool` — the parent agent passes its tool list down. Not designed for v1; revisit when a use case demands it.
-- **Streaming partial results from a specialist to the parent.** Specialist returns its final result at end-of-invocation. Streaming intermediate state would require richer protocol design.
 - **Per-specialist permission gate override** (specialist can write to /tmp but parent can't, etc.). Out of scope — specialists inherit parent's permission gate.
 - **Specialist authoring UI in mast-web.** Operators write `.tmpl` files in their editor of choice. Maybe later.
 
+### Previously out of scope, now supported via v2 primitives
+
+- **Specialist composition** (specialist A calling specialist B). Two paths now available: (a) as **sub-workflow nodes** when specialists are composed inside a workflow graph — trivially expressible; see [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md)'s composition section. (b) as **`agenttool`-chained calls** from inside a specialist's own reasoning, provided the specialist's tool allowlist includes the child specialist as a tool. Both paths need attention to the composed budget: parent specialist's `max_cost_usd` should account for downstream specialists' consumption.
+- **Streaming partial results from a specialist to the parent.** Available for specialists invoked as **agent nodes** in a workflow via v2's emitting-function-node pattern (`workflow.NewEmittingFunctionNode` composed around the agent node, or the agent node emitting `session.Event`s directly). Specialists invoked via `agenttool` from parent reasoning remain non-streaming — the `agenttool` contract returns the final result at end-of-invocation.
+
 ## Related
 
-- `./positioning.md` — the lean-fork thesis this serves
-- `./fork-design.md` — references this doc for the specialists piece
+- [`./positioning.md`](./positioning.md) — the lean-fork thesis this serves
+- [`./fork-design.md`](./fork-design.md) — references this doc for the specialists piece; resolves ADK v2 from day one
+- [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) — the reference-graph library that instantiates specialists as agent nodes
+- [`./orchestration-design.md`](./orchestration-design.md) — workload bundles enumerate specialist rosters per named workload; planner invokes specialists via tool vocabulary
 - [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) — discusses specialist visualization in the UI
-- ADK `agenttool` package — the underlying mechanism
+- ADK v2 `agenttool` package (signature unchanged from v1) — the underlying mechanism for `agenttool`-based invocation
+- ADK v2 workflow package (`google.golang.org/adk/v2/workflow`) — the graph engine that hosts specialist-as-agent-node composition
 - [mastersingh24/gke-agent](https://github.com/mastersingh24/gke-agent) — the proof-of-concept this design extends
 - [core-agent's context-management-design.md](https://github.com/go-steer/core-agent/blob/main/docs/context-management-design.md) — Mechanism B, which specialists are a domain-specific instance of

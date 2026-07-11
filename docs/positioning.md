@@ -1,12 +1,21 @@
 # mast: positioning + scope
 
-**Status:** draft, 2026-06-10 (updated 2026-06-13). Strategy doc, not a design doc — proposes the positioning thesis for `mast`, the lean fork of core-agent (per [`./fork-design.md`](./fork-design.md)). Concrete cut/keep/change-shape decisions follow from the thesis below.
+**Status:** draft, 2026-06-10 (updated 2026-07-01 — ADK v2 implications on task-class profiles, workflow scaffolding, and small-tier-parent classifier). Strategy doc, not a design doc — proposes the positioning thesis for `mast`, the lean fork of core-agent (per [`./fork-design.md`](./fork-design.md)). Concrete cut/keep/change-shape decisions follow from the thesis below.
 
 Under the (E) — sibling-products motivation in [`./fork-design.md`](./fork-design.md), this doc is *mast's* positioning; core-agent retains its own (broader, experimentation-shaped) positioning, to be captured separately as that work lands.
 
 ## Thesis
 
-**mast** is the agent-infrastructure substrate for **unattended, library-embedded, multi-provider** workloads. It is explicitly *not* a Claude Code / Antigravity competitor. The dev-laptop interactive coding experience is downstream of model + IDE + training investment we cannot match; competing there loses on every axis. The cloud-native / headless / library shape is genuinely underserved and is where the moat lives.
+**mast** is the agent-infrastructure substrate for **unattended, library-embedded, multi-provider, durable** workloads. It is explicitly *not* a Claude Code / Antigravity competitor. The dev-laptop interactive coding experience is downstream of model + IDE + training investment we cannot match; competing there loses on every axis. The cloud-native / headless / library shape is genuinely underserved and is where the moat lives.
+
+The four pillars:
+
+1. **Unattended.** Runs without a human watching.
+2. **Library-embedded.** Composes as a Go library inside larger services, not just as a standalone binary.
+3. **Multi-provider.** Same config switches between Gemini and Claude without code changes.
+4. **Durable.** Sessions survive process restarts, pod restarts, cluster migrations, paused HITL waits, and budget exhaustion pauses. Work resumes where it stopped. (See [`./durable-execution-design.md`](./durable-execution-design.md).)
+
+*Durable* was added 2026-07-01 after ADK v2 exposed session-durable pause/resume as a first-class primitive. Prior to v2, "unattended" implicitly assumed either idempotent workloads that could restart from scratch, or operator tolerance for lost work on infrastructure churn. Both are unacceptable for the platform-team workloads mast targets. Durable execution is the fourth pillar because *unattended without durable is unwatched but fragile*.
 
 The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in the core-agent repo) is the proximate motivator: frontier Gemini ran 164 turns / $5.41 / 196K context on a code-investigation prompt that Claude Code with Opus handles in a handful of turns. That gap is real, structural, and the wrong fight to pick. mast sharpens scope around the fights this kind of substrate *can* win.
 
@@ -47,7 +56,9 @@ The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in t
 - **Background agents + spawn_agent + scheduler.** Workflow scaffolding for the gke-parallel-triage pattern.
 - **Auto-continue / inbox.** The unattended-loop primitive.
 - **Container images + cloud-deployment recipes** (`examples/cloud-run-deploy`, `examples/gke-deploy`). The deploy story.
-- **Library API + agent-card publishing.** The embedding story.
+- **Library API + agent-card publishing.** The embedding story. Agent-card publishing now concrete via A2A — see [`./a2a-design.md`](./a2a-design.md).
+- **A2A protocol support (first-class).** Both server (expose workloads to Google Agent Registry, kagent, and similar) and client (invoke external A2A agents). Table stakes for platform-team-substrate positioning — without A2A, mast is invisible to cross-framework registries.
+- **Federation across mast instances + protocols.** One-mast-as-coordinator dispatching to remote agents via A2A / mast-native / HTTP/RPC. See [`./federation-design.md`](./federation-design.md).
 
 ### Cut or de-emphasize
 
@@ -59,17 +70,21 @@ The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in t
 
 ### Change shape
 
-- **DefaultInstruction** (`pkg/agent/agent.go:76`): today is a generic helpful-assistant frame + parallelism mandate + plan nudge. Should be reoriented around unattended-loop discipline: "conservative defaults; explicit state persistence to the eventlog; fail-fast on ambiguity; structured tool preference; plan-before-act required; subagents over open-ended search." The 4-paragraph generic-assistant prose becomes opinionated workload-shaped guidance.
-- **Default tool catalog.** `--task=implement` keeps the current broad set (edit/test cycle needs it). Every other task class defaults to a curated structured subset (per filed issue #160). Bash gets gated against search-shaped commands by default (per filed issue #158).
+- **DefaultInstruction** (`pkg/agent/agent.go:76`): today is a generic helpful-assistant frame + parallelism mandate + plan nudge. Should be reoriented around unattended-loop discipline: "conservative defaults; explicit state persistence to the eventlog; fail-fast on ambiguity; structured tool preference; plan-before-act required; subagents over open-ended search." Post-ADK-v2: split into per-mode variants — `Chat`-mode gets conversational framing for attach-mode / `mast-web` operators; `Task`-mode gets the opinionated unattended-loop frame; `SingleTurn`-mode gets minimal framing (used by LLM-as-router classifiers). The 4-paragraph generic-assistant prose becomes three role-shaped guidance blocks.
+- **Default tool catalog.** `--task=implement` keeps the current broad set (edit/test cycle needs it). Every other task class defaults to a curated structured subset (per filed issue #160). Bash gets gated against search-shaped commands by default (per filed issue #158). Task-class profiles are shaped by ADK v2 agent modes: `--task=chat` → `Chat` mode; `--task=debug|implement|research|review|orchestrate` → `Task` mode. SingleTurn mode is internal (classifier-first workload dispatch, `mode: SingleTurn` specialists, LLM-as-router classifiers) rather than a public task class — see [`./orchestration-design.md`](./orchestration-design.md).
+- **Unattended dispatch is bundle-driven, not CLI-flag-driven.** The `--task=X` flag stays for laptop / library-embedder use, but unattended entry points (HTTP webhooks, queue consumers, scheduled jobs) resolve task class + operational profile from **workload bundles** — declarative YAML files under `.agents/workloads/*.yaml` naming specialists, tool catalog, budgets, HITL policy, and whether the planner runs. Four resolution paths (explicit / envelope / bundle-selection / classifier-first) coexist. See [`./orchestration-design.md`](./orchestration-design.md).
 - **README + Hugo site entry points.** Lead with unattended / platform / library. The "I'm a developer who wants Claude Code" reader should be told within 30 seconds: *"Use Claude Code; this isn't that."* The "I'm a platform team deploying agents into Cloud Run / Kubernetes" reader should see their use case in the first screen. Both surfaces need a rewrite, not a tweak.
 - **Examples directory.** Rebalance toward platform/SRE/library patterns. Target ratio: 70% unattended (GKE triage, Cloud Run, scheduled monitor, library embedding, MCP runbooks), 30% interactive (web UI, plan-first, attach-mode driving). Today's mix skews the other way.
-- **Subagent / spawn_agent / workflow scaffolding.** This becomes first-class. `examples/gke-parallel-triage` is the template; ship 4-6 canonical workflow shapes operators can copy:
-  - Fan-out-fan-in (gke-parallel-triage, exists)
+- **Subagent / spawn_agent / workflow scaffolding.** This becomes first-class, and — post-ADK-v2 — is delivered as **reference graphs on v2's workflow package**, not as a helper layer above the runtime. Seven canonical shapes shipped as `examples/workflows/<shape>/`:
+  - Fan-out-fan-in (`gke-parallel-triage` becomes the reference implementation)
   - Sequential pipeline (extract → transform → propose)
-  - Supervisor + workers (long-running orchestrator dispatching scoped tasks)
-  - Autonomous loop (scheduled monitor pattern, exists in `examples/scheduled-monitor` but needs more shapes)
+  - Supervisor + workers (long-running orchestrator dispatching scoped tasks; multi-tenant story lands here)
+  - Autonomous loop (scheduled monitor pattern; v2 cyclic graph replaces `pkg/agent/autonomous.go` custom loop machinery)
   - Adversarial verifier (proposer + skeptic pattern — useful for unattended decision-making)
-  - Map-reduce over corpus (digest-summarize many inputs into one output)
+  - Map-reduce over corpus (digest-summarize many inputs into one output; audit-derived-memory backfill is a real instance)
+  - LLM-as-router (classifier dispatches to per-category specialist; also replaces the substring-matcher small-tier-parent classifier — see open question #4 below)
+
+  Mast's surface for this priority collapses from "helper packages + examples" to "domain wiring on v2 primitives (which MCP servers / specialists / tools compose in)." See [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) for the full design, per-shape v2-primitive mapping, and composition rules.
 - **Watchdog routing.** Per filed issue #159, alerts should reach the model's next-turn context, not just operator UI. Critical for unattended where there is no operator.
 
 ## What this implies for the next 6 months
@@ -77,12 +92,12 @@ The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in t
 In rough priority order:
 
 1. **README + Hugo site repositioning sweep.** First impression matters most. Lead with unattended / platform story. Cheap, immediate, sets the frame for everything else.
-2. **Land filed issues #158-#161.** Compose to "make Gemini less bad at the failure shape we care about" for cases where Claude isn't available.
+2. **Land filed issues #158-#161.** Compose to "make Gemini less bad at the failure shape we care about" for cases where Claude isn't available. (Post-v2 note: watchdog→model routing per issue #159 gets a cleaner shape — watchdog runs inside an emitting function node and injects alerts into the session event stream; no separate transport.)
 3. **Ship shared-memory design (PRs #13/14/15).** Biggest single moat-builder in the queue.
-4. **Build out the workflow-scaffolding example library.** 4-6 canonical shapes, each with example + doc page.
-5. **Multi-session deployment story end-to-end (v2.4).** Walk-through from "single dev" to "shared team deployment with per-user auth and audit isolation."
+4. **Build out the workflow-scaffolding reference-graph library.** Seven canonical shapes on ADK v2 primitives, each with example + doc page. See [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md).
+5. **Multi-session deployment story end-to-end (v2.4).** Walk-through from "single dev" to "shared team deployment with per-user auth and audit isolation." (Post-v2 note: supervisor+workers with `WithIsolationScope(tenantID)` is the concrete shape — see workflow-scaffolding doc.)
 6. **MCP credential resolution end-to-end.** Design doc → implementation → docs page. Multi-tenant story closed loop.
-7. **Audit-derived-memory implementation.** Thesis lives in shared-memory design; needs implementation work to become real.
+7. **Audit-derived-memory implementation.** Thesis lives in shared-memory design; needs implementation work to become real. (Post-v2 note: consumer nodes read via state-bound nodes (`state:"<key>"` tags); the derivation pipeline is a map-reduce reference-graph instance.) Direct enabler for workload-bundle learning (see [`./orchestration-design.md`](./orchestration-design.md)) — the same audit-derived-memory pipeline that surfaces operational memory also proposes new workload bundles and refines existing ones.
 
 **Explicitly off this list:**
 - Better Gemini code-search prompts (measured: doesn't move).
@@ -96,7 +111,7 @@ In rough priority order:
 1. **Where does AX fit?** Per `reference_ax_runtime`, AX is the distributed-runtime layer above core-agent. As core-agent sharpens around unattended single-process, the boundary with AX gets clearer — but also raises *"should some of what core-agent does today move up to AX?"* (Background agents? Multi-session coordination? Cross-process inbox?) Needs a dedicated audit.
 2. **MCP server catalog: build or consume?** Should core-agent ship its own MCP servers (Prometheus, Cilium, Istio, GCP IAM/Logging) or stay a substrate that consumes others'? Probably the latter, but gke-parallel-triage shows there's value in shipping the *wiring config* even when servers are external.
 3. ~~**Is "interactive mode + TUI" a long-term commitment or a transitional one**...~~ *Resolved 2026-06-11: interactive surface is long-term; shape is web UI over attach mode, not embedded terminal TUI. See [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md).*
-4. **How does the small-tier-parent classifier age** as `gemini-3.5-flash` lands and `gemini-3.5-pro` GAs? The substring matcher needs revisiting (filed issue #161 begins this).
+4. **How does the small-tier-parent classifier age** as `gemini-3.5-flash` lands and `gemini-3.5-pro` GAs? The substring matcher needs revisiting (filed issue #161 begins this). *2026-07-01 update: ADK v2's `SingleTurn` agent mode is a natural replacement — a lightweight LlmAgent classifier on flash, invoked as the LLM-as-router shape ([`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md)), ages gracefully as model IDs change and shifts the question from "can our substring matcher keep up" to "which model should the classifier target." The substring-matcher goes when the classifier lands.*
 5. **Canonical positioning name.** "Agent infrastructure" is generic. "Platform agent runtime" is closer. "Agent substrate" is what design docs use internally. Naming matters for the README sweep — pick one and use it consistently.
 
 ## What gets simpler if we commit
