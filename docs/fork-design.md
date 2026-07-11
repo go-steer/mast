@@ -1,6 +1,6 @@
 # mast: fork design
 
-**Status:** draft, 2026-06-11 (updated 2026-06-13 — moved into `go-steer/mast/docs/` from core-agent's worktree). Companion to [`./positioning.md`](./positioning.md) (the thesis), [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) (the operator-facing UI), and [`./specialists-design.md`](./specialists-design.md) (the subagent-as-tool subsystem). This doc covers the *mechanics* of extracting `mast` from current core-agent. Reading the positioning doc first is assumed — this doc takes the keep/cut/change-shape decisions as given and answers *how* to make them happen via a fork.
+**Status:** draft, 2026-06-11 (updated 2026-07-01 — ADK v2 disposition + fork mechanic revised from prune-in-place to rebuild-lean-core). Companion to [`./positioning.md`](./positioning.md) (the thesis), [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) (the operator-facing UI), [`./specialists-design.md`](./specialists-design.md) (the subagent-as-tool subsystem), and [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (the canonical workflow shapes on top of ADK v2's graph engine). This doc covers the *mechanics* of extracting `mast` from current core-agent. Reading the positioning doc first is assumed — this doc takes the keep/cut/change-shape decisions as given and answers *how* to make them happen.
 
 ## The strategic question that determines everything
 
@@ -18,15 +18,37 @@ The mechanical work is similar — same set of code gets deleted either way. The
 
 **Resolved (2026-06-11): the motivation is (E) — sibling products with divergent agendas.** The lean fork is the platform-agent product (per `./positioning.md`); core-agent stays alive as the experimentation/integration substrate for cogo and similar embedded consumers. Both have a future. This is meaningfully different from (A) — both maintained — because the two have *different jobs*, not just different user cohorts for the same job. That distinction reduces the sync burden (less overlap to keep in lockstep) but raises the bar for clear positioning so users know which to reach for.
 
-## Recommended approach: hard-fork-then-prune, single squash commit
+## Recommended approach: rebuild lean core around ADK v2, port adapters
 
-Three viable mechanics:
+**Revised 2026-07-01.** Three mechanics were considered pre-v2:
 
 1. **Hard fork.** `git clone` the repo, rename, start deleting on a fresh branch. History preserved verbatim. Pro: full provenance. Con: every git log entry references files that no longer exist; the diff to land the prune is huge.
 2. **Code extraction.** Create empty repo, copy in the keep list, write a fresh initial commit. Pro: clean history matching the new scope. Con: loses provenance entirely; tests/CI/coverage start from zero.
-3. **Hard-fork-then-prune in one squash commit (recommended).** Hard-fork to preserve history, then land all cuts in a single squash commit titled `chore: prune to lean scope (forked from go-steer/core-agent@<SHA>)`. Pro: provenance preserved, but history *after* the fork point reads cleanly against the new scope. Con: the squash commit is enormous.
+3. **Hard-fork-then-prune in one squash commit** (originally recommended). Hard-fork to preserve history, then land all cuts in a single squash commit titled `chore: prune to lean scope (forked from go-steer/core-agent@<SHA>)`. Pro: provenance preserved, but history *after* the fork point reads cleanly against the new scope. Con: the squash commit is enormous.
 
-The squash is worth it. Anyone doing archaeology can `git log --follow` back through the squash into the original history. Anyone working forward sees a clean tree.
+**ADK v2 changes the calculation.** The v2 workflow package delivers node runtime, graph engine, Chat/Task/SingleTurn agent modes, durable HITL, unified `agent.Context`, and one telemetry span tree. Under v1, the core agent loop (`pkg/agent/{agent,runner,loop,scheduler,checkpointer,compactor,autonomous,inbox}.go`) was substantial value-add code worth preserving through a prune. Under v2, most of what that code did *is what v2 provides natively* — porting it would be porting code whose value has evaporated. Prune-in-place is the wrong shape for code that we would rewrite anyway.
+
+**The revised recommended mechanic: rebuild the lean core around v2 primitives, port the adapter packages unchanged, build the mast-specific subsystems v2-natively.** Three buckets of work; different provenance treatment per bucket:
+
+- **Bucket 1 (rebuild).** The lean core — a small (~500-1500 LOC) shim over v2's runner + node runtime + Chat/Task/SingleTurn wiring + HITL propagation + event-stream plumbing + watchdog signal emission + plan-first gate as a graph-entry pattern. Written fresh against v2; no v1 code carried forward. This is where mast's positioning gets encoded in the loop itself, not negotiated against inherited v1 patterns.
+- **Bucket 2 (port).** Adapter packages that constitute value-add substrate — providers, permissions, eventlog, attach, MCP, config, instruction, modeltier, taskclass, usage, pricing, digest, tools + agentic wrappers. Carry forward with minimal changes for v2 compat (unified `agent.Context`, `session.NewEvent` signature, event fields in eventlog). Attribution headers per-file: `// Originally derived from go-steer/core-agent@<SHA>`.
+- **Bucket 3 (build v2-native).** Specialists loader, workload-bundle loader + resolution paths + classifier-first dispatch (see [`./orchestration-design.md`](./orchestration-design.md)), planner (scaffolded in v0.1, complete in v0.2), reference-graph library, autonomous+inbox as cyclic graphs, shared memory + audit-derived memory ([`./memory-design.md`](./memory-design.md)), bundle learning (v0.3), evaluation + regression harness (v0.3), watchdog integration, small-tier-parent classifier, durable-execution primitives beyond HITL (programmatic/timed/external-signal pause per [`./durable-execution-design.md`](./durable-execution-design.md)), observability instrumentation ([`./observability-design.md`](./observability-design.md)), library-API surface ([`./library-api-design.md`](./library-api-design.md)), MCP catalog wiring templates ([`./mcp-catalog-design.md`](./mcp-catalog-design.md)), A2A server + client + Google Agent Registry publishing ([`./a2a-design.md`](./a2a-design.md)), federation adapter framework + `invoke_remote_agent` planner tool ([`./federation-design.md`](./federation-design.md)). New code that instantiates mast's positioning; written against bucket 1's contract from day one.
+
+**Provenance is preserved via attribution, not git history.** Bucket-2 ports carry per-file attribution headers pointing at the core-agent commit SHA they were derived from. The CHANGELOG's v0.1.0 note references the core-agent commit range. Anyone doing archaeology on a specific package can `git log` core-agent's history for that file; there is no cross-repo `git log --follow` chain, but there was never going to be a useful one across the pruning squash either — the squash was already an archaeology-defeating boundary in the original design.
+
+**Trade-off vs. prune-in-place:**
+
+| Dimension | Prune-in-place (original) | Rebuild lean core (revised) |
+|---|---|---|
+| Wall-clock to `go build` clean | ~1 day (mechanical prune) | ~1-2 weeks (bucket 1 + bucket 2 in parallel) |
+| Wall-clock to `mast --task=debug ...` runnable end-to-end | ~1-2 weeks after phase 1 (phase 2's boundary cleanup + DefaultInstruction rewrite) | ~2-3 weeks (bucket 1 + bucket 2 + minimum bucket 3) |
+| Long-term code health | Loop carries v1 assumptions; DefaultInstruction rewrite chases them post-hoc; boundary cleanup discovers rather than designs | Loop is v2-native by design; no v1 assumptions to chase; boundaries designed against v2's contract |
+| Risk of losing subtle behaviors | Low — soaked code preserved verbatim | Medium — checkpointer/compactor/plan-first behaviors must be reimplemented; some subtle interactions may reappear as bugs (mitigated by contract tests + UAT before v0.1.0 tag) |
+| Squash commit reviewability | Huge, mechanical, "look at the tree not the diff" | N/A — multiple normal PRs (P1.1 … P1.6, see Phase 1) replace the squash |
+| Fits (E) sibling-products framing | Fine | Better — rebuild forces us to encode mast's positioning into the core loop from the first commit rather than layer it above core-agent's shape |
+| ADK-boundary sync burden | Same (ADK-touching shared code still on version boundary) | Same |
+
+The rebuild costs 1-2 more weeks of wall-clock and one class of risk (subtle-behavior regression). It buys code that structurally embodies mast's positioning from the first commit, a smaller loop with fewer moving parts, and freedom from a v1→v2 migration diff that would show up in every future `git blame`.
 
 ## Phase 0: decisions before code moves
 
@@ -40,7 +62,7 @@ These need answers before phase 1; deferring them creates rework.
 | Binary name | **`mast`** | Drops from `cmd/core-agent/main.go` → `cmd/mast/main.go`. CLI invocation becomes `mast --task=debug ...`. |
 | License | Carry forward Apache 2.0 | No reason to change unless **(C)**. |
 | Versioning | Start fresh at v0.1.0 | Signals "new project, not a continuation." Inherits design maturity, drops API stability promises. |
-| ADK dependency | **Keep.** No concrete pain; provides known working code. Revisit only if a specific bug or limitation surfaces. | Replacing `google.golang.org/adk` would be 2-3 months of careful work (tool-call correlation, parallel function calls, streaming delta protocols, content-part ordering rules — all the fiddly translation ADK does between Gemini and Anthropic semantics). The lean thesis is about *positioning + opinionated defaults*, not about owning every line of the substrate. Owning ADK's job is a separate decision that needs its own trigger. |
+| ADK dependency | **Keep, and adopt v2 from day one.** No concrete pain; provides known working code. v2's graph engine, durable HITL, and agent modes are load-bearing for mast's positioning (see [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) and [`./specialists-design.md`](./specialists-design.md)). Revisit replacement only if a specific bug or limitation surfaces. | Replacing `google.golang.org/adk/v2` would be 2-3 months of careful work (tool-call correlation, parallel function calls, streaming delta protocols, content-part ordering rules — all the fiddly translation ADK does between Gemini and Anthropic semantics). v2 makes that even less appealing by delivering the graph scheduler, durable HITL, and agent modes we would otherwise own. Version disposition: the lean core (bucket 1) is written fresh against v2; adapter ports (bucket 2) migrate v1→v2 at port time. No v1→v2 migration diff persists in mast's history. See "Recommended approach" and "Sync discipline" for the follow-on implications. Owning ADK's job is a separate decision that needs its own trigger. |
 | Backward-compat surface | None (clean break) | Existing consumers consume the original core-agent for as long as they need to. The fork doesn't promise import-path stability with core-agent. |
 | CI / release infra | **Independent at start.** Port `dev/ci/presubmits/*` as-is; lean fork owns its own GitHub Actions workflows and release pipeline from day one. | Presubmits are the project's quality bar; carry them over. Shared workflow infrastructure (one source, both repos consume) is the more elegant long-term option but couples release cadences and isn't worth the operational overhead at start. Revisit at the 6-12 month mark alongside the shared-infrastructure-repo question. |
 | Hugo site | Fresh Hugo site, not a port | Site docs are too entangled with the old positioning; cheaper to rewrite. The library + design docs in `docs/` port over. |
@@ -49,85 +71,123 @@ These need answers before phase 1; deferring them creates rework.
 
 The lean fork starts *after* the following in-flight work lands in core-agent:
 
-1. **Issues #158-#161** (bash search-gate, watchdog→model routing, `--task=debug` profile extensions, gemini-3.5-flash probe). Small, scoped, apply equally to both products. Land in core-agent first because they belong there *and* because the lean fork inherits stronger baseline behavior.
-2. **Shared-memory stack (PRs #13/14/15).** Audit-derived memory is core to the lean fork's value proposition, but it's also a real feature core-agent's experimentation/integration consumers want. Land in core-agent first; the lean fork inherits a real-soak-tested implementation at fork time rather than building it twice or porting half-finished.
+1. **Issues #158-#161** (bash search-gate, watchdog→model routing, `--task=debug` profile extensions, gemini-3.5-flash probe). Small, scoped, apply equally to both products. Land in core-agent first because they belong there *and* because the rebuild inherits stronger baseline design to re-express v2-natively.
+2. **Shared-memory stack (PRs #13/14/15).** Audit-derived memory is core to the lean fork's value proposition, and it's also a real feature core-agent's experimentation/integration consumers want. Land in core-agent first; the rebuild inherits soaked design and (for the ADK-independent parts) portable implementation.
 
-Starting phase 1 before this work lands means doing it twice (once in each repo); starting after means the fork ships with a stronger v0.1. The few-week delay is worth it.
+Under the rebuild mechanic the trigger's reasoning shifts slightly: bucket 2 of phase 1 is a *port*, so ADK-independent shared-infrastructure code (permissions logic, digest math, most of eventlog) is worth carrying forward directly rather than reinventing. Design work in shared-memory and #158-#161 is worth *referencing* rather than reinventing. Starting before this work stabilizes means either duplicating design work or writing bucket 3 against a moving target. The few-week delay is worth it.
+
+**ADK v2 migration does *not* extend the trigger.** The two items above are shared work (small bug-fix issues that apply to both products; a shared-memory feature core-agent's audience wants). The v1→v2 migration is different: it's a substrate-version choice that mast's positioning depends on structurally (graph engine, durable HITL, agent modes) while core-agent's audience does not need in the same way. Making core-agent's v2 migration a prerequisite would (1) put core-agent's schedule on mast's critical path — the exact failure mode the (E) sibling-products framing was chosen to avoid, (2) force a compromise migration done for mast's benefit under core-agent's cogo-shaped-consumer constraints, and (3) delay the fork indefinitely if core-agent's audience never asks for v2 features. Under the rebuild mechanic, mast is v2-native by construction; adapter ports absorb whatever v1→v2 adaptation the imported packages need at port time. Core-agent stays on ADK v1 for as long as its audience wants; the sibling-products framing means the two products can genuinely diverge on substrate version. Follow-on implication: ADK-touching shared-infrastructure code (session store, provider adapters, watchdog signal routing) sits on opposite sides of the v1/v2 API boundary — sync discipline covers this below.
 
 **Note: `mast-web` work doesn't gate on this trigger.** Phases A+B+C of [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) consume the attach protocol that already exists in core-agent, so frontend work can proceed in parallel — built against `core-agent --attach-listen` today, repointed at mast at fork time. See [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md)'s Phasing section for the dependency table.
 
-## Phase 1: fork-then-prune (1 PR, ~1 day)
+## Phase 1: rebuild + port (multiple PRs, ~2-3 weeks)
 
-One PR titled `chore: prune to lean scope (forked from go-steer/core-agent@<SHA>)`. Contents:
+Phase 1 is a set of coordinated PRs against a fresh `github.com/go-steer/mast` repo, not one squash. Sequencing:
 
-1. **Rename module path everywhere.** `go mod edit -module github.com/<org>/<name>`; sed all imports. One mechanical commit.
-2. **Delete cut-list items per `./positioning.md`** (see "Concrete delete list" below). One squash commit.
-3. **Trim transitively-orphaned code.** Anything depending only on deleted code gets removed. Iterate until `go build ./...` is clean.
-4. **Update CHANGELOG.md** to mark v0.1.0 with the fork note.
-5. **README rewrite** to lean positioning (per `./positioning.md`).
-6. **Update DESIGN.md** to reflect the trimmed surface.
+**P1.1 — bootstrap.** New repo initialized. Empty `cmd/mast/main.go`, minimal `go.mod` pinning `google.golang.org/adk/v2`, `LICENSE` (Apache 2.0), initial `README.md` stub, `.gitignore`, `CHANGELOG.md`, CI skeleton adapted from mast-web (lint + build + test workflows). ~1 day.
 
-**Concrete delete list** (initial pass — refine during phase 1):
+**P1.2 — lean core (bucket 1).** The core agent loop as a small shim over v2 primitives:
+- v2 runner integration; `agent.Agent` interface consumers.
+- Chat / Task / SingleTurn mode wiring; helper-tool auto-installation surfaces exposed to bucket 2's config layer.
+- HITL propagation: `RequestInputEvent` surfaces plumbed through to the attach transport (interface only; concrete attach lands in bucket 2).
+- Event-stream plumbing: session events emitted uniformly regardless of node vs. agent execution.
+- Watchdog signal-emission integration point (interface; concrete watchdog lands in bucket 3).
+- Plan-first gate reimplemented as a graph-entry pattern (not a stateful mid-loop hook).
+- Per-mode DefaultInstruction variants (Chat conversational; Task opinionated-unattended; SingleTurn minimal).
+- Contract tests bucket 2 will write against.
 
+Estimated size: ~500-1500 LOC. Written fresh; no v1 code carried forward. ~3-5 days.
+
+**P1.3 — adapters (bucket 2).** Port from core-agent with per-file `// Originally derived from go-steer/core-agent@<SHA>` headers. Minimal changes for v2 compat (unified `agent.Context`, `session.NewEvent` signature, event fields in eventlog). Can proceed in parallel with P1.2 once the core's contract is stable (probably day 3-5 of P1.2). Packages:
+
+| Package | Port notes |
+|---|---|
+| `pkg/providers/` (Gemini, Vertex, Anthropic, Anthropic-Vertex, echo, scripted) | ADK-touching: `agent.Context` change; adapter methods take the unified context. |
+| `pkg/permissions/` (gate, path scope, URL scope) | ADK-independent; straight port. |
+| `pkg/eventlog/` (durable sessions, audit) | ADK-touching: new event fields (`IsolationScope`, `Output`, `Routes`, `RequestedInput`, `NodeInfo`) must persist. `session.NewEvent` signature. |
+| `pkg/attach/` (HTTP/SSE) | ADK-touching: emit v2 event shape; expose `RequestInputEvent` schema to mast-web. |
+| `pkg/mcp/` (client + transparent wrap) | ADK-touching lightly; wrap and filtering unchanged in shape. |
+| `pkg/config/`, `pkg/instruction/`, `pkg/modeltier/`, `pkg/taskclass/` | ADK-independent; port with `--task=<class>` → agent-mode mapping added in `taskclass`. |
+| `pkg/usage/`, `pkg/pricing/` | ADK-independent; straight port. |
+| `pkg/digest/` | ADK-independent; straight port. |
+| `pkg/tools/` (built-in tool surface) | ADK-touching lightly (tool.Tool contract unchanged); port with bash-search-gate applied (core-agent issue #158). |
+| `pkg/tools/agentic/` (Mechanism B wrappers) | ADK-independent aside from digest calls; straight port. |
+| `pkg/agent-card/` | ADK-independent; straight port. |
+
+Not ported (see "Packages not ported" below).
+
+Estimated wall-clock: ~5-8 days in parallel with P1.2 completion.
+
+**P1.4 — specialists loader + workload bundles + durability primitive + A2A + federation scaffolding + minimum bucket 3.** The `pkg/specialists/` package per [`./specialists-design.md`](./specialists-design.md), loading `.tmpl` files, registering as Task-mode (or SingleTurn-mode per `mode:` frontmatter) `LlmAgent`s via `agenttool`. The `pkg/workloads/` package per [`./orchestration-design.md`](./orchestration-design.md) — bundle schema, loader, `--workload=<name>` CLI flag, envelope routing, basic classifier-first dispatch. The `pkg/session/` durability surface per [`./durable-execution-design.md`](./durable-execution-design.md) — `Pause`/`Resume`/`List`/`Get` API against SQLite session store; CLI `mast sessions list/show/resume/abort`. The `pkg/a2a/` package per [`./a2a-design.md`](./a2a-design.md) — synchronous A2A server (`/.well-known/agent-card.json`, `/a2a/tasks/*`), synchronous A2A client, static `.agents/a2a/*.yaml` config. The `pkg/federation/` package per [`./federation-design.md`](./federation-design.md) — adapter interface, A2A adapter, planner `invoke_remote_agent` tool. Planner scaffolded (tool vocabulary schema in place; `run_shape_*` tools wire to whatever reference-graph shapes are shipped in P1.5); learning explicitly deferred to v0.3. ~7-9 days.
+
+**P1.5 — smoke examples + observability + presubmits.** Port enough of `examples/gke-parallel-triage` and `examples/cloud-run-deploy` to build. Ship `pkg/observability/` per [`./observability-design.md`](./observability-design.md) — Prometheus `/metrics` endpoint with the base metric families; JSON structured logs; basic OTel trace export. Ship deployment starters (`examples/deploy/{standalone,library-embedded,gke,cloud-run}/`) per [`./deployment-design.md`](./deployment-design.md). Ship MCP wiring templates for v0.1 catalog per [`./mcp-catalog-design.md`](./mcp-catalog-design.md). Port `dev/ci/presubmits/*` scripts. Port `dev/uat/` scaffolding. Goal: `go build ./... && go test ./... && dev/ci/presubmits/*` all green. ~3-4 days.
+
+**P1.6 — v0.1.0 tag.** CHANGELOG note referencing `go-steer/core-agent@<SHA-range>`; README rewritten to full lean-positioning language (per [`./positioning.md`](./positioning.md)); DESIGN.md written fresh for the trimmed surface. ~1 day.
+
+**Phase 1 exit criteria:**
+
+1. `go build ./... && go test ./... && dev/ci/presubmits/*` all green.
+2. `mast --task=debug --provider=gemini <toy prompt>` runs end-to-end (laptop path), produces expected output, session persists in eventlog.
+3. `mast --workload=<sample> --provider=gemini <envelope>` runs end-to-end (unattended path) against a hand-authored bundle under `.agents/workloads/` — resolves bundle, applies tool catalog + specialist roster + budgets, produces expected output.
+4. Attach mode reachable from `mast-web` (once mast-web's Phase C+ is repointed at mast per its own doc).
+5. Specialists loader recognizes a sample `.tmpl` file and registers it as a callable tool (Task and SingleTurn modes).
+6. HITL round-trip: an interactive prompt from a specialist reaches attach, waits, resumes on operator response — pause survives process restart per [`./durable-execution-design.md`](./durable-execution-design.md).
+7. Prometheus `/metrics` endpoint reachable; base metric families populated; JSON logs to stdout with session correlation IDs (per [`./observability-design.md`](./observability-design.md)).
+8. Library-embedded consumer scenario: `mast.RunWorkload(ctx, ...)` succeeds from a Go test with programmatic bundle registration (per [`./library-api-design.md`](./library-api-design.md)).
+9. A2A round-trip: sample bundle marked `a2a.expose: true` is discoverable via `/.well-known/agent-card.json`; A2A task submission succeeds; `mast a2a publish --registry=...` sample succeeds against a stub registry.
+10. Federation round-trip: sample workload's planner invokes `invoke_remote_agent("a2a://sample-external", ...)` against a stub A2A server; result surfaces to the planner as tool output.
+
+**Packages not ported:**
+
+- `pkg/agent/{agent,runner,loop,scheduler,checkpointer,compactor,autonomous,inbox}.go` — replaced by bucket 1 (lean core) + bucket 3 (autonomous+inbox as cyclic graphs, landing in Phase 2).
+- `pkg/skills/` + `adk/tool/skilltoolset` — skills subsystem cut per [`./specialists-design.md`](./specialists-design.md). Specialists replace the callable-subroutine use case.
 - Any package or example targeting developer-laptop interactive-coding UX polish.
 - LSP / AST tooling references (none today, just preventative).
-- Documentation under `docs/site/content/docs/` that targets the developer-coding-assistant reader (port the rest fresh; see Phase 4).
+- Documentation under `docs/site/content/docs/` that targets the developer-coding-assistant reader (site rewritten fresh in Phase 4).
 - Any model-specific prompt-engineering scaffolding for code search beyond what's load-bearing (per `docs/gemini-tier1-followup-plan.md` — measured ineffective).
 - `examples/basic`, `examples/with-tools` — keep as smoke tests in `examples/_smoke/` (or similar) but stop recommending them as starting points. README points new readers at platform/SRE-shaped examples instead.
-- **`pkg/skills/` + `adk/tool/skilltoolset`** — skills subsystem cut. The "callable task template" use case is replaced by the new specialists subsystem (`pkg/specialists/`) using ADK's `agenttool` pattern. The Anthropic-SKILL.md-compat shape stays in core-agent for its audience. See `./specialists-design.md` for the replacement schema and loader design.
 
-**Notably *not* in the delete list** (resolved 2026-06-11, "parts of all"):
+**Explicitly kept and reshaped in Phase 2/3, not Phase 1:**
 
-- `pkg/usage/`, `pkg/pricing/` — cost tracking matters in both products.
-- `pkg/tools/agentic/` — Mechanism B wrappers stay; they're the right shape for unattended where context budget matters most.
-- `pkg/digest/` — required by agentic wrappers; stays.
-- `pkg/agent-card/` (agent-card publishing) — useful for unattended deployment discovery; stays.
+- `examples/gke-deploy`, `examples/scheduled-monitor`, `examples/autonomous`, `examples/plan-first`, `examples/streaming`, `examples/replay`, `examples/autonomous-handle` — reshape or promote to reference graphs (see [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md)) as bucket 3 lands.
+- `dev/parallel-probe/` — port as-is when the workflow scaffolding library needs it for testing.
 
-**Concrete keep list** — explicit so phase 1 has a definite stopping point:
+## Phase 2: bucket-3 completion (multiple PRs, ~3-6 weeks)
 
-- `pkg/agent/` (loop, runner, scheduler, watchdog, checkpointer, compactor, autonomous, inbox)
-- `pkg/providers/` (multi-provider abstraction)
-- `pkg/tools/` (built-in tool surface)
-- `pkg/tools/agentic/` (Mechanism B wrappers)
-- `pkg/permissions/` (gate, path scope, URL scope)
-- `pkg/eventlog/` (durable sessions / audit)
-- `pkg/config/`, `pkg/modeltier/`, `pkg/taskclass/`, `pkg/usage/`
-- `pkg/attach/` (HTTP/SSE attach mode)
-- `pkg/mcp/` (MCP client + transparent wrap)
-- `pkg/instruction/` (instruction loader v2)
-- `pkg/digest/`, `pkg/pricing/`
-- **`pkg/specialists/`** (new — replaces `pkg/skills/`) — subagent-as-tool loader for `.tmpl` files under `.agents/specialists/`. See `./specialists-design.md`.
-- `cmd/core-agent/` → rename to `cmd/<new-name>/`
-- Companion repo `core-agent-tui` consumed at current pinned version (no fork of it required v0.1; revisit if the lean repo's needs diverge)
-- `examples/gke-deploy`, `examples/gke-parallel-triage`, `examples/cloud-run-deploy`, `examples/scheduled-monitor`, `examples/autonomous`, `examples/plan-first`, `examples/streaming`, `examples/replay`, `examples/autonomous-handle`
-- `docs/` design docs (the positioning + lean-fork docs migrate first; rest come over selectively in phase 4)
-- `dev/ci/presubmits/`, `dev/uat/`, `dev/parallel-probe/` (testing infra)
+The original Phase 2 (refactor / boundary cleanup, DefaultInstruction rewrite, tool catalog defaults per task class, bash search-gate, watchdog→model routing) largely moots under the rebuild:
 
-The goal of phase 1 is **`go build ./... && go test ./... && dev/ci/presubmits/* ` all green on the new tree.** No new features, no DefaultInstruction rewrite yet. Just establish the trimmed baseline.
+- **DefaultInstruction rewrite** — done in bucket 1 as part of building the core; not a follow-on refactor.
+- **Package consolidation / boundary cleanup** — bucket 2 ports are the opportunity to consolidate; boundaries that want rework get reworked at port time, not as a follow-on pass.
+- **Tool catalog defaults per task class (issue #160)** — done in `pkg/taskclass/` during bucket 2 port; agent-mode mapping surfaces the change naturally.
+- **Bash search-gate (issue #158)** — applied to `pkg/tools/` during bucket 2 port (assumes it lands in core-agent first per trigger).
+- **Watchdog → model context routing (issue #159)** — the emitting-node integration point is scaffolded in bucket 1; the concrete watchdog signal-emission lands in Phase 2 as bucket 3 work.
 
-## Phase 2: refactor / boundary cleanup (2-4 PRs, ~1-2 weeks)
+What remains of Phase 2 is bucket-3 work not scoped into Phase 1's minimum. In rough priority:
 
-With the surface trimmed, opportunities to simplify boundaries become visible:
+1. **Reference-graph library** — the seven canonical shapes per [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md), each with `main.go` + `README.md` + `config.yaml` under `examples/workflows/<shape>/`. Ship 2-3 shapes per PR; the whole set incrementally.
+2. **Planner completion + `orchestrate` task class exposed** per [`./orchestration-design.md`](./orchestration-design.md) — all `run_shape_*` planner tools wired to the reference-graph library; `plan_review_required` HITL flow end-to-end; bundle-scoped nested classifiers.
+3. **Autonomous+inbox as cyclic graphs** — rewrite `pkg/agent/autonomous.go` and `pkg/agent/inbox.go` (both unported from Phase 1) as v2 cyclic graphs. Landing pattern: define the graph in `pkg/autonomous/` or similar, expose `mast --autonomous <config>` entry point.
+4. **Watchdog signal-emission** — concrete watchdog running inside an emitting function node, injecting alerts into the session event stream per core-agent issue #159.
+5. **Small-tier-parent classifier as LLM-as-router** — replaces the substring matcher (positioning.md open Q #4, now resolved). Ships as a specialist `.tmpl` with `mode: SingleTurn` plus a router node in the appropriate reference graph.
+6. **DefaultInstruction refinements** — the first-pass split from bucket 1 will need per-mode iteration once real workloads exercise them. Includes the planner-mode DefaultInstruction template ([`./orchestration-design.md`](./orchestration-design.md) open Q #7).
+7. **A2A streaming + push notifications + dynamic registry discovery** per [`./a2a-design.md`](./a2a-design.md) v0.2 phasing — expands v0.1's synchronous A2A support to the full protocol.
+8. **Federation adapters (HTTP/RPC + basic mast-native)** per [`./federation-design.md`](./federation-design.md) v0.2 phasing — planner can dispatch to remote agents via `invoke_remote_agent`.
 
-1. **Package consolidation.** Some `pkg/` boundaries were drawn assuming a larger team or larger surface. Re-evaluate; merge anything that's a thin wrapper.
-2. **DefaultInstruction rewrite** per `./positioning.md` change-shape section. Reorient around unattended-loop discipline.
-3. **Tool catalog defaults per task class** (issue #160 from `worktree-debug` session). `--task=implement` keeps broad set; other classes default to curated structured subset.
-4. **Bash search-gate** (issue #158). Composes with tool catalog defaults.
-5. **Watchdog → model context routing** (issue #159). Composes with both above.
+Phase 2 changes are visible to consumers. Bump to v0.2.0 at completion of items 1-2; v0.3.0 at 3-8.
 
-Phase 2 changes are visible to consumers — bump to v0.2.0 at the end.
+## Phase 3: shared memory + multi-session + MCP creds + bundle learning (ongoing, ~2-4 months)
 
-## Phase 3: new investment (ongoing)
+What the lean repo focuses energy on next, matching [`./positioning.md`](./positioning.md) priority order:
 
-What the lean repo focuses energy on, in rough priority (matches `./positioning.md`):
+1. **Shared memory + audit-derived memory implementation.** Per the core-agent shared-memory-stack design; consumed via state-bound nodes in downstream reference graphs (positioning.md priority #7). Direct enabler for item 4 below.
+2. **Multi-session deployment story end-to-end.** Supervisor+workers reference graph with `WithIsolationScope(tenantID)` as the concrete shape; walk-through from "single dev" to "shared team deployment with per-user auth and audit isolation" (positioning.md priority #5). Composes with `isolation.scope` on workload bundles.
+3. **MCP credential resolution end-to-end.** Design doc → implementation → docs page (positioning.md priority #6). Bundle `tool_catalog.mcp[].server` references resolve per bundle context.
+4. **Bundle learning + refinement** per [`./orchestration-design.md`](./orchestration-design.md) — map-reduce over audit corpus proposes new workloads and refines existing ones; review UI in mast-web. Depends on item 1 being real.
+5. **AX-boundary audit + integration** (positioning.md open Q, cross-doc).
+6. **Full mast-native federation** per [`./federation-design.md`](./federation-design.md) v0.3 phasing — gRPC transport, cross-instance session-state propagation, cross-instance HITL, cross-instance durability. Enables hierarchical federation topologies and cross-tenant federation with opt-in.
+7. **A2A cost attribution + advanced auth** per [`./a2a-design.md`](./a2a-design.md) v0.3 phasing — OAuth 2.0 flows end-to-end; Google IAM Workload Identity as default in GKE deployments; cost attribution extension.
 
-1. Shared memory + audit-derived memory implementation
-2. Workflow-scaffolding example library (4-6 canonical shapes)
-3. Multi-session deployment story end-to-end
-4. MCP credential resolution end-to-end
-5. AX-boundary audit + integration
-
-This phase is "what was the point of the fork." Lands at v0.5.0+ — by which time the ADK-dependency question (deferred from phase 0) should be revisited with phase 1-2 hindsight.
+This phase is "what was the point of the fork." Lands at v0.5.0+ — by which time the ADK-dependency question (deferred from Phase 0) should be revisited with Phase 1-2 hindsight.
 
 ## Phase 4: Hugo site + outward-facing rewrite (parallel with phase 3)
 
@@ -170,6 +230,8 @@ This is more discipline than weekly cherry-pick batches; the upside is that dive
 
 **Avoid the failure mode** of letting "shared infrastructure" creep until it's most of the codebase. Concretely: when adding a new feature to the lean fork, default to *not* touching shared-infrastructure code; extend in the lean-fork-specific layer when possible. Same in reverse for core-agent. This keeps the shared core small enough to sync confidently.
 
+**ADK-version-boundary flag.** Because mast runs on ADK v2 and core-agent stays on v1 (see "Trigger condition for Phase 1"), any shared-infrastructure code that consumes ADK types sits on opposite sides of the v1/v2 API boundary. The concrete subset: session store (event schema change), provider adapters (context type change), watchdog + signal routing (event-emission surface), any custom `InvocationContext` implementations (must add `IsolationScope()` / `ResumedInput()` on the v2 side). Ports across the boundary need adaptation, not a straight cherry-pick. The sibling-sync doc's per-SHA entries should call out ADK-boundary items explicitly so the port doesn't get scheduled as a five-minute cherry-pick. ADK-independent shared code (`pkg/permissions/`, `pkg/pricing/`, `pkg/digest/`, most of `pkg/config/`) is unaffected and ports cleanly.
+
 **Optional, longer-term:** if the shared-infrastructure layer stays meaningfully large after 6-12 months, consider extracting it to a third repo (`agent-substrate` or similar) that both projects depend on. Don't do this on day one — premature extraction couples the two projects' release cadences in a way that defeats the point of (E). Wait until the shared surface has stabilized enough that a separate release cadence wouldn't slow either project down.
 
 ## Risks + mitigations
@@ -177,23 +239,28 @@ This is more discipline than weekly cherry-pick batches; the upside is that dive
 | Risk | Mitigation |
 |---|---|
 | **Two-repo confusion for users** during transition (any of A/B/D) | Clear banners on both READMEs; pick a date and stick to it; over-communicate. |
-| **ADK dependency keeps the kitchen sink in via transitive deps** | Phase 0 decision is to defer; phase 3 revisit. Measure first (`go mod graph | wc -l` before vs. after the prune) — may matter less than expected. |
-| **Phase 1 squash commit is huge and unreviewable** | Acceptable cost. The squash commit's *job* is to establish a baseline, not to be human-reviewable. The diff inside it is mechanical. Anyone reviewing should look at the resulting *tree*, not the diff. |
-| **Examples that worked under core-agent break under the lean fork** | Catch in phase 1 via `go build ./examples/...`. Any example that breaks is either ported or moved to the cut list with a one-line CHANGELOG note. |
-| **Existing core-agent issues + PRs orphaned** | Triage at fork time. Issues that apply to the lean scope get ported as fresh issues in the fork (linking back). PRs that target deleted code are closed with a note. |
-| **Loss of contributor momentum** during the transition | Communicate the fork plan publicly *before* phase 1 lands; give contributors a heads-up so in-flight work isn't wasted. |
-| **Naming collision / SEO confusion** | Pick a name distinctive enough to be findable. Avoid prefixes/suffixes on "agent" — too generic. |
+| **ADK dependency keeps the kitchen sink in via transitive deps** | Phase 0 decision is to defer; Phase 3 revisit. Measure first (`go mod graph \| wc -l`) after Phase 1 — the rebuild lets us pick a truly minimal `go.mod` from day one. |
+| **ADK v1/v2 boundary in shared-infrastructure sync** | Flagged in sync-discipline as an ADK-boundary port class; expect adaptation on port, not straight cherry-pick. Concrete subset (session store, provider adapters, watchdog signal routing, custom `InvocationContext`) is small and stable. If it grows, that's a signal to revisit the shared-infrastructure-repo option earlier than the 6-12 month mark. |
+| **Rebuild misses subtle behaviors from soaked v1 code** (checkpointer edge cases, compactor timing, plan-first gate corner conditions) | Bucket-1 contract tests exercise the primitives that checkpointer/compactor/plan-first handled. Where bucket-2 ports touch behaviors that had adjacent v1-loop assumptions, port the relevant behavior tests from core-agent (they run against interfaces, not v1 loop internals). Full UAT walkthrough against `examples/gke-parallel-triage` and `examples/scheduled-monitor` before the v0.1.0 tag. Accept that some subtle regressions will surface in early releases; keep v0.1.x cadence tight to fix them fast. |
+| **Bucket-1 core takes longer than 3-5 days** because v2 primitives don't compose the way we expect | De-risk by prototyping bucket 1 in a scratch worktree during the trigger-wait period (core-agent's #158-#161 + shared-memory landing). By the time the trigger fires, we know whether the ~1500 LOC estimate holds. If it balloons past ~3000 LOC, that's signal that we've reintroduced v1's shape on top of v2 — stop and rethink before doubling down. |
+| **Examples that worked under core-agent break under the rebuild** | Catch in P1.5 via `go build ./examples/...`. Any example that breaks in a non-trivial way is either reshaped (probably as a reference-graph shape in Phase 2) or dropped with a one-line CHANGELOG note. Smoke examples in `examples/_smoke/` are the minimum required to build; the platform/SRE-shaped set becomes reference-graph-anchored in Phase 2. |
+| **Existing core-agent issues + PRs orphaned** | Triage at Phase 1 start. Issues that apply to the lean scope get ported as fresh issues in mast (linking back). PRs that target deleted code are closed with a note. |
+| **Loss of contributor momentum** during the transition | Communicate the rebuild plan publicly *before* Phase 1 lands; give contributors a heads-up so in-flight work isn't wasted. Under (E) — single team owning both repos — this is more about internal calendar coordination than public announcement. |
+| **Naming collision / SEO confusion** | Pick a name distinctive enough to be findable. Avoid prefixes/suffixes on "agent" — too generic. (Resolved: `mast`.) |
 
 ## Open questions to resolve before phase 1
 
 1. **What about AX integration?** Per `./positioning.md` open question — boundary needs an audit. Probably out of scope for v0.1 but worth scoping the audit.
 2. **Does core-agent's own README/positioning get updated as part of the fork landing**, or as a separate effort? Bias: update at the same time, so users landing on either repo immediately see the sibling and know which fits their use case. Inconsistent positioning across the two repos is the most common failure mode of (E)-style splits.
+3. ~~**Task-class name for `SingleTurn` mode.**~~ *Resolved 2026-07-01 in [`./orchestration-design.md`](./orchestration-design.md): SingleTurn is an internal mode, not a user-facing task class. Consumed by the classifier-first workload dispatcher, `mode: SingleTurn` specialists, LLM-as-router classifiers, and the small-tier-parent classifier. Public task classes stay: chat / debug / implement / research / review, plus new `orchestrate` for planner-enabled workloads.*
 
 (For `mast-web`-specific open questions — TypeScript-or-vanilla, framework adoption trigger, hosting model, slash command alignment — see [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md).)
 
-### Resolved (2026-06-11)
+### Resolved
 
-- **ADK:** stays. No concrete pain; provides known working code.
+**2026-06-11:**
+
+- **ADK:** stays. No concrete pain; provides known working code. (Updated 2026-07-01: adopt v2 from day one — see below.)
 - **Strategic motivation:** (E) — sibling products with divergent agendas. Lean fork = platform-agent product; core-agent = experimentation/integration substrate for cogo and similar.
 - **In-flight work disposition:** all in-flight work lands in core-agent first. Both products benefit; lean fork inherits stronger baseline.
 - **Phase 1 trigger:** after #158-#161 AND shared-memory stack (#13/14/15) land in core-agent.
@@ -204,6 +271,22 @@ This is more discipline than weekly cherry-pick batches; the upside is that dive
 - **Interactive UI:** web, not terminal. Embedded terminal TUI dropped from mast's scope (the use case lives in core-agent, which keeps `core-agent-tui` as before). New project `mast-web` at `github.com/go-steer/mast-web` ports cogo-wasm2's rendering surface as a thin client over mast's existing attach-mode protocol. Architecture pattern is "browser-as-thin-client, mast-as-backend-agent" — *not* cogo-wasm2's "browser-WASM-as-agent + auth-proxy" pattern, which fits cogo's job but is structurally wrong for mast. See [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md).
 - **`core-agent-tui` disposition:** not forked. Mast doesn't ship a terminal TUI. Core-agent keeps `core-agent-tui` for its audience.
 - **Skills → specialists:** core-agent's `pkg/skills/` (Anthropic-SKILL.md-compat loader) replaced in mast by `pkg/specialists/` (subagent-as-tool pattern with YAML frontmatter for budget/model/tool-allowlist). See `./specialists-design.md`.
+
+**2026-07-01 (ADK v2 disposition):**
+
+- **ADK v2 from day one.** The v2 release ships the graph engine (`google.golang.org/adk/v2/workflow`), durable HITL, and agent modes (`Chat` / `Task` / `SingleTurn`) that mast's positioning and workflow-scaffolding subsystem depend on structurally. Building on v1 first and migrating later would double the work.
+- **v1→v2 migration disposition:** ~~phase 1's squash absorbs the migration on the pruned tree.~~ *Superseded 2026-07-01 (fork mechanic revision below): the lean core is written fresh against v2, no migration diff exists in mast's history.* The trigger is *not* extended to wait for core-agent to migrate — mast and core-agent diverge on substrate version, consistent with (E). See "Trigger condition for Phase 1" for the reasoning.
+- **Task-class profiles shaped by v2 agent modes:** `--task=chat` → `Chat` mode; `--task=debug|implement|research|review` → `Task` mode; new `SingleTurn` profile pending naming (open question #3 above). Auto-installed helper tools (`finish_task`, `single_turn`, `task`) replace prompt-engineering we would otherwise have to do to signal completion. `task`-mode agents can't be used as static graph nodes — workflow-scaffolding examples use dynamic nodes (`RunNode[T]`) for Task-mode sub-agents.
+- **HITL is a first-class primitive** on both plain `LlmAgent`s (v2 gain) and workflows, delivered via `RequestInputEvent` + attach mode + `mast-web`. Not workflow-wrapping. Response schemas (`session.RequestInput.ResponseSchema`) drive `mast-web` form generation. Cross-runtime resume (shared interrupt format with Python ADK) is a future-preserved option; don't design the attach-side protocol in a way that breaks compat, even though the Python side isn't v0.1 scope.
+- **Workflow-scaffolding as a first-class subsystem.** Six + one canonical shapes (fan-out-fan-in, sequential pipeline, supervisor+workers, autonomous loop, adversarial verifier, map-reduce, LLM-as-router) expressed as reference graphs on v2 primitives. Mast's contribution is the domain wiring (which MCP servers / tools compose in), not the workflow engine itself. See [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md).
+- **ADK-boundary sync discipline:** shared-infrastructure code that consumes ADK types (session store, provider adapters, watchdog signal routing, custom `InvocationContext` implementations) is flagged in the sibling-sync doc as version-boundary — ports across need adaptation, not straight cherry-pick. ADK-independent shared code ports cleanly. See "Sync discipline under (E)" above.
+
+**2026-07-01 (fork mechanic revision):**
+
+- **Phase-1 mechanic is rebuild-lean-core, not prune-in-place.** Superseding the original "hard-fork-then-prune, one squash commit" recommendation. Rationale: ADK v2 delivers most of what v1's core agent loop provided; porting that loop would carry v1 assumptions forward into code we'd want to rewrite anyway. Three buckets — bucket 1 rebuilds the lean core on v2 (~500-1500 LOC), bucket 2 ports adapter packages with per-file `// Originally derived from ...` attribution headers, bucket 3 builds mast-specific v2-native subsystems (specialists, reference graphs, autonomous+inbox-as-cyclic-graphs, watchdog signal-emission). See "Recommended approach" for the full trade-off table and "Phase 1" for the P1.1-P1.6 PR sequencing.
+- **Provenance via attribution, not git history.** No cross-repo `git log --follow` chain; per-file attribution headers on bucket-2 ports point at the source SHA in core-agent. CHANGELOG v0.1.0 note carries the commit range. Same archaeological reach as the original prune-squash design (the squash was already a `git log --follow` boundary).
+- **De-risk bucket 1 in the trigger-wait period.** During the wait for core-agent's #158-#161 + shared-memory to land, prototype bucket 1 in a scratch worktree to validate the ~1500 LOC estimate. If it balloons past ~3000 LOC, that's signal we've reintroduced v1's shape on top of v2 — stop and rethink before doubling down.
+- **Phase 2 largely moots.** Original Phase 2 items (DefaultInstruction rewrite, tool catalog defaults, bash search-gate, watchdog routing) get baked into buckets 1/2 rather than deferred as a follow-on refactor pass. What remains of "Phase 2" is bucket-3 completion (reference-graph library, autonomous+inbox rewrite, concrete watchdog signal-emission, small-tier-parent classifier as LLM-as-router). Phase 3 unchanged in shape.
 
 ## Out of scope for this doc
 
