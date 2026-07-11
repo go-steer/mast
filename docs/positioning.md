@@ -17,6 +17,8 @@ The four pillars:
 
 *Durable* was added 2026-07-01 after ADK v2 exposed session-durable pause/resume as a first-class primitive. Prior to v2, "unattended" implicitly assumed either idempotent workloads that could restart from scratch, or operator tolerance for lost work on infrastructure churn. Both are unacceptable for the platform-team workloads mast targets. Durable execution is the fourth pillar because *unattended without durable is unwatched but fragile*.
 
+**On "library-embedded" specifically:** it names a *capability* mast commits to (few agent frameworks are cleanly embeddable), not a deployment mode that excludes the standalone binary. Mast ships **both** consumer shapes as equal first-class citizens — a `mast` binary for Cloud Run / GKE / systemd / laptop CLI use, and a Go library (`import "github.com/go-steer/mast/..."`) for host services that want agent capabilities inline. Same subsystems, same features, same durability + observability + orchestration in both; only the config-injection surface differs. [`./deployment-design.md`](./deployment-design.md) enumerates all four production topologies (Cloud Run, GKE, library-embedded, standalone) and [`./library-api-design.md`](./library-api-design.md) covers the library-consumer contract.
+
 The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in the core-agent repo) is the proximate motivator: frontier Gemini ran 164 turns / $5.41 / 196K context on a code-investigation prompt that Claude Code with Opus handles in a handful of turns. That gap is real, structural, and the wrong fight to pick. mast sharpens scope around the fights this kind of substrate *can* win.
 
 ## What this means concretely
