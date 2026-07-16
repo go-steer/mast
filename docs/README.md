@@ -21,6 +21,8 @@ Design documentation for `mast` — the agent-infrastructure substrate for unatt
 15. **[`./federation-design.md`](./federation-design.md)** — federation as pattern: one mast instance orchestrating N remote agents via multiple protocols (A2A, mast-native, HTTP/RPC). Planner's `invoke_remote_agent` vocabulary; topology archetypes (star / mesh / hierarchical); mast-to-mast handoff with cross-instance session state, HITL, durability.
 16. **[`./skills-design.md`](./skills-design.md)** — SKILL.md format support (reinstated 2026-07-01 after GKE + Google teams began publishing skills as first-class artifacts). Coexists with specialists as complementary authoring model — specialists for mast-authored subagents; skills for consumed published templates. Publisher/consumer split, Google Agent Registry integration, policy layering (allowlist intersection, budget caps).
 17. **[`./ag-ui-design.md`](./ag-ui-design.md)** — AG-UI protocol integration (agent↔user); the fourth corner of the interop surface alongside MCP (tools), A2A (agents), and skills (task templates). Mast as AG-UI server for CopilotKit React apps + chat-platform bots (Slack / Teams / Discord / Telegram / WhatsApp via `@copilotkit/bot-*`); mast as AG-UI client via federation. Interrupt lifecycle maps directly onto mast's durable pause/resume.
+18. **[`./adk-v2-usage.md`](./adk-v2-usage.md)** — consolidated inventory of the ADK v2 constructs mast leans on (runner + agent modes, unified `agent.Context`, graph engine + node types, `agenttool`, HITL primitives, session events, unified span tree). Cross-references the companion docs where each surface area is decided; reference doc, not a strategy doc. Read before starting Phase 1 bucket 1.
+19. **[`./triage-demo-plan.md`](./triage-demo-plan.md)** — v0.1 anchor use case: mast-native reshape of core-agent's GKE triage recipe. Workload bundle + thirteen specialists (eleven per-failure-mode + `SingleTurn` classifier + `change-safety-gate` HITL) + LLM-as-router workflow graph, tying substrate and subsystems together end-to-end against a real platform-team problem. Sanctioned pre-trigger prototyping scope per [`./fork-design.md`](./fork-design.md).
 
 Each doc has a Resolved-decisions section at the bottom listing what's been settled in conversation; the rest is open for discussion.
 
@@ -43,7 +45,7 @@ Per [`./fork-design.md`](./fork-design.md), the code fork executes after these i
 1. Issues [#158-#161](https://github.com/go-steer/core-agent/issues?q=is%3Aissue+158+OR+159+OR+160+OR+161) (bash search-gate, watchdog→model routing, `--task=debug` profile extensions, gemini-3.5-flash probe).
 2. The shared-memory stack (PRs #13/14/15 against core-agent).
 
-When both are done, phase 1 of the fork begins (hard-fork-then-prune, single squash commit, per the design doc).
+When both are done, phase 1 of the fork begins (rebuild-lean-core against ADK v2 across PRs P1.1-P1.6, per the design doc — superseding the earlier hard-fork-then-prune plan, revised 2026-07-01).
 
 ## Resolved decisions cross-reference
 
@@ -100,6 +102,7 @@ A consolidated view (each doc's local resolved section is authoritative for its 
 | Web UI = thin client over attach mode, not WASM-as-agent | [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) |
 | `mast-web` phases A+B+C don't gate on the fork trigger | [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) |
 | Docs split: mast-design here, mast-web design in mast-web repo | This README + redirect stubs in core-agent's `docs/mast/` |
+| v0.1 anchor use case = mast-native reshape of GKE triage (specialists + LLM-as-router + workflow graph + in-band HITL); showcase mast differentiators against a real platform-team problem, not prove parity with the core-agent recipe | [`./triage-demo-plan.md`](./triage-demo-plan.md) |
 
 ## Open questions still on the table
 
