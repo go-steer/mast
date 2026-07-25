@@ -1,6 +1,6 @@
 # mast workflow scaffolding: design
 
-**Status:** draft, 2026-07-01. Companion to [`./positioning.md`](./positioning.md) (the thesis — priority #4 in the "next 6 months" list is the workflow-scaffolding example library), [`./fork-design.md`](./fork-design.md) (which resolves ADK v2 from day one as the substrate this builds on), and [`./specialists-design.md`](./specialists-design.md) (the subagent-as-tool subsystem that composes with workflow nodes). This doc covers the workflow-scaffolding subsystem in detail — the canonical shapes mast ships, how each maps onto ADK v2 primitives, and the composition rules between shapes, specialists, attach mode, and session state.
+**Status:** draft, 2026-07-01 (updated 2026-07-25 — spike-2 verification against ADK v2.1.0: API-name corrections in shapes #1/#6, root-agent rules, resume/re-execution contract, parallel-HITL constraint, v0.1 shape subset. See "Spike-2 verification notes" below and [`./adk-v2-usage.md`](./adk-v2-usage.md) for the construct-level detail). Companion to [`./positioning.md`](./positioning.md) (the thesis — priority #4 in the "next 6 months" list is the workflow-scaffolding example library), [`./fork-design.md`](./fork-design.md) (which resolves ADK v2 from day one as the substrate this builds on), and [`./specialists-design.md`](./specialists-design.md) (the subagent-as-tool subsystem that composes with workflow nodes). This doc covers the workflow-scaffolding subsystem in detail — the canonical shapes mast ships, how each maps onto ADK v2 primitives, and the composition rules between shapes, specialists, attach mode, and session state.
 
 ## Why this is a real subsystem
 
@@ -49,7 +49,7 @@ Each directory is a runnable `go run ./examples/workflows/<shape>/`, standalone.
 
 **v2 primitives.**
 - `workflow.NewFunctionNode` — planner emits `[]Task`.
-- `workflow.NewEdgeBuilder().AddFanOut(planner, workers...)` if the worker count is static; parallel workers (`workflow.NewParallelWorkerNode` / equivalent) if the list is dynamic and homogeneous.
+- `workflow.NewEdgeBuilder().AddFanOut(planner, workers...)` if the worker count is static; parallel workers (`workflow.NewParallelWorker(name, wrapped, maxConcurrency, cfg)` or `NodeConfig{ParallelWorker: true}`) if the list is dynamic and homogeneous. *(Corrected 2026-07-25: `NewParallelWorkerNode` / `AddFanOutDynamic` from earlier drafts don't exist in v2.1.0.)*
 - Workers are either `agenttool`-wrapped Task-mode `LlmAgent`s (specialist-shaped) or plain function nodes for deterministic work.
 - Join node (`AddFanIn`) aggregates outputs into a map.
 - Summarizer: `NewFunctionNode` or a Task-mode agent node.
@@ -62,12 +62,12 @@ join := workflow.NewJoinNode("collect", cfg)
 summary := workflow.NewFunctionNode("summarize", summarize, cfg)
 
 b := workflow.NewEdgeBuilder()
-b.AddFanOutDynamic(plan, triage)   // one triage per plan output
-b.AddFanIn(join, triage)
+b.AddFanOut(plan, triageWorkers)   // triageWorkers = NewParallelWorker over the triage node
+b.AddFanIn(join, triageWorkers)
 b.AddRoutes(join, map[string]workflow.Node{"": summary})
 ```
 
-**Notes.** With a static task list, `AddFanOut` is exact fit. With a dynamic list computed at runtime, wrap the fan-out in a dynamic node that calls `RunNode` per element — see supervisor+workers below.
+**Notes.** With a static task list, `AddFanOut` is exact fit. With a dynamic list computed at runtime, either wrap the worker node in `NewParallelWorker` or use a dynamic node that calls `RunNode` per element — see supervisor+workers below. **Constraint (2026-07-25): HITL cannot be raised from inside parallel branches (`ErrParallelHITLUnsupported`)** — operator escalation belongs after the join, or the escalating item must be routed out of the parallel section first.
 
 ### 2. Sequential pipeline
 
@@ -183,7 +183,7 @@ decide   := workflow.NewEmittingFunctionNode("decide",
     }, cfg)
 ```
 
-**Notes.** Especially valuable for unattended because no human is watching by default; the skeptic is the substitute reviewer. Composes with HITL escalation as the third leg for cases neither the proposer nor the skeptic can resolve confidently. Response schema on HITL escalation should be typed narrowly (`{approved: bool, note?: string}`) — free-form text puts the burden on the decision node to reparse.
+**Notes.** Especially valuable for unattended because no human is watching by default; the skeptic is the substitute reviewer. Composes with HITL escalation as the third leg for cases neither the proposer nor the skeptic can resolve confidently. Response schema on HITL escalation should be typed narrowly (`{approved: bool, note?: string}`) — free-form text puts the burden on the decision node to reparse. Two constraints verified 2026-07-25: (1) the `decide` node sits *after* the join, which is required — HITL from inside the parallel proposer/skeptic branches would hit `ErrParallelHITLUnsupported`; (2) `emitHITL` in the sketch must follow the re-entry contract — node bodies re-execute on resume, so the body checks `ctx.ResumedInput(id)` first and anything the resume pass needs (here, the joined verdicts are re-fed as node input, so nothing extra) is stashed in session state before interrupting. See "Spike-2 verification notes" below.
 
 ### 6. Map-reduce over corpus
 
@@ -199,7 +199,7 @@ decide   := workflow.NewEmittingFunctionNode("decide",
 **Sketch:**
 ```go
 digest := workflow.NewFunctionNode("digest-file", digestFile, cfg)
-workers := workflow.NewParallelWorkers("per-file", digest, cfg)
+workers, _ := workflow.NewParallelWorker("per-file", digest, maxConcurrency, cfg)
 join   := workflow.NewJoinNode("collect-digests", cfg)
 reduce := workflow.NewFunctionNode("reduce-timeline", reduceToTimeline, cfg)
 
@@ -319,9 +319,19 @@ Core-agent's existing patterns port to reference-graph shapes at different level
 
 Migration is intentional per-workload, not automatic. There's no `migrate-to-workflows.sh` — each existing pattern is small enough that porting to the reference shape is faster than writing a migration.
 
+## Spike-2 verification notes (2026-07-25)
+
+The LLM-as-router shape (#7) was built and run end-to-end against ADK v2.1.0 in the `mast-prototype` repo (`pkg/graph`; see its `FINDINGS.md`), against the GKE-triage anchor workload. Facts the shape library must build on:
+
+- **Root-agent rules.** A `workflowagent.New`-wrapped graph runs as the runner's **root agent** directly. The runner's Chat-mode restriction applies only when the root *is* an `LlmAgent` (non-LlmAgent roots take a generic path). An earlier spike-1 conclusion that "a bare Workflow cannot be a root agent" was wrong; graphs do not need a coordinator above them. The SubAgents-dispatch pattern (Chat coordinator + auto-installed `task`/`single_turn` tools per sub-agent) remains a valid *alternative* shape — the prototype keeps both behind a flag for comparison — but it routes by tool-description reading on a frontier coordinator rather than by typed `Event.Routes`, with the cost and legibility differences that implies.
+- **Task-mode specialists in graphs.** Wrap in `workflow.NewAgentNode`, invoke via `RunNode` from a `DynamicNode` body. `finish_task` is auto-installed and its argument becomes the node output.
+- **Resume/re-execution contract.** Dynamic-node bodies re-execute on resume (`RerunOnResume`); `RunNode` does **not** return cached child results across a pause turn (dynamic children aren't in the static graph `ReconstructRunState` rehydrates). Body shape must be ResumedInput-first with a session-state stash for anything the resume pass needs. Consequence for every shape here that mixes children with HITL: side effects before the interrupt re-run unless guarded — see [`./durable-execution-design.md`](./durable-execution-design.md) side-effect semantics.
+- **Parallel-branch HITL is unsupported** (`ErrParallelHITLUnsupported`) — constrains shapes #1, #5, #6 as noted inline.
+- **v0.1 shape subset (named, resolving the phasing gap with [`./orchestration-design.md`](./orchestration-design.md)'s "2 canonical shapes in v0.1"):** **LLM-as-router** (#7 — classifier-first dispatch and the triage anchor need it; already proven) and **fan-out-fan-in** (#1 — the `gke-parallel-triage` smoke example needs it). The remaining five ship in v0.2 per fork-design Phase 2. P1.4's planner scaffold wires `run_shape_*` tools to these two; the P1.4→P1.5 sequencing in fork-design should reflect that these two shapes land *before or with* the planner scaffold, not after.
+
 ## Open questions
 
-1. **Where does the shared classifier live?** The LLM-as-router shape uses a lightweight classifier. If multiple graphs reuse the same classifier (incident-type, error-severity, action-safety), it should be a shared specialist rather than an inline `llmagent.New` per graph. Concretely: does `.agents/specialists/*.tmpl` accept `mode: SingleTurn` frontmatter? Answer probably yes — natural extension of the specialists schema. Spec change: add `mode` field to the specialist frontmatter (default `Task`, options `Task` / `SingleTurn`).
+1. ~~**Where does the shared classifier live?**~~ *Resolved (2026-07-01 in [`./orchestration-design.md`](./orchestration-design.md), verified in spike 2): `.agents/specialists/*.tmpl` accepts `mode: SingleTurn` frontmatter; the prototype's specialists loader implements it and the triage classifier runs as a shared SingleTurn specialist.*
 
 2. **How does the reference-graph library get discovered by operators?** Options: README lists them; each shape's directory has a self-describing `spec.yaml`; `mast workflows list` command. Bias: README + directory README-per-shape. A CLI command is optimizing for a use case that isn't visible yet.
 
