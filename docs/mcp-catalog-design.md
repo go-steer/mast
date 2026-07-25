@@ -10,7 +10,7 @@ Positioning.md open question #2: *"MCP server catalog: build or consume? Should 
 
 ## Four curated surfaces: MCP vs. A2A vs. AG-UI vs. skills
 
-MCP, A2A, AG-UI, and skills are complementary, not competing. Concise distinction — one for each corner of the interop surface:
+MCP, A2A, AG-UI, and skills are complementary, not competing. Concise distinction — the **four interop surfaces** (harmonized 2026-07-25: this doc's "surfaces" framing is canonical; ag-ui-design's "four corners" phrasing — which counted attach mode as a corner in one spot — defers to it; attach mode is mast's *native transport*, not an interop surface):
 
 - **MCP is for tools (agent → tool)** — structured function calls with defined input/output schemas. Synchronous request/response typical. Server-side is stateless per call (though may have state internally). Think: "call `get_k8s_resource(name=X)`, get back a K8s resource object."
 - **A2A is for agents (agent → agent)** — task-based interactions with negotiable state, streaming, HITL support, long-running task lifecycle. Server-side maintains task state and can push updates or request input. Think: "submit a task 'investigate incident-X', receive updates as investigation progresses, respond to input requests, get final structured verdict."
@@ -51,11 +51,15 @@ Cataloging criteria: the server must be (a) load-bearing for mast's audience (un
 
 | Server | Upstream | Rationale | Wiring template |
 |---|---|---|---|
-| **`gke`** | community / Google-team; e.g. [mastersingh24/gke-agent](https://github.com/mastersingh24/gke-agent)-adjacent | GKE-parallel-triage is the reference example; Kubernetes-shape workloads are core audience | `.agents/mcp/gke.example.json` |
-| **`prometheus`** | community; several exist | Alert-driven workloads (incident triage) universally need this | `.agents/mcp/prometheus.example.json` |
-| **`github`** | first-party GitHub or well-maintained community | PR review, release management, cross-repo automation | `.agents/mcp/github.example.json` |
-| **`cloud-logging`** | Google-team or community | Log-search-shaped workloads | `.agents/mcp/cloud-logging.example.json` |
-| **`slack`** | community | HITL escalation to on-call, incident notifications | `.agents/mcp/slack.example.json` |
+*(Upstream column tightened 2026-07-25: the earlier entries — "community; several exist", "-adjacent" pointers at a personal repo — did not meet this doc's own criterion (b) "sufficiently stable to point operators at". Rule: a v0.1 catalog entry names ONE pinned upstream (repo + release line) before the catalog ships; entries that can't are demoted to v0.2-candidate. The gke row's pin is the official Google GKE MCP server (`https://container.googleapis.com/mcp`, the endpoint the triage recipe + spike already use), not a community stand-in.)*
+
+| Server | Upstream (pin before v0.1 ships) | Rationale | Wiring template |
+|---|---|---|---|
+| **`gke`** | **Official Google GKE MCP endpoint** (`container.googleapis.com/mcp`; WIF auth per the triage recipe) | GKE-parallel-triage is the reference example; Kubernetes-shape workloads are core audience | `.agents/mcp/gke.example.json` |
+| **`prometheus`** | To pin: one named community server with releases + maintainer — else demote to v0.2-candidate | Alert-driven workloads (incident triage) universally need this | `.agents/mcp/prometheus.example.json` |
+| **`github`** | First-party GitHub MCP server (github/github-mcp-server) | PR review, release management, cross-repo automation | `.agents/mcp/github.example.json` |
+| **`cloud-logging`** | To pin: Google-published server if available — else demote to v0.2-candidate | Log-search-shaped workloads | `.agents/mcp/cloud-logging.example.json` |
+| **`slack`** | To pin: one named community server — else demote to v0.2-candidate | HITL escalation to on-call, incident notifications | `.agents/mcp/slack.example.json` |
 
 ### v0.2 catalog (expanding after v0.1 operator feedback)
 

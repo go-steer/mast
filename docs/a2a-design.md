@@ -1,6 +1,6 @@
 # mast A2A support: design
 
-**Status:** draft, 2026-07-01. Companion to [`./positioning.md`](./positioning.md) (agent-interop is table stakes for the platform-substrate positioning; agent-card publishing is already on the keep list), [`./federation-design.md`](./federation-design.md) (federation as pattern; A2A as one protocol adapter within it), [`./specialists-design.md`](./specialists-design.md) (external A2A agents can appear as specialist-shaped tools), [`./orchestration-design.md`](./orchestration-design.md) (workload bundles can reference A2A servers + expose workloads as A2A agents), [`./library-api-design.md`](./library-api-design.md) (A2A client + server APIs are extension points), [`./mcp-catalog-design.md`](./mcp-catalog-design.md) (protocol sibling — MCP for tools, A2A for agents), [`./deployment-design.md`](./deployment-design.md) (A2A discovery in-cluster), [`./durable-execution-design.md`](./durable-execution-design.md) (A2A calls that pause survive restart), and [`./observability-design.md`](./observability-design.md) (A2A calls get first-class trace/metric coverage). Covers **A2A as a protocol integration** — the ecosystem contract mast supports for interoperability with Google Agent Registry / Runtime, kagent, and similar frameworks.
+**Status:** draft, 2026-07-01 (updated 2026-07-25 — rewritten against A2A **v0.3/1.0**: the earlier draft tracked the dead pre-0.2 spec (REST-ish `/a2a/tasks/*` paths, `tasks/send`, skill-level I/O schemas in the agent card — none of which survive in the current spec). Also: phasing re-cut per [`./fork-design.md`](./fork-design.md) 2026-07-25 — v0.1 ships the A2A *client* only; server + registry publishing are v0.2. Planner tool name unified on `invoke_remote_agent` per [`./federation-design.md`](./federation-design.md)). Companion to [`./positioning.md`](./positioning.md) (agent-interop is table stakes for the platform-substrate positioning; agent-card publishing is already on the keep list), [`./federation-design.md`](./federation-design.md) (federation as pattern; A2A as one protocol adapter within it), [`./specialists-design.md`](./specialists-design.md) (external A2A agents can appear as specialist-shaped tools), [`./orchestration-design.md`](./orchestration-design.md) (workload bundles can reference A2A servers + expose workloads as A2A agents), [`./library-api-design.md`](./library-api-design.md) (A2A client + server APIs are extension points), [`./mcp-catalog-design.md`](./mcp-catalog-design.md) (protocol sibling — MCP for tools, A2A for agents), [`./deployment-design.md`](./deployment-design.md) (A2A discovery in-cluster), [`./durable-execution-design.md`](./durable-execution-design.md) (A2A calls that pause survive restart), and [`./observability-design.md`](./observability-design.md) (A2A calls get first-class trace/metric coverage). Covers **A2A as a protocol integration** — the ecosystem contract mast supports for interoperability with Google Agent Registry / Runtime, kagent, and similar frameworks.
 
 ## Why A2A as first-class
 
@@ -19,15 +19,15 @@ The alternative — mast-native protocol only — locks operators into a mast-on
 
 Brief. Assumes the reader can consult the [A2A spec](https://a2aproject.github.io/A2A/) for wire-level detail; this doc is about mast's *integration* with it.
 
-Core A2A concepts:
+Core A2A concepts (per the v0.3 spec — corrected 2026-07-25):
 
-- **Agent card.** Public metadata document (`/.well-known/agent-card.json` conventionally) describing an agent's capabilities, endpoints, supported input/output modes, auth requirements, and skills. Discovery-time contract.
-- **Tasks.** A2A interactions are structured as tasks — the client sends a task; the server processes; task progresses through states (submitted → working → input-required / completed / failed / canceled). Long-running tasks are natively supported.
-- **Skills.** Named capabilities an agent exposes ("investigate incident", "generate report", "review config"). Each skill has structured input/output schema.
-- **Messages + parts.** Task communication is via messages (bidirectional); each message contains parts (text, file, structured data). Similar shape to LLM tool-call schemas.
-- **Streaming.** Servers can stream intermediate task state via SSE or similar transport.
-- **Authentication.** Token-based (bearer tokens; OAuth 2.0 patterns); auth requirements advertised in agent card.
-- **Push notifications.** For long-running tasks where the client polls too infrequently, servers can push updates to a client-provided webhook.
+- **Agent card.** Public metadata document (`/.well-known/agent-card.json`) describing an agent's capabilities, transports (`preferredTransport` / `additionalInterfaces`), auth requirements, and skills. Discovery-time contract.
+- **Transport + method surface.** The primary transport is **JSON-RPC 2.0 over HTTP on a single endpoint** — methods `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, `tasks/pushNotificationConfig/*` — with gRPC and HTTP/REST as alternative transports declared in the card. Requests carry an `A2A-Version` header. (The pre-0.2 draft's `tasks/send` and REST-ish per-task paths are gone; `tasks/send` was renamed `message/send`.)
+- **Messages, tasks, contexts.** A client sends a *message*; the server may answer directly or open a *task* (states: submitted → working → input-required / completed / failed / canceled). `contextId` groups related tasks; `taskId` identifies one. Long-running tasks are native.
+- **Skills.** Named capabilities in the agent card. Spec `AgentSkill` carries id/name/description/tags/examples and input/output *media types* (`inputModes`/`outputModes`) — **not JSON Schemas**. Structured I/O contracts are conveyed in skill descriptions or out-of-band; a client cannot assume machine-readable schemas from a third-party card.
+- **Streaming.** `message/stream` delivers incremental task/message updates over SSE.
+- **Authentication.** Token-based (bearer; OAuth 2.0 patterns); requirements advertised in the card.
+- **Push notifications.** For long-running tasks, servers push updates to a client-provided webhook via `tasks/pushNotificationConfig/*`.
 
 Mast's role: implement both sides of this protocol correctly — server (mast agents callable via A2A) + client (mast agents calling A2A) — and layer mast-specific composition on top.
 
@@ -47,13 +47,20 @@ a2a:
   skill_description: |
     Investigate GKE pod-failure incidents. Given a pod reference and
     a symptom description, returns root cause + concrete remediation.
-  input_schema:                    # A2A skill input schema
+  # NOTE (2026-07-25): input_schema/output_schema are a MAST-SIDE
+  # convention — mast uses them to validate inbound task inputs for its
+  # OWN exposed skills and renders them into the skill description.
+  # Spec AgentSkill has no schema fields (only inputModes/outputModes
+  # media types), so these do NOT round-trip through the agent card as
+  # machine-readable schema, and mast cannot schema-validate calls to
+  # third-party agents from their cards.
+  input_schema:
     type: object
     properties:
       pod: {type: string, description: "namespace/pod format"}
       symptom: {type: string, description: "operator observation"}
     required: [pod, symptom]
-  output_schema:                   # A2A skill output schema
+  output_schema:
     type: object
     properties:
       root_cause: {type: string}
@@ -70,14 +77,18 @@ Workloads without an `a2a` section are not exposed via A2A. This is deliberate: 
 
 Standard A2A endpoints on the mast HTTP listener (or on a separate port, configurable via [`./config-layout-design.md`](./config-layout-design.md)):
 
-| Path | Purpose | v0.X |
+*(Rewritten 2026-07-25 against A2A v0.3 — one JSON-RPC endpoint, not per-task REST paths. Server phasing shifted to v0.2 per the fork-design re-cut.)*
+
+| Surface | Purpose | v0.X |
 |---|---|---|
-| `/.well-known/agent-card.json` | Aggregated agent card (all exposed workloads as skills) | v0.1 |
-| `/a2a/tasks/send` | Submit a task (JSON-RPC over HTTP) | v0.1 |
-| `/a2a/tasks/{id}` | Get task state | v0.1 |
-| `/a2a/tasks/{id}/cancel` | Cancel a task | v0.1 |
-| `/a2a/tasks/subscribe` | Subscribe to task updates (SSE) | v0.2 |
-| `/a2a/tasks/pushNotification/set` | Configure push notifications | v0.2 |
+| `/.well-known/agent-card.json` | Aggregated agent card (all exposed workloads as skills) | v0.2 |
+| `POST /a2a` (JSON-RPC 2.0): `message/send` | Submit a message; server replies directly or opens a task | v0.2 |
+| `POST /a2a`: `tasks/get` | Get task state | v0.2 |
+| `POST /a2a`: `tasks/cancel` | Cancel a task | v0.2 |
+| `POST /a2a`: `message/stream` | Streaming task/message updates (SSE) | v0.2 |
+| `POST /a2a`: `tasks/pushNotificationConfig/set` / `get` / `list` / `delete` | Push notifications | v0.3 |
+
+Transport choice: **JSON-RPC only at first**; the card's `preferredTransport` says so, and gRPC/REST alternates are declined until a consumer materializes. `A2A-Version` handled on every request. Version pin: implement against the current stable spec (v0.3 line; 1.0 is live per Google Agent Registry docs) — `>= 0.3` semantics, tracked explicitly rather than assumed.
 
 The agent card at `/.well-known/agent-card.json` aggregates all exposed workloads as skills — one card per mast instance, N skills within it. If operators need per-workload cards (some registries require distinct endpoints per agent), mast can also serve per-workload cards at `/.well-known/agent-card/<workload-name>.json` — configurable.
 
@@ -111,12 +122,12 @@ For Google Agent Registry integration specifically, the registry's own auth flow
 
 An A2A task submission → mast session:
 
-1. Task arrives at `/a2a/tasks/send` with skill name + inputs + auth token.
+1. Message arrives via JSON-RPC `message/send` with skill reference + inputs + auth token.
 2. Mast validates token; checks scope against skill's required scopes.
 3. Mast maps skill name to workload bundle (`a2a.skill_name` field).
 4. Mast starts a session with the resolved bundle; task inputs become the session input.
 5. Task ID is generated (also serves as session ID; content-addressable UUID v7 per [`./durable-execution-design.md`](./durable-execution-design.md)).
-6. Task state transitions emit A2A task update messages; consumers can subscribe (SSE) or poll.
+6. Task state transitions emit A2A task update messages; consumers can stream (`message/stream`) or poll (`tasks/get`). The `contextId` groups follow-up messages for the same incident with the originating task.
 7. Session `finish_task` produces the A2A completed state with the finish output as the response.
 
 **Tenant scope propagation.** A2A token can carry a tenant claim (`tenant_id` or similar). Mast maps this to `WithIsolationScope(tenantID)` on the session per [`./deployment-design.md`](./deployment-design.md).
@@ -160,7 +171,7 @@ tool_catalog:
   # ... existing tool catalog config
 ```
 
-The planner treats external A2A agents as another class in its tool vocabulary — `invoke_a2a_agent(name, skill, inputs)`. Composes with `invoke_specialist` and `run_shape_*` uniformly (see [`./federation-design.md`](./federation-design.md) for the unified `invoke_remote_agent` tool).
+The planner reaches external A2A agents through the **single unified planner tool `invoke_remote_agent(reference, inputs)`** with an `a2a://` reference, per [`./federation-design.md`](./federation-design.md) — *naming unified 2026-07-25; earlier drafts of this doc had a separate `invoke_a2a_agent(name, skill, inputs)` tool, creating a two-names-one-capability split-brain with federation-design. The A2A specifics (skill selection, card resolution) live in the reference (`a2a://<name>/<skill>`), not in a per-protocol tool name.* Composes with `invoke_specialist` and `run_shape_*` uniformly.
 
 ### Dynamic discovery via registry
 
@@ -185,10 +196,10 @@ At startup (and on `SIGHUP`), mast queries the registry, fetches agent cards for
 
 Client-side A2A call from within a mast agent:
 
-1. Planner (or specialist, or tool node) invokes `invoke_a2a_agent(name, skill, inputs)`.
+1. Planner (or specialist, or tool node) invokes `invoke_remote_agent("a2a://<name>/<skill>", inputs)`.
 2. Mast resolves `name` to a configured A2A agent (static or discovered).
-3. Mast constructs the A2A task submission — validates inputs against the skill schema from the agent card; attaches auth token from the configured resolver; propagates `traceparent` for distributed tracing.
-4. Task submitted via HTTP; task ID returned.
+3. Mast constructs the `message/send` request — attaches auth token from the configured resolver; propagates `traceparent` for distributed tracing. *(Corrected 2026-07-25: no client-side schema validation against third-party cards — spec `AgentSkill` carries no schemas. Mast validates against a schema only when the operator has declared one locally in the `.agents/a2a/` config for that agent.)*
+4. Message submitted via JSON-RPC; server replies directly or returns a task ID.
 5. **If the skill is short-running** (agent card advertises or task completes within a threshold): mast waits synchronously; result returns to the caller.
 6. **If the skill is long-running** (task takes longer than threshold, or agent card indicates streaming): mast pauses the calling session per [`./durable-execution-design.md`](./durable-execution-design.md) — programmatic pause with `Reason: a2a_task_pending`; resumes when the A2A task reaches a terminal state (completed / failed / canceled) via either subscription or push-notification callback.
 7. On resume, task output surfaces as the tool result to the caller.
@@ -296,14 +307,14 @@ The A2A spec allows any registry that supports the standard discovery contract. 
 
 | Version | Scope |
 |---|---|
-| **v0.1** | Server: agent card publication (`/.well-known/agent-card.json`), synchronous task submission (`/a2a/tasks/send`), task-state polling (`/a2a/tasks/{id}`), task cancel, bearer-token auth with a pluggable validator (`a2a.TokenValidator`). Client: static A2A agent configs in `.agents/a2a/`, synchronous invocation, mapping `invoke_a2a_agent` to `agenttool`-shaped tool. Google Agent Registry publishing command (`mast a2a publish --registry=google`). |
-| **v0.2** | Streaming (SSE) for both server + client. Push notifications for long-running tasks. Dynamic registry discovery (Google Agent Registry, kagent, static). HITL propagation across A2A (mast-hosted A2A skill's HITL surfaces to mast-web; remote A2A HITL surfaces to mast client's operator). Per-workload agent-card endpoints. |
+| **v0.1** | **Client only** (re-cut 2026-07-25 per [`./fork-design.md`](./fork-design.md)): static A2A agent configs in `.agents/a2a/`, synchronous `message/send` invocation against A2A v0.3+, surfaced via `invoke_remote_agent` + the federation A2A adapter. Long-running remote tasks are out (they need programmatic pause, itself v0.2 per [`./durable-execution-design.md`](./durable-execution-design.md)) — v0.1 calls block to a bounded timeout. No server, no registry publish. Evaluate ADK v2.1.0\'s agent-registry package (REST transport, card discovery, RemoteAgent factories — see [`./adk-v2-usage.md`](./adk-v2-usage.md) v2.1.0 additions) before hand-building any client machinery. |
+| **v0.2** | Server: agent-card publication, `message/send` / `tasks/get` / `tasks/cancel` / `message/stream` on the JSON-RPC endpoint, bearer-token auth with pluggable `a2a.TokenValidator`. Registry publishing (`mast a2a publish --registry=google`) — **gated on Google Agent Registry API maturity (Public Preview as of 2026-07; regional Agent Gateway alignment applies)**. Client: streaming, push notifications, programmatic-pause composition for long-running tasks, dynamic registry discovery (Google Agent Registry, kagent). HITL propagation across A2A both directions. Per-workload agent-card endpoints. |
 | **v0.3** | Cost attribution across A2A boundary (opt-in extension). Federation patterns fully wired (per [`./federation-design.md`](./federation-design.md)). Multi-registry composition. Auth: OAuth 2.0 flows end-to-end; Google IAM Workload Identity as default in GKE deployments. |
 | **v0.4+** | Cross-runtime resume via A2A + Python ADK (per durable-execution's cross-runtime-resume commitment). A2A-specific bundle-learning: learn which external agents work well for which task shapes. Advanced agent-card capability negotiation (input-mode preferences, streaming preferences). |
 
 ## Open questions
 
-1. **A2A protocol version pinning.** A2A spec evolves; mast should support a specific version range. Bias: `>= 1.0, < 2.0` initially; version-negotiate in agent-card exchange; document tested-against versions per mast release.
+1. ~~**A2A protocol version pinning.**~~ *Resolved 2026-07-25: implement against the v0.3 line (1.0 is live per Google Agent Registry docs; 0.3 is what the ecosystem broadly speaks), send/honor the `A2A-Version` header, document tested-against versions per mast release. The earlier "`>= 1.0, < 2.0`" bias coexisted with pre-0.2-draft endpoint descriptions in this very doc — the rewrite pins both prose and code target to the same spec line.*
 2. **Agent-card refresh cadence for discovered agents.** Cached agent cards go stale (endpoint changes, skill schema changes, auth requirements change). Bias: refresh on `SIGHUP` (per [`./config-layout-design.md`](./config-layout-design.md)) + on-demand refresh via CLI (`mast a2a refresh <agent-name>`) + optional TTL-based refresh (opt-in per agent).
 3. **Streaming task output → planner reasoning.** When mast is A2A client and remote skill streams updates, does the calling planner see updates mid-tool-call or only the terminal state? Bias: only terminal state for v0.2 (matches Task-mode's `finish_task` shape); streaming updates surface as observability spans, not as planner reasoning inputs.
 4. **Cost attribution extension.** No standard A2A extension for cost reporting yet. Bias: propose one to the spec community; ship mast-side as opt-in header (`Mast-Cost-USD`) until standardized.
