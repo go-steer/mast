@@ -111,6 +111,18 @@ A consolidated view (each doc's local resolved section is authoritative for its 
 | Tool-allowlist algebra = per-field presence (absent = inherit, empty = deny, non-empty = whitelist), one normative table; per-tool MCP filtering is stock ADK `FilterToolset` | [`./specialists-design.md`](./specialists-design.md) |
 | Budget substrate = event-stream `UsageMetadata` (+ `Branch`/`NodeInfo` attribution); pricing + enforcement are mast-side; post-call meter v0.1, pre-call gate follow-on | [`./orchestration-design.md`](./orchestration-design.md) + [`./adk-v2-usage.md`](./adk-v2-usage.md) |
 | Triage-demo sessions are per-incident (`incident-<uid>`), not shared-session | [`./triage-demo-plan.md`](./triage-demo-plan.md) |
+| v0.1 scope re-cut (2026-07-25): A2A server, AG-UI (server + client), and registry publishing move to v0.2; v0.1 keeps MCP templates, `federation.Adapter` interface + `invoke_remote_agent` stub, synchronous A2A client; Phase 1 is honestly ~3-4 weeks | [`./fork-design.md`](./fork-design.md) |
+| A2A integration targets the v0.3/1.0 spec (JSON-RPC `message/send` surface; no skill schemas in `AgentSkill`; bundle I/O schemas are a mast-side convention) | [`./a2a-design.md`](./a2a-design.md) |
+| One planner tool for remote agents: `invoke_remote_agent(reference, inputs)`; `invoke_a2a_agent` retired | [`./federation-design.md`](./federation-design.md) + [`./a2a-design.md`](./a2a-design.md) |
+| AG-UI interrupts/activity/reasoning are draft spec extensions — a labeled bet (SDK pinned, encoding isolated in `pkg/agui`); chat-platform packages are `@copilotkit/channels-*`; push + reconnect-resume are mast extensions | [`./ag-ui-design.md`](./ag-ui-design.md) |
+| "Four interop surfaces" is the canonical framing (MCP / A2A / AG-UI / skills); attach mode is mast-native transport, not a surface | [`./mcp-catalog-design.md`](./mcp-catalog-design.md) + [`./ag-ui-design.md`](./ag-ui-design.md) |
+| v0.1 MCP catalog entries require one pinned upstream each (gke = official Google GKE MCP endpoint); unpinnable entries demote to v0.2-candidate | [`./mcp-catalog-design.md`](./mcp-catalog-design.md) |
+| Cloud Run v0.1 uses Postgres via ADK `session/database`; GKE-with-SQLite is StatefulSet+PVC | [`./deployment-design.md`](./deployment-design.md) |
+| Library API v0.1 semver freeze = five pillar packages (`mast`, `agent`, `session`, `provider`, `tool`); all else experimental with named stabilization versions; `memory` experimental v0.1 → stable v0.3 | [`./library-api-design.md`](./library-api-design.md) |
+| Budget/policy-critical memory keys are fail-closed; incremental reducers carry persisted event cursors (at-least-once safety) | [`./memory-design.md`](./memory-design.md) |
+| Classifier-first dispatch is a privilege boundary: code-enforced per-entry-point bundle allowlists; envelope selection validated + transport-authenticated; resolutions audit-logged | [`./orchestration-design.md`](./orchestration-design.md) |
+| Mutation predicate for `on_mutation`: built-in `Mutating` annotation + MCP `readOnlyHint`, default-deny-unknown, per-tool audited override | [`./orchestration-design.md`](./orchestration-design.md) |
+| Resume tokens: tenant-scope-bound, permission gate re-runs on resume, TTL 7d with audited override | [`./durable-execution-design.md`](./durable-execution-design.md) |
 | v0.1 anchor use case = mast-native reshape of GKE triage (specialists + LLM-as-router + workflow graph + in-band HITL); showcase mast differentiators against a real platform-team problem, not prove parity with the core-agent recipe | [`./triage-demo-plan.md`](./triage-demo-plan.md) |
 
 ## Open questions still on the table
