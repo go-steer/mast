@@ -102,6 +102,15 @@ A consolidated view (each doc's local resolved section is authoritative for its 
 | Web UI = thin client over attach mode, not WASM-as-agent | [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) |
 | `mast-web` phases A+B+C don't gate on the fork trigger | [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) |
 | Docs split: mast-design here, mast-web design in mast-web repo | This README + redirect stubs in core-agent's `docs/mast/` |
+| Pre-trigger prototype lives in the standalone `mast-prototype` git repo (tags `spike1`/`spike2`), not an uncommitted scratch worktree | [`./triage-demo-plan.md`](./triage-demo-plan.md) + [`./fork-design.md`](./fork-design.md) |
+| Bucket-1 ADK pin = `google.golang.org/adk/v2 v2.1.0` (spike-2 verified) | [`./fork-design.md`](./fork-design.md) + [`./adk-v2-usage.md`](./adk-v2-usage.md) |
+| Graphs run as the runner root via `workflowagent.New` — no coordinator required (runner's Chat-mode rule applies to LlmAgent roots only; spike-1 conclusion reversed) | [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) + [`./adk-v2-usage.md`](./adk-v2-usage.md) |
+| Resume model = reconstruct-and-re-execute (not deterministic replay); node bodies are ResumedInput-first with session-state stash; mutating side effects are at-least-once with declared guards | [`./durable-execution-design.md`](./durable-execution-design.md) + [`./adk-v2-usage.md`](./adk-v2-usage.md) |
+| Session store = ADK `session/database` (SQLite pure-Go v0.1; Postgres = same service, pulled forward where topology demands); `pkg/eventlog/` port re-scoped to audit/query surface; shared-FS SQLite dropped | [`./durable-execution-design.md`](./durable-execution-design.md) + [`./fork-design.md`](./fork-design.md) |
+| v0.1 reference-graph subset = LLM-as-router + fan-out-fan-in; HITL cannot originate inside parallel branches (`ErrParallelHITLUnsupported`) | [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) |
+| Tool-allowlist algebra = per-field presence (absent = inherit, empty = deny, non-empty = whitelist), one normative table; per-tool MCP filtering is stock ADK `FilterToolset` | [`./specialists-design.md`](./specialists-design.md) |
+| Budget substrate = event-stream `UsageMetadata` (+ `Branch`/`NodeInfo` attribution); pricing + enforcement are mast-side; post-call meter v0.1, pre-call gate follow-on | [`./orchestration-design.md`](./orchestration-design.md) + [`./adk-v2-usage.md`](./adk-v2-usage.md) |
+| Triage-demo sessions are per-incident (`incident-<uid>`), not shared-session | [`./triage-demo-plan.md`](./triage-demo-plan.md) |
 | v0.1 anchor use case = mast-native reshape of GKE triage (specialists + LLM-as-router + workflow graph + in-band HITL); showcase mast differentiators against a real platform-team problem, not prove parity with the core-agent recipe | [`./triage-demo-plan.md`](./triage-demo-plan.md) |
 
 ## Open questions still on the table

@@ -1,6 +1,6 @@
 # mast specialists: design
 
-**Status:** draft, 2026-06-11 (updated 2026-07-01 — ADK v2 resolves several open questions and reshapes the schema slightly; skills reinstated as first-class alongside specialists, so this doc is no longer framed as "the replacement for skills"). Companion to [`./fork-design.md`](./fork-design.md) (bucket 2 ports both `pkg/skills/` and `pkg/specialists/` — see [`./skills-design.md`](./skills-design.md) for the reinstatement rationale), [`./positioning.md`](./positioning.md) (the thesis), [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (the reference-graph library that instantiates specialists as agent nodes), and [`./skills-design.md`](./skills-design.md) (the complementary authoring model — specialists for mast-authored subagents; skills for consumed published templates). This doc covers the specialist subsystem in detail — schema, loader, registration mechanics, and the open questions to resolve before phase 1 of the fork.
+**Status:** draft, 2026-06-11 (updated 2026-07-01 — ADK v2 resolves several open questions and reshapes the schema slightly; skills reinstated as first-class alongside specialists, so this doc is no longer framed as "the replacement for skills". Updated 2026-07-25 — spike-2 pass: allowlist semantics rewritten as one normative table with per-field presence, `ToolAllowlist` sketch fixed accordingly (+ `Skills` field), per-tool MCP filtering resolved as stock ADK, budget-substrate findings folded into open Q #2, pre-reversal migration section replaced). Companion to [`./fork-design.md`](./fork-design.md) (bucket 2 ports both `pkg/skills/` and `pkg/specialists/` — see [`./skills-design.md`](./skills-design.md) for the reinstatement rationale), [`./positioning.md`](./positioning.md) (the thesis), [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (the reference-graph library that instantiates specialists as agent nodes), and [`./skills-design.md`](./skills-design.md) (the complementary authoring model — specialists for mast-authored subagents; skills for consumed published templates). This doc covers the specialist subsystem in detail — schema, loader, registration mechanics, and the open questions to resolve before phase 1 of the fork.
 
 ## Why specialists exist (and how they coexist with skills)
 
@@ -96,19 +96,23 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | `budget.max_cost_usd` | float | 0 | Per-invocation cost ceiling. 0 = inherit session ceiling. Useful for cheap-but-frequently-invoked specialists where bounded per-call cost matters more than session-level. |
 | `mode` | string | `Task` | ADK v2 agent mode. Options: `Task` (default; auto-installs `finish_task` — specialist returns via `finish_task` argument), `SingleTurn` (one call, no `finish_task` needed — useful for lightweight classifier specialists consumed by the LLM-as-router shape in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) and by workload-bundle classifier-first dispatch in [`./orchestration-design.md`](./orchestration-design.md)). `Chat` is deliberately not exposed — specialists are sub-agents, not coordinators. |
 | `model` | string | inherit parent | Full model ID (`gemini-2.5-flash`, `claude-haiku-4-5`, etc.). Provider is inferred from the parent's resolved config. Common pattern: frontier parent dispatching to cheap-tier specialists for high-volume tasks. |
-| `tools.builtin` | []string | inherit all | Allowlist (not denylist) of core-agent built-in tools. Empty/absent = specialist sees all of parent's builtins. |
-| `tools.mcp[].server` | string | required if `mcp` set | MCP server name as configured in `.agents/mcp.json`. |
-| `tools.mcp[].tools` | []string | all | Allowlist of tools from this MCP server. Empty/absent = all tools from this server available to specialist. |
-| `tools.skills` | []string | inherit all | Allowlist of skills (SKILL.md bundles per [`./skills-design.md`](./skills-design.md)) the specialist may invoke. References resolve the same way as workload-bundle `skills:` entries (local name or registry URL). Empty/absent = specialist inherits all skills available in the workload bundle's `skills:` roster. Skill invocation from a specialist follows the standard three-way policy layering: skill's `allowed_tools` ∩ specialist's `tools` ∩ workload bundle's `tool_catalog` — narrowest wins. Skill budget hints get bounded by the specialist's `budget.max_cost_usd` (which itself is bounded by the bundle's `budget.max_cost_usd`). |
+| `tools.builtin` | []string | inherit all | Allowlist (not denylist) of core-agent built-in tools. Absent = inherit all; present-but-empty = deny all builtins (see the normative table below — empty and absent are NOT equivalent, revised 2026-07-25). |
+| `tools.mcp[].server` | string | required if `mcp` set | MCP server name as configured under `.agents/mcp/` (path per [`./config-layout-design.md`](./config-layout-design.md), which is authoritative for layout; an earlier `.agents/mcp.json` reference here was stale). |
+| `tools.mcp[].tools` | []string | all from this server | Allowlist of tools from this MCP server. Absent = whole server; non-empty = narrowed to those names (enforced via stock `tool.FilterToolset`, verified 2026-07-25). |
+| `tools.skills` | []string | inherit all | Allowlist of skills (SKILL.md bundles per [`./skills-design.md`](./skills-design.md)) the specialist may invoke. References resolve the same way as workload-bundle `skills:` entries (local name or registry URL). Absent = inherit the bundle's `skills:` roster; present-but-empty = deny skill access (normative table below). Skill invocation from a specialist follows the standard three-way policy layering: skill's `allowed_tools` ∩ specialist's `tools` ∩ workload bundle's `tool_catalog` — narrowest wins. Skill budget *hints* are advisory (per [`./skills-design.md`](./skills-design.md) — hints are not enforcement); the enforced ceiling is the specialist's `budget.max_cost_usd`, itself bounded by the bundle's. |
 
-### Allowlist semantics, in plain text
+### Allowlist semantics — normative table (rewritten 2026-07-25)
 
-- **No `tools` block** → specialist inherits everything the parent has (all builtins, all MCP tools, all skills from the workload bundle's roster).
-- **`tools.builtin: [read_file]`** → specialist sees only `read_file` from builtins; nothing else.
-- **`tools.mcp` listed, `tools.builtin` absent** → specialist inherits all builtins, only the listed MCP tools.
-- **`tools.skills: [gke-triage]`** → specialist can invoke only that skill from the bundle's roster; other bundle-enumerated skills invisible.
-- **`tools.skills: []`** (empty list, present) → specialist explicitly denied skill access even if bundle has skills.
-- **`tools: {}`** (empty block) → specialist sees zero tools. Useful for pure-reasoning specialists that just digest the parent's input.
+*Earlier revisions of this doc contradicted themselves (field table vs. plain-text list vs. Go sketch) on empty-vs-absent and `tools: {}`. This table is now the single normative statement; the MCP axis is the semantics spike 2 implemented and verified (`mast-prototype` `pkg/specialists.filterToolsets`, using stock `tool.FilterToolset` + `AllowedToolsPredicate`). Presence is tracked **per field**, not per block.*
+
+| Frontmatter state | builtin axis | mcp axis | skills axis |
+|---|---|---|---|
+| No `tools:` block | inherit all | inherit all | inherit all (bundle roster) |
+| `tools: {}` (block present, all fields absent) | inherit all | inherit all | inherit all — *per-field absence rules; this **reverses** the earlier "zero tools" reading, which contradicted per-field inheritance. Pure-reasoning specialists state denial explicitly (next row).* |
+| Field present, empty list (`builtin: []` / `mcp: []` / `skills: []`) | deny all on that axis | deny all on that axis | deny all on that axis |
+| Field present, non-empty | whitelist: only the listed entries | whitelist: unlisted servers dropped; a listed server with no `tools:` passes whole; with `tools:` it is narrowed to those names | whitelist: only the listed skills |
+
+Cross-axis independence: each axis resolves on its own (e.g. `mcp` listed + `builtin` absent → all builtins, only the listed MCP surface). Composition with bundles and skills is intersection, narrowest wins: skill `allowed_tools` ∩ specialist `tools` ∩ bundle `tool_catalog`.
 
 This is allowlist-by-design: enumerating the few tools a specialist *should* see is much easier than excluding the many it shouldn't.
 
@@ -133,9 +137,15 @@ type Budget struct {
 }
 
 type ToolAllowlist struct {
-    set     bool             // true if the YAML had a `tools:` block at all
-    Builtin []string         // empty (and set=true) = no builtins; absent (set=false) = inherit all
-    MCP     []MCPAllowlist
+    // Presence is tracked per field (custom UnmarshalYAML or *[]string):
+    // nil = field absent = inherit all on that axis; non-nil empty = deny
+    // all on that axis; non-nil non-empty = whitelist. Matches the
+    // normative table above. (Rewritten 2026-07-25 — the earlier
+    // block-level `set bool` could not represent per-field inheritance,
+    // and the struct predated the skills reinstatement.)
+    Builtin *[]string
+    MCP     *[]MCPAllowlist
+    Skills  *[]string
 }
 
 type MCPAllowlist struct {
@@ -151,7 +161,7 @@ func Load(dir string) ([]Spec, error)
 func Register(specs []Spec, parent *agent.Agent) ([]tool.Tool, error)
 ```
 
-Estimated size: ~200-400 LOC including YAML parsing, allowlist resolution, model override, and `agenttool.New` wiring. Significantly smaller than today's `pkg/skills/`.
+Estimated size: ~200-400 LOC including YAML parsing, allowlist resolution, model override, and agent wiring — spike 2's working loader + builder + MCP-allowlist filtering came in under this envelope. (An earlier size comparison against `pkg/skills/` predated the skills reinstatement and is moot: both packages exist now, doing different jobs.)
 
 ## Auto-discovery
 
@@ -185,20 +195,23 @@ Specialists compose naturally with the patterns already shipped or designed:
 | Workload bundles (see [`./orchestration-design.md`](./orchestration-design.md)) | Bundles enumerate a `specialists:` roster — the set of specialists available in a given workload. Loader instantiates only the enumerated specialists per session (rather than the full `.agents/specialists/` directory), giving operators per-workload scope control. Planner invokes specialists via `invoke_specialist(name, inputs)`; plain-agent workloads invoke specialists directly via `agenttool`. `mode: SingleTurn` specialists are useful as bundle-scoped classifiers (e.g., a per-workload router that dispatches within the bundle). |
 | A2A / federation (see [`./a2a-design.md`](./a2a-design.md), [`./federation-design.md`](./federation-design.md)) | External remote agents (A2A, mast-native, HTTP/RPC) appear to the planner as another class of invocable tools via `invoke_remote_agent(reference, inputs)`. Distinct from specialists (which are in-process, budget-composed, direct tool access); complementary. Same planner treats both uniformly; choice depends on locality + trust. A local specialist can also be *published* as an A2A skill via the workload bundle's `a2a.expose` field — the specialist stays local, but becomes callable by external A2A clients through the wrapping workload. |
 
-## Migration story (for core-agent users coming to mast)
+## Choosing between a skill and a specialist (rewritten 2026-07-25)
 
-Specialists are *not* drop-in replacements for `SKILL.md` bundles. Migration is intentional, not automatic:
+*The previous revision of this section was pre-reversal residue: it told SKILL.md users to convert skills into instruction files or specialist `.tmpl`s. Since the 2026-07-01 skills reinstatement, skills are first-class — a SKILL.md bundle needs no migration at all: drop it in `.agents/skills/` and reference it from the bundle roster.*
 
-1. **Anthropic-skill-style "knowledge injection" use case** (skill body becomes part of the parent's context for a turn): migrate to `pkg/instruction/`'s multi-file loader. The skill body becomes an `AGENTS.md` file or `@include`-d snippet.
-2. **Anthropic-skill-style "callable subroutine" use case** (skill body describes how to do X, parent invokes when relevant): migrate to a specialist `.tmpl` file. The frontmatter description becomes the YAML description; the skill body becomes the specialist's system prompt; budget + tools added as the operator sees fit.
+The remaining question is authoring-model choice for content *you* write:
 
-A migration helper script (`scripts/migrate-skills-to-specialists.sh`) could automate the second case for the common shape. Not v1; nice-to-have if migration friction becomes a real complaint.
+1. **Consuming a published SKILL.md** (GKE team, registry, community): use it as-is via `pkg/skills/`. No conversion.
+2. **Authoring mast-native operational content** that needs per-invocation budgets, tool allowlists, a model override, or `SingleTurn` mode: write a specialist `.tmpl`.
+3. **Knowledge injection** (content that should ride in the parent's own context rather than be a callable): `pkg/instruction/`'s multi-file loader (`AGENTS.md` / `@include`).
+
+Converting an authored skill into a specialist (to gain budgets/allowlists) is [`./skills-design.md`](./skills-design.md)'s `mast skills convert --to-specialist` (v0.3+); this doc no longer proposes a separate migration script.
 
 ## Open questions
 
 1. ~~**What does `agenttool.New` return to the parent?**~~ **Resolved 2026-07-01 (ADK v2):** Task-mode agents auto-install a `finish_task` helper tool. Specialists return their focused final via `finish_task`'s argument, not the raw last-assistant-text. The digest pattern is preserved by construction — no wrapper needed. `SingleTurn`-mode specialists (schema `mode: SingleTurn`) return the single-turn output directly, also focused.
-2. **Does `agenttool` natively enforce budgets** (max_turns, max_wallclock_seconds, max_cost_usd)? *2026-07-01 update:* partly answered by v2. Per-node `Timeout` maps to `max_wallclock_seconds`; per-node `RetryConfig` bounds transient failures. `max_turns` still needs enforcement inside the specialist's own runtime (sub-agent turn count); `max_cost_usd` still needs the mast-side cost interceptor because ADK doesn't track USD. `pkg/agent/background.go`'s `spawn_agent` composition still applies for the remainder.
-3. **MCP per-tool allowlist mechanism.** Does the existing MCP integration support filtering an MCP server's tool set per-agent? If the parent has full server access but the specialist should only see some tools, the underlying mechanism needs to support this. Likely yes via tool filtering, but worth confirming. (Unchanged by v2 — orthogonal to the workflow-engine surface.)
+2. **Does `agenttool` natively enforce budgets** (max_turns, max_wallclock_seconds, max_cost_usd)? *2026-07-01 update:* partly answered by v2. Per-node `Timeout` maps to `max_wallclock_seconds`; per-node `RetryConfig` bounds transient failures. `max_turns` still needs enforcement inside the specialist's own runtime (sub-agent turn count); `max_cost_usd` still needs the mast-side cost interceptor because ADK doesn't track USD. *2026-07-25 update (spike 2): the cost-interceptor substrate is verified — every model call's `UsageMetadata` rides the runner event stream (`Event` embeds `LLMResponse`), with `Branch`/`NodeInfo` for per-specialist attribution; the prototype's `pkg/budget` meter enforces `max_cost_usd` by folding usage per event and cancelling the run context on breach (demonstrated tripping a $0.01 cap mid-turn). Wallclock caps map to context deadlines. Remaining open: per-turn cap plumbing and pre-call (rather than post-call) gating via a `model.LLM` wrapper or the v2.1.0 TaskRunner seam.*
+3. ~~**MCP per-tool allowlist mechanism.**~~ *Resolved 2026-07-25 (spike 2): yes, and it's stock ADK — `tool.FilterToolset(ts, tool.AllowedToolsPredicate(names))` narrows any toolset per specialist at Build time; no mast-side machinery needed. Implemented + unit-tested in `mast-prototype` `pkg/specialists`.*
 4. **Model override means constructing a new provider client per specialist** if the specialist's model is on a different provider than the parent (Gemini specialist under a Claude parent). Likely acceptable cost, but worth noting and possibly limiting to "specialist model must be same provider as parent" for v1 simplicity. (Unchanged by v2.)
 5. **Specialist visibility in `mast-web`.** *2026-07-01 update:* v2's unified telemetry span tree means specialist invocations share one trace shape with regular tool calls and workflow-node executions. The UI question is now purely "which attribute do we filter on to render specialists distinctly" (`agent.type == "specialist"`, or by name-prefix), not "how do we correlate two separate span shapes." Simpler than pre-v2.
 6. **YAML parser choice.** `gopkg.in/yaml.v3` is what the existing skills loader uses; reuse for consistency unless there's a reason to switch.
