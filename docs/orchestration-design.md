@@ -1,6 +1,6 @@
 # mast orchestration: workload bundles, planner, learning
 
-**Status:** draft, 2026-07-01. Companion to [`./positioning.md`](./positioning.md) (the thesis — unattended / library / multi-provider workloads are the audience this doc serves), [`./fork-design.md`](./fork-design.md) (ADK v2 from day one as the substrate), [`./specialists-design.md`](./specialists-design.md) (the specialists that populate agent nodes and workload rosters), and [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (the seven canonical reference graphs the planner uses as vocabulary). Covers three related subsystems as one story: **workload bundles** (operational profile per named class of work), **the planner** (supervisor-body agent that constructs execution from workload vocabulary), and **bundle learning** (audit-derived refinement of bundles over time).
+**Status:** draft, 2026-07-01 (updated 2026-07-25 — spike-2 pass adds the verified budget substrate under "Planner is bounded by"). Companion to [`./positioning.md`](./positioning.md) (the thesis — unattended / library / multi-provider workloads are the audience this doc serves), [`./fork-design.md`](./fork-design.md) (ADK v2 from day one as the substrate), [`./specialists-design.md`](./specialists-design.md) (the specialists that populate agent nodes and workload rosters), and [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (the seven canonical reference graphs the planner uses as vocabulary). Covers three related subsystems as one story: **workload bundles** (operational profile per named class of work), **the planner** (supervisor-body agent that constructs execution from workload vocabulary), and **bundle learning** (audit-derived refinement of bundles over time).
 
 ## Why one doc
 
@@ -222,6 +222,15 @@ Turn K: Emit finish_task(result) → planner exits, result returns to caller.
 - **`hitl_policy.on_budget_exhaustion`** determines what happens when any cap is hit.
 
 Sub-invocations count against the planner's remaining budget. A planner that invokes a specialist with its own `budget.max_cost_usd` uses the min of remaining-planner-budget and specialist-declared-cap.
+
+### Budget substrate (added 2026-07-25 — spike-2 verified)
+
+The enforcement mechanics above were previously specified without a substrate; spike 2 pinned it down (`mast-prototype` `pkg/budget`, FINDINGS.md):
+
+- **Token accounting is free from ADK:** `session.Event` embeds `model.LLMResponse`, so every model call's `UsageMetadata` (prompt/candidates/total tokens) streams past the runner-event consumer, and events carry `Branch` + `NodeInfo` — the attribution keys for "which specialist / which sub-workflow spent this."
+- **Pricing and enforcement are mast-side:** ADK tracks tokens, not USD. `pkg/pricing` (bucket-2 port) supplies rates; a per-session meter folds usage per event and computes `min(parent-remaining, specialist-cap)` from the running totals. Verified live: crossing `max_cost_usd` cancels the run context mid-turn.
+- **Two enforcement points, both needed:** the event-stream meter is enforcement-*after*-the-call (a runaway call is caught when its usage event lands); pre-call gating (refuse to start a call that would exceed remaining budget) sits in a `model.LLM` wrapper and/or the v2.1.0 TaskRunner seam for tool fan-out. v0.1 ships the meter; the pre-call gate is the follow-on.
+- `budget.max_wallclock_seconds` maps to a context deadline per dispatch. `budget.max_turns` remains mast-side turn counting (ADK has no turn cap).
 
 ### Plan-first gate composition
 
