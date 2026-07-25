@@ -1,6 +1,6 @@
 # mast library API: design
 
-**Status:** draft, 2026-07-01. Companion to [`./positioning.md`](./positioning.md) ("library-embedded" is a pillar; this doc scopes what the library-consumer sees), [`./fork-design.md`](./fork-design.md) (bucket 1's lean core defines the public surface; bucket 2's ports plumb through it), [`./durable-execution-design.md`](./durable-execution-design.md) (session inspection + resume are library API surface), and [`./orchestration-design.md`](./orchestration-design.md) (workloads and bundles are configurable programmatically, not just via `.agents/*.yaml`). Covers the public Go API surface plus the extension points third parties can plug into.
+**Status:** draft, 2026-07-01 (updated 2026-07-25 — stability freeze shrunk: five pillar-serving packages are stable from v0.1, everything else is explicitly **experimental** until v0.2/v0.3; `memory` package added to the surface table (it was used in this doc's own composition examples but missing from the table) with phasing reconciled against [`./memory-design.md`](./memory-design.md)). Companion to [`./positioning.md`](./positioning.md) ("library-embedded" is a pillar; this doc scopes what the library-consumer sees), [`./fork-design.md`](./fork-design.md) (bucket 1's lean core defines the public surface; bucket 2's ports plumb through it), [`./durable-execution-design.md`](./durable-execution-design.md) (session inspection + resume are library API surface), and [`./orchestration-design.md`](./orchestration-design.md) (workloads and bundles are configurable programmatically, not just via `.agents/*.yaml`). Covers the public Go API surface plus the extension points third parties can plug into.
 
 ## Why this is its own doc
 
@@ -15,24 +15,28 @@ Bucket 1's lean core defines the answer *by construction*. If we don't design th
 
 Public packages under `github.com/go-steer/mast/`:
 
+*(Stability column revised 2026-07-25. The earlier table marked sixteen packages "stable from v0.1" — a semver freeze on an unexercised surface at the end of a ~3-4-week rebuild, i.e. a standing deprecation-cycle tax on every design mistake. New rule: **stable-from-v0.1 is reserved for the five packages the four pillars actually stand on**; everything else ships v0.1 as `// Experimental: API may change without deprecation cycle until <version>` and stabilizes when its subsystem has real consumers.)*
+
 | Package | Purpose | Stability |
 |---|---|---|
-| `github.com/go-steer/mast` | Top-level convenience API: `mast.Run`, `mast.RunWorkload`, `mast.Serve`, `mast.ListSessions`, `mast.Resume` | Stable from v0.1 |
-| `github.com/go-steer/mast/agent` | Core types: `Agent`, `Config`, `Context`, `Result`, mode constants | Stable from v0.1 |
-| `github.com/go-steer/mast/workload` | Workload bundle types: `Bundle`, `Loader`, `Resolver`, `Registry` | Stable from v0.1 |
-| `github.com/go-steer/mast/specialist` | Specialist types: `Spec`, `Registry`, `Loader` | Stable from v0.1 |
-| `github.com/go-steer/mast/provider` | Provider interface + built-in registrations | Interface stable; built-ins may add |
-| `github.com/go-steer/mast/tool` | Tool interface + built-in tools | Interface stable |
-| `github.com/go-steer/mast/permission` | Permission gate types + scope helpers | Stable from v0.1 |
-| `github.com/go-steer/mast/session` | Session types: `Store` interface, `Event`, `PauseSpec`, `ResumeSpec` | Stable from v0.1 |
-| `github.com/go-steer/mast/eventlog` | Built-in eventlog store implementations (SQLite; postgres in v0.2) | Interface stable; may add adapters |
-| `github.com/go-steer/mast/attach` | Attach mode server + client | Stable from v0.1 |
-| `github.com/go-steer/mast/observability` | Metric registry; OTel wiring; standard attribute keys | Stable from v0.1 |
-| `github.com/go-steer/mast/mcp` | MCP client + transparent wrap | Stable from v0.1 |
-| `github.com/go-steer/mast/a2a` | A2A server + client + `TokenValidator` interface (see [`./a2a-design.md`](./a2a-design.md)) | Stable from v0.1 |
-| `github.com/go-steer/mast/agui` | AG-UI server + client; wraps community Go SDK (`github.com/ag-ui-protocol/ag-ui/sdks/community/go`) for consistent context propagation + observability spans; shares `TokenValidator` interface with `a2a` package (see [`./ag-ui-design.md`](./ag-ui-design.md)) | Interface stable from v0.1; SDK dependency tracked per pre-1.0 evolution |
-| `github.com/go-steer/mast/federation` | Federation adapter interface + built-in adapters (A2A / mast-native / HTTP/RPC) (see [`./federation-design.md`](./federation-design.md)) | Interface stable from v0.1; built-in adapters may add |
-| `github.com/go-steer/mast/skill` | SKILL.md format loader + `Registry` + `Source` extension point for custom skill sources (see [`./skills-design.md`](./skills-design.md)) | Stable from v0.1 |
+| `github.com/go-steer/mast` | Top-level convenience API: `mast.Run`, `mast.RunWorkload`, `mast.Serve`, `mast.ListSessions`, `mast.Resume` | **Stable from v0.1** |
+| `github.com/go-steer/mast/agent` | Core types: `Agent`, `Config`, `Context`, `Result`, mode constants | **Stable from v0.1** |
+| `github.com/go-steer/mast/session` | Session types: `Store` interface, `Event`, `PauseSpec`, `ResumeSpec` | **Stable from v0.1** |
+| `github.com/go-steer/mast/provider` | Provider interface + built-in registrations | **Interface stable from v0.1**; built-ins may add |
+| `github.com/go-steer/mast/tool` | Tool interface + built-in tools | **Interface stable from v0.1** |
+| `github.com/go-steer/mast/workload` | Workload bundle types: `Bundle`, `Loader`, `Resolver`, `Registry` | Experimental v0.1 → stable v0.2 |
+| `github.com/go-steer/mast/specialist` | Specialist types: `Spec`, `Registry`, `Loader` | Experimental v0.1 → stable v0.2 |
+| `github.com/go-steer/mast/permission` | Permission gate types + scope helpers | Experimental v0.1 → stable v0.2 |
+| `github.com/go-steer/mast/eventlog` | Audit/query surface over the ADK `session/database` store (re-scoped per [`./fork-design.md`](./fork-design.md) 2026-07-25) | Experimental v0.1 → stable v0.2 |
+| `github.com/go-steer/mast/attach` | Attach mode server + client | Experimental v0.1 → stable v0.2 |
+| `github.com/go-steer/mast/observability` | Metric registry; OTel wiring; standard attribute keys | Experimental v0.1 → stable v0.2 |
+| `github.com/go-steer/mast/mcp` | MCP client + transparent wrap | Experimental v0.1 → stable v0.2 |
+| `github.com/go-steer/mast/memory` | Memory read surface (`memory.Get[T]`) + reducer registration (see [`./memory-design.md`](./memory-design.md)) — *added to this table 2026-07-25; it was already used in the composition examples below* | Experimental v0.1 (read + register, matching memory-design's v0.1 slice) → stable v0.3 (matching this doc's original phasing; the two docs previously contradicted each other) |
+| `github.com/go-steer/mast/budget` | Per-session usage meter + limits (see [`./orchestration-design.md`](./orchestration-design.md) budget substrate) | Experimental v0.1 → stable v0.2 |
+| `github.com/go-steer/mast/federation` | Federation adapter interface + A2A client adapter (v0.1); HTTP/RPC + mast-native adapters v0.2 (see [`./federation-design.md`](./federation-design.md)) | Experimental v0.1 → interface stable v0.2 |
+| `github.com/go-steer/mast/a2a` | A2A client (v0.1); server + `TokenValidator` v0.2 (see [`./a2a-design.md`](./a2a-design.md); re-cut 2026-07-25) | Experimental v0.1 → stable v0.3 |
+| `github.com/go-steer/mast/agui` | AG-UI server + client; wraps community Go SDK; shares `TokenValidator` with `a2a` (see [`./ag-ui-design.md`](./ag-ui-design.md)) | **Ships v0.2** (re-cut 2026-07-25); experimental until the AG-UI interrupt extension finalizes |
+| `github.com/go-steer/mast/skill` | SKILL.md format loader + `Registry` + `Source` extension point (see [`./skills-design.md`](./skills-design.md)) | Experimental v0.1 → stable v0.2 |
 
 **Internal / churnable** packages under `github.com/go-steer/mast/internal/…`. These are the bucket 1 shim + runtime glue; not for library consumers.
 
