@@ -1,6 +1,6 @@
 # mast durable execution: design
 
-**Status:** draft, 2026-07-01. Companion to [`./positioning.md`](./positioning.md) (in which "durable" is proposed as a fourth pillar alongside unattended / library / multi-provider), [`./fork-design.md`](./fork-design.md) (ADK v2 provides the substrate; bucket 1's lean core exposes the semantics), [`./orchestration-design.md`](./orchestration-design.md) (planner pause/resume + workload budget composition), [`./specialists-design.md`](./specialists-design.md) (specialist HITL pause), and [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (cyclic graphs / autonomous loops that survive restarts). This doc treats **durable execution as its own subsystem** rather than as an implementation detail scattered across other designs.
+**Status:** draft, 2026-07-01 (updated 2026-07-25 — spike-2 verification: the resume model is pinned down (reconstruct-and-re-execute, verified across `kill -9`), ADK's `session/database` service reshapes the storage table, side-effect semantics under re-execution added as a mandatory design section, and the v0.1/v0.2 programmatic-pause phasing contradiction fixed). Companion to [`./positioning.md`](./positioning.md) (in which "durable" is proposed as a fourth pillar alongside unattended / library / multi-provider), [`./fork-design.md`](./fork-design.md) (ADK v2 provides the substrate; bucket 1's lean core exposes the semantics), [`./orchestration-design.md`](./orchestration-design.md) (planner pause/resume + workload budget composition), [`./specialists-design.md`](./specialists-design.md) (specialist HITL pause), and [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) (cyclic graphs / autonomous loops that survive restarts). This doc treats **durable execution as its own subsystem** rather than as an implementation detail scattered across other designs.
 
 ## Why this is a fourth pillar
 
@@ -23,6 +23,9 @@ Durable execution in mast is not something we *implement*; it is something we *e
 
 - **Session-durable state.** Every node execution's state is written to the session. Custom `InvocationContext` implementations must supply `IsolationScope()` and `ResumedInput(id string)` — the primitives that make replay work.
 - **Reconstructable pause.** ADK "can even reconstruct a paused workflow by scanning session history — so a workflow can resume after a process restart." The session event stream *is* the state.
+
+  *Verified 2026-07-25 (spike 2), and the mechanism matters:* **the resume model is reconstruct-and-re-execute, not deterministic replay.** `Workflow.ReconstructRunState` rebuilds paused state from session history on *every* turn (there is no in-memory workflow state between turns — restart-survival is free once the store is durable, proven across `kill -9`). On resume, interrupted node bodies **re-execute** (`RerunOnResume`), with the human reply available via `ctx.ResumedInput(interruptID)`; the runner reuses the paused run's invocation ID. Two hard consequences: (1) `RunNode` does **not** return cached dynamic-child results across the pause turn — bodies must be ResumedInput-first and stash pre-pause results into session state (`StateDelta`), else the child re-runs (and, worse, the re-run LlmAgent fails on the resume turn's orphan `FunctionResponse`); (2) anything a node body did before the interrupt happens again on re-entry unless guarded — see "Side-effect semantics under re-execution" below. Temporal-style replay-through-arbitrary-code is NOT what the substrate provides; designs assuming it (mid-node crash recovery, replay-with-alternate-config) must be re-derived from the reconstruct-and-re-execute model.
+- **Persistent session services in-box (2026-07-25).** `session/database.NewSessionService(gorm.Dialector)` + `database.AutoMigrate` gives SQLite (pure-Go `glebarez/sqlite`) and Postgres (same call, different dialector) session stores without mast-side storage code. Verified: HITL pause persisted to SQLite survives `kill -9`; a fresh process resumes it. This re-scopes the `pkg/eventlog/` port ([`./fork-design.md`](./fork-design.md) P1.3) toward the audit/query/retention surface rather than the store itself.
 - **Shared interrupt format with Python ADK.** Cross-runtime resume is possible in principle — a mast session's paused state can be resumed by a Python ADK runtime and vice versa, provided the session storage is compatible.
 - **HITL as one flavor of pause.** `RequestInputEvent` is one interrupt shape; the underlying pause primitive is more general.
 - **Idempotent resume + typed errors.** `ErrInvalidResumeResponse`, `ErrNothingToResume` — the resume path fails cleanly, not silently.
@@ -109,12 +112,23 @@ Storage backends (v0.1 → future):
 
 | Backend | Suitable for | v0.x scope |
 |---|---|---|
-| SQLite (per-instance file) | Single-instance dev / laptop / library-embedded single-process | v0.1 default; ported from core-agent |
-| SQLite (shared filesystem) | Small multi-instance where a network FS is acceptable | v0.1 supported; documented caveat about fs semantics |
-| Cloud Spanner / CockroachDB | Multi-region, high-throughput, tenant-isolated | v0.3+ (deployment-design.md dependency) |
-| Postgres | Standard multi-instance | v0.2 (needs adapter in `pkg/eventlog/`) |
+| SQLite (per-instance file) | Single-instance dev / laptop / library-embedded single-process | v0.1 default — via ADK `session/database` + `glebarez/sqlite` (pure Go), *not* a core-agent port (revised 2026-07-25; verified in spike 2) |
+| SQLite (shared filesystem) | Small multi-instance where a network FS is acceptable | ~~v0.1 supported; documented caveat~~ *Dropped 2026-07-25: SQLite's own docs warn most network-FS lock implementations corrupt databases; a "documented caveat" is not acceptable cover for a durability-pillar product. Multi-instance goes straight to Postgres.* |
+| Postgres | Standard multi-instance; Cloud Run (ephemeral filesystem) | ~~v0.2 (needs adapter in `pkg/eventlog/`)~~ *Revised 2026-07-25: same ADK `NewSessionService` call with a Postgres dialector — near-free, and pulled forward as the fix for the Cloud-Run-v0.1 durability contradiction in [`./deployment-design.md`](./deployment-design.md).* |
+| Cloud Spanner / CockroachDB | Multi-region, high-throughput, tenant-isolated | v0.3+ (deployment-design.md dependency; GORM dialector permitting) |
 | Cloud Firestore | GCP-native serverless | v0.3+ |
 | Custom (via `SessionStore` interface) | Anything else | v0.1 (interface + docs; concrete adapters as needed) |
+
+## Side-effect semantics under re-execution (added 2026-07-25 — mandatory design surface)
+
+Because resume re-executes node bodies (see Substrate) and crash recovery resumes from the last fsynced event, **mutating tool calls are at-least-once**: a `rollout_undo` or `apply_manifest` whose completion event wasn't durably written before a crash *will run again* on recovery, and any side effect a node body performs before its interrupt point *will run again* on resume unless guarded. For an SRE-facing product this is the single most important durability semantic, and it is a contract we owe tool authors in writing:
+
+1. **Declared default: at-least-once, with guards.** Mast does not build an exactly-once illusion. The runtime provides the guard primitives; tool and node authors use them.
+2. **Node-body guard:** ResumedInput-first + session-state stash (verified pattern; the change-safety-gate in the triage anchor demo implements it).
+3. **Tool-call guard (v0.1 guidance, v0.2 mechanism):** mutating tools should accept an idempotency key derived from `(session ID, invocation ID, function-call ID)` — all three already exist on events. A recorded-effect outbox (check the event log for a completed effect before re-executing) is the v0.2 candidate mechanism, sited in the tool-execution wrapper so individual tools don't reimplement it.
+4. **The permission gate composes:** re-executed mutations pass through the gate again by construction — fail-closed under re-execution, not fail-open.
+
+This section resolves the previously-implicit question; the residual open question (#8 below) is only the v0.2 outbox mechanism's shape.
 
 The `SessionStore` interface is one of the extension points enumerated in [`./library-api-design.md`](./library-api-design.md). Third-party stores can be plugged in.
 
@@ -224,8 +238,8 @@ These are deployment-design concerns; the pause/resume primitive itself is topol
 
 | Version | Scope |
 |---|---|
-| **v0.1** | Pause/resume primitive (`agent.Pause`, `agent.Resume`); HITL pause (existing); external-signal pause; SQLite session store (single-instance). CLI: `mast sessions list/show/resume/abort`. Snapshot/replay: export format only, replay in v0.2. |
-| **v0.2** | Timed pause + single-instance scheduler. Snapshot replay. Postgres session store (`pkg/eventlog/` adapter). Programmatic pause. |
+| **v0.1** | Resume primitive (`agent.Resume`) + HITL pause + external-signal pause (both resumed via `agent.Resume`; verified durable across restart in spike 2). SQLite session store via ADK `session/database` (single-instance); Postgres via the same service where the topology demands it (Cloud Run). CLI: `mast sessions list/show/resume/abort`. Snapshot/replay: export format only, replay in v0.2. *(Revised 2026-07-25: this row previously also claimed `agent.Pause` while v0.2 claimed "programmatic pause" — the same feature on both sides of the boundary. Resolution: programmatic **self**-pause (`agent.Pause` from inside an agent) is v0.2; v0.1 pauses originate from HITL interrupts and external-signal waits only.)* |
+| **v0.2** | Programmatic self-pause (`agent.Pause` + `PauseSpec`). Timed pause + single-instance scheduler. Snapshot replay. Recorded-effect outbox for mutating-tool idempotency (see "Side-effect semantics"). *(Note: [`./a2a-design.md`](./a2a-design.md)'s outbound-call composition depends on programmatic pause — outbound A2A in v0.1 would have to block synchronously; another reason the A2A server/client slice belongs in v0.2, per the pending scope re-cut.)* |
 | **v0.3** | Multi-instance coordination (session ownership handoff; distributed timed-pause scheduler). Bundle-learning-derived pause-pattern analytics. |
 | **v0.4+** | Cross-runtime resume validation (with Python ADK integration tests). Cloud-native session stores (Spanner, Firestore) via community-contributed adapters. |
 
@@ -238,6 +252,8 @@ These are deployment-design concerns; the pause/resume primitive itself is topol
 5. **Idempotency granularity.** Currently resume is idempotent by `(sessionID, resumeToken)`. Is that sufficient, or do we need idempotency keys on Pause too so the same emission doesn't create two pause records? Bias: pause is single-writer per session so intra-session dupes are impossible; cross-session pause coordination doesn't exist yet.
 6. **In-process attach for library-embedded** — a Go-library consumer wants to attach programmatically to a paused session inside their own process. Covered in [`./library-api-design.md`](./library-api-design.md); mentioned here as a cross-doc dependency.
 7. **Snapshot redaction.** Snapshots may contain secrets pulled from MCP calls, provider responses, etc. Should snapshot export have a redaction pass? Bias: yes; configurable per-workload allowlist / blocklist; default-safe (redact anything matching common secret patterns).
+8. **Recorded-effect outbox shape (v0.2).** Given the at-least-once contract ("Side-effect semantics" above), what does the tool-execution wrapper's effect record look like — keyed by `(session, invocation, function-call ID)`, stored as events or a side table, and how does it interact with retention? Added 2026-07-25.
+9. **Resume-token authz binding.** Flagged 2026-07-25: bearer-token possession alone resuming a session that can approve mutations, with a 30-day default TTL, is weak for multi-tenant deployments. Candidate fix: bind tokens to tenant scope and re-run the permission gate on resume (the gate-on-re-execution property from "Side-effect semantics" gives the second half for free). Needs a decision before the v0.1 resume surface freezes.
 
 ## Out of scope
 
