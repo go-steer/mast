@@ -1,6 +1,6 @@
 # mast deployment: design
 
-**Status:** draft, 2026-07-01. Companion to [`./positioning.md`](./positioning.md) (multi-session deployment story is priority #5), [`./durable-execution-design.md`](./durable-execution-design.md) (multi-instance coordination is a durability concern), [`./library-api-design.md`](./library-api-design.md) (library-embedded is a distinct deployment shape), [`./orchestration-design.md`](./orchestration-design.md) (`isolation.scope` on bundles maps to deployment tenancy), and [`./observability-design.md`](./observability-design.md) (multi-instance metric aggregation). Covers how mast actually runs in production — topologies, multi-instance coordination, multi-tenant tenancy, and packaging.
+**Status:** draft, 2026-07-01 (updated 2026-07-25 — Cloud Run v0.1 durability contradiction fixed: Postgres pulled into v0.1 via ADK's `session/database` service, which spike 2 verified makes SQLite and Postgres the same one-call surface; GKE v0.1 single-instance pinned to a StatefulSet+PVC when using SQLite). Companion to [`./positioning.md`](./positioning.md) (multi-session deployment story is priority #5), [`./durable-execution-design.md`](./durable-execution-design.md) (multi-instance coordination is a durability concern), [`./library-api-design.md`](./library-api-design.md) (library-embedded is a distinct deployment shape), [`./orchestration-design.md`](./orchestration-design.md) (`isolation.scope` on bundles maps to deployment tenancy), and [`./observability-design.md`](./observability-design.md) (multi-instance metric aggregation). Covers how mast actually runs in production — topologies, multi-instance coordination, multi-tenant tenancy, and packaging.
 
 ## Deployment topologies
 
@@ -14,7 +14,7 @@ Mast targets four production topologies. Each has different consequences for ses
 
 **Cons.** Cold-start latency on scale-from-zero (acceptable for webhook workloads, painful for interactive attach). No persistent local disk (session store must be external). Long-running sessions (autonomous loops, planner spanning hours) don't fit Cloud Run's per-request model — need scheduled resume triggers.
 
-**Session store.** Cloud SQL Postgres (v0.2 adapter) or Firestore (v0.3 adapter). Must be external — Cloud Run's ephemeral filesystem loses SQLite files on instance turnover.
+**Session store.** Cloud SQL Postgres **from v0.1** (revised 2026-07-25 — the earlier "v0.2 adapter" phasing contradicted this very paragraph plus the v0.1 exit criterion that pauses survive restart: SQLite cannot live on Cloud Run's ephemeral filesystem. The fix is cheap because there is no adapter to write: ADK's `session/database.NewSessionService` takes a Postgres dialector exactly as it takes SQLite's — see [`./durable-execution-design.md`](./durable-execution-design.md) storage table). Firestore remains v0.3+.
 
 **Long-running workloads pattern.** Sessions that would exceed Cloud Run's request timeout pause durably (per `./durable-execution-design.md`), resume via external scheduler (Cloud Scheduler → HTTP resume endpoint).
 
@@ -232,8 +232,8 @@ Deployment-cost knobs operators tune:
 
 | Version | Scope |
 |---|---|
-| **v0.1** | Standalone binary; library-embedded; Cloud Run single-instance; GKE single-instance. SQLite session store. Base `examples/deploy/{gke,cloud-run,standalone,library-embedded}/` starters. |
-| **v0.2** | Postgres session store adapter. Session-ownership handoff (advisory-lock based). Multi-instance GKE deployments (2-N replicas). Attach-mode redirect-based affinity. Helm chart. |
+| **v0.1** | Standalone binary; library-embedded; Cloud Run single-instance; GKE single-instance. Session stores via ADK `session/database`: SQLite (standalone / library / GKE-with-PVC) and **Postgres (Cloud Run — required for durability there; revised 2026-07-25)**. GKE single-instance with SQLite runs as StatefulSet + PVC, not a bare Deployment (a rescheduled pod otherwise loses sessions and falsifies the durability exit criterion). Base `examples/deploy/{gke,cloud-run,standalone,library-embedded}/` starters. |
+| **v0.2** | Session-ownership handoff (advisory-lock based). Multi-instance GKE deployments (2-N replicas; Postgres store). Attach-mode redirect-based affinity. Helm chart. |
 | **v0.3** | Spanner adapter (via community contribution or Google-team direct). Timed-pause scheduler (claim-based). Multi-tenant deployment starter. Attach-mode proxy-based affinity. Custom-Kubernetes-metric HPA guide. |
 | **v0.4+** | Firestore adapter; multi-region active-active (with Spanner); explicit autonomous-loop load balancing; Debian package. |
 
