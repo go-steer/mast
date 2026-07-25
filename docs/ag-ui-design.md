@@ -1,6 +1,6 @@
 # mast AG-UI support: design
 
-**Status:** draft, 2026-07-01. Companion to [`./positioning.md`](./positioning.md) (attach mode remains the mast-native operator transport; AG-UI added as the ecosystem-standard user-facing protocol), [`./a2a-design.md`](./a2a-design.md) (protocol sibling: A2A = agent↔agent, AG-UI = agent↔user, MCP = agent↔tool — the fourth corner of the interop surface), [`./specialists-design.md`](./specialists-design.md) (specialists render into AG-UI as tool-call events uniformly), [`./orchestration-design.md`](./orchestration-design.md) (workload bundles can opt in to AG-UI exposure similar to `a2a.expose`), [`./library-api-design.md`](./library-api-design.md) (`github.com/go-steer/mast/agui` package), [`./deployment-design.md`](./deployment-design.md) (AG-UI endpoint deployment topology; chat-platform bots as sidecar workloads), [`./durable-execution-design.md`](./durable-execution-design.md) (AG-UI interrupt lifecycle maps directly onto mast's durable pause/resume), [`./federation-design.md`](./federation-design.md) (mast can be AG-UI client of other AG-UI servers when useful), [`./observability-design.md`](./observability-design.md) (AG-UI spans + metrics), and [`./config-layout-design.md`](./config-layout-design.md) (`.agents/agui/` if needed). Covers **AG-UI as a protocol integration** — the ecosystem contract mast supports for interoperability with CopilotKit-built UIs, chat-platform bots (Slack / Teams / Discord / Telegram / WhatsApp), and any other AG-UI-compatible client.
+**Status:** draft, 2026-07-01 (updated 2026-07-25 — corrections pass: the interrupt lifecycle + Activity/Reasoning events are **draft AG-UI spec extensions**, explicitly changeable before finalization — building v0.1... v0.2 HITL on them is a deliberate, labeled bet (mitigation: version-pin the community Go SDK, isolate interrupt encoding behind `pkg/agui`); CopilotKit package names corrected to the published `@copilotkit/channels-*` line (`bot-*` names never shipped; naming still in flux); "push notifications" and "reconnect-and-resume-stream" are **mast extensions**, not AG-UI-spec patterns (the spec defines neither a webhook push pattern nor run-reattach semantics); the unverified Bedrock-AgentCore-speaks-AG-UI claim is cut (AgentCore documents an A2A contract); AG-UI moves wholesale to v0.2 per [`./fork-design.md`](./fork-design.md)'s 2026-07-25 re-cut, which also resolves the v0.1-adapter contradiction with [`./federation-design.md`](./federation-design.md)). Companion to [`./positioning.md`](./positioning.md) (attach mode remains the mast-native operator transport; AG-UI added as the ecosystem-standard user-facing protocol), [`./a2a-design.md`](./a2a-design.md) (protocol sibling: A2A = agent↔agent, AG-UI = agent↔user, MCP = agent↔tool — the fourth corner of the interop surface), [`./specialists-design.md`](./specialists-design.md) (specialists render into AG-UI as tool-call events uniformly), [`./orchestration-design.md`](./orchestration-design.md) (workload bundles can opt in to AG-UI exposure similar to `a2a.expose`), [`./library-api-design.md`](./library-api-design.md) (`github.com/go-steer/mast/agui` package), [`./deployment-design.md`](./deployment-design.md) (AG-UI endpoint deployment topology; chat-platform bots as sidecar workloads), [`./durable-execution-design.md`](./durable-execution-design.md) (AG-UI interrupt lifecycle maps directly onto mast's durable pause/resume), [`./federation-design.md`](./federation-design.md) (mast can be AG-UI client of other AG-UI servers when useful), [`./observability-design.md`](./observability-design.md) (AG-UI spans + metrics), and [`./config-layout-design.md`](./config-layout-design.md) (`.agents/agui/` if needed). Covers **AG-UI as a protocol integration** — the ecosystem contract mast supports for interoperability with CopilotKit-built UIs, chat-platform bots (Slack / Teams / Discord / Telegram / WhatsApp), and any other AG-UI-compatible client.
 
 ## Why AG-UI as first-class
 
@@ -8,11 +8,11 @@ The three-cornered interop surface enumerated in [`./mcp-catalog-design.md`](./m
 
 - **CopilotKit-built React applications** (any React app using `@copilotkit/react-core` to embed an agent).
 - **Chat-platform bots** built on CopilotKit's bot SDK — Slack (via CopilotKit + Slack Bolt), Discord, Teams, Telegram, WhatsApp. Ecosystem SDKs handle the platform-specific plumbing; the agent backend just needs to speak AG-UI.
-- **Other AG-UI-compatible clients** (Amazon Bedrock AgentCore natively supports AG-UI; other framework-adjacent clients are landing).
+- **Other AG-UI-compatible clients** (Microsoft Agent Framework's Go integration and Pydantic AI implement the protocol, including the draft interrupt extension; more framework-adjacent clients are landing).
 
 The competitive framing is the same as A2A: *"speaking the standard buys you the ecosystem's velocity; not speaking it means you have to build every integration yourself."* CopilotKit having a first-party Slack bot SDK means an AG-UI-compatible mast gets platform-team incident-triage-in-Slack for free — one of the highest-value integrations for mast's audience.
 
-The four corners:
+The four interop surfaces (framing harmonized 2026-07-25 with [`./mcp-catalog-design.md`](./mcp-catalog-design.md) — "surfaces" is canonical; attach mode is mast's native transport, not a fifth surface or a competing "corner"):
 
 | Direction | Protocol | Doc |
 |---|---|---|
@@ -185,8 +185,8 @@ Pluggable `TokenValidator` interface, shared with the A2A implementation (single
 AG-UI supports long-running runs natively via the streamed-event model — the SSE connection stays open until `RunFinished`. But mast workloads often exceed practical SSE-connection lifetimes (planner running for 20 minutes with an intervening HITL pause). Mast handles this via:
 
 - **Native pause/resume**: HITL interrupts (per protocol) close the stream cleanly via `RunFinished{interrupt}`; client resumes with a new run.
-- **Client disconnect resilience**: if the SSE stream disconnects mid-run for any reason, mast's session persists (per [`./durable-execution-design.md`](./durable-execution-design.md)); client can reconnect via the same `threadID` + `runID` and mast resumes streaming from the last durable event.
-- **Push notifications** (v0.2+): for clients that can't hold a persistent SSE connection (mobile apps, some proxied deployments), mast supports the AG-UI push-notification pattern where mast POSTs events to a client-provided webhook URL.
+- **Client disconnect resilience** *(mast extension — AG-UI defines no run-reattach semantics)*: if the SSE stream disconnects mid-run, mast's session persists (per [`./durable-execution-design.md`](./durable-execution-design.md)); mast allows reconnect via the same `threadID` + `runID` and resumes streaming from the last durable event. Standard AG-UI clients won't know to do this without mast-specific client code; document it as such.
+- **Webhook event push** (v0.2+) *(mast extension — corrected 2026-07-25: there is no "AG-UI push-notification pattern" in the spec; that concept is A2A's)*: for clients that can't hold a persistent SSE connection, mast can POST events to a client-provided webhook URL as a mast-defined extension, clearly flagged as non-portable.
 
 ### Concurrent runs on the same thread
 
@@ -197,7 +197,7 @@ A `threadID` may have multiple in-flight `runID`s (branched exploration, retries
 Mast agents (specialists, planner, workflow nodes) can call *other* AG-UI servers when it makes sense. Rare compared to server-side; the primary AG-UI use case is being called, not calling. But the client side matters for a few scenarios:
 
 - **CopilotKit-hosted agents** that mast wants to invoke as sub-tasks.
-- **Framework peers** (Bedrock AgentCore agent, LangGraph agent hosted by CopilotKit Runtime) that don't yet speak A2A but do speak AG-UI.
+- **Framework peers** (e.g. a LangGraph agent hosted by CopilotKit Runtime) that don't yet speak A2A but do speak AG-UI.
 - **User-driven sub-agent chains** where an AG-UI-user-shaped remote agent is the right composition.
 
 Under [`./federation-design.md`](./federation-design.md), this is another protocol adapter alongside A2A / mast-native / HTTP/RPC. Reference format: `agui://<name>` or `agui://<endpoint-url>[?thread=<threadID>]`.
@@ -212,42 +212,42 @@ CopilotKit (`github.com/CopilotKit/CopilotKit`) is the largest AG-UI ecosystem c
 
 - **React frontend stack** — `@copilotkit/react-core`, `@copilotkit/react-ui`; prebuilt chat surfaces (`CopilotChat`, `CopilotSidebar`, `CopilotPopup`); headless UI for custom rendering.
 - **Runtime server** — the AG-UI server-side implementation for the CopilotKit hosted agent path. Mast doesn't use CopilotKit Runtime (we're the runtime); but we speak the same protocol so CopilotKit clients don't care.
-- **Chat-platform bot SDK** — `@copilotkit/bot` + platform adapters (`@copilotkit/bot-slack`, `@copilotkit/bot-discord`, `@copilotkit/bot-teams`, `@copilotkit/bot-telegram`, `@copilotkit/bot-whatsapp`). Bot connects to any AG-UI backend; the backend just needs to speak AG-UI.
-- **Cross-platform JSX** — `@copilotkit/bot-ui` (or `channels-ui`) renders once, adapts to Slack Block Kit / Discord Components V2 / Telegram HTML per platform.
+- **Chat-platform channels SDK** — published as `@copilotkit/channels` + platform adapters (`@copilotkit/channels-slack` shipped; further platforms in flight) *(corrected 2026-07-25: the `@copilotkit/bot-*` names from earlier drafts never shipped to npm; naming is still in flux — treat the whole package line as pre-stable and re-verify names before any deployment starter is written)*. Bot connects to any AG-UI backend; the backend just needs to speak AG-UI.
+- **Cross-platform JSX** — `@copilotkit/channels-ui` renders once, adapts to Slack Block Kit / Discord Components V2 / Telegram HTML per platform.
 
 For mast, the composition is:
 
 ```
 [Slack workspace]
      ↓
-[@copilotkit/bot-slack] (CopilotKit Slack adapter — Bolt SDK, Socket Mode or HTTP)
+[@copilotkit/channels-slack] (CopilotKit Slack adapter — Bolt SDK, Socket Mode or HTTP)
      ↓
-[@copilotkit/bot] (platform-agnostic bot engine — threads, tool calls, HITL gate)
+[@copilotkit/channels] (platform-agnostic bot engine — threads, tool calls, HITL gate)
      ↓ (AG-UI over HTTP+SSE)
 [mast --workload=incident-triage] (AG-UI server; exposes workload as an AG-UI agent)
      ↓
 [mast planner + specialists + MCP servers + reference graphs + durable execution]
 ```
 
-The bot process (Node.js, running CopilotKit `@copilotkit/bot-*`) is a *sidecar* to mast — could deploy in the same pod, same cluster, or as an external service depending on operator preference. Communication is via AG-UI over standard HTTP. Auth is bearer token; mast's `TokenValidator` handles the check.
+The bot process (Node.js, running CopilotKit `@copilotkit/channels-*`) is a *sidecar* to mast — could deploy in the same pod, same cluster, or as an external service depending on operator preference. Communication is via AG-UI over standard HTTP. Auth is bearer token; mast's `TokenValidator` handles the check.
 
-**OpenTag** (`github.com/CopilotKit/OpenTag`) — the reference Slack bot from the CopilotKit team ("open-source alternative to Claude in Slack"). Shows the wiring pattern end-to-end. Mast operators wanting Slack-as-mast-UX can start from OpenTag's setup and repoint the agent backend at mast's AG-UI endpoint. Two-process deployment: agent (mast in this case) + bot (CopilotKit's `@copilotkit/bot` + Slack adapter).
+**OpenTag** (`github.com/CopilotKit/OpenTag`) — the reference Slack bot from the CopilotKit team ("open-source alternative to Claude in Slack"). Shows the wiring pattern end-to-end. Mast operators wanting Slack-as-mast-UX can start from OpenTag's setup and repoint the agent backend at mast's AG-UI endpoint. Two-process deployment: agent (mast in this case) + bot (CopilotKit's `@copilotkit/channels` + Slack adapter).
 
 ## Slack (and Teams / Discord / Telegram / WhatsApp) via CopilotKit
 
 The chat-platform bot SDK is the highest-value AG-UI-derived capability for mast's audience. Concrete integrations:
 
-### Slack (primary; via `@copilotkit/bot-slack`)
+### Slack (primary; via `@copilotkit/channels-slack`)
 
 - **Socket Mode** (default) — outbound WebSocket only; no public URL needed. Fits GKE deployments behind private ingress.
 - **HTTP mode** — for operators who prefer Slack webhook-based ingress; needs `signingSecret` + public path.
 - Auth via `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN`; mast operators wire these as Kubernetes Secrets.
 - Response routing: DMs conversational; app mentions in-thread; plain replies require another mention. All configurable.
-- Rich rendering via Block Kit (from JSX authored once in `@copilotkit/bot-ui`).
+- Rich rendering via Block Kit (from JSX authored once in `@copilotkit/channels-ui`).
 - HITL: user's Slack response resumes the mast session's paused interrupt. Approval buttons render as Block Kit interactive components.
 - Ships a `mast-slack-bot` deployment starter (v0.2+): `examples/deploy/slack-via-copilotkit/` with Terraform / Kustomize configs + Slack app manifest.
 
-### Teams (via `@copilotkit/bot-teams`)
+### Teams (via CopilotKit channels adapter, when published)
 
 Same shape; Teams-native rendering (Adaptive Cards from JSX). Auth via Microsoft Bot Framework tokens. Deployment starter `examples/deploy/teams-via-copilotkit/`.
 
@@ -276,17 +276,17 @@ CopilotKit's chat-platform bot SDK is open-source (no per-seat cost). Operators 
 | **Memory** ([`./memory-design.md`](./memory-design.md)) | AG-UI `state` field maps to bundle-scoped state-bound reads. AG-UI's `StateDelta` events emit when bundle state changes visible to the workload. |
 | **Library API** ([`./library-api-design.md`](./library-api-design.md)) | `github.com/go-steer/mast/agui` package: `agui.Server` + `agui.Client` + `agui.TokenValidator` (shares interface with A2A). Programmatic exposure via `ServerConfig.AGUI` (analog to `ServerConfig.Attach`). |
 | **Deployment** ([`./deployment-design.md`](./deployment-design.md)) | AG-UI endpoint typically fronted by Ingress + TLS. Chat-platform bots (CopilotKit-based) deploy as sidecars — same pod, same cluster, or external. Deployment starters ship for each. |
-| **MCP catalog** ([`./mcp-catalog-design.md`](./mcp-catalog-design.md)) | Sibling to the three-way surface comparison — the fourth corner (agent↔user protocol). The comparison note in mcp-catalog-design updates to enumerate all four. |
+| **MCP catalog** ([`./mcp-catalog-design.md`](./mcp-catalog-design.md)) | Sibling to the surface comparison — the fourth interop surface (agent↔user protocol); mcp-catalog-design enumerates all four and owns the framing. |
 | **Config layout** ([`./config-layout-design.md`](./config-layout-design.md)) | No new `.agents/agui/` directory required — AG-UI exposure is bundle-level config (`agui.*` fields on workload bundles). |
 
 ## Phasing
 
 | Version | Scope |
 |---|---|
-| **v0.1** | AG-UI server: per-workload endpoints (`agui.expose: true`); RunAgentInput acceptance; event streaming for lifecycle + text messages + tool calls + state; HITL via `RunFinished{interrupt}` + resume. Auth via shared `TokenValidator` (JWT, bearer, Google IAM). Basic client (`invoke_remote_agent("agui://...")` federation adapter). No push notifications; SSE-only. |
-| **v0.2** | Activity events (workflow-shape visibility); reasoning events (opt-in); push notifications for long-running runs; `/agui/agents.json` aggregation endpoint. `examples/deploy/slack-via-copilotkit/` deployment starter. Client-disconnect + reconnect resumption. |
+| **v0.1** | **Nothing ships** (re-cut 2026-07-25 per [`./fork-design.md`](./fork-design.md) — AG-UI server + client both move to v0.2; this also resolves the earlier contradiction where this doc put an `agui://` federation adapter in v0.1 while [`./federation-design.md`](./federation-design.md) said A2A-only). Design-time obligation only: keep the attach protocol + durable pause/resume shaped so the v0.2 AG-UI mapping stays a projection, not a rework. |
+| **v0.2** | AG-UI server: per-workload endpoints (`agui.expose: true`); RunAgentInput acceptance; event streaming for lifecycle + text messages + tool calls + state; HITL via the draft interrupt extension (`RunFinished{outcome: interrupt}` + resume) — SDK version-pinned, encoding isolated in `pkg/agui`. Auth via shared `TokenValidator`. Basic client (`invoke_remote_agent("agui://...")` federation adapter). SSE-only. Then: activity events (workflow-shape visibility); reasoning events (opt-in); mast-extension webhook push; `/agui/agents.json`; `examples/deploy/slack-via-copilotkit/` starter **once the channels-* packages stabilize on npm**; client-disconnect + reconnect resumption (mast extension). |
 | **v0.3** | Multi-thread concurrency support (opt-in per bundle); per-tenant AG-UI policy; observability + bundle-learning integration (AG-UI patterns feed learning). `examples/deploy/{teams,discord,telegram,whatsapp}-via-copilotkit/` starters. CopilotKit React reference example (`examples/copilotkit-react/`) showing a full stack. |
-| **v0.4+** | AG-UI protocol version negotiation once the spec matures. Bedrock AgentCore native runtime deployment starter. Cross-runtime AG-UI federation (mast AG-UI server called by Python-ADK AG-UI client). |
+| **v0.4+** | AG-UI protocol version negotiation once the spec matures (interrupts/activity/reasoning finalized). Cross-runtime AG-UI federation (mast AG-UI server called by Python-ADK AG-UI client). |
 
 ## Open questions
 
@@ -298,14 +298,14 @@ CopilotKit's chat-platform bot SDK is open-source (no per-seat cost). Operators 
 6. **Tool declarations from AG-UI clients.** `RunAgentInput.tools` lets clients declare tools they expose *to* the agent (frontend tool calls). Mast can support this (client-side tools count as another tool class the planner can invoke); need to reconcile with bundle `tool_catalog` allowlist. Bias: client-declared tools require `agui.accept_client_tools: true` opt-in per bundle; intersected with bundle allowlist same as skills.
 7. **State delta authorship.** AG-UI `StateDelta` events publish state changes to the client. Which mast state keys emit? Bias: bundle declares `agui.state_projection: [key1, key2]` — explicit allowlist of state keys projected to the client; default empty (nothing projected without explicit config).
 8. **Aggregation endpoint content model.** `/agui/agents.json` is mast-defined; format-shape TBD. Bias: JSON array of `{name, endpoint, description, input_schema, auth: {scopes}}` per exposed workload. Keep it simple; align with CopilotKit conventions once they publish one.
-9. **CopilotKit-hosted vs. self-hosted-bot deployment guidance.** CopilotKit sells a managed platform; self-hosting the `@copilotkit/bot` process alongside mast is also viable. Bias: document both; recommend self-hosted for platform teams with existing GKE/Cloud Run infra; recommend managed for teams without.
+9. **CopilotKit-hosted vs. self-hosted-bot deployment guidance.** CopilotKit sells a managed platform; self-hosting the `@copilotkit/channels` bot process alongside mast is also viable. Bias: document both; recommend self-hosted for platform teams with existing GKE/Cloud Run infra; recommend managed for teams without.
 10. **AG-UI-native workload authoring UX.** Some workloads are natively chat-shaped and want UI hints in their bundle (starter messages, quick-reply chips, avatar). AG-UI protocol supports these via `Custom` events. Bias: pass through as-is; provide helper functions in `pkg/agui/` for common patterns; don't add mast-specific extensions.
 
 ## Out of scope
 
 - **Reimplementing the AG-UI Go SDK.** We use the community SDK (`github.com/ag-ui-protocol/ag-ui/sdks/community/go`) as-is; contribute upstream when we hit bugs; wrap in `pkg/agui/` for mast-specific integration.
 - **Owning CopilotKit's frontend.** We don't ship a React library. CopilotKit's `@copilotkit/react-core` + `react-ui` are the ecosystem's React answer; mast is the backend.
-- **Owning the chat-platform bots.** We don't ship a Slack bot. CopilotKit's `@copilotkit/bot-*` packages are the ecosystem's chat-platform answer; mast provides the deployment starters + auth wiring.
+- **Owning the chat-platform bots.** We don't ship a Slack bot. CopilotKit's `@copilotkit/channels-*` packages are the ecosystem's chat-platform answer; mast provides the deployment starters + auth wiring.
 - **AG-UI protocol design contributions beyond feedback.** Spec evolution happens at ag-ui-protocol/ag-ui; mast follows.
 - **A mast-branded AG-UI client.** We already have mast-web (mast-native); CopilotKit React apps are the AG-UI-native alternative. No third client.
 - **Replacing attach mode with AG-UI.** Attach mode's richer feature set (workflow-node visualization, planner turn detail, federation cross-instance spans, snapshot/replay controls) doesn't fit AG-UI's user-facing scope. Both coexist; different consumer surfaces.
