@@ -76,6 +76,12 @@ type Config struct {
 
 	// Logger is the structured logger. Defaults to slog.Default().
 	Logger *slog.Logger
+
+	// Metrics, when non-nil, is served at GET /metrics (Prometheus
+	// scrape). Unauthenticated by design — scrape configs don't carry
+	// the inject bearer token, and the payload is aggregate counters
+	// only. Nil leaves the route unregistered.
+	Metrics http.Handler
 }
 
 // Server is the HTTP inject endpoint.
@@ -102,6 +108,9 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /", s.handleHealth)
 	mux.HandleFunc("POST /inject", s.handleInject)
 	mux.HandleFunc("POST /resume", s.handleResume)
+	if cfg.Metrics != nil {
+		mux.Handle("GET /metrics", cfg.Metrics)
+	}
 	s.srv = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           mux,
