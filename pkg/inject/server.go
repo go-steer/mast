@@ -58,6 +58,26 @@ type ResumeRequest struct {
 // nil the /resume route responds 404.
 type ResumeHandler func(ctx context.Context, req ResumeRequest) error
 
+// AbortRequest asks the daemon to mark a session aborted.
+//
+// Semantics are those of pkg/session's Store.Abort — a durable
+// operator-abort marker appended to the session's event log, not
+// preemption of in-flight work. See that method's doc for the full
+// contract (docs/durable-execution-design.md, "Operator-facing
+// surface"; engine-level terminal abort is v0.2).
+type AbortRequest struct {
+	// SessionID identifies the session to mark aborted.
+	SessionID string `json:"session_id"`
+
+	// Reason is the operator-supplied reason, recorded in the abort
+	// marker and surfaced by `mast sessions list/show`.
+	Reason string `json:"reason,omitempty"`
+}
+
+// AbortHandler applies an abort request. Optional; when nil the /abort
+// route responds 404.
+type AbortHandler func(ctx context.Context, req AbortRequest) error
+
 // Config configures the inject server.
 type Config struct {
 	// Listen is the bind address, e.g. ":7777".
@@ -73,6 +93,9 @@ type Config struct {
 
 	// ResumeHandler is called for each valid resume POST. Optional.
 	ResumeHandler ResumeHandler
+
+	// AbortHandler is called for each valid abort POST. Optional.
+	AbortHandler AbortHandler
 
 	// Logger is the structured logger. Defaults to slog.Default().
 	Logger *slog.Logger
@@ -102,6 +125,7 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /", s.handleHealth)
 	mux.HandleFunc("POST /inject", s.handleInject)
 	mux.HandleFunc("POST /resume", s.handleResume)
+	mux.HandleFunc("POST /abort", s.handleAbort)
 	s.srv = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           mux,
@@ -191,6 +215,38 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = fmt.Fprintln(w, "resumed")
+}
+
+func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
+	if !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.cfg.AbortHandler == nil {
+		http.Error(w, "abort not enabled", http.StatusNotFound)
+		return
+	}
+	defer r.Body.Close()
+
+	var req AbortRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		http.Error(w, "bad request: session_id is required", http.StatusBadRequest)
+		return
+	}
+
+	s.logger.Info("abort received", "session", req.SessionID, "reason", req.Reason)
+
+	if err := s.cfg.AbortHandler(r.Context(), req); err != nil {
+		s.logger.Error("abort failed", "error", err.Error())
+		http.Error(w, "abort failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = fmt.Fprintln(w, "aborted")
 }
 
 func (s *Server) authOK(r *http.Request) bool {

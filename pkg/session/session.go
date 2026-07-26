@@ -1,0 +1,351 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package session is the operator-facing read/inspect surface over
+// ADK's session store (docs/durable-execution-design.md, "Operator-facing
+// surface"). It answers the questions durability raises for an operator:
+// which sessions exist, which are paused waiting for input, on what
+// interrupt, and with what response schema.
+//
+// The pause model it inspects is the one verified in spike 2
+// (docs/spike-findings.md): a paused session carries an event with a
+// non-nil RequestedInput; the matching resume is a later user turn
+// whose FunctionResponse.ID equals that RequestedInput's InterruptID.
+// A RequestedInput with no such later FunctionResponse is therefore a
+// *pending* interrupt, and a session with pending interrupts is paused.
+//
+// State labels are derived strictly from what the store can prove:
+//
+//   - StatePaused:  at least one pending (unresolved) RequestedInput.
+//   - StateAborted: an operator abort marker is present in session state
+//     (written by Store.Abort; see its doc for the semantics contract).
+//   - StateIdle:    everything else. The store cannot distinguish "a turn
+//     is in flight right now" from "the last turn completed" — that is
+//     in-process runner state, not event-log state — so this package
+//     deliberately does not claim "running" or "completed".
+package session
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"sort"
+	"time"
+
+	"github.com/glebarez/sqlite"
+	"github.com/google/jsonschema-go/jsonschema"
+	"google.golang.org/genai"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
+
+	adksession "google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/session/database"
+)
+
+// Session states derived from the event log. See the package doc for
+// why there is no "running" or "completed".
+const (
+	StatePaused  = "paused"
+	StateAborted = "aborted"
+	StateIdle    = "idle"
+)
+
+// Session-state keys written by Store.Abort. Unprefixed, so they land
+// in per-session state (not app:/user: scope) and survive in the same
+// store the runner reads.
+const (
+	abortReasonKey = "mast_abort_reason"
+	abortTimeKey   = "mast_abort_time"
+)
+
+// ErrNotFound reports that no session with the requested ID exists in
+// the store (under the store's app name).
+var ErrNotFound = errors.New("session not found")
+
+// ErrAlreadyAborted reports that an abort marker is already present.
+var ErrAlreadyAborted = errors.New("session already aborted")
+
+// PendingInput is a RequestedInput interrupt that has not been resolved
+// by a later matching FunctionResponse. It carries everything an
+// operator needs to script a resume.
+type PendingInput struct {
+	// InterruptID is the resume correlation key: the resume turn's
+	// FunctionResponse.ID must equal it (spike-2 verified contract).
+	InterruptID string `json:"interrupt_id"`
+	// Message is the human-readable prompt from the pausing node.
+	Message string `json:"message,omitempty"`
+	// Author is the agent that raised the interrupt.
+	Author string `json:"author,omitempty"`
+	// RaisedAt is the timestamp of the pausing event.
+	RaisedAt time.Time `json:"raised_at"`
+	// ResponseSchema, when non-nil, is the JSON schema the resume
+	// response payload must conform to.
+	ResponseSchema *jsonschema.Schema `json:"response_schema,omitempty"`
+	// Payload is optional context the pausing node attached.
+	Payload any `json:"payload,omitempty"`
+}
+
+// Summary is the list-view projection of one session.
+type Summary struct {
+	ID            string    `json:"id"`
+	AppName       string    `json:"app_name"`
+	UserID        string    `json:"user_id"`
+	LastEventTime time.Time `json:"last_event_time"`
+	State         string    `json:"state"`
+	// PendingInterruptIDs are the unresolved interrupt IDs (empty
+	// unless State is StatePaused).
+	PendingInterruptIDs []string `json:"pending_interrupt_ids,omitempty"`
+	// AbortReason is set when State is StateAborted.
+	AbortReason string `json:"abort_reason,omitempty"`
+}
+
+// Detail is the show-view projection: Summary plus event count and the
+// full pending-interrupt records.
+type Detail struct {
+	Summary
+	EventCount int            `json:"event_count"`
+	Pending    []PendingInput `json:"pending,omitempty"`
+}
+
+// Store wraps an ADK session.Service with the operator-facing
+// projections. It works over any Service implementation — the SQLite /
+// Postgres database service and the in-memory service alike.
+type Store struct {
+	svc     adksession.Service
+	appName string
+}
+
+// NewStore wraps an already-open session service (the path the daemon
+// uses: same service instance the runner writes through).
+func NewStore(svc adksession.Service, appName string) *Store {
+	return &Store{svc: svc, appName: appName}
+}
+
+// Open opens the SQLite session DB at path read-through (the path the
+// CLI uses: `mast sessions list/show --session-db=...` against a DB a
+// daemon owns or owned). The file must already exist — opening a
+// missing path would silently create an empty store and report zero
+// sessions for what is actually an operator typo.
+func Open(path, appName string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("session db %q: %w", path, err)
+	}
+	// Silence GORM's default trace logger: ADK's service probes
+	// app/user state rows that legitimately may not exist, and the
+	// resulting "record not found" traces would pollute CLI output.
+	svc, err := database.NewSessionService(sqlite.Open(path),
+		&gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	if err != nil {
+		return nil, fmt.Errorf("open session db %q: %w", path, err)
+	}
+	if err := database.AutoMigrate(svc); err != nil {
+		return nil, fmt.Errorf("migrate session db %q: %w", path, err)
+	}
+	return NewStore(svc, appName), nil
+}
+
+// List returns summaries for all sessions under the store's app name,
+// most recent last-event first. userID narrows to one user; empty
+// lists all users.
+//
+// Note: ADK's Service.List returns sessions without events, and paused
+// state is an event-log property, so List issues one Get per session.
+// Fine at operator-CLI scale; a paged/indexed path is a v0.2+ concern
+// alongside the eventlog query surface (docs/fork-design.md P1.3).
+func (s *Store) List(ctx context.Context, userID string) ([]Summary, error) {
+	resp, err := s.svc.List(ctx, &adksession.ListRequest{AppName: s.appName, UserID: userID})
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	summaries := make([]Summary, 0, len(resp.Sessions))
+	for _, sess := range resp.Sessions {
+		d, err := s.Get(ctx, sess.UserID(), sess.ID())
+		if err != nil {
+			return nil, fmt.Errorf("inspect session %q: %w", sess.ID(), err)
+		}
+		summaries = append(summaries, d.Summary)
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		if !summaries[i].LastEventTime.Equal(summaries[j].LastEventTime) {
+			return summaries[i].LastEventTime.After(summaries[j].LastEventTime)
+		}
+		return summaries[i].ID < summaries[j].ID
+	})
+	return summaries, nil
+}
+
+// Get returns the detail view for one session. An empty userID is
+// resolved by scanning List for the session ID (the CLI knows session
+// IDs, not the daemon-internal user ID).
+func (s *Store) Get(ctx context.Context, userID, sessionID string) (*Detail, error) {
+	if userID == "" {
+		var err error
+		userID, err = s.findUserID(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	resp, err := s.svc.Get(ctx, &adksession.GetRequest{
+		AppName:   s.appName,
+		UserID:    userID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get session %q: %w", sessionID, err)
+	}
+	return project(resp.Session), nil
+}
+
+// Abort appends a durable operator-abort marker to the session.
+//
+// Semantics contract (minimal and honest — read before relying on it):
+//
+//   - Abort is a marker, not preemption. It does NOT cancel a turn that
+//     is in flight in some daemon process; it appends an event whose
+//     StateDelta records the abort reason and time in session state.
+//   - ADK's workflow reconstruction does not read the marker: as far as
+//     the engine is concerned, a pending RequestedInput is still
+//     resumable. It is mast's surface that treats the marker as
+//     terminal — List/Get report StateAborted with pending interrupts
+//     cleared, and the daemon's /resume handler refuses aborted
+//     sessions (cmd/mast). A real engine-level terminal state is the
+//     v0.2 programmatic-pause/abort work
+//     (docs/durable-execution-design.md, Phasing).
+//   - Idempotency: a second Abort returns ErrAlreadyAborted rather than
+//     stacking markers.
+func (s *Store) Abort(ctx context.Context, userID, sessionID, reason string) error {
+	if userID == "" {
+		var err error
+		userID, err = s.findUserID(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+	}
+	resp, err := s.svc.Get(ctx, &adksession.GetRequest{
+		AppName:   s.appName,
+		UserID:    userID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("get session %q: %w", sessionID, err)
+	}
+	if _, err := resp.Session.State().Get(abortReasonKey); err == nil {
+		return fmt.Errorf("session %q: %w", sessionID, ErrAlreadyAborted)
+	}
+
+	ev := adksession.NewEvent(ctx, "operator-abort")
+	ev.Author = "operator"
+	ev.Content = genai.NewContentFromText(
+		fmt.Sprintf("session aborted by operator: %s", reason), genai.RoleUser)
+	ev.Actions.StateDelta[abortReasonKey] = reason
+	ev.Actions.StateDelta[abortTimeKey] = ev.Timestamp.UTC().Format(time.RFC3339Nano)
+	if err := s.svc.AppendEvent(ctx, resp.Session, ev); err != nil {
+		return fmt.Errorf("append abort event to session %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+// findUserID resolves the user ID owning sessionID by scanning the
+// app's session list. Session IDs are the operator-visible handle
+// (e.g. "incident-<uid>"); the user ID is a daemon-internal constant
+// the operator should not need to know.
+func (s *Store) findUserID(ctx context.Context, sessionID string) (string, error) {
+	resp, err := s.svc.List(ctx, &adksession.ListRequest{AppName: s.appName})
+	if err != nil {
+		return "", fmt.Errorf("list sessions: %w", err)
+	}
+	for _, sess := range resp.Sessions {
+		if sess.ID() == sessionID {
+			return sess.UserID(), nil
+		}
+	}
+	return "", fmt.Errorf("session %q (app %q): %w", sessionID, s.appName, ErrNotFound)
+}
+
+// project computes the Detail view from a fully-loaded session.
+func project(sess adksession.Session) *Detail {
+	d := &Detail{
+		Summary: Summary{
+			ID:            sess.ID(),
+			AppName:       sess.AppName(),
+			UserID:        sess.UserID(),
+			LastEventTime: sess.LastUpdateTime(),
+			State:         StateIdle,
+		},
+		EventCount: sess.Events().Len(),
+		Pending:    scanPending(sess.Events()),
+	}
+
+	if reason, err := sess.State().Get(abortReasonKey); err == nil {
+		// Abort trumps paused: the marker is terminal on mast's
+		// surface, so pending interrupts are reported resolved-by-abort.
+		d.State = StateAborted
+		d.AbortReason = fmt.Sprintf("%v", reason)
+		d.Pending = nil
+		return d
+	}
+
+	if len(d.Pending) > 0 {
+		d.State = StatePaused
+		for _, p := range d.Pending {
+			d.PendingInterruptIDs = append(d.PendingInterruptIDs, p.InterruptID)
+		}
+	}
+	return d
+}
+
+// scanPending walks the event log in order and returns the
+// RequestedInput interrupts with no later matching resolution. A
+// resolution is any later event carrying a FunctionResponse part whose
+// ID equals the pending InterruptID — exactly the resume wire shape
+// verified in spike 2 (docs/spike-findings.md, Q2).
+func scanPending(events adksession.Events) []PendingInput {
+	var order []string
+	byID := make(map[string]PendingInput)
+	for ev := range events.All() {
+		if ri := ev.RequestedInput; ri != nil && ri.InterruptID != "" {
+			if _, seen := byID[ri.InterruptID]; !seen {
+				order = append(order, ri.InterruptID)
+			}
+			byID[ri.InterruptID] = PendingInput{
+				InterruptID:    ri.InterruptID,
+				Message:        ri.Message,
+				Author:         ev.Author,
+				RaisedAt:       ev.Timestamp,
+				ResponseSchema: ri.ResponseSchema,
+				Payload:        ri.Payload,
+			}
+		}
+		if ev.Content == nil {
+			continue
+		}
+		for _, part := range ev.Content.Parts {
+			if part == nil || part.FunctionResponse == nil {
+				continue
+			}
+			if _, ok := byID[part.FunctionResponse.ID]; ok {
+				delete(byID, part.FunctionResponse.ID)
+			}
+		}
+	}
+	var pending []PendingInput
+	for _, id := range order {
+		if p, ok := byID[id]; ok {
+			pending = append(pending, p)
+			delete(byID, id) // an ID re-raised after resolution appears in order twice
+		}
+	}
+	return pending
+}
