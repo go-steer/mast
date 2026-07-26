@@ -1,0 +1,47 @@
+/* Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* mast site typography + accent. Skeleton scope: Inter/JetBrains Mono
+ * (the go-steer site convention, same as core-agent's docs/site) plus
+ * a Go-cyan accent ramp. Both Starlight themes stay enabled; the full
+ * visual pass is Phase-4 work. */
+
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+
+:root {
+  --sl-font: 'Inter Variable', system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, sans-serif;
+  --sl-font-system-mono: 'JetBrains Mono Variable', ui-monospace,
+    SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Content measure + type scale */
+  --sl-content-width: 55rem;
+  --sl-line-height: 1.7;
+}
+
+/* Accent ramp (Go cyan) — dark theme */
+:root {
+  --sl-color-accent-low: #00323f;
+  --sl-color-accent: #00add8;
+  --sl-color-accent-high: #9adfef;
+}
+
+/* Accent ramp — light theme */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e6f7fb;
+  --sl-color-accent: #0092b8;
+  --sl-color-accent-high: #00546b;
+}
