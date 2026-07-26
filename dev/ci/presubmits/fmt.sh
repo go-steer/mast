@@ -22,7 +22,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
-offenders="$(gofmt -l cmd pkg examples)"
+offenders="$(gofmt -l ./*.go cmd internal pkg examples)"
 if [[ -n "${offenders}" ]]; then
   echo "FAIL: the following files are not gofmt-clean:" >&2
   sed 's/^/  - /' <<<"${offenders}" >&2
@@ -30,4 +30,4 @@ if [[ -n "${offenders}" ]]; then
   exit 1
 fi
 
-echo "OK: cmd pkg examples are gofmt-clean."
+echo "OK: root, cmd, internal, pkg, examples are gofmt-clean."
