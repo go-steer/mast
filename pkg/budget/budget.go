@@ -47,7 +47,18 @@ var ErrExceeded = errors.New("budget exceeded")
 type Limits struct {
 	MaxCostUSD float64
 	MaxTokens  int64
-	RatePer1K  float64 // flat USD per 1K total tokens (spike pricing model)
+
+	// MaxTurns caps the number of model calls in the session.
+	//
+	// Vocabulary: mast counts one "turn" per model call — the same
+	// unit as the meter's calls counter (one streamed event carrying
+	// UsageMetadata). This matches docs/orchestration-design.md's
+	// "budget.max_turns remains mast-side turn counting (ADK has no
+	// turn cap)": a Task specialist that loops through five model
+	// calls before finish_task has spent five turns, not one.
+	MaxTurns int
+
+	RatePer1K float64 // flat USD per 1K total tokens (spike pricing model)
 }
 
 // Meter accumulates usage for one session.
@@ -77,6 +88,9 @@ func (m *Meter) Observe(ev *session.Event) error {
 	m.tokens += int64(ev.UsageMetadata.TotalTokenCount)
 	m.cost = float64(m.tokens) / 1000 * m.limits.RatePer1K
 
+	if m.limits.MaxTurns > 0 && m.calls > m.limits.MaxTurns {
+		return fmt.Errorf("%w: %d model calls (turns) > cap %d", ErrExceeded, m.calls, m.limits.MaxTurns)
+	}
 	if m.limits.MaxTokens > 0 && m.tokens > m.limits.MaxTokens {
 		return fmt.Errorf("%w: %d tokens > cap %d", ErrExceeded, m.tokens, m.limits.MaxTokens)
 	}
