@@ -1,0 +1,23 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Replaces the watcher container's --cluster-name arg with the real
+# cluster identifier (surfaces on every InjectPayload's `cluster` field).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-event-watcher
+spec:
+  template:
+    spec:
+      containers:
+        - name: watcher
+          args:
+            - "--daemon-url=http://mast.mast-triage.svc.cluster.local:7777"
+            - "--token-env=WATCHER_TOKEN"
+            - "--mode=per-incident"
+            - "--cluster-name=REPLACE_ME"
+            - "--dedup-window=5m"
+            - "--in-cluster"
+            - "--metrics-addr=:9090"
+            - "--log-level=info"

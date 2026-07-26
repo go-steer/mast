@@ -1,0 +1,29 @@
+# Build artifacts + host state that shouldn't ship into the image.
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editor / IDE / OS scratch.
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local secrets.
+*.token
+.env
+.env.local
+credentials.json
+application_default_credentials.json
+
+# Docker-internal.
+Dockerfile
+.dockerignore
+
+# Documentation not needed at runtime.
+README.md

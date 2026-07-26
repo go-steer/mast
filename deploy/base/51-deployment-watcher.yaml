@@ -1,0 +1,74 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Originally derived from
+# go-steer/core-agent@c5efbb9e:examples/gke-troubleshoot-agent/deploy/base/51-deployment-watcher.yaml.
+#
+# Points at the mast Service instead of core-agent. No --owner
+# (single-bearer; no X-Asserted-Caller proxy identity). Sidecar image
+# reused unchanged — schema of InjectPayload is stable between projects.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-event-watcher
+  namespace: mast-triage
+  labels:
+    app.kubernetes.io/name: k8s-event-watcher
+    app.kubernetes.io/component: sidecar
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-event-watcher
+      app.kubernetes.io/component: sidecar
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k8s-event-watcher
+        app.kubernetes.io/component: sidecar
+    spec:
+      serviceAccountName: k8s-event-watcher
+      containers:
+        - name: watcher
+          image: ghcr.io/go-steer/k8s-event-watcher:2.6.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--daemon-url=http://mast.mast-triage.svc.cluster.local:7777"
+            - "--token-env=WATCHER_TOKEN"
+            - "--mode=per-incident"
+            - "--cluster-name=local"
+            - "--dedup-window=5m"
+            - "--in-cluster"
+            - "--metrics-addr=:9090"
+            - "--log-level=info"
+          env:
+            - name: WATCHER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-event-watcher-token
+                  key: token
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 20
