@@ -35,6 +35,8 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -52,6 +54,7 @@ import (
 	"github.com/go-steer/mast/pkg/inject"
 	mastmcp "github.com/go-steer/mast/pkg/mcp"
 	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/router"
 	mastsession "github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
@@ -81,7 +84,8 @@ func serve() {
 		dispatchMode = flag.String("dispatch", "coordinator", "dispatch shape: `coordinator` (spike-1 SubAgents pattern) or `graph` (workflow-graph LLM-as-router)")
 		modelName    = flag.String("model", "echo", "model to use: `echo` (fake, for smoke) or a Gemini model id like `gemini-2.5-flash`")
 		listen       = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
-		sessionDB    = flag.String("session-db", "", "path to a SQLite session DB; empty = in-memory sessions (no durability)")
+		sessionDB    = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
+		sessionDrv   = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
 		logLevel     = flag.String("log-level", "info", "log level: debug|info|warn|error")
 	)
 	flag.Parse()
@@ -131,7 +135,7 @@ func serve() {
 		"sub_agents", len(root.SubAgents()),
 	)
 
-	sessionSvc, err := buildSessionService(*sessionDB, logger)
+	sessionSvc, err := buildSessionService(*sessionDrv, *sessionDB, logger)
 	if err != nil {
 		logger.Error("failed to construct session service", "error", err.Error())
 		os.Exit(1)
@@ -347,6 +351,24 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 		}
 	}
 
+	// Planner dispatch (docs/orchestration-design.md "The planner",
+	// v0.1 scaffold): when the bundle enables the planner, the root is
+	// the supervisor-body planner with the bundle's specialists as its
+	// invoke_specialist roster, and --dispatch is ignored. Budget is
+	// unchanged — the planner's model calls stream past runTurn's
+	// meter like any other agent's.
+	if bundle.Planner.Enabled {
+		logger.Info("planner enabled; --dispatch ignored", "dispatch_flag", dispatch)
+		a, err := planner.NewRoot(planner.Config{
+			Name:        bundle.Name,
+			Description: bundle.Description,
+			Model:       llm,
+			Specialists: byName,
+			Order:       bundle.Specialists,
+		})
+		return a, &bundle, err
+	}
+
 	if dispatch == "graph" {
 		if classifier == nil {
 			return nil, nil, fmt.Errorf("--dispatch=graph requires a SingleTurn classifier specialist in the roster")
@@ -500,19 +522,49 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters 
 	return nil
 }
 
-func buildSessionService(path string, logger *slog.Logger) (session.Service, error) {
-	if path == "" {
+// sessionDialector maps --session-db-driver onto a GORM dialector for
+// ADK's session/database service. SQLite and Postgres are the same
+// one-call surface (docs/deployment-design.md, 2026-07-25 revision):
+// database.NewSessionService takes either dialector identically. For
+// sqlite the DSN is a file path; for postgres it is a DSN or
+// postgres:// URL (Cloud Run's required shape — no persistent disk).
+func sessionDialector(driver, dsn string) (gorm.Dialector, error) {
+	switch driver {
+	case "sqlite":
+		return sqlite.Open(dsn), nil
+	case "postgres":
+		return postgres.Open(dsn), nil
+	default:
+		return nil, fmt.Errorf("unknown --session-db-driver %q (want `sqlite` or `postgres`)", driver)
+	}
+}
+
+func buildSessionService(driver, dsn string, logger *slog.Logger) (session.Service, error) {
+	if dsn == "" {
+		if driver != "sqlite" {
+			return nil, fmt.Errorf("--session-db-driver=%s requires --session-db (a DSN); empty --session-db means in-memory sessions", driver)
+		}
 		logger.Warn("no --session-db; sessions are in-memory and will NOT survive restart")
 		return session.InMemoryService(), nil
 	}
-	svc, err := database.NewSessionService(sqlite.Open(path))
+	dial, err := sessionDialector(driver, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open session db %q: %w", path, err)
+		return nil, err
+	}
+	svc, err := database.NewSessionService(dial)
+	if err != nil {
+		return nil, fmt.Errorf("open session db (driver %s): %w", driver, err)
 	}
 	if err := database.AutoMigrate(svc); err != nil {
-		return nil, fmt.Errorf("migrate session db %q: %w", path, err)
+		return nil, fmt.Errorf("migrate session db (driver %s): %w", driver, err)
 	}
-	logger.Info("session db opened", "path", path)
+	// Deliberately not logging the DSN: a Postgres DSN carries
+	// credentials. The sqlite path is safe and useful for operators.
+	if driver == "sqlite" {
+		logger.Info("session db opened", "driver", driver, "path", dsn)
+	} else {
+		logger.Info("session db opened", "driver", driver)
+	}
 	return svc, nil
 }
 
@@ -525,6 +577,14 @@ func logEvent(logger *slog.Logger, event *session.Event, sessionID string) {
 			"session", sessionID,
 			"interrupt_id", event.RequestedInput.InterruptID,
 			"message", event.RequestedInput.Message,
+		)
+	} else if len(event.LongRunningToolIDs) > 0 {
+		// Tool-level pause (e.g. the planner's request_operator_input):
+		// the pending function-call ID is the interrupt ID an operator
+		// passes to POST /resume.
+		logger.Info("HITL PAUSE (long-running tool)",
+			"session", sessionID,
+			"interrupt_ids", event.LongRunningToolIDs,
 		)
 	}
 	summary := "(no text)"
