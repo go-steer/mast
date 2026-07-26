@@ -296,3 +296,73 @@ func TestBudgetEnvOverrideEmptyStringIsUnset(t *testing.T) {
 		t.Fatalf("file value must be preserved when override is empty, got %v", got)
 	}
 }
+
+// writeA2AAgent writes a minimal valid .agents/a2a registration.
+func writeA2AAgent(t *testing.T, dir, filename, name string) {
+	t.Helper()
+	body := fmt.Sprintf("name: %s\nagent_card_url: https://%s.example.com\nauth:\n  type: bearer\n  token_env: TEST_TOKEN\n", name, name)
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte(body), 0o644); err != nil {
+		t.Fatalf("write a2a agent: %v", err)
+	}
+}
+
+func TestLoadRootA2AAgents(t *testing.T) {
+	root := tempDir(t)
+	populateRoot(t, root, "incident-triage", "classifier")
+	a2aDir := mkdir(t, filepath.Join(root, "a2a"))
+	writeA2AAgent(t, a2aDir, "external-triage.yaml", "external-triage")
+	writeA2AAgent(t, a2aDir, "scanner.yml", "scanner")
+
+	cfg, err := LoadRoot(Root{Dir: root, Source: SourceProject}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.A2A) != 2 {
+		t.Fatalf("want 2 a2a agents, got %v", sortedKeys(cfg.A2A))
+	}
+	if cfg.A2A["external-triage"].Auth.TokenEnv != "TEST_TOKEN" {
+		t.Fatalf("a2a agent fields not preserved: %+v", cfg.A2A["external-triage"])
+	}
+	list := cfg.A2AList()
+	if len(list) != 2 || list[0].Name != "external-triage" || list[1].Name != "scanner" {
+		t.Fatalf("A2AList() = %+v, want name-sorted registrations", list)
+	}
+}
+
+func TestLoadRootA2AMissingDirIsEmpty(t *testing.T) {
+	root := tempDir(t)
+	populateRoot(t, root, "incident-triage", "classifier")
+	cfg, err := LoadRoot(Root{Dir: root, Source: SourceProject}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.A2A) != 0 {
+		t.Fatalf("want no a2a agents, got %v", sortedKeys(cfg.A2A))
+	}
+}
+
+func TestA2ANameCollisionFatal(t *testing.T) {
+	root := tempDir(t)
+	populateRoot(t, root, "incident-triage", "classifier")
+	a2aDir := mkdir(t, filepath.Join(root, "a2a"))
+	writeA2AAgent(t, a2aDir, "a.yaml", "external-triage")
+	writeA2AAgent(t, a2aDir, "b.yaml", "external-triage")
+
+	_, err := LoadRoot(Root{Dir: root, Source: SourceProject}, testLogger())
+	if err == nil || !strings.Contains(err.Error(), "collision") {
+		t.Fatalf("want fatal a2a name collision, got %v", err)
+	}
+}
+
+func TestA2AInvalidConfigFatal(t *testing.T) {
+	root := tempDir(t)
+	populateRoot(t, root, "incident-triage", "classifier")
+	a2aDir := mkdir(t, filepath.Join(root, "a2a"))
+	if err := os.WriteFile(filepath.Join(a2aDir, "bad.yaml"), []byte("name: bad\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadRoot(Root{Dir: root, Source: SourceProject}, testLogger())
+	if err == nil || !strings.Contains(err.Error(), "agent_card_url or endpoint") {
+		t.Fatalf("want fatal a2a validation error, got %v", err)
+	}
+}
