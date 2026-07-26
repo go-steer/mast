@@ -86,14 +86,14 @@ Match the syntax-comment style for the file type. The `LICENSE` file at the repo
 
 If you encounter an internal codename — or are tempted to invent one — call it **Antigravity**. The string "Jetski" must not appear in any committed artifact (docs, PR titles/bodies, commit messages, code, file names). This is an internal naming decision; respect it.
 
-### 4. Hugo site docs alongside README/DESIGN changes
+### 4. Docs-site pages alongside README/DESIGN changes — NOW ACTIVE
 
-When the code fork lands and this repo grows a `docs/site/` Hugo surface (per [`docs/fork-design.md`](./docs/fork-design.md)), user-visible changes must update both:
+**Active as of 2026-07-26:** `docs/site/` exists. The stack is **Astro + Starlight** — core-agent's actual `docs/site` convention; this rule's earlier "Hugo" wording (and fork-design's "Hugo + Docsy" references) were stale and were corrected the same day. User-visible changes must update both:
 
 - `README.md` and/or `docs/*.md` (design surface)
-- `docs/site/content/docs/...` (user-facing Hugo content)
+- `docs/site/src/content/docs/...` (user-facing Astro/Starlight content)
 
-Walk both when shipping a feature. Today, before the site exists, this rule is moot.
+Walk both when shipping a feature. Build the site locally with `dev/tools/docs-site.sh build` (Node 22+; see `docs/site/README.md`) — CI runs the identical build via `.github/workflows/ci-docs.yml`. The site build is deliberately not a Go presubmit.
 
 ### 5. UAT / scratch files under `/tmp`, never `$HOME`
 
@@ -158,7 +158,7 @@ Phase 1 is in progress; the repo has code. Current shape (per [`docs/fork-design
 - `pkg/agent/`, `pkg/providers/`, `pkg/attach/`, etc. — runtime
 - `dev/ci/presubmits/` + `dev/tools/` — same convention as core-agent
 - `.github/workflows/{ci,ci-docs,docs,release}.yml` — same convention as mast-web / core-agent
-- `docs/site/` — Hugo + Docsy mirror of core-agent's setup
+- `docs/site/` — Astro + Starlight mirror of core-agent's setup *(corrected 2026-07-26 — the earlier "Hugo + Docsy" reference was stale; skeleton shipped, deploy deferred until the repo is public)*
 
 Working rules while Phase 1 is in flight: build + vet + gofmt + test green before pushing (CI runs exactly that per `.github/workflows/ci.yml`); every new source file gets the Apache header (house rule #2); one workstream per PR, stacked on `main` or the current integration branch; consult `docs/spike-findings.md` before touching graph/HITL/budget code — the resume contract and allowlist semantics there are verified behavior, not suggestions.
 

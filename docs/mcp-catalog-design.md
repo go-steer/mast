@@ -174,7 +174,7 @@ Not the same as merging arbitrary MCP servers — the mast catalog is a *curatio
 
 1. **Cataloging exclusivity.** If two competing MCP servers exist for the same target (two `gke-mcp-server` implementations), do we catalog both, pick one, or catalog neither? Bias: pick one, based on maintainer activity + operator feedback; document the alternative in the catalog page's notes.
 2. **Version-pinning cataloged servers.** Wiring templates could pin to a specific MCP server version — safer against breakage, riskier against staleness. Bias: pin at minor version (`>=1.2,<1.3`); operator overrides for their environment.
-3. **In-tree vs. external catalog docs.** Wiring templates + reference workloads live in `mast` repo; is the catalog page in the mast Hugo site or in a separate `mast-catalog` docs site? Bias: mast Hugo site — the catalog is core to the mast experience.
+3. **In-tree vs. external catalog docs.** Wiring templates + reference workloads live in `mast` repo; is the catalog page in the mast docs site (Astro + Starlight, `docs/site/` — "Hugo" was stale here, corrected 2026-07-26) or in a separate `mast-catalog` docs site? Bias: mast docs site — the catalog is core to the mast experience.
 4. **Credential-injection helper.** Do we ship a small helper for the common credential-resolution patterns (Workload Identity, IAM Roles for Service Accounts, Vault agent)? Bias: yes as `pkg/mcp/credentials/` in v0.2; small surface, big usability win.
 5. **Test coverage for wiring templates.** How do we validate that a template works? Bias: `examples/mcp/<server-name>/smoke-test.sh` per server; runs in CI against a stub MCP server that returns canned responses; not a full integration test.
 

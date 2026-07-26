@@ -1,0 +1,89 @@
+---
+title: Workload bundle schema
+description: The v0.1 workload.yaml fields mast actually parses, including the budget block and its env-var overrides.
+sidebar:
+  order: 1
+---
+
+A **workload bundle** is the declarative operational profile for a mast
+deployment: one YAML file naming the specialists, tool catalog, budget,
+HITL policy, and edge trigger for one named workload. Bundles live at
+`.agents/workloads/<name>.yaml` (see [.agents/ discovery](/reference/agents-discovery/))
+or in a workload directory passed to `--workload=<path>`.
+
+This page documents the **v0.1 subset** — exactly the fields the shipped
+loader parses. The canonical full schema lives in
+[`docs/orchestration-design.md`](https://github.com/go-steer/mast/blob/main/docs/orchestration-design.md);
+fields beyond this subset (planner review knobs, isolation scope, bundle
+learning) land with their subsystems.
+
+## Example
+
+```yaml
+name: gke-triage
+description: Autonomous triage of GKE cluster incidents.
+mode: single_session
+
+tool_catalog:
+  mcp:
+    - server: gke
+
+specialists:
+  - triage-classifier
+  - CrashLoopBackOff
+  - ImagePullBackOff
+  - _fallback
+
+budget:
+  max_wallclock_seconds: 300
+  max_turns: 20
+  max_cost_usd: 5.00
+
+hitl:
+  require_approval: true
+
+planner:
+  enabled: false
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer
+```
+
+## Fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Required. Unique per deployment; used as the `workload` metric label. |
+| `description` | string | Human-readable; used in operator UIs and logs. |
+| `mode` | string | `single_session` (default) or `multi_session`. Multi-session is vocabulary-only in v0.1 — declared intent, honored when the multi-session substrate lands (v0.2). |
+| `tool_catalog.mcp[].server` | string | MCP server references, by name from the deployment's `mcp.json`. Intersected against per-specialist tool allowlists at dispatch time. |
+| `specialists[]` | list of strings | Specialist names; resolve against the config root's `specialists/*.tmpl`. A roster with a SingleTurn classifier plus a `_fallback` Task specialist enables graph dispatch. |
+| `budget` | block | See below. |
+| `hitl.require_approval` | bool | When true, every specialist result pauses on a durable RequestInput interrupt until an operator resumes with a verdict. |
+| `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
+| `edge_trigger.http.path`, `.auth` | strings | Informational in v0.1 — the inject server declares its routes globally; per-workload path prefixes come later. |
+
+## Budget fields
+
+| Field | Meaning |
+|---|---|
+| `budget.max_turns` | Cap on **model calls** per session. One "turn" = one model call — a Task specialist looping through five model calls before `finish_task` has spent five turns, not one. Absent/0 = unlimited. |
+| `budget.max_wallclock_seconds` | Bounds each whole turn with a context timeout. |
+| `budget.max_cost_usd` | Session-cumulative cost ceiling, derived by the budget meter from streamed usage metadata (flat per-1K-token spike pricing in v0.1). |
+
+Crossing a ceiling cancels the run context mid-turn, aborts in-flight
+model/tool work, and increments `mast_budget_trips_total`. Budgets compose:
+workload-level and per-specialist budgets both apply, tightest cap wins.
+
+### Env-var overrides
+
+Scalar budget values can be overridden process-wide (applies to every
+bundle loaded in the invocation, overrides file values unconditionally;
+set-but-unparseable is a fatal load error):
+
+```
+budget.max_cost_usd          → MAST_BUDGET_MAX_COST_USD
+budget.max_wallclock_seconds → MAST_BUDGET_MAX_WALLCLOCK_SECONDS
+```
