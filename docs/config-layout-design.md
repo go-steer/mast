@@ -1,6 +1,6 @@
 # mast config layout: design
 
-**Status:** draft, 2026-07-01. Companion to [`./specialists-design.md`](./specialists-design.md) (`.agents/specialists/*.tmpl`), [`./orchestration-design.md`](./orchestration-design.md) (`.agents/workloads/*.yaml`), [`./mcp-catalog-design.md`](./mcp-catalog-design.md) (`.agents/mcp/*.json`), [`./library-api-design.md`](./library-api-design.md) (config precedence surface), and [`./deployment-design.md`](./deployment-design.md) (config injection patterns per topology). Small doc that ties together the `.agents/` file layout across subsystems and defines precedence rules, naming conflicts, hot-reload semantics, and env-var overrides.
+**Status:** draft, 2026-07-01 (updated 2026-07-26 — reconciled with the shipped v0.1 `pkg/config`, which implements the discovery + loading rules and resolved several ambiguities this draft left open; the dated annotations below record where the code's behavior is now the contract). Companion to [`./specialists-design.md`](./specialists-design.md) (`.agents/specialists/*.tmpl`), [`./orchestration-design.md`](./orchestration-design.md) (`.agents/workloads/*.yaml`), [`./mcp-catalog-design.md`](./mcp-catalog-design.md) (`.agents/mcp/*.json`), [`./library-api-design.md`](./library-api-design.md) (config precedence surface), and [`./deployment-design.md`](./deployment-design.md) (config injection patterns per topology). Small doc that ties together the `.agents/` file layout across subsystems and defines precedence rules, naming conflicts, hot-reload semantics, and env-var overrides.
 
 ## Why this needs its own doc
 
@@ -65,8 +65,8 @@ Directory names are canonical — mast looks for `specialists/`, `workloads/`, `
 
 **Merging strategy across locations:** last-write-wins is *not* the default. Locations are consulted independently:
 
-- If `$MAST_CONFIG_DIR` is set: only that location is used. Others ignored.
-- Otherwise: the *first* location that exists (`./`, `~`, `/etc`) is used exclusively. No merging across locations.
+- If `$MAST_CONFIG_DIR` is set: only that location is used. Others ignored. *(Resolved 2026-07-26, shipped `pkg/config`: a set-but-missing `$MAST_CONFIG_DIR` is a **fatal error** — the loader never silently falls through past an explicit override.)*
+- Otherwise: the *first* location that exists (`./`, `~`, `/etc`) is used exclusively. No merging across locations. *(Resolved 2026-07-26: "exists" means *is a directory* — a plain FILE at a candidate `.agents` path counts as absent and discovery moves on; only the `$MAST_CONFIG_DIR` case treats a non-directory as fatal. And because selection is exclusive, an existing-but-empty higher-priority location shadows a populated lower-priority one; `pkg/config` mitigates the footgun by logging loudly which root was selected, why, and which existing lower-priority locations it shadows.)*
 
 Rationale: cross-location merging invites subtle bugs (specialist X in `~/.config/...` overrides specialist X in `./.agents/`? or vice versa?) and hides discoverability. One location per invocation, deterministically chosen.
 
@@ -85,9 +85,9 @@ Each subsystem directory is scanned per its own rules:
 | `remote/` | `*.yaml` (also `.yml`) | No; flat directory |
 | `skills/` | `*.skill/` (directories); `SKILL.md` inside each; also `registry.yaml` at top level | No skill-directory recursion; one skill per bundle dir |
 
-**Flat, not recursive.** Nested subdirectories are ignored (allows operators to organize source repos with subdirs like `specialists/archive/` for retired-but-kept files).
+**Flat, not recursive.** Nested subdirectories are ignored (allows operators to organize source repos with subdirs like `specialists/archive/` for retired-but-kept files). *(Resolved 2026-07-26, shipped `pkg/config`: a **missing** subsystem subdirectory yields zero entries — it is not an error. An `.agents/` root with no `workloads/` dir simply loads no workloads.)*
 
-**Filename-derived names.** For specialists and workloads, the filename (minus extension) is the default name; explicit `name:` in the file overrides. For MCP config, `name:` is required in the file (JSON doesn't have a natural filename→name mapping).
+**Filename-derived names.** For specialists, the filename (minus extension) is the default name; explicit `name:` in the file overrides. For MCP config, `name:` is required in the file (JSON doesn't have a natural filename→name mapping). *(Corrected 2026-07-26: this paragraph previously extended the filename-derived default to workloads too — the shipped loader does not. Workload bundle names come from the file's **required** `name:` field; a bundle without `name:` is a fatal load-time error, and the filename is kept only for diagnostics. Specialists retain the filename-derived default.)*
 
 ## Name collisions
 
@@ -120,6 +120,8 @@ Any config value can be overridden via env var following a convention:
 - Config key `deployment.instance_id` → env var `MAST_DEPLOYMENT_INSTANCE_ID`.
 
 Uppercase; dots replaced with underscores; `MAST_` prefix.
+
+*(Resolved 2026-07-26, shipped `pkg/config` — three semantics the draft left open: (1) an env override set to the **empty string** is treated as unset, same as `$MAST_CONFIG_DIR`; (2) a set-but-unparseable or **negative** value is a fatal load-time error, not a clamp or a warning; (3) env overrides are **process-wide** — a `MAST_BUDGET_*` override applies to every workload bundle loaded in the invocation, not to any single bundle.)*
 
 **Sensitive values (credentials, tokens) should always be env-supplied**, not file-configured — never put secrets in `.agents/*` or `mast.yaml`. The credential resolvers (per [`./mcp-catalog-design.md`](./mcp-catalog-design.md)) reference env vars for token retrieval.
 
@@ -167,7 +169,7 @@ Hot-reload semantics per file class:
 Config validation happens at load time — not at session start.
 
 - **Specialists** load-validate: YAML frontmatter parses; required fields present; `mode` value is legal; referenced tool names exist in the registry.
-- **Workloads** load-validate: YAML parses; required fields present; `task_class` is legal; `specialists[]` references exist in the specialist registry; `tool_catalog.mcp[].server` references exist in the MCP config; `budget` fields have legal ranges.
+- **Workloads** load-validate: YAML parses; required fields present; `task_class` is legal; `specialists[]` references exist in the specialist registry; `tool_catalog.mcp[].server` references exist in the MCP config; `budget` fields have legal ranges. *(Amended 2026-07-26: in the shipped v0.1 `pkg/config`, `tool_catalog.mcp[].server` reference validation is **deferred to the MCP catalog loader** — `pkg/config` validates the specialist roster cross-file but carries MCP server refs through unresolved, since the MCP catalog ([`./mcp-catalog-design.md`](./mcp-catalog-design.md)) is the subsystem that knows which servers exist.)*
 - **MCP config** load-validate: JSON parses; `name` present; `transport` is legal; `command` (for stdio transport) or `url` (for HTTP transport) present.
 - **Runtime config** load-validate: YAML parses; unknown top-level keys warn (not error, to allow forward-compat evolution); values that must be one-of-enum enforce.
 
