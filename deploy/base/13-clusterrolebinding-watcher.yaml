@@ -1,0 +1,17 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Originally derived from
+# go-steer/core-agent@c5efbb9e:examples/gke-troubleshoot-agent/deploy/base/13-clusterrolebinding-watcher.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-event-watcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-event-watcher
+subjects:
+  - kind: ServiceAccount
+    name: k8s-event-watcher
+    namespace: mast-triage
