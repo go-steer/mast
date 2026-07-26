@@ -1,0 +1,74 @@
+---
+title: mast
+description: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads. Not a Claude Code competitor.
+template: doc
+tableOfContents: false
+banner:
+  content: |
+    v0.1.0-pre — pre-release. APIs are experimental except the five stable-from-v0.1 packages; see the <a href="/roadmap/">roadmap</a>.
+hero:
+  title: mast
+  tagline: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads. Not a Claude Code competitor.
+  actions:
+    - text: Install
+      link: /install/
+      icon: right-arrow
+      variant: primary
+    - text: Quickstart
+      link: /quickstart/unattended-triage/
+      icon: right-arrow
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/go-steer/mast
+      icon: github
+      variant: minimal
+---
+
+import { CardGrid, LinkCard, Card } from '@astrojs/starlight/components';
+
+## Is mast for you? Thirty seconds of honesty
+
+<CardGrid>
+  <Card title="You want a coding assistant" icon="laptop">
+    Use **Claude Code** (or Antigravity, or Cursor). Developer-laptop
+    interactive coding is downstream of model + IDE investment mast does not
+    compete with. This isn't that.
+  </Card>
+  <Card title="You want one simple agent loop in Go" icon="seti:go">
+    Use **raw ADK v2** — no governance, no durability, smallest possible
+    surface. Come back when the loop must survive restarts, needs budget or
+    permission governance, needs provider switching, or stops having a human
+    watching it.
+  </Card>
+  <Card title="You're a platform team" icon="rocket">
+    Agents in Cloud Run, GKE, scheduled jobs, or compiled into your own
+    services — incident triage, runbook automation, monitoring. **You're
+    home.** Start with the quickstarts below.
+  </Card>
+</CardGrid>
+
+## The four pillars
+
+1. **Unattended.** Runs without a human watching: HTTP-triggered workloads, budget ceilings, HITL pauses that wait for an operator instead of failing.
+2. **Library-embedded.** Composes as a Go library inside larger services — with a [tested slim-embed guarantee](/quickstart/library-embed/): pay for what you import.
+3. **Multi-provider.** Same config switches models without code changes (v0.1 ships Gemini and an offline echo model; the provider surface is one of the stable-from-v0.1 interfaces).
+4. **Durable.** Sessions live in SQLite or Postgres and survive process death — a paused approval outlives `kill -9` and resumes in a fresh process.
+
+## Two ways to run it
+
+<CardGrid>
+  <LinkCard
+    title="Run the daemon"
+    description="mast --workload=... serves an inject endpoint, dispatches to specialists, pauses for approvals, exports Prometheus metrics."
+    href="/quickstart/unattended-triage/"
+  />
+  <LinkCard
+    title="Embed the library"
+    description="mast.RunWorkload for the batteries-included path, or compose the slim pkg-level slice directly."
+    href="/quickstart/library-embed/"
+  />
+</CardGrid>
+
+mast is the lean sibling of [core-agent](https://github.com/go-steer/core-agent)
+— same org, different job. The full design corpus lives in the repo under
+[`docs/`](https://github.com/go-steer/mast/tree/main/docs).
