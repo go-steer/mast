@@ -86,6 +86,26 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestLoad_PlannerEnabled(t *testing.T) {
+	path := writeBundle(t, "b.yaml", "name: x\nspecialists: [a]\nplanner:\n  enabled: true\n")
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !b.Planner.Enabled {
+		t.Error("Planner.Enabled = false, want true")
+	}
+	// And the default stays off.
+	path = writeBundle(t, "c.yaml", "name: x\nspecialists: [a]\n")
+	b, err = workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if b.Planner.Enabled {
+		t.Error("Planner.Enabled = true by default, want false")
+	}
+}
+
 func TestLoad_DefaultsMode(t *testing.T) {
 	path := writeBundle(t, "b.yaml", "name: x\nspecialists: [a]\n")
 	b, err := workload.Load(path)

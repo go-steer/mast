@@ -26,6 +26,15 @@ budget:
 hitl:
   require_approval: true
 
+# Supervisor-body planner (docs/orchestration-design.md "The planner",
+# v0.1 scaffold). When enabled, the root agent becomes a Task-mode
+# planner whose invoke_specialist roster is the specialists list above,
+# and --dispatch is ignored. run_shape_* vocabulary tools are declared
+# but return not_implemented until v0.2 wires the reference-graph
+# library.
+# planner:
+#   enabled: true
+
 edge_trigger:
   http:
     path: /inject
