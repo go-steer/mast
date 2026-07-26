@@ -1,0 +1,122 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Originally derived from
+# go-steer/core-agent@c5efbb9e:examples/gke-troubleshoot-agent/deploy/base/50-deployment-daemon.yaml.
+#
+# Simplified for the mast spike vs. the core-agent recipe:
+#   - No session-db PVC or --session-db* args (single-session substrate).
+#   - No users.json Secret + initContainer shuffle (single-bearer auth
+#     via MAST_INJECT_TOKEN env from a Secret).
+#   - No X-Asserted-Caller / proxy-identity / admin_identities config.
+#   - No -c ambient-config plumbing — mast reads --workload=<dir>
+#     directly; no config.json in the ConfigMap.
+#   - No record_plan writable /plans emptyDir — mast has no plan artifact
+#     writer yet.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mast
+  namespace: mast-triage
+  labels:
+    app.kubernetes.io/name: mast
+    app.kubernetes.io/component: daemon
+  annotations:
+    apphub.cloud.google.com/functional-type: "AGENT"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mast
+      app.kubernetes.io/component: daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mast
+        app.kubernetes.io/component: daemon
+    spec:
+      serviceAccountName: mast-daemon
+      # Standard-cluster gate — uncomment to pin onto GKE-metadata-server
+      # nodes. Required for WIF on Standard; REJECTED on Autopilot
+      # (Autopilot ships the metadata server universally). Leaving
+      # commented is the Autopilot-safe default; overlay operators on
+      # Standard uncomment it.
+      #
+      # nodeSelector:
+      #   iam.gke.io/gke-metadata-server-enabled: "true"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: mast
+          image: ghcr.io/go-steer/mast:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--workload=/workspace/workload"
+            - "--model=gemini-2.5-flash"
+            - "--listen=:7777"
+            - "--log-level=info"
+          env:
+            - name: MAST_INJECT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mast-inject-token
+                  key: token
+          envFrom:
+            # GCP project + location for the Vertex AI client. Expected
+            # keys: GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION. Set via
+            # the generated `mast-gcp-env` ConfigMap in the base
+            # kustomization; overlays override the values.
+            - configMapRef:
+                name: mast-gcp-env
+          ports:
+            - name: inject
+              containerPort: 7777
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: workload
+              mountPath: /workspace/workload
+              readOnly: true
+          readinessProbe:
+            # HTTP probe on GET / (mast's inject server serves 200 on
+            # the health path unauthenticated) — safe to poll from the
+            # kubelet without a bearer token.
+            httpGet:
+              path: /
+              port: inject
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: inject
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        # The workload dir (workload.yaml + mcp.json + specialists/*.tmpl)
+        # is projected from a flat ConfigMap; ConfigMap keys can't
+        # contain "/", so the generator flattens paths with "_" and
+        # items:.path reconstitutes the tree.
+        - name: workload
+          configMap:
+            name: mast-workload
+            items:
+              - key: workload.yaml
+                path: workload.yaml
+              - key: mcp.json
+                path: mcp.json
+              - key: specialists_triage-classifier.tmpl
+                path: specialists/triage-classifier.tmpl
+              - key: specialists_ImagePullBackOff.tmpl
+                path: specialists/ImagePullBackOff.tmpl
+              - key: specialists__fallback.tmpl
+                path: specialists/_fallback.tmpl

@@ -1,0 +1,26 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Anchor workload for the mast v0.1 GKE triage demo.
+# See docs (in the mast repo): triage-demo-plan.md.
+
+name: gke-triage
+description: Autonomous triage of GKE cluster incidents surfaced by k8s-event-watcher.
+mode: single_session
+
+tool_catalog:
+  mcp:
+    - server: gke
+
+specialists:
+  - triage-classifier
+  - ImagePullBackOff
+  - _fallback
+
+budget:
+  max_wallclock_seconds: 300
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer

@@ -14,15 +14,15 @@ This file is mirrored verbatim to [`CLAUDE.md`](./CLAUDE.md) so tools that look 
 
 See [`docs/fork-design.md`](./docs/fork-design.md) for the rebuild-lean-core mechanics, naming, sync discipline, and resolved decisions.
 
-**What you can do here today:**
+**What you can do here today (Phase 1 in progress since 2026-07-26):**
 
 - Read + improve the design corpus under [`docs/`](./docs/).
-- Open PRs that refine the positioning, fork mechanics, or specialists design.
+- Ship Go code for Phase-1 workstreams (lean core, bucket-3 subsystems, examples) — `cmd/mast/` + `pkg/` landed with the P1.1 bootstrap. Follow the design doc for the subsystem you touch; `docs/adk-v2-usage.md` is the substrate reference.
 - Cross-reference between docs and to the sibling repos (core-agent and mast-web).
 
-**What you cannot do here today:**
+**What you cannot do here yet:**
 
-- Ship Go code that depends on mast's runtime (it doesn't exist yet). For runtime changes that anticipate landing in mast, open a PR against [`core-agent`](https://github.com/go-steer/core-agent) and reference the relevant `docs/` design here.
+- **Port adapter packages from core-agent (P1.3 / bucket 2).** The ports gate on core-agent's three code cleanup milestones closing (see the revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)) — porting earlier means porting code core-agent is actively restructuring. Runtime changes that belong in core-agent still go to [`core-agent`](https://github.com/go-steer/core-agent) first.
 
 ---
 
@@ -135,7 +135,9 @@ Body: a short paragraph or two on *why*. The diff describes *what*. Avoid traili
 
 ## How to contribute pre-fork
 
-The repo accepts **docs PRs only** until the fork executes. Typical pre-fork PR shapes:
+*(Historical note: this section governed the docs-only period, which ended 2026-07-26 when the P1.1 bootstrap landed under the revised trigger. Docs-PR conventions below still apply to design-doc changes.)*
+
+Typical design-doc PR shapes:
 
 1. **Refining a design doc** — clarifying language, adding context, capturing a resolved decision in the cross-reference table. Most common; low-friction.
 2. **Adding a new design doc** — for a subsystem the existing three don't cover. Add it under `docs/<topic>-design.md`, update `docs/README.md`'s reading order + cross-reference table.
@@ -148,9 +150,9 @@ The repo accepts **docs PRs only** until the fork executes. Typical pre-fork PR 
 
 ---
 
-## How to contribute post-fork (placeholder)
+## How to contribute post-fork (active as of 2026-07-26)
 
-Filled in when phase 1 of the fork lands and this repo grows code. Expected shape (per [`docs/fork-design.md`](./docs/fork-design.md)):
+Phase 1 is in progress; the repo has code. Current shape (per [`docs/fork-design.md`](./docs/fork-design.md)):
 
 - `cmd/mast/` — the binary
 - `pkg/agent/`, `pkg/providers/`, `pkg/attach/`, etc. — runtime
@@ -158,7 +160,7 @@ Filled in when phase 1 of the fork lands and this repo grows code. Expected shap
 - `.github/workflows/{ci,ci-docs,docs,release}.yml` — same convention as mast-web / core-agent
 - `docs/site/` — Hugo + Docsy mirror of core-agent's setup
 
-When that arrives, this section grows real instructions.
+Working rules while Phase 1 is in flight: build + vet + gofmt + test green before pushing (CI runs exactly that per `.github/workflows/ci.yml`); every new source file gets the Apache header (house rule #2); one workstream per PR, stacked on `main` or the current integration branch; consult `docs/spike-findings.md` before touching graph/HITL/budget code — the resume contract and allowlist semantics there are verified behavior, not suggestions.
 
 ---
 

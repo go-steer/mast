@@ -2,7 +2,7 @@
 
 The agent-infrastructure substrate for **unattended, library-embedded, multi-provider** workloads. Lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent).
 
-> **Status: pre-fork.** This repo currently holds the design corpus and roadmap; the code lives in [`core-agent`](https://github.com/go-steer/core-agent) until the fork executes (per [`docs/fork-design.md`](./docs/fork-design.md)'s trigger conditions). See [`docs/README.md`](./docs/README.md) for the reading order.
+> **Status: Phase 1 in progress (since 2026-07-26).** The design corpus lives under [`docs/`](./docs/README.md); the code rebuild has begun — the spike-validated prototype graduated in P1.1 (`cmd/mast/`, `pkg/`, GKE triage example, CI). Adapter ports from [`core-agent`](https://github.com/go-steer/core-agent) land when its code-cleanup milestones close (revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)).
 
 ## What `mast` is
 
