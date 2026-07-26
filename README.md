@@ -26,7 +26,7 @@ The agent-infrastructure substrate for **unattended, library-embedded, multi-pro
 
 ## Contributing pre-fork
 
-Right now this repo accepts **docs PRs only**. Substantive design changes welcome; code lands here when the fork executes (the trigger condition is documented in [`docs/fork-design.md`](./docs/fork-design.md) — paraphrased: after core-agent issues #158-#161 and the shared-memory stack #13-#15 land in core-agent).
+Right now this repo accepts **docs PRs only**. Substantive design changes welcome; code lands here when the fork executes (the trigger condition is documented in [`docs/fork-design.md`](./docs/fork-design.md), revised 2026-07-26 — paraphrased: the rebuild work starts immediately; only the adapter ports wait on core-agent's code cleanup milestones closing).
 
 For code-level changes that anticipate landing in mast post-fork, open the PR against [`core-agent`](https://github.com/go-steer/core-agent) and reference the relevant `docs/` design here.
 

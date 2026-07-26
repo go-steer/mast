@@ -10,12 +10,9 @@ This file is mirrored verbatim to [`CLAUDE.md`](./CLAUDE.md) so tools that look 
 
 **`mast`** is the agent-infrastructure substrate for unattended, library-embedded, multi-provider workloads — the platform-agent product designed as a lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent).
 
-**Right now this repo is design-only.** The code lives in `core-agent` until the fork executes, per the trigger condition in [`docs/fork-design.md`](./docs/fork-design.md):
+**Right now this repo is design-only.** The code lives in `core-agent` (and the pre-fork `mast-prototype` spike repo) until the fork executes. Per the trigger condition in [`docs/fork-design.md`](./docs/fork-design.md), revised 2026-07-26: Phase 1's rebuild work (lean core + mast-native subsystems) starts immediately; only the adapter ports (P1.3) wait, on core-agent's three code cleanup milestones (*Correctness & durability*, *Security hardening*, *Substrate & API structure*) closing.
 
-1. Issues #158-#161 land in core-agent (bash search-gate, watchdog→model routing, `--task=debug` profile extensions, gemini-3.5-flash probe).
-2. The shared-memory stack (core-agent PRs #13/14/15) lands.
-
-When both are done, phase 1 of the fork begins — see [`docs/fork-design.md`](./docs/fork-design.md) for the hard-fork-then-prune mechanics, naming, sync discipline, and resolved decisions.
+See [`docs/fork-design.md`](./docs/fork-design.md) for the rebuild-lean-core mechanics, naming, sync discipline, and resolved decisions.
 
 **What you can do here today:**
 
