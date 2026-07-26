@@ -19,6 +19,7 @@ specialists:
 
 budget:
   max_wallclock_seconds: 300
+  # max_turns: 20  # cap on model calls ("turns") per session; absent/0 = unlimited
 
 # Change-safety-gate stand-in (spike 2): every specialist result pauses
 # for operator approval via a durable RequestInput interrupt.
