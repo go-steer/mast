@@ -49,6 +49,7 @@ import (
 	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/inject"
 	mastmcp "github.com/go-steer/mast/pkg/mcp"
+	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/router"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
@@ -81,6 +82,23 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Env-gated OTel trace export: a no-op unless OTEL_EXPORTER_OTLP_*
+	// endpoints are set. mast opens no spans of its own in v0.1 — ADK
+	// v2's runner emits the span tree; this only exports it.
+	otelShutdown, otelEnabled, err := observability.SetupOTel(ctx)
+	if err != nil {
+		logger.Error("failed to configure OTel trace export", "error", err.Error())
+		os.Exit(1)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = otelShutdown(flushCtx)
+	}()
+	if otelEnabled {
+		logger.Info("OTel trace export enabled", "endpoint_source", "OTEL_EXPORTER_OTLP_* env")
+	}
 
 	llm, err := buildModel(ctx, *modelName)
 	if err != nil {
@@ -117,11 +135,21 @@ func main() {
 
 	meters := newMeterPool(bundle, *modelName)
 
+	// Fixed metric registry (pkg/observability owns every family name;
+	// nothing here can mint new ones). Single-workload process in v0.1,
+	// so the workload label is resolved once.
+	obs := observability.New()
+	workloadName := "(none)"
+	if bundle != nil {
+		workloadName = bundle.Name
+	}
+	obs.Prime(workloadName)
+
 	handler := func(reqCtx context.Context, p envelope.InjectPayload) error {
-		return dispatch(reqCtx, r, logger, meters, bundle, p)
+		return dispatch(reqCtx, r, logger, meters, obs, workloadName, bundle, p)
 	}
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
-		return resume(reqCtx, r, logger, meters, req)
+		return resume(reqCtx, r, logger, meters, obs, workloadName, req)
 	}
 
 	srv, err := inject.New(inject.Config{
@@ -130,6 +158,7 @@ func main() {
 		Handler:       handler,
 		ResumeHandler: resumeHandler,
 		Logger:        logger,
+		Metrics:       obs.Handler(),
 	})
 	if err != nil {
 		logger.Error("failed to construct inject server", "error", err.Error())
@@ -315,7 +344,7 @@ func (mp *meterPool) meter(sessionID string) *budget.Meter {
 	return m
 }
 
-func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, bundle *workload.Bundle, p envelope.InjectPayload) error {
+func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, obs *observability.Registry, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal inject payload: %w", err)
@@ -327,14 +356,14 @@ func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters
 		defer cancel()
 	}
 	msg := genai.NewContentFromText(fmt.Sprintf("INJECT %s", string(body)), genai.RoleUser)
-	return runTurn(ctx, r, logger, meters, sessionIDFor(p), msg, "inject:"+p.Reason)
+	return runTurn(ctx, r, logger, meters, obs, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
 }
 
 // resume feeds an operator's approval verdict back into a paused
 // session. The runner treats a user turn carrying a FunctionResponse
 // whose ID matches a pending InterruptID as a resume (see adk/v2
 // runner buildResumeResponses).
-func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, req inject.ResumeRequest) error {
+func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, obs *observability.Registry, workloadName string, req inject.ResumeRequest) error {
 	msg := &genai.Content{
 		Role: genai.RoleUser,
 		Parts: []*genai.Part{genai.NewPartFromFunctionResponse("adk_request_input", map[string]any{
@@ -342,10 +371,11 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *
 		})},
 	}
 	msg.Parts[0].FunctionResponse.ID = req.InterruptID
-	return runTurn(ctx, r, logger, meters, req.SessionID, msg, "resume:"+req.InterruptID)
+	obs.HITLResume(workloadName)
+	return runTurn(ctx, r, logger, meters, obs, workloadName, req.SessionID, msg, "resume:"+req.InterruptID)
 }
 
-func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, sessionID string, msg *genai.Content, label string) error {
+func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, obs *observability.Registry, workloadName, sessionID string, msg *genai.Content, label string) error {
 	// Budget enforcement point: the meter folds UsageMetadata from
 	// each streamed event; crossing a ceiling cancels the run context,
 	// aborting any in-flight model/tool work.
@@ -353,16 +383,27 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters 
 	defer cancel()
 	meter := meters.meter(sessionID)
 
+	// Export the turn's cost delta whichever way the turn ends. The
+	// meter's session-cumulative cost is authoritative (pricing lives
+	// in pkg/budget); the counter only ever sees per-turn deltas.
+	_, costBefore, _ := meter.Snapshot()
+	defer func() {
+		_, costAfter, _ := meter.Snapshot()
+		obs.AddCost(workloadName, costAfter-costBefore)
+	}()
+
 	events := 0
 	for event, err := range r.Run(ctx, defaultUserID, sessionID, msg, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeNone,
 	}) {
 		if err != nil {
 			logger.Error("runner emitted error", "turn", label, "session", sessionID, "error", err.Error(), "events_before_error", events)
+			obs.TurnComplete(workloadName, observability.OutcomeError)
 			return err
 		}
 		events++
 		logEvent(logger, event, sessionID)
+		obs.Observe(event, workloadName)
 		if berr := meter.Observe(event); berr != nil {
 			tokens, cost, calls := meter.Snapshot()
 			logger.Error("BUDGET EXCEEDED — aborting session turn",
@@ -371,12 +412,15 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters 
 				"error", berr.Error(),
 			)
 			cancel()
+			obs.BudgetTrip(workloadName)
+			obs.TurnComplete(workloadName, observability.OutcomeBudgetExceeded)
 			return berr
 		}
 	}
 	tokens, cost, calls := meter.Snapshot()
 	logger.Info("turn complete", "turn", label, "session", sessionID, "events", events,
 		"session_tokens", tokens, "session_cost_usd", fmt.Sprintf("%.4f", cost), "session_model_calls", calls)
+	obs.TurnComplete(workloadName, observability.OutcomeOK)
 	return nil
 }
 
@@ -428,6 +472,7 @@ func logEvent(logger *slog.Logger, event *session.Event, sessionID string) {
 		}
 	}
 	attrs := []any{
+		"session", sessionID,
 		"author", event.Author,
 		"branch", event.Branch,
 		"summary", summary,
