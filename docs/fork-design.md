@@ -65,7 +65,7 @@ These need answers before phase 1; deferring them creates rework.
 | ADK dependency | **Keep, and adopt v2 from day one.** No concrete pain; provides known working code. v2's graph engine, durable HITL, and agent modes are load-bearing for mast's positioning (see [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) and [`./specialists-design.md`](./specialists-design.md)). Revisit replacement only if a specific bug or limitation surfaces. | Replacing `google.golang.org/adk/v2` would be 2-3 months of careful work (tool-call correlation, parallel function calls, streaming delta protocols, content-part ordering rules — all the fiddly translation ADK does between Gemini and Anthropic semantics). v2 makes that even less appealing by delivering the graph scheduler, durable HITL, and agent modes we would otherwise own. Version disposition: the lean core (bucket 1) is written fresh against v2; adapter ports (bucket 2) migrate v1→v2 at port time. No v1→v2 migration diff persists in mast's history. See "Recommended approach" and "Sync discipline" for the follow-on implications. Owning ADK's job is a separate decision that needs its own trigger. |
 | Backward-compat surface | None (clean break) | Existing consumers consume the original core-agent for as long as they need to. The fork doesn't promise import-path stability with core-agent. |
 | CI / release infra | **Independent at start.** Port `dev/ci/presubmits/*` as-is; lean fork owns its own GitHub Actions workflows and release pipeline from day one. | Presubmits are the project's quality bar; carry them over. Shared workflow infrastructure (one source, both repos consume) is the more elegant long-term option but couples release cadences and isn't worth the operational overhead at start. Revisit at the 6-12 month mark alongside the shared-infrastructure-repo question. |
-| Hugo site | Fresh Hugo site, not a port | Site docs are too entangled with the old positioning; cheaper to rewrite. The library + design docs in `docs/` port over. |
+| Docs site | Fresh site, not a port — **Astro + Starlight** *(corrected 2026-07-26: this row originally said "Hugo"; core-agent's actual `docs/site` convention is Astro ^7 + @astrojs/starlight, and the Hugo references across the corpus were stale. The v0.1 skeleton shipped at `docs/site/` on that stack.)* | Site docs are too entangled with the old positioning; cheaper to rewrite. The library + design docs in `docs/` port over. |
 
 ## Trigger condition for Phase 1
 
@@ -196,9 +196,11 @@ What the lean repo focuses energy on next, matching [`./positioning.md`](./posit
 
 This phase is "what was the point of the fork." Lands at v0.5.0+ — by which time the ADK-dependency question (deferred from Phase 0) should be revisited with Phase 1-2 hindsight.
 
-## Phase 4: Hugo site + outward-facing rewrite (parallel with phase 3)
+## Phase 4: docs site + outward-facing rewrite (parallel with phase 3)
 
-Fresh Hugo site, not a port. Targets:
+*(Corrected 2026-07-26: this section originally said "Hugo site". The stack is **Astro + Starlight** — core-agent's actual `docs/site` convention; the Hugo references were stale. A v0.1 skeleton of this site shipped at `docs/site/` — landing, install, three quickstarts, reference, roadmap — with build-only CI; deploy is deferred until the repo goes public.)*
+
+Fresh site, not a port. Targets:
 
 - **Landing page.** "Agent infrastructure for unattended / library / multi-provider workloads. Not a Claude Code competitor." Top-of-fold message.
 - **Quickstart.** Three flavors: (1) library embedding, (2) GKE platform agent, (3) interactive REPL + web UI (`mast-web`). The first two are the moat; the third keeps the user-pinned interactive story via browser rather than terminal.
@@ -299,6 +301,6 @@ This is more discipline than weekly cherry-pick batches; the upside is that dive
 
 - The actual name choice.
 - A detailed line-by-line cut list (phase 1 produces it as the squash commit's diff; pre-listing it duplicates work).
-- The Hugo site IA / writing.
+- The docs-site IA / writing (Astro + Starlight per Phase 4).
 - Pricing or commercial positioning.
 - Whether to do the fork at all — that's a strategic decision the positioning doc doesn't resolve. This doc only covers *how* if the answer is yes.
