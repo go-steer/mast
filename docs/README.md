@@ -40,12 +40,7 @@ Current state:
 
 ## Fork trigger
 
-Per [`./fork-design.md`](./fork-design.md), the code fork executes after these in-flight items land in core-agent:
-
-1. Issues [#158-#161](https://github.com/go-steer/core-agent/issues?q=is%3Aissue+158+OR+159+OR+160+OR+161) (bash search-gate, watchdog→model routing, `--task=debug` profile extensions, gemini-3.5-flash probe).
-2. The shared-memory stack (PRs #13/14/15 against core-agent).
-
-When both are done, phase 1 of the fork begins (rebuild-lean-core against ADK v2 across PRs P1.1-P1.6, per the design doc — superseding the earlier hard-fork-then-prune plan, revised 2026-07-01).
+Per [`./fork-design.md`](./fork-design.md) (trigger revised 2026-07-26): **Phase 1's rebuild work (P1.1, P1.2, bucket-3 minimum) starts immediately** — it shares no code with core-agent, and the spike-validated `mast-prototype` graduates into it. Only **P1.3 (adapter ports) gates**, on core-agent's three code cleanup milestones closing (*Correctness & durability*, *Security hardening*, *Substrate & API structure* — they churn the exact packages being ported). Issues #158-#160 land in core-agent independently and no longer gate; the shared-memory stack is re-homed as the gate on mast's v0.2+ memory work.
 
 ## Resolved decisions cross-reference
 
@@ -62,7 +57,7 @@ A consolidated view (each doc's local resolved section is authoritative for its 
 | Provenance via per-file attribution headers on bucket-2 ports | [`./fork-design.md`](./fork-design.md) |
 | Phase 1 = P1.1-P1.6 (bootstrap, lean core, adapter ports, specialists, smoke, tag) | [`./fork-design.md`](./fork-design.md) |
 | In-flight work lands in core-agent first | [`./fork-design.md`](./fork-design.md) |
-| Phase 1 trigger = after #158-#161 + shared-memory stack | [`./fork-design.md`](./fork-design.md) |
+| ~~Phase 1 trigger = after #158-#161 + shared-memory stack~~ *Revised 2026-07-26: P1.1/P1.2/bucket-3 start immediately; only P1.3 ports gate, on core-agent's three code cleanup milestones; #158-#160 demoted (land independently); shared-memory re-homed to mast's v0.2 memory gate.* | [`./fork-design.md`](./fork-design.md) |
 | CI/release infra = independent at start | [`./fork-design.md`](./fork-design.md) |
 | Interactive UI = web, not terminal | [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) + [`./positioning.md`](./positioning.md) |
 | ~~Skills replaced by specialists subsystem~~ *Reversed 2026-07-01: skills reinstated as first-class consumable; coexist with specialists as complementary authoring model. Rationale: GKE + Google teams publishing skills as first-class artifacts inverted the audience-fit assumption behind the cut.* | [`./skills-design.md`](./skills-design.md) + [`./specialists-design.md`](./specialists-design.md) |
