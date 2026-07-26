@@ -52,6 +52,7 @@ import (
 	"github.com/go-steer/mast/pkg/inject"
 	mastmcp "github.com/go-steer/mast/pkg/mcp"
 	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/router"
 	mastsession "github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
@@ -347,6 +348,24 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 		}
 	}
 
+	// Planner dispatch (docs/orchestration-design.md "The planner",
+	// v0.1 scaffold): when the bundle enables the planner, the root is
+	// the supervisor-body planner with the bundle's specialists as its
+	// invoke_specialist roster, and --dispatch is ignored. Budget is
+	// unchanged — the planner's model calls stream past runTurn's
+	// meter like any other agent's.
+	if bundle.Planner.Enabled {
+		logger.Info("planner enabled; --dispatch ignored", "dispatch_flag", dispatch)
+		a, err := planner.NewRoot(planner.Config{
+			Name:        bundle.Name,
+			Description: bundle.Description,
+			Model:       llm,
+			Specialists: byName,
+			Order:       bundle.Specialists,
+		})
+		return a, &bundle, err
+	}
+
 	if dispatch == "graph" {
 		if classifier == nil {
 			return nil, nil, fmt.Errorf("--dispatch=graph requires a SingleTurn classifier specialist in the roster")
@@ -525,6 +544,14 @@ func logEvent(logger *slog.Logger, event *session.Event, sessionID string) {
 			"session", sessionID,
 			"interrupt_id", event.RequestedInput.InterruptID,
 			"message", event.RequestedInput.Message,
+		)
+	} else if len(event.LongRunningToolIDs) > 0 {
+		// Tool-level pause (e.g. the planner's request_operator_input):
+		// the pending function-call ID is the interrupt ID an operator
+		// passes to POST /resume.
+		logger.Info("HITL PAUSE (long-running tool)",
+			"session", sessionID,
+			"interrupt_ids", event.LongRunningToolIDs,
 		)
 	}
 	summary := "(no text)"
