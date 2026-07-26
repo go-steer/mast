@@ -19,10 +19,11 @@
 //
 // Schema authority: docs/orchestration-design.md defines the canonical
 // bundle schema. This package implements the spike subset needed for
-// the GKE triage anchor use case (see docs/triage-demo-plan.md). Fields
-// beyond the spike subset — planner config, isolation scope, bundle
-// learning knobs — are omitted here and will be added when their
-// downstream subsystems land.
+// the GKE triage anchor use case (see docs/triage-demo-plan.md) plus
+// the v0.1 planner scaffold knob (planner.enabled). Fields beyond that
+// — planner review/shape knobs, isolation scope, bundle learning — are
+// omitted here and will be added when their downstream subsystems
+// land.
 package workload
 
 // Mode is the session mode a workload runs in.
@@ -75,6 +76,19 @@ type HITL struct {
 	RequireApproval bool `yaml:"require_approval,omitempty"`
 }
 
+// Planner is the workload's planner block (docs/orchestration-design.md
+// "The planner"). v0.1 scaffold subset: enabled only. Later fields —
+// plan_review_required, reference_shapes — join when their subsystems
+// land (v0.2 per the phasing table).
+type Planner struct {
+	// Enabled switches the workload's root agent to the supervisor-body
+	// planner (pkg/planner) with the bundle's specialists as its
+	// invoke_specialist roster. When false (the default), dispatch is
+	// unchanged: the --dispatch coordinator/graph shapes drive the
+	// roster directly.
+	Enabled bool `yaml:"enabled,omitempty"`
+}
+
 // HTTPTrigger declares that a workload accepts inbound POSTs on the
 // mast inject endpoint. The path + auth mode are informational for the
 // spike (the inject server declares its own routes globally); later
@@ -116,6 +130,10 @@ type Bundle struct {
 
 	// HITL is the human-in-the-loop policy for this workload.
 	HITL HITL `yaml:"hitl,omitempty"`
+
+	// Planner configures the supervisor-body planner for this
+	// workload; zero value means planner off.
+	Planner Planner `yaml:"planner,omitempty"`
 
 	// EdgeTrigger declares how external signals reach this workload.
 	EdgeTrigger EdgeTrigger `yaml:"edge_trigger,omitempty"`
