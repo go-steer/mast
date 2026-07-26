@@ -38,6 +38,7 @@ package graph
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
@@ -46,12 +47,26 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/workflow"
 
+	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
 // FallbackName is the specialist that handles reasons the classifier
 // can't map to a per-failure-mode specialist. Required in graph mode.
 const FallbackName = "_fallback"
+
+// Specialist pairs a built Task-mode agent with the budget bounds
+// declared on its Spec, so Build can map per-specialist ceilings onto
+// per-node ADK config without re-reading spec files.
+type Specialist struct {
+	// Agent is the built specialist.
+	Agent adkagent.Agent
+
+	// Budget is the specialist's declared budget block. Only
+	// MaxWallclockSeconds is consumed here (→ NodeConfig.Timeout);
+	// see nodeConfig for where the other fields are enforced.
+	Budget specialists.Budget
+}
 
 // Config describes how to assemble the workflow-graph dispatch shape
 // for a workload.
@@ -66,7 +81,28 @@ type Config struct {
 
 	// Specialists is the roster of Task-mode specialists indexed by
 	// spec name. Must contain FallbackName.
-	Specialists map[string]adkagent.Agent
+	Specialists map[string]Specialist
+}
+
+// nodeConfig maps a specialist's declared budget onto the ADK per-node
+// config. MaxWallclockSeconds becomes NodeConfig.Timeout — the
+// sanctioned per-node wallclock knob (docs/adk-v2-usage.md, NodeConfig
+// resolution 2026-07-25; docs/specialists-design.md open Q #2): the
+// scheduler wraps each activation in context.WithTimeout, so the cap
+// bounds every activation of the specialist's node, including resume
+// re-runs. Zero means no per-node timeout; the node is bounded only by
+// the dispatch deadline (workload max_wallclock_seconds in cmd/mast).
+//
+// The other Budget fields are not node-level knobs: max_turns is
+// enforced by the workload-level meter (pkg/budget Limits.MaxTurns);
+// per-specialist max_cost_usd is not yet enforced (see the pkg
+// specialists package doc).
+func nodeConfig(b specialists.Budget) workflow.NodeConfig {
+	var cfg workflow.NodeConfig
+	if b.MaxWallclockSeconds > 0 {
+		cfg.Timeout = time.Duration(b.MaxWallclockSeconds) * time.Second
+	}
+	return cfg
 }
 
 // Build assembles the graph and wraps it as a runnable root agent via
@@ -110,7 +146,7 @@ func Build(cfg Config) (adkagent.Agent, error) {
 
 	for _, name := range rosterOrder(cfg.Bundle, cfg.Specialists) {
 		sp := cfg.Specialists[name]
-		spNode, err := workflow.NewAgentNode(sp, workflow.NodeConfig{})
+		spNode, err := workflow.NewAgentNode(sp.Agent, nodeConfig(sp.Budget))
 		if err != nil {
 			return nil, fmt.Errorf("graph: wrap specialist %q: %w", name, err)
 		}
@@ -186,7 +222,7 @@ func Build(cfg Config) (adkagent.Agent, error) {
 			route = workflow.Default
 		}
 		edges = append(edges, workflow.Edge{From: routeNode, To: runNode, Route: route})
-		subAgents = append(subAgents, sp)
+		subAgents = append(subAgents, sp.Agent)
 	}
 
 	return workflowagent.New(workflowagent.Config{
@@ -201,7 +237,7 @@ func Build(cfg Config) (adkagent.Agent, error) {
 
 // rosterOrder yields specialist names in bundle order, restricted to
 // those present in the built map (the classifier is not in this map).
-func rosterOrder(b workload.Bundle, built map[string]adkagent.Agent) []string {
+func rosterOrder(b workload.Bundle, built map[string]Specialist) []string {
 	out := make([]string, 0, len(built))
 	seen := make(map[string]bool, len(built))
 	for _, name := range b.Specialists {

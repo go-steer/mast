@@ -34,6 +34,7 @@ specialists:
   - _fallback
 budget:
   max_wallclock_seconds: 300
+  max_turns: 20
 edge_trigger:
   http:
     path: /inject
@@ -73,6 +74,9 @@ func TestLoad(t *testing.T) {
 	}
 	if got, want := b.Budget.MaxWallclockSeconds, 300; got != want {
 		t.Errorf("Budget.MaxWallclockSeconds = %d, want %d", got, want)
+	}
+	if got, want := b.Budget.MaxTurns, 20; got != want {
+		t.Errorf("Budget.MaxTurns = %d, want %d", got, want)
 	}
 	if b.EdgeTrigger.HTTP == nil || b.EdgeTrigger.HTTP.Path != "/inject" {
 		t.Errorf("EdgeTrigger.HTTP unexpected: %+v", b.EdgeTrigger.HTTP)
