@@ -18,7 +18,8 @@
 # for what each scenario proves.
 #
 #   1. Graph dispatch: LLM-as-router workflow graph as the runner root
-#      (route hit -> specialist; unknown reason -> Default -> _fallback).
+#      (three reasons each hit their own specialist; unknown reason ->
+#      Default -> _fallback).
 #   2. Durable HITL: pause persisted to SQLite, process killed with -9,
 #      fresh process resumes with an operator approval.
 #   3. Budget enforcement: a $0.01 cost cap trips mid-turn and aborts.
@@ -72,12 +73,16 @@ cp -r "${REPO}/examples/workloads/gke-triage" "${WORK}/wl-graph"
 # No approval gate in this scenario; keep it pure routing.
 sed -i.bak 's/require_approval: true/require_approval: false/' "${WORK}/wl-graph/workload.yaml"
 start "${WORK}/graph.log" "${WORK}/wl-graph"
-inject demo-a ImagePullBackOff >/dev/null
-inject demo-b OOMKilled        >/dev/null   # not in roster -> Default route
+inject demo-a ImagePullBackOff  >/dev/null
+inject demo-b CrashLoopBackOff  >/dev/null
+inject demo-c NodeNotReady      >/dev/null
+inject demo-d SomeVendorReason  >/dev/null  # not in roster -> Default route
 sleep 1
 stop
 note "route hit   -> $(grep -c '"author":"ImagePullBackOff"' "${WORK}/graph.log") events from the ImagePullBackOff specialist"
-note "fallback    -> $(grep -c '"author":"_fallback"' "${WORK}/graph.log") events from _fallback (OOMKilled has no specialist)"
+note "route hit   -> $(grep -c '"author":"CrashLoopBackOff"' "${WORK}/graph.log") events from the CrashLoopBackOff specialist"
+note "route hit   -> $(grep -c '"author":"NodeNotReady"' "${WORK}/graph.log") events from the NodeNotReady specialist"
+note "fallback    -> $(grep -c '"author":"_fallback"' "${WORK}/graph.log") events from _fallback (SomeVendorReason has no specialist)"
 grep -E 'runner event' "${WORK}/graph.log" | sed 's/^/   | /'
 
 # ---------------------------------------------------------------- 2 --
