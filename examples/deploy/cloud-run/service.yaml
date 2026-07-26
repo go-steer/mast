@@ -1,0 +1,103 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# service.yaml — Cloud Run starter for mast (docs/deployment-design.md,
+# "Cloud Run"). Deploy with:
+#
+#   gcloud run services replace service.yaml --region=REGION
+#
+# REPLACE_ME markers: project, region, Cloud SQL instance, image.
+#
+# The session store is Postgres — REQUIRED on Cloud Run (v0.1 row,
+# revised 2026-07-25): the filesystem is ephemeral, so SQLite there
+# would silently drop paused sessions on every instance recycle and
+# falsify the durability exit criterion. Wire it with
+# --session-db-driver=postgres and a DSN from Secret Manager.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: mast
+  annotations:
+    # Webhook-shaped ingress usually wants "internal" or
+    # "internal-and-cloud-load-balancing"; "all" for a public endpoint
+    # (the bearer token is then the only gate — keep it strong).
+    run.googleapis.com/ingress: internal
+spec:
+  template:
+    metadata:
+      annotations:
+        # v0.1 is single-instance (no session-ownership handoff until
+        # v0.2, deployment-design "Multi-instance coordination").
+        autoscaling.knative.dev/maxScale: "1"
+        # 0 = scale-to-zero (fine for webhook workloads; 1-3s cold
+        # start). Autonomous/long-running loops want "1" — see the
+        # long-running pattern note in the README.
+        autoscaling.knative.dev/minScale: "0"
+        # Cloud SQL connector: mounts a unix socket under /cloudsql/.
+        run.googleapis.com/cloudsql-instances: "REPLACE_ME_PROJECT:REPLACE_ME_REGION:mast-sessions"
+    spec:
+      # Service account needs roles/cloudsql.client (session store) and
+      # roles/aiplatform.user (Vertex model calls).
+      serviceAccountName: mast-run@REPLACE_ME_PROJECT.iam.gserviceaccount.com
+      containerConcurrency: 10
+      timeoutSeconds: 300
+      containers:
+        # Derived image with your workload baked in — see README.
+        - image: REPLACE_ME_REGION-docker.pkg.dev/REPLACE_ME_PROJECT/mast/mast-workload:latest
+          args:
+            - "--workload=/workspace/workload"
+            - "--model=gemini-2.5-flash"
+            # mast v0.1 does not read Cloud Run's $PORT; pin both this
+            # flag and containerPort to 8080.
+            - "--listen=:8080"
+            - "--session-db-driver=postgres"
+            # $(VAR) is Knative env substitution — the DSN stays in
+            # Secret Manager, never in this file.
+            - "--session-db=$(MAST_SESSION_DB_DSN)"
+            - "--log-level=info"
+          ports:
+            - name: http1
+              containerPort: 8080
+          env:
+            - name: GOOGLE_CLOUD_PROJECT
+              value: REPLACE_ME_PROJECT
+            - name: GOOGLE_CLOUD_LOCATION
+              value: global
+            - name: MAST_INJECT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mast-inject-token
+                  key: latest
+            # e.g. "host=/cloudsql/PROJECT:REGION:mast-sessions
+            #       user=mast password=... dbname=mast sslmode=disable"
+            - name: MAST_SESSION_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: mast-session-db-dsn
+                  key: latest
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            periodSeconds: 30
