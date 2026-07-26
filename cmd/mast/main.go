@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -45,6 +46,7 @@ import (
 
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
+	"github.com/go-steer/mast/pkg/config"
 	"github.com/go-steer/mast/pkg/envelope"
 	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/inject"
@@ -62,7 +64,7 @@ const (
 
 func main() {
 	var (
-		workloadDir  = flag.String("workload", "", "path to workload directory (containing workload.yaml + specialists/)")
+		workloadFlag = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
 		dispatchMode = flag.String("dispatch", "coordinator", "dispatch shape: `coordinator` (spike-1 SubAgents pattern) or `graph` (workflow-graph LLM-as-router)")
 		modelName    = flag.String("model", "echo", "model to use: `echo` (fake, for smoke) or a Gemini model id like `gemini-2.5-flash`")
 		listen       = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
@@ -89,7 +91,7 @@ func main() {
 	}
 	logger.Info("model constructed", "name", llm.Name())
 
-	root, bundle, err := buildRoot(ctx, logger, llm, *modelName, *workloadDir, *dispatchMode)
+	root, bundle, err := buildRoot(ctx, logger, llm, *modelName, *workloadFlag, *dispatchMode)
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		os.Exit(1)
@@ -164,17 +166,68 @@ func buildModel(ctx context.Context, name string) (model.LLM, error) {
 	}
 }
 
+// resolveWorkload turns the --workload flag value into a loaded bundle
+// plus its specialist specs. Two modes:
+//
+//   - Path mode: the value is an existing directory → legacy spike
+//     layout (workload.yaml + specialists/ inside that directory).
+//     scripts/demo-spike2.sh depends on this shape; unchanged.
+//   - Name mode: anything else is a workload name resolved via the
+//     .agents/ discovery rules in pkg/config (exclusive
+//     single-location; see docs/config-layout-design.md).
+func resolveWorkload(logger *slog.Logger, arg string) (workload.Bundle, []specialists.Spec, error) {
+	if fi, err := os.Stat(arg); err == nil && fi.IsDir() {
+		bundle, err := workload.Load(filepath.Join(arg, "workload.yaml"))
+		if err != nil {
+			return workload.Bundle{}, nil, fmt.Errorf("load workload: %w", err)
+		}
+		loaded, err := specialists.LoadDir(filepath.Join(arg, "specialists"))
+		if err != nil {
+			return workload.Bundle{}, nil, fmt.Errorf("load specialists: %w", err)
+		}
+		return bundle, loaded, nil
+	}
+
+	cfg, err := config.Load(logger)
+	if err != nil {
+		return workload.Bundle{}, nil, err
+	}
+	bundle, ok := cfg.Workloads[arg]
+	if !ok {
+		return workload.Bundle{}, nil, fmt.Errorf(
+			"workload %q not found in config root %s (source %s; available: %v) and it is not a directory path",
+			arg, cfg.Root.Dir, cfg.Root.Source, workloadNames(cfg))
+	}
+	// Name mode builds only the bundle's roster (the root's
+	// specialists/ dir may serve many workloads). LoadRoot already
+	// validated every roster reference resolves.
+	loaded := make([]specialists.Spec, 0, len(bundle.Specialists))
+	for _, name := range bundle.Specialists {
+		loaded = append(loaded, cfg.Specialists[name])
+	}
+	return bundle, loaded, nil
+}
+
+func workloadNames(cfg *config.Config) []string {
+	names := make([]string, 0, len(cfg.Workloads))
+	for name := range cfg.Workloads {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // buildRoot wires the top-level agent. With --workload set it loads
 // the workload bundle + specialists + tool catalog and constructs the
 // dispatch shape selected by --dispatch: the spike-1 SubAgents
 // coordinator (pkg/router) or the spike-2 workflow graph (pkg/graph).
 // Without --workload it constructs a trivial single-agent coordinator
 // (useful for pure inject-endpoint smoke).
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelName, workloadDir, dispatch string) (adkagent.Agent, *workload.Bundle, error) {
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelName, workloadArg, dispatch string) (adkagent.Agent, *workload.Bundle, error) {
 	if dispatch != "coordinator" && dispatch != "graph" {
 		return nil, nil, fmt.Errorf("unknown --dispatch %q (want `coordinator` or `graph`)", dispatch)
 	}
-	if workloadDir == "" {
+	if workloadArg == "" {
 		logger.Warn("no --workload supplied; running trivial single-agent coordinator")
 		a, err := mastagent.NewCoordinator(mastagent.CoordinatorConfig{
 			Name:        "trivial_coordinator",
@@ -185,22 +238,15 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 		return a, nil, err
 	}
 
-	bundlePath := filepath.Join(workloadDir, "workload.yaml")
-	bundle, err := workload.Load(bundlePath)
+	bundle, loaded, err := resolveWorkload(logger, workloadArg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load workload: %w", err)
+		return nil, nil, err
 	}
 	logger.Info("workload loaded",
 		"name", bundle.Name,
 		"specialists", len(bundle.Specialists),
 		"mcp_servers", len(bundle.ToolCatalog.MCP),
 	)
-
-	specsDir := filepath.Join(workloadDir, "specialists")
-	loaded, err := specialists.LoadDir(specsDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load specialists: %w", err)
-	}
 	logger.Info("specialists loaded", "count", len(loaded))
 
 	// Attach MCP toolsets to specialists only when a real model is in
