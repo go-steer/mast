@@ -14,7 +14,17 @@ tool_catalog:
 
 specialists:
   - triage-classifier
+  - CrashLoopBackOff
   - ImagePullBackOff
+  - ErrImagePull
+  - OOMKilled
+  - FailedMount
+  - FailedScheduling
+  - BackOff
+  - Unhealthy
+  - NetworkNotReady
+  - NodeNotReady
+  - Evicted
   - _fallback
 
 budget:

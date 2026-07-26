@@ -27,7 +27,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -40,22 +39,19 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
-	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/session/database"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/mast/internal/compose"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/config"
 	"github.com/go-steer/mast/pkg/envelope"
-	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/inject"
 	mastmcp "github.com/go-steer/mast/pkg/mcp"
 	"github.com/go-steer/mast/pkg/observability"
-	"github.com/go-steer/mast/pkg/planner"
-	"github.com/go-steer/mast/pkg/router"
 	mastsession "github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
@@ -210,18 +206,11 @@ func serve() {
 	}
 }
 
-// buildModel constructs the model.LLM for the given name. "echo" builds
-// a fake in-process echo model (no credentials required); anything
-// starting with "gemini-" builds a Vertex/Gemini model via ADK.
+// buildModel constructs the model.LLM for the given name. Thin alias
+// over the shared core (internal/compose) so the flag surface and the
+// library surface can't drift.
 func buildModel(ctx context.Context, name string) (model.LLM, error) {
-	switch {
-	case name == "echo":
-		return mastagent.NewEchoModel("mast-echo"), nil
-	case strings.HasPrefix(name, "gemini-"):
-		return gemini.NewModel(ctx, name, &genai.ClientConfig{})
-	default:
-		return nil, fmt.Errorf("unknown model %q (want `echo` or a `gemini-*` model id)", name)
-	}
+	return compose.BuildModel(ctx, name)
 }
 
 // resolveWorkload turns the --workload flag value into a loaded bundle
@@ -276,8 +265,10 @@ func workloadNames(cfg *config.Config) []string {
 }
 
 // buildRoot wires the top-level agent. With --workload set it loads
-// the workload bundle + specialists + tool catalog and constructs the
-// dispatch shape selected by --dispatch: the spike-1 SubAgents
+// the workload bundle + specialists + tool catalog and hands the
+// loaded roster to the shared core (internal/compose.BuildRoot — the
+// same code the library-facing mast.RunWorkload uses) to construct
+// the dispatch shape selected by --dispatch: the spike-1 SubAgents
 // coordinator (pkg/router) or the spike-2 workflow graph (pkg/graph).
 // Without --workload it constructs a trivial single-agent coordinator
 // (useful for pure inject-endpoint smoke).
@@ -310,7 +301,9 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 	// Attach MCP toolsets to specialists only when a real model is in
 	// use. The echo model doesn't call tools; wiring MCP under echo
 	// would only add startup latency (and mask ADC-availability issues
-	// as workload-load failures rather than "no real LLM").
+	// as workload-load failures rather than "no real LLM"). MCP wiring
+	// stays daemon-side: the library path (mast.RunWorkload) is
+	// filesystem- and network-config-free in v0.1.
 	var toolsets []tool.Toolset
 	if modelName != "echo" {
 		for _, ref := range bundle.ToolCatalog.MCP {
@@ -327,66 +320,18 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 		}
 	}
 
-	byName := make(map[string]adkagent.Agent, len(loaded))
-	taskOnly := make(map[string]graph.Specialist, len(loaded))
-	var classifier adkagent.Agent
-	for _, spec := range loaded {
-		opts := specialists.BuildOptions{Model: llm}
-		// Task-mode specialists get the MCP toolsets; SingleTurn
-		// classifiers don't (they run in one shot with no tool loop).
-		if spec.Mode == specialists.ModeTask {
-			opts.Toolsets = toolsets
-		}
-		a, err := specialists.Build(spec, opts)
-		if err != nil {
-			return nil, nil, fmt.Errorf("build specialist %q: %w", spec.Name, err)
-		}
-		byName[spec.Name] = a
-		if spec.Mode == specialists.ModeTask {
-			// The spec's budget rides along so graph.Build can map
-			// max_wallclock_seconds onto the node's Timeout.
-			taskOnly[spec.Name] = graph.Specialist{Agent: a, Budget: spec.Budget}
-		} else if classifier == nil {
-			classifier = a
-		}
-	}
-
-	// Planner dispatch (docs/orchestration-design.md "The planner",
-	// v0.1 scaffold): when the bundle enables the planner, the root is
-	// the supervisor-body planner with the bundle's specialists as its
-	// invoke_specialist roster, and --dispatch is ignored. Budget is
-	// unchanged — the planner's model calls stream past runTurn's
-	// meter like any other agent's.
-	if bundle.Planner.Enabled {
-		logger.Info("planner enabled; --dispatch ignored", "dispatch_flag", dispatch)
-		a, err := planner.NewRoot(planner.Config{
-			Name:        bundle.Name,
-			Description: bundle.Description,
-			Model:       llm,
-			Specialists: byName,
-			Order:       bundle.Specialists,
-		})
-		return a, &bundle, err
-	}
-
-	if dispatch == "graph" {
-		if classifier == nil {
-			return nil, nil, fmt.Errorf("--dispatch=graph requires a SingleTurn classifier specialist in the roster")
-		}
-		a, err := graph.Build(graph.Config{
-			Bundle:      bundle,
-			Classifier:  classifier,
-			Specialists: taskOnly,
-		})
-		return a, &bundle, err
-	}
-
-	a, err := router.Build(router.Config{
-		Bundle:      bundle,
-		Specialists: byName,
-		Model:       llm,
+	a, err := compose.BuildRoot(compose.RootConfig{
+		Bundle:   bundle,
+		Specs:    loaded,
+		Model:    llm,
+		Toolsets: toolsets,
+		Dispatch: compose.Dispatch(dispatch),
+		Logger:   logger,
 	})
-	return a, &bundle, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return a, &bundle, nil
 }
 
 // sessionIDFor derives a per-incident session ID from the payload so
@@ -407,21 +352,10 @@ type meterPool struct {
 	byID   map[string]*budget.Meter
 }
 
-// ratePer1K is the spike's flat pricing table: enough structure to
-// prove cost derivation from UsageMetadata, not a real price list.
-func ratePer1K(modelName string) float64 {
-	switch {
-	case modelName == "echo":
-		return 0.05 // inflated so offline smoke tests can trip small caps
-	case strings.HasPrefix(modelName, "gemini-"):
-		return 0.0006
-	default:
-		return 0.001
-	}
-}
-
 func newMeterPool(bundle *workload.Bundle, modelName string) *meterPool {
-	limits := budget.Limits{RatePer1K: ratePer1K(modelName)}
+	// Pricing lives in the shared core (internal/compose.RatePer1K)
+	// so the daemon and mast.RunWorkload derive identical costs.
+	limits := budget.Limits{RatePer1K: compose.RatePer1K(modelName)}
 	if bundle != nil {
 		limits.MaxCostUSD = bundle.Budget.MaxCostUSD
 		// Workload turn ceiling: one "turn" = one model call (see
