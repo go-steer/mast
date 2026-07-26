@@ -123,6 +123,7 @@ A consolidated view (each doc's local resolved section is authoritative for its 
 | Classifier-first dispatch is a privilege boundary: code-enforced per-entry-point bundle allowlists; envelope selection validated + transport-authenticated; resolutions audit-logged | [`./orchestration-design.md`](./orchestration-design.md) |
 | Mutation predicate for `on_mutation`: built-in `Mutating` annotation + MCP `readOnlyHint`, default-deny-unknown, per-tool audited override | [`./orchestration-design.md`](./orchestration-design.md) |
 | Resume tokens: tenant-scope-bound, permission gate re-runs on resume, TTL 7d with audited override | [`./durable-execution-design.md`](./durable-execution-design.md) |
+| Smaller-agents strategy: forkable standalone starters + tested slim-embed guarantee + honest routing to raw ADK — no product tier below mast, no prebuilt single-purpose binaries | [`./positioning.md`](./positioning.md) + [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) + [`./library-api-design.md`](./library-api-design.md) |
 | v0.1 anchor use case = mast-native reshape of GKE triage (specialists + LLM-as-router + workflow graph + in-band HITL); showcase mast differentiators against a real platform-team problem, not prove parity with the core-agent recipe | [`./triage-demo-plan.md`](./triage-demo-plan.md) |
 
 ## Open questions still on the table
