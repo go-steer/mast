@@ -57,6 +57,14 @@ import (
 	"github.com/go-steer/mast/pkg/workload"
 )
 
+// Release identity, stamped by GoReleaser via -ldflags (see
+// .goreleaser.yaml). "dev" for local builds.
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
+
 const (
 	appName          = "mast"
 	defaultUserID    = "mast-inject"
@@ -83,8 +91,18 @@ func serve() {
 		sessionDB    = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
 		sessionDrv   = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
 		logLevel     = flag.String("log-level", "info", "log level: debug|info|warn|error")
+		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("mast %s", version)
+		if commit != "" {
+			fmt.Printf(" (%s %s)", commit, date)
+		}
+		fmt.Println()
+		return
+	}
 
 	logger := newLogger(*logLevel)
 	slog.SetDefault(logger)
