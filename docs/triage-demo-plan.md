@@ -147,7 +147,7 @@ Six of seven v2 subsystems from the inventory get real exercise; the untouched s
 
 ## Sequencing
 
-**Timing relative to the fork trigger.** Per [`./fork-design.md`](./fork-design.md), Phase 1 does not begin until core-agent's #158-#161 and shared-memory stack (#13/14/15) land. Nothing in this doc changes that trigger.
+**Timing relative to the fork trigger.** *Updated 2026-07-26:* per [`./fork-design.md`](./fork-design.md)'s revised trigger, Phase 1's rebuild work starts immediately (this demo's prototype graduates into it); only the P1.3 adapter ports wait on core-agent's code cleanup milestones.
 
 **Sanctioned pre-trigger work.** [`./fork-design.md`](./fork-design.md) risks table explicitly calls for prototyping bucket 1 in a scratch worktree during the trigger-wait period. The GKE triage demo is the honest scope for that prototype: it exercises the substrate against a real use case, not a synthetic toy. Prototype work lives in the standalone `mast-prototype` repo (see resolved open Q #1 below) and validates the ~1500 LOC bucket-1 estimate.
 
