@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-steer/mast/pkg/a2a"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -46,6 +47,21 @@ type Config struct {
 	// Specialists maps specialist name → loaded spec
 	// (<root>/specialists/*.tmpl, flat scan).
 	Specialists map[string]specialists.Spec
+
+	// A2A maps remote-agent name → static A2A registration
+	// (<root>/a2a/*.yaml, flat scan). Consumed by a2a.NewAdapter for
+	// the federation registry's a2a:// scheme.
+	A2A map[string]a2a.AgentConfig
+}
+
+// A2AList returns the loaded A2A registrations in name order — the
+// shape a2a.NewAdapter takes.
+func (c *Config) A2AList() []a2a.AgentConfig {
+	out := make([]a2a.AgentConfig, 0, len(c.A2A))
+	for _, name := range sortedKeys(c.A2A) {
+		out = append(out, c.A2A[name])
+	}
+	return out
 }
 
 // Load discovers the `.agents/` root and loads it. Equivalent to
@@ -78,6 +94,9 @@ func LoadRoot(root Root, logger *slog.Logger) (*Config, error) {
 		return nil, err
 	}
 	if cfg.Specialists, err = loadSpecialists(filepath.Join(root.Dir, "specialists")); err != nil {
+		return nil, err
+	}
+	if cfg.A2A, err = loadA2A(filepath.Join(root.Dir, "a2a")); err != nil {
 		return nil, err
 	}
 	if err := applyBudgetEnvOverrides(cfg.Workloads, logger); err != nil {
@@ -159,6 +178,26 @@ func loadSpecialists(dir string) (map[string]specialists.Spec, error) {
 	return out, nil
 }
 
+// loadA2A loads dir/*.yaml and dir/*.yml (flat, non-recursive) via
+// pkg/a2a and rejects same-name collisions. A missing dir yields zero
+// entries.
+func loadA2A(dir string) (map[string]a2a.AgentConfig, error) {
+	out := map[string]a2a.AgentConfig{}
+	cfgs, err := a2a.LoadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	for _, c := range cfgs {
+		if prev, ok := out[c.Name]; ok {
+			return nil, fmt.Errorf(
+				"config: a2a agent name collision: %q defined by both %s and %s (same-directory collisions are fatal in v0.1; rename one)",
+				c.Name, prev.Filename, c.Filename)
+		}
+		out[c.Name] = c
+	}
+	return out, nil
+}
+
 // applyBudgetEnvOverrides applies the MAST_BUDGET_* scalar overrides
 // to every loaded workload bundle. Env overrides file values
 // unconditionally; a set-but-unparseable value is fatal. An
@@ -199,14 +238,16 @@ func logConfig(cfg *Config, logger *slog.Logger) {
 		"source", string(cfg.Root.Source),
 		"workloads", len(cfg.Workloads),
 		"specialists", len(cfg.Specialists),
+		"a2a_agents", len(cfg.A2A),
 		"workload_names", strings.Join(sortedKeys(cfg.Workloads), ","),
 		"specialist_names", strings.Join(sortedKeys(cfg.Specialists), ","),
+		"a2a_agent_names", strings.Join(sortedKeys(cfg.A2A), ","),
 	)
 	for _, shadowed := range cfg.Root.Shadowed {
 		logger.Warn("lower-priority config location exists but is IGNORED (exclusive single-location discovery; no cross-location merging)",
 			"selected", cfg.Root.Dir, "ignored", shadowed)
 	}
-	if len(cfg.Workloads) == 0 && len(cfg.Specialists) == 0 {
+	if len(cfg.Workloads) == 0 && len(cfg.Specialists) == 0 && len(cfg.A2A) == 0 {
 		logger.Warn("selected config root is EMPTY — if you expected workloads/specialists from another location, note that the selected root shadows it outright",
 			"dir", cfg.Root.Dir, "source", string(cfg.Root.Source))
 	}

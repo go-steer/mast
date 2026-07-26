@@ -55,6 +55,11 @@ type ToolCatalog struct {
 // Budget is the workload-level runtime budget ceiling. Composes over
 // per-specialist budgets — the tightest cap wins.
 type Budget struct {
+	// MaxTurns caps the number of model calls per session. 0 means
+	// unlimited. One "turn" = one model call (the unit pkg/budget's
+	// meter counts), so a Task specialist's internal tool loop spends
+	// one turn per model call, not one per dispatch.
+	MaxTurns            int     `yaml:"max_turns,omitempty"`
 	MaxWallclockSeconds int     `yaml:"max_wallclock_seconds,omitempty"`
 	MaxCostUSD          float64 `yaml:"max_cost_usd,omitempty"`
 }

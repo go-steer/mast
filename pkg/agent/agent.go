@@ -42,6 +42,11 @@ type CoordinatorConfig struct {
 // NewCoordinator constructs a Chat-mode LlmAgent with the given
 // sub-agents and tools. The coordinator drives the top-level
 // conversation; sub-agents handle delegated tasks.
+//
+// When cfg.Instruction is empty, DefaultChatInstruction is used. A
+// non-empty Instruction is used verbatim — callers with a
+// bundle-specific prompt (e.g. router.Build's per-workload coordinator
+// default) keep full control.
 func NewCoordinator(cfg CoordinatorConfig) (adkagent.Agent, error) {
 	if cfg.Model == nil {
 		return nil, fmt.Errorf("agent: Coordinator %q has no Model", cfg.Name)
@@ -49,7 +54,7 @@ func NewCoordinator(cfg CoordinatorConfig) (adkagent.Agent, error) {
 	return llmagent.New(llmagent.Config{
 		Name:        cfg.Name,
 		Description: cfg.Description,
-		Instruction: cfg.Instruction,
+		Instruction: effectiveInstruction(cfg.Instruction, DefaultChatInstruction),
 		Model:       cfg.Model,
 		SubAgents:   cfg.SubAgents,
 		Tools:       cfg.Tools,

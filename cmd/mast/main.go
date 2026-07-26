@@ -324,7 +324,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 	}
 
 	byName := make(map[string]adkagent.Agent, len(loaded))
-	taskOnly := make(map[string]adkagent.Agent, len(loaded))
+	taskOnly := make(map[string]graph.Specialist, len(loaded))
 	var classifier adkagent.Agent
 	for _, spec := range loaded {
 		opts := specialists.BuildOptions{Model: llm}
@@ -339,7 +339,9 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 		}
 		byName[spec.Name] = a
 		if spec.Mode == specialists.ModeTask {
-			taskOnly[spec.Name] = a
+			// The spec's budget rides along so graph.Build can map
+			// max_wallclock_seconds onto the node's Timeout.
+			taskOnly[spec.Name] = graph.Specialist{Agent: a, Budget: spec.Budget}
 		} else if classifier == nil {
 			classifier = a
 		}
@@ -400,6 +402,9 @@ func newMeterPool(bundle *workload.Bundle, modelName string) *meterPool {
 	limits := budget.Limits{RatePer1K: ratePer1K(modelName)}
 	if bundle != nil {
 		limits.MaxCostUSD = bundle.Budget.MaxCostUSD
+		// Workload turn ceiling: one "turn" = one model call (see
+		// budget.Limits.MaxTurns for the vocabulary).
+		limits.MaxTurns = bundle.Budget.MaxTurns
 	}
 	return &meterPool{limits: limits, byID: map[string]*budget.Meter{}}
 }
