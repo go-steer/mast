@@ -52,6 +52,7 @@ import (
 	"github.com/go-steer/mast/pkg/inject"
 	mastmcp "github.com/go-steer/mast/pkg/mcp"
 	"github.com/go-steer/mast/pkg/router"
+	mastsession "github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -63,6 +64,17 @@ const (
 )
 
 func main() {
+	// Subcommand dispatch happens before flag parsing so the flag-only
+	// serve invocation (`mast --workload=... --listen=...`) keeps
+	// working exactly as before — scripts/demo-spike2.sh depends on it.
+	if len(os.Args) > 1 && os.Args[1] == "sessions" {
+		os.Exit(runSessions(os.Args[2:]))
+	}
+	serve()
+}
+
+// serve runs the daemon: inject endpoint + runner + session store.
+func serve() {
 	var (
 		workloadFlag = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
 		dispatchMode = flag.String("dispatch", "coordinator", "dispatch shape: `coordinator` (spike-1 SubAgents pattern) or `graph` (workflow-graph LLM-as-router)")
@@ -119,11 +131,23 @@ func main() {
 
 	meters := newMeterPool(bundle, *modelName)
 
+	// Operator surface over the same session service the runner writes
+	// through (docs/durable-execution-design.md, "Operator-facing
+	// surface"): /abort appends the durable abort marker, and /resume
+	// refuses sessions that carry one.
+	store := mastsession.NewStore(sessionSvc, appName)
+
 	handler := func(reqCtx context.Context, p envelope.InjectPayload) error {
 		return dispatch(reqCtx, r, logger, meters, bundle, p)
 	}
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
+		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == mastsession.StateAborted {
+			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
+		}
 		return resume(reqCtx, r, logger, meters, req)
+	}
+	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
+		return store.Abort(reqCtx, "", req.SessionID, req.Reason)
 	}
 
 	srv, err := inject.New(inject.Config{
@@ -131,6 +155,7 @@ func main() {
 		BearerToken:   bearer,
 		Handler:       handler,
 		ResumeHandler: resumeHandler,
+		AbortHandler:  abortHandler,
 		Logger:        logger,
 	})
 	if err != nil {
