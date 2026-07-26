@@ -1,6 +1,6 @@
 # mast workflow scaffolding: design
 
-**Status:** draft, 2026-07-01 (updated 2026-07-25 — spike-2 verification against ADK v2.1.0: API-name corrections in shapes #1/#6, root-agent rules, resume/re-execution contract, parallel-HITL constraint, v0.1 shape subset. See "Spike-2 verification notes" below and [`./adk-v2-usage.md`](./adk-v2-usage.md) for the construct-level detail). Companion to [`./positioning.md`](./positioning.md) (the thesis — priority #4 in the "next 6 months" list is the workflow-scaffolding example library), [`./fork-design.md`](./fork-design.md) (which resolves ADK v2 from day one as the substrate this builds on), and [`./specialists-design.md`](./specialists-design.md) (the subagent-as-tool subsystem that composes with workflow nodes). This doc covers the workflow-scaffolding subsystem in detail — the canonical shapes mast ships, how each maps onto ADK v2 primitives, and the composition rules between shapes, specialists, attach mode, and session state.
+**Status:** draft, 2026-07-01 (updated 2026-07-25 — spike-2 verification against ADK v2.1.0: API-name corrections in shapes #1/#6, root-agent rules, resume/re-execution contract, parallel-HITL constraint, v0.1 shape subset. See "Spike-2 verification notes" below and [`./adk-v2-usage.md`](./adk-v2-usage.md) for the construct-level detail. Updated 2026-07-26 — sketch corrections from the shipped v0.1 starters under `examples/workflows/`: `NewJoinNode(name)` takes no `NodeConfig`, unconditional edges are plain `Add` (the `AddRoutes(..., {"": next})` idiom never matches), join output is a `map[string]any` keyed by predecessor name, and `WithMaxConcurrency` is unreachable from a workflowagent root). Companion to [`./positioning.md`](./positioning.md) (the thesis — priority #4 in the "next 6 months" list is the workflow-scaffolding example library), [`./fork-design.md`](./fork-design.md) (which resolves ADK v2 from day one as the substrate this builds on), and [`./specialists-design.md`](./specialists-design.md) (the subagent-as-tool subsystem that composes with workflow nodes). This doc covers the workflow-scaffolding subsystem in detail — the canonical shapes mast ships, how each maps onto ADK v2 primitives, and the composition rules between shapes, specialists, attach mode, and session state.
 
 ## Why this is a real subsystem
 
@@ -68,16 +68,18 @@ Each directory is a runnable `go run ./examples/workflows/<shape>/`, standalone.
 ```go
 plan := workflow.NewFunctionNode("plan-triage", planTriage, cfg)
 triage := specialists.AgentNode("ServiceTriage", registry)  // Task-mode
-join := workflow.NewJoinNode("collect", cfg)
+join := workflow.NewJoinNode("collect")   // v2.1.0: NewJoinNode(name) takes no NodeConfig
 summary := workflow.NewFunctionNode("summarize", summarize, cfg)
 
 b := workflow.NewEdgeBuilder()
 b.AddFanOut(plan, triageWorkers)   // triageWorkers = NewParallelWorker over the triage node
 b.AddFanIn(join, triageWorkers)
-b.AddRoutes(join, map[string]workflow.Node{"": summary})
+b.Add(join, summary)               // unconditional edge = plain Add (nil Route)
 ```
 
-**Notes.** With a static task list, `AddFanOut` is exact fit. With a dynamic list computed at runtime, either wrap the worker node in `NewParallelWorker` or use a dynamic node that calls `RunNode` per element — see supervisor+workers below. **Constraint (2026-07-25): HITL cannot be raised from inside parallel branches (`ErrParallelHITLUnsupported`)** — operator escalation belongs after the join, or the escalating item must be routed out of the parallel section first.
+*(Corrected 2026-07-26, build-wave verification against v2.1.0 — see `examples/workflows/fan-out-fan-in` for the shipped instance: (1) `NewJoinNode(name)` takes no `NodeConfig` — earlier sketches passed `cfg`; (2) unconditional edges are plain `EdgeBuilder.Add` — the earlier `AddRoutes(x, map[string]Node{"": y})` idiom creates `StringRoute("")`, which never matches; (3) the join hands its successor a `map[string]any` keyed by predecessor node name — even with a single predecessor — so the summarizer unwraps `in["<workers-name>"]`.)*
+
+**Notes.** With a static task list, `AddFanOut` is exact fit. With a dynamic list computed at runtime, either wrap the worker node in `NewParallelWorker` or use a dynamic node that calls `RunNode` per element — see supervisor+workers below. **Constraint (2026-07-25): HITL cannot be raised from inside parallel branches (`ErrParallelHITLUnsupported`)** — operator escalation belongs after the join, or the escalating item must be routed out of the parallel section first. *(Verified 2026-07-26: `NewParallelWorker` also rejects a wrapped node carrying `RetryConfig` — retry hoists to the worker's own `NodeConfig` and applies per item; aggregated outputs preserve input order; per-item sub-branches are `<wrapped-name>@1..N`; and intermediate non-output events from the wrapped node are suppressed, which is why mid-branch escalation cannot surface anyway.)*
 
 ### 2. Sequential pipeline
 
@@ -97,8 +99,8 @@ diagnose := specialists.AgentNode("RootCauseAnalyst", registry)
 propose := workflow.NewToolNode("propose-pr", ghTools.OpenPR, cfg)
 
 b := workflow.NewEdgeBuilder()
-b.AddRoutes(parse, map[string]workflow.Node{"": diagnose})
-b.AddRoutes(diagnose, map[string]workflow.Node{"": propose})
+b.Add(parse, diagnose)    // (Corrected 2026-07-26: unconditional edges are plain Add;
+b.Add(diagnose, propose)  //  the old `AddRoutes(..., {"": next})` idiom never matches.)
 ```
 
 **Notes.** Include this shape as a reference explicitly *because* it's dull — operators tend to reach for supervisor+workers when a pipeline is what they need. The reference implementation is the excuse to say so in the README.
@@ -154,7 +156,7 @@ check := workflow.NewFunctionNode("check-continue", checkContinue, cfg)
 finalize := workflow.NewFunctionNode("finalize", finalize, cfg)
 
 b := workflow.NewEdgeBuilder()
-b.AddRoutes(step, map[string]workflow.Node{"": check})
+b.Add(step, check)          // unconditional edge (Corrected 2026-07-26)
 b.AddRoutes(check, map[string]workflow.Node{
     "continue": step,       // cycle back
     "exit":     finalize,
@@ -179,7 +181,7 @@ b.AddRoutes(check, map[string]workflow.Node{
 ```go
 proposer := specialists.AgentNode("ChangeProposer", registry)
 skeptic  := specialists.AgentNode("ChangeSkeptic",  registry)
-join     := workflow.NewJoinNode("collect-verdicts", cfg)
+join     := workflow.NewJoinNode("collect-verdicts")  // v2.1.0: no NodeConfig (Corrected 2026-07-26)
 decide   := workflow.NewEmittingFunctionNode("decide",
     func(ctx agent.Context, in JoinedVerdicts, emit func(*session.Event) error) (Decision, error) {
         switch policy.Classify(in) {
@@ -210,13 +212,15 @@ decide   := workflow.NewEmittingFunctionNode("decide",
 ```go
 digest := workflow.NewFunctionNode("digest-file", digestFile, cfg)
 workers, _ := workflow.NewParallelWorker("per-file", digest, maxConcurrency, cfg)
-join   := workflow.NewJoinNode("collect-digests", cfg)
+join   := workflow.NewJoinNode("collect-digests")  // v2.1.0: no NodeConfig
 reduce := workflow.NewFunctionNode("reduce-timeline", reduceToTimeline, cfg)
 
 b := workflow.NewEdgeBuilder()
-b.AddRoutes(workers, map[string]workflow.Node{"": join})
-b.AddRoutes(join,    map[string]workflow.Node{"": reduce})
+b.AddFanIn(join, workers)  // fan-in to the join barrier
+b.Add(join, reduce)        // unconditional edge = plain Add
 ```
+
+*(Corrected 2026-07-26: same fixes as shape #1 — `NewJoinNode` takes no `NodeConfig`, unconditional edges are plain `Add` (the `AddRoutes(..., {"": next})` idiom creates `StringRoute("")`, which never matches), and the reducer receives the join's `map[string]any` keyed by predecessor name. `cfg` on `NewParallelWorker` may carry `RetryConfig` — the wrapped `digest` node must not.)*
 
 **Notes.** Similar to fan-out-fan-in but the reducer step is *reduce* (N → 1) rather than *summarize* (N → structured N-length report). Include as its own shape because the reducer pattern is distinct — and because the audit-derived-memory implementation is a real map-reduce, not a fan-out-fan-in.
 
@@ -245,7 +249,7 @@ routeFn := workflow.NewFunctionNode("route", func(ctx agent.Context, in string) 
 }, cfg)
 
 b := workflow.NewEdgeBuilder()
-b.AddRoutes(classifier, map[string]workflow.Node{"": routeFn})
+b.Add(classifier, routeFn)  // unconditional edge (Corrected 2026-07-26)
 b.AddRoutes(routeFn, map[string]workflow.Node{
     "ImagePullBackOff":  specialists.AgentNode("ImagePullBackOff",  registry),
     "CrashLoopBackOff":  specialists.AgentNode("CrashLoopBackOff",  registry),
@@ -301,7 +305,7 @@ These are *defaults for the reference examples*, not runtime enforcement. Any ta
 ### With watchdog + cost ceilings
 
 - **Per-node `Timeout`** and `RetryConfig` (v2's `DefaultRetryConfig` = 5 attempts, 1s→60s, 2× backoff, full jitter) enforce per-node cost bounds — the specialist-budget primitives from `specialists-design.md` map onto these directly.
-- **Graph-wide `WithMaxConcurrency(n)`** caps concurrent agent invocations across a workflow — critical for fan-out-fan-in and map-reduce where a naive fan-out could saturate provider quotas.
+- **Graph-wide `WithMaxConcurrency(n)`** caps concurrent agent invocations across a workflow — critical for fan-out-fan-in and map-reduce where a naive fan-out could saturate provider quotas. *(Corrected 2026-07-26, build-wave verification: `workflowagent.Config` does not pass `workflow.Option`s through — it calls `workflow.New(name, edges)` bare — so a graph run as a workflowagent root cannot set this at all. The per-`NewParallelWorker` `maxConcurrency` argument is the cap that actually binds in shapes #1 and #6; dynamic `RunNode` fan-out (shape #3) is bounded only by the issuing Go code. `examples/workflows/fan-out-fan-in`'s README documents the three knobs.)*
 - **Watchdog signals** reach graph nodes via the session event stream (per core-agent issue #159, resolved by v2's emitting-node pattern). Nodes can check the event stream for watchdog alerts and route accordingly (e.g., autonomous-loop's continue-vs-exit routing can consult watchdog state).
 
 ### With session state + audit-derived memory
