@@ -43,7 +43,17 @@ configMapGenerator:
       - workload.yaml=config/workload.yaml
       - mcp.json=config/mcp.json
       - specialists_triage-classifier.tmpl=config/specialists/triage-classifier.tmpl
+      - specialists_CrashLoopBackOff.tmpl=config/specialists/CrashLoopBackOff.tmpl
       - specialists_ImagePullBackOff.tmpl=config/specialists/ImagePullBackOff.tmpl
+      - specialists_ErrImagePull.tmpl=config/specialists/ErrImagePull.tmpl
+      - specialists_OOMKilled.tmpl=config/specialists/OOMKilled.tmpl
+      - specialists_FailedMount.tmpl=config/specialists/FailedMount.tmpl
+      - specialists_FailedScheduling.tmpl=config/specialists/FailedScheduling.tmpl
+      - specialists_BackOff.tmpl=config/specialists/BackOff.tmpl
+      - specialists_Unhealthy.tmpl=config/specialists/Unhealthy.tmpl
+      - specialists_NetworkNotReady.tmpl=config/specialists/NetworkNotReady.tmpl
+      - specialists_NodeNotReady.tmpl=config/specialists/NodeNotReady.tmpl
+      - specialists_Evicted.tmpl=config/specialists/Evicted.tmpl
       - specialists__fallback.tmpl=config/specialists/_fallback.tmpl
 
 generatorOptions:
