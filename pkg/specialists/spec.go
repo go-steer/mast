@@ -19,9 +19,26 @@
 //
 // Schema follows docs/specialists-design.md. This package implements
 // the spike subset (name, description, mode, instruction, model
-// override); budget and tool allowlist fields are parsed and preserved
-// on the Spec but not yet enforced at Build time. Enforcement lands in
-// later spike steps.
+// override). Tool allowlists are enforced at Build time (see
+// filterToolsets). Budget fields are parsed here but enforced
+// elsewhere, per field:
+//
+//   - max_wallclock_seconds — enforced in graph dispatch: pkg/graph
+//     maps it to workflow.NodeConfig.Timeout on the specialist's
+//     AgentNode (the sanctioned per-node wallclock knob).
+//   - max_turns — the per-specialist turn cap is not yet enforced;
+//     it needs turn counting inside the specialist's own run. The
+//     workload-level max_turns ceiling (pkg/budget Limits.MaxTurns)
+//     does bound the session as a whole.
+//   - max_cost_usd — not yet enforced per specialist, and Build is
+//     the wrong place to try: cost is derived from UsageMetadata on
+//     the runner's event stream, which Build never sees. Enforcement
+//     lands with per-branch attribution — events carry Branch and
+//     NodeInfo, so the session meter (pkg/budget) can learn to bucket
+//     spend per specialist and apply min(workload-remaining,
+//     specialist-cap). Until then the workload-level max_cost_usd is
+//     the only cost ceiling; a specialist's max_cost_usd is recorded
+//     but has no effect.
 package specialists
 
 // Mode is the ADK v2 agent mode a specialist runs in.
@@ -38,12 +55,11 @@ const (
 )
 
 // Budget captures the per-specialist runtime bounds. See
-// docs/specialists-design.md schema for field semantics.
-//
-// The spike parses and preserves these but does not yet enforce them —
-// budget enforcement composes over ADK v2 NodeConfig.Timeout /
-// RetryConfig plus mast-side cost interceptors, which are step-11-plus
-// scope.
+// docs/specialists-design.md schema for field semantics, and the
+// package doc above for the per-field enforcement status:
+// MaxWallclockSeconds is enforced (pkg/graph → NodeConfig.Timeout);
+// MaxTurns and MaxCostUSD are parsed and preserved but not yet
+// enforced per specialist.
 type Budget struct {
 	MaxTurns            int     `yaml:"max_turns,omitempty"`
 	MaxWallclockSeconds int     `yaml:"max_wallclock_seconds,omitempty"`
