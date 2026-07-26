@@ -1,0 +1,79 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Cuts the GitHub Release on every `v*` tag push (adapted from
+# go-steer/core-agent's release.yml, leaner for v0.1.x):
+#   - runs the full presubmit suite first — a tag never ships red
+#   - cross-compiles the mast binary (linux/darwin x amd64/arm64)
+#     via GoReleaser, with SHA-256 checksums
+#   - publishes the Release with notes drawn from CHANGELOG.md
+#     (dev/release/notes.sh); pre-release suffixes (-pre, -rc.N)
+#     are marked Pre-release automatically
+#
+# Deliberate v0.1.x omissions vs core-agent, to add when warranted:
+# Sigstore keyless signing of checksums, container images
+# (release-images.yml), retroactive-tag overlay machinery.
+#
+# Manual dry run: gh workflow run release.yml -f dry_run=true
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Cross-compile only; skip the GitHub Release publish. Uploads dist/ as a workflow artifact.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Presubmits
+        run: dev/ci/presubmits/all.sh
+      - name: Compose release notes
+        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+        run: dev/release/notes.sh "${GITHUB_REF_NAME}" > /tmp/release-notes.md && cat /tmp/release-notes.md
+      - name: GoReleaser (publish)
+        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean --release-notes /tmp/release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: GoReleaser (dry run)
+        if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean --skip=publish --snapshot
+      - name: Upload dist (dry run)
+        if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

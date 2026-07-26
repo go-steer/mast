@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased (Phase 1, toward v0.1.0)
+## Unreleased
+
+- (nothing yet)
+
+## v0.1.0-pre (2026-07-26)
+
+Phase-1 pre-release: nine of fork-design's eleven v0.1 exit criteria are
+green; `--task` profiles and attach-mode reachability remain gated on the
+P1.3 adapter ports per the revised trigger. Highlights below; details in
+the per-item entries that follow.
+
+- Workflow-graph and SubAgents dispatch on ADK v2.1.0; durable HITL
+  surviving process death; budget metering with cost + turn caps; the
+  full 13-specialist GKE triage roster; `.agents/` config discovery;
+  sessions operator surface (CLI + HTTP); observability v0.1; A2A v0.3
+  client + federation adapter + `invoke_remote_agent`; planner scaffold;
+  forkable workflow starters; the slim-embed guarantee with CI
+  enforcement; presubmits-as-CI; deploy starters incl. Cloud Run with
+  Postgres session store; top-level `mast` library API.
 
 - **P1.4 interop slice: A2A client + federation surface (2026-07-26).** The
   v0.1 slice of the 2026-07-25 re-cut ([`docs/fork-design.md`](./docs/fork-design.md)
