@@ -89,6 +89,12 @@ func Build(cfg Config) (adkagent.Agent, error) {
 		subAgents = append(subAgents, sp)
 	}
 
+	// Instruction precedence: explicit Config.Instruction (verbatim) >
+	// bundle-specific coordinator default (below) > the generic
+	// mode-level agent.DefaultChatInstruction. Because the
+	// bundle-specific default is always non-empty, NewCoordinator's
+	// Chat-mode fallback never applies on this path — the workload
+	// coordinator knows its roster and beats the generic framing.
 	instruction := cfg.Instruction
 	if instruction == "" {
 		instruction = defaultCoordinatorInstruction(cfg.Bundle)
@@ -106,7 +112,10 @@ func Build(cfg Config) (adkagent.Agent, error) {
 // defaultCoordinatorInstruction is the fallback system prompt used
 // when the caller doesn't supply one. It nudges the coordinator toward
 // the specialist-dispatch pattern; workloads that need something
-// different pass their own Instruction.
+// different pass their own Instruction. This bundle-aware default
+// intentionally shadows the generic agent.DefaultChatInstruction —
+// a coordinator built for a named workload should be framed around
+// that workload, not around generic operator chat.
 func defaultCoordinatorInstruction(b workload.Bundle) string {
 	return fmt.Sprintf(`You are the coordinator for the %q workload.
 

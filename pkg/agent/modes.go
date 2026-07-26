@@ -46,6 +46,10 @@ type TaskAgentConfig struct {
 // NewTaskAgent constructs a Task-mode agent. Suitable for
 // per-failure-mode specialists (diagnose, remediate, return a structured
 // digest).
+//
+// When cfg.Instruction is empty, DefaultTaskInstruction is used. A
+// non-empty Instruction is used verbatim — specialists keep full
+// control of their prompt; nothing is prepended.
 func NewTaskAgent(cfg TaskAgentConfig) (adkagent.Agent, error) {
 	if cfg.Model == nil {
 		return nil, fmt.Errorf("agent: TaskAgent %q has no Model", cfg.Name)
@@ -53,7 +57,7 @@ func NewTaskAgent(cfg TaskAgentConfig) (adkagent.Agent, error) {
 	return llmagent.New(llmagent.Config{
 		Name:         cfg.Name,
 		Description:  cfg.Description,
-		Instruction:  cfg.Instruction,
+		Instruction:  effectiveInstruction(cfg.Instruction, DefaultTaskInstruction),
 		Model:        cfg.Model,
 		Tools:        cfg.Tools,
 		Toolsets:     cfg.Toolsets,
@@ -76,6 +80,10 @@ type SingleTurnAgentConfig struct {
 }
 
 // NewSingleTurnAgent constructs a SingleTurn-mode agent.
+//
+// When cfg.Instruction is empty, DefaultSingleTurnInstruction is used.
+// A non-empty Instruction is used verbatim — specialists keep full
+// control of their prompt; nothing is prepended.
 func NewSingleTurnAgent(cfg SingleTurnAgentConfig) (adkagent.Agent, error) {
 	if cfg.Model == nil {
 		return nil, fmt.Errorf("agent: SingleTurnAgent %q has no Model", cfg.Name)
@@ -83,7 +91,7 @@ func NewSingleTurnAgent(cfg SingleTurnAgentConfig) (adkagent.Agent, error) {
 	return llmagent.New(llmagent.Config{
 		Name:         cfg.Name,
 		Description:  cfg.Description,
-		Instruction:  cfg.Instruction,
+		Instruction:  effectiveInstruction(cfg.Instruction, DefaultSingleTurnInstruction),
 		Model:        cfg.Model,
 		InputSchema:  cfg.InputSchema,
 		OutputSchema: cfg.OutputSchema,
