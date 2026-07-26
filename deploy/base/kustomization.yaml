@@ -1,0 +1,53 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Base kustomization for a single-cluster mast-triage deployment.
+# Overlays under deploy/overlays/example/ pin image tags and adjust
+# per-environment values (cluster name, GCP project/location, image
+# registry).
+#
+# Secrets are deliberately NOT in this base — operators must create
+# them out-of-band (`kubectl -n mast-triage create secret ...`):
+#   - mast-inject-token          (opaque; key=token)
+#   - k8s-event-watcher-token    (opaque; key=token, same value as above)
+#
+# The two secrets must carry the SAME token — the watcher posts to the
+# daemon with that bearer.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mast-triage
+
+resources:
+  - 00-namespace.yaml
+  - 10-serviceaccount-daemon.yaml
+  - 11-serviceaccount-watcher.yaml
+  - 12-clusterrole-watcher.yaml
+  - 13-clusterrolebinding-watcher.yaml
+  - 50-deployment-daemon.yaml
+  - 51-deployment-watcher.yaml
+  - 60-service.yaml
+
+configMapGenerator:
+  - name: mast-gcp-env
+    literals:
+      - GOOGLE_CLOUD_PROJECT=REPLACE_ME
+      - GOOGLE_CLOUD_LOCATION=global
+  # Workload artifacts are mirrored into config/ from the source-of-truth
+  # under ../../examples/workloads/gke-triage/. Kustomize's file-source
+  # security restriction requires files to sit at/below the kustomization
+  # dir. Keep the two in sync (or symlink) if you edit examples.
+  - name: mast-workload
+    files:
+      - workload.yaml=config/workload.yaml
+      - mcp.json=config/mcp.json
+      - specialists_triage-classifier.tmpl=config/specialists/triage-classifier.tmpl
+      - specialists_ImagePullBackOff.tmpl=config/specialists/ImagePullBackOff.tmpl
+      - specialists__fallback.tmpl=config/specialists/_fallback.tmpl
+
+generatorOptions:
+  # Overlays reference these ConfigMaps by stable name; disabling the
+  # hash suffix means operators must `kubectl rollout restart` after
+  # ConfigMap edits.
+  disableNameSuffixHash: true

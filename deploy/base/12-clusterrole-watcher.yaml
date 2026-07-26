@@ -1,0 +1,16 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Originally derived from
+# go-steer/core-agent@c5efbb9e:examples/gke-troubleshoot-agent/deploy/base/12-clusterrole-watcher.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-event-watcher
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
