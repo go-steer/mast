@@ -110,6 +110,53 @@ func TestLoadDir(t *testing.T) {
 	}
 }
 
+// TestLoadDir_ExampleWorkload pins the shipped GKE-triage roster to
+// the full shape in docs/triage-demo-plan.md: eleven per-failure-mode
+// Task specialists + the SingleTurn triage-classifier + _fallback.
+func TestLoadDir_ExampleWorkload(t *testing.T) {
+	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage", "specialists")
+	specs, err := specialists.LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir(%s): %v", dir, err)
+	}
+	if got, want := len(specs), 13; got != want {
+		t.Fatalf("got %d specs, want %d", got, want)
+	}
+
+	want := map[string]specialists.Mode{
+		"BackOff":           specialists.ModeTask,
+		"CrashLoopBackOff":  specialists.ModeTask,
+		"ErrImagePull":      specialists.ModeTask,
+		"Evicted":           specialists.ModeTask,
+		"FailedMount":       specialists.ModeTask,
+		"FailedScheduling":  specialists.ModeTask,
+		"ImagePullBackOff":  specialists.ModeTask,
+		"NetworkNotReady":   specialists.ModeTask,
+		"NodeNotReady":      specialists.ModeTask,
+		"OOMKilled":         specialists.ModeTask,
+		"Unhealthy":         specialists.ModeTask,
+		"_fallback":         specialists.ModeTask,
+		"triage-classifier": specialists.ModeSingleTurn,
+	}
+	for _, s := range specs {
+		mode, ok := want[s.Name]
+		if !ok {
+			t.Errorf("unexpected specialist %q in example roster", s.Name)
+			continue
+		}
+		if s.Mode != mode {
+			t.Errorf("%s: Mode = %q, want %q", s.Name, s.Mode, mode)
+		}
+		if s.Description == "" {
+			t.Errorf("%s: empty description", s.Name)
+		}
+		delete(want, s.Name)
+	}
+	for name := range want {
+		t.Errorf("roster is missing specialist %q", name)
+	}
+}
+
 func TestLoadFile_MissingDescription(t *testing.T) {
 	dir := t.TempDir()
 	writeTempTmpl(t, dir, "broken.tmpl", missingDescSpec)
