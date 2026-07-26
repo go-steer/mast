@@ -42,6 +42,15 @@ Public packages under `github.com/go-steer/mast/`:
 
 **Compatibility promise:** stable-marked packages follow semver. Breaking changes to stable packages between major versions get a migration doc and a deprecation cycle in the preceding minor version. Internal packages have no compatibility promise.
 
+## Slim-embed guarantee (added 2026-07-25 — v0.1 scope)
+
+"Library-embedded" is hollow if the minimum viable embed drags in the kitchen sink. The guarantee, as a tested v0.1 property rather than an intention:
+
+- **Pay for what you import.** A consumer importing only the loop-and-loaders slice (`agent` + `session` + `provider` + `tool`, optionally `specialist`/`workload`/`budget`) must not pull `attach`, `observability`'s Prometheus/OTel exporters, `mcp`, `a2a`, or `skill` into its module graph. Enforced by package structure (no convenience cross-imports from core packages into subsystem packages; the top-level `mast` convenience package is the one place that imports everything, and slim consumers simply don't use it).
+- **Reference consumer:** `examples/deploy/slim/` — a single-file host service embedding one control loop (classifier → specialist, in-memory or SQLite sessions) with no attach server, no metrics endpoint, no interop surfaces. This is the "I just need a purpose-built control loop in my own binary" on-ramp; the starters in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) are its standalone-binary siblings.
+- **CI check:** a presubmit asserts `examples/deploy/slim/`'s module graph excludes the heavy subsystems (`go list -deps` allowlist). A PR that breaks the slim graph fails CI — the guarantee can't erode silently.
+- **Upgrade path is additive:** turning on durability, budgets, HITL, or attach later is adding an import and a config value, not a migration. That is the strategic point — slim consumers start inside mast, not beside it.
+
 ## Top-level convenience API
 
 The 90% path for library-embedded consumers. Small; delegates to lower packages for detail.

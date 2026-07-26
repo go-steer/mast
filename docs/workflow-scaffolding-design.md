@@ -20,6 +20,16 @@ We do **not** ship a workflow abstraction above ADK v2. Every canonical shape is
 
 Exception: cross-cutting concerns that don't fit inside a single graph — cost ceilings, permission gates, watchdog integration — stay as first-class runtime concerns configured on the parent agent (the shapes inherit them via `agent.Context`).
 
+### Shapes are forkable starters, not demonstrations (added 2026-07-25)
+
+The framing above is sharpened by a decision from the smaller-agents discussion (see [`./positioning.md`](./positioning.md) "Smaller agents, slim embeds"): each shape directory is a **starter someone forks to get a purpose-built agent**, not a demo that exists to showcase mast. `mast-prototype` (spikes 1-2) is the proof and the first instance — a complete triage control loop in ~2k LOC that a team could fork, gut, and run. Three disciplines follow:
+
+1. **Standalone-runnable.** Every starter runs end-to-end offline with one command (the `demo-spike2.sh` bar): a deterministic fake model, no credentials, no config beyond the directory itself. A starter that needs the reader to assemble context from three docs has failed its job.
+2. **Self-contained.** A starter imports mast packages and ADK — never another starter, never shared "starter helpers." Duplication between starters is accepted on purpose; a shared helper layer would silently rebuild the workflow abstraction this section forbids.
+3. **Fork-and-forget is the supported lifecycle.** Forked starters don't get upgrade paths, deprecation cycles, or compatibility promises — they're the reader's code the moment they copy it. Mast's CI keeps the in-repo originals building (P1.5's examples gate); that is the entire maintenance surface. Explicitly rejected: shipping starters as prebuilt single-purpose binaries ("mast-triage", "mast-monitor") — a support surface with none of the substrate's leverage.
+
+If starters get real adoption, the selection question ("which shape do I need?") grows into the planner / `orchestrate` story already phased at v0.2+ ([`./orchestration-design.md`](./orchestration-design.md)) — the smaller-agents path converges back into mast rather than fragmenting it.
+
 ## File layout
 
 ```
