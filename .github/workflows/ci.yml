@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# CI for mast (P1.1 skeleton, adapted from the go-steer repo pattern).
-# When dev/ci/presubmits/* land (P1.5), this workflow runs those same
-# scripts so local presubmit == CI.
+# CI for mast. This workflow runs dev/ci/presubmits/all.sh — the same
+# script operators run locally — so local presubmit == CI exactly
+# (docs/fork-design.md P1.5; house rule #6). Don't add inline check
+# steps here; add a script under dev/ci/presubmits/ instead.
 name: ci
 
 on:
@@ -33,13 +34,5 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build
-        run: go build ./...
-      - name: Vet
-        run: go vet ./...
-      - name: Format check
-        run: test -z "$(gofmt -l cmd pkg examples 2>/dev/null)"
-      - name: Test
-        run: go test ./...
-      - name: Slim-embed dependency check
-        run: scripts/check-slim-deps.sh
+      - name: Presubmits
+        run: dev/ci/presubmits/all.sh
