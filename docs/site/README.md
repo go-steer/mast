@@ -36,12 +36,11 @@ runs `dev/tools/docs-site.sh build` on PRs and main pushes touching
 **not** part of `dev/ci/presubmits/all.sh`: Go contributors shouldn't need
 a Node toolchain.
 
-## Deploy: deliberately deferred
+## Deploy
 
-The repo is private until the fork lands plus sanity checks pass
-(AGENTS.md, "Operational facts"). Publishing this site is deferred until
-the repo goes public; when that happens, the deploy lands as a GitHub
-Pages workflow mirroring core-agent's `docs.yml` pattern
-(configure-pages + upload-pages-artifact + deploy-pages), and
-`astro.config.mjs` grows the `site` + `base` pair (plus core-agent's
-remark-prepend-base plugin) so links resolve identically in dev and prod.
+Live at **https://go-steer.github.io/mast/** (the repo went public
+2026-07-27). Main pushes touching `docs/site/**` deploy via
+`.github/workflows/docs.yml` (configure-pages + upload-pages-artifact +
+deploy-pages, mirroring core-agent's pattern); `astro.config.mjs`
+carries the `site` + `base` pair. PRs get build-only verification via
+`ci-docs.yml` — they never ship.
