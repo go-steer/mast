@@ -4,7 +4,7 @@
 
 ## Why this reverses the earlier cut
 
-The original decision (see [`./specialists-design.md`](./specialists-design.md) history) cut skills from mast's scope with this reasoning: *"Skills load Anthropic-SKILL-formatted bundles so users can drop existing Claude Code skills into a project. That's a real value-add for core-agent's audience (developers experimenting locally, cogo-shaped consumers). It's not mast's audience — mast operators write GKE runbooks, not Anthropic-compat skill bundles."*
+The original decision (see [`./specialists-design.md`](./specialists-design.md) history) cut skills from mast's scope with this reasoning: *"Skills load Anthropic-SKILL-formatted bundles so users can drop existing Claude Code skills into a project. That's a real value-add for core-agent's audience (developers experimenting locally, embedded consumers). It's not mast's audience — mast operators write GKE runbooks, not Anthropic-compat skill bundles."*
 
 That reasoning inverted in 2026 as **the GKE team and broader Google teams began publishing skills as first-class artifacts for platform-team work**. When mast's audience (platform teams) is exactly the audience the skill publishers are targeting, cutting skills would mean mast operators can't consume the ecosystem their own vendor is publishing into. The cost of skill support (bucket-2 port + composition wiring) is low; the cost of *not* supporting it is invisibility to a fast-growing ecosystem.
 

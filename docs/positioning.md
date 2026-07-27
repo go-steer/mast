@@ -122,7 +122,7 @@ Explicitly rejected: prebuilt single-purpose binaries (`mast-triage`, `mast-moni
 
 ## Open questions
 
-1. **Where does AX fit?** Per `reference_ax_runtime`, AX is the distributed-runtime layer above core-agent. As core-agent sharpens around unattended single-process, the boundary with AX gets clearer — but also raises *"should some of what core-agent does today move up to AX?"* (Background agents? Multi-session coordination? Cross-process inbox?) Needs a dedicated audit.
+1. ~~**Where does the distributed-runtime layer fit?**~~ *Retired 2026-07-27: the adjacent distributed-runtime effort this referenced no longer plays a role in mast's planning; the audit is dropped. Multi-instance coordination questions live in [`./deployment-design.md`](./deployment-design.md) on their own merits.*
 2. **MCP server catalog: build or consume?** Should core-agent ship its own MCP servers (Prometheus, Cilium, Istio, GCP IAM/Logging) or stay a substrate that consumes others'? Probably the latter, but gke-parallel-triage shows there's value in shipping the *wiring config* even when servers are external.
 3. ~~**Is "interactive mode + TUI" a long-term commitment or a transitional one**...~~ *Resolved 2026-06-11: interactive surface is long-term; shape is web UI over attach mode, not embedded terminal TUI. See [mast-web's web-design.md](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md).*
 4. **How does the small-tier-parent classifier age** as `gemini-3.5-flash` lands and `gemini-3.5-pro` GAs? The substring matcher needs revisiting (filed issue #161 begins this). *2026-07-01 update: ADK v2's `SingleTurn` agent mode is a natural replacement — a lightweight LlmAgent classifier on flash, invoked as the LLM-as-router shape ([`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md)), ages gracefully as model IDs change and shifts the question from "can our substring matcher keep up" to "which model should the classifier target." The substring-matcher goes when the classifier lands.*
@@ -144,5 +144,5 @@ The cost of the commitment is small: mostly the README sweep and a discipline ab
 
 - Specific API or schema designs for any of the keep/change-shape items (each has its own design doc track).
 - Pricing / commercial positioning.
-- Cross-product synergies with AX, Cogo, or other adjacent codebases (referenced where load-bearing; not designed here).
+- Cross-product synergies with adjacent internal codebases (referenced where load-bearing; not designed here — and largely retired 2026-07-27 as no longer relevant).
 - Marketing copy. The README sweep is real work but the *what* it should say is what this doc resolves, not the *how*.

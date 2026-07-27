@@ -14,7 +14,7 @@ The agent-infrastructure substrate for **unattended, library-embedded, multi-pro
 ## What `mast` is *not*
 
 - **Not a Claude Code competitor.** Developer-laptop interactive coding is downstream of model + IDE + training investment we can't match. Use Claude Code, Antigravity, or Cursor for that shape.
-- **Not a one-tool-for-everything.** Sibling to [`core-agent`](https://github.com/go-steer/core-agent) under the (E) — sibling products with divergent agendas — motivation: `mast` targets platform-agent runtime; `core-agent` stays the experimentation + integration substrate (cogo-shaped consumers).
+- **Not a one-tool-for-everything.** Sibling to [`core-agent`](https://github.com/go-steer/core-agent) under the (E) — sibling products with divergent agendas — motivation: `mast` targets platform-agent runtime; `core-agent` stays the experimentation + integration substrate for embedded consumers.
 
 ## Related repos
 
@@ -24,11 +24,11 @@ The agent-infrastructure substrate for **unattended, library-embedded, multi-pro
 | [`go-steer/mast-web`](https://github.com/go-steer/mast-web) | Operator-facing web UI for `mast` (and any attach-mode core-agent variant). Already initialized; ships independently. |
 | [`go-steer/core-tui`](https://github.com/go-steer/core-tui) | Terminal UI alternative for developer / experimentation workflows. Stays paired with core-agent, not mast. |
 
-## Contributing pre-fork
+## Contributing
 
-Right now this repo accepts **docs PRs only**. Substantive design changes welcome; code lands here when the fork executes (the trigger condition is documented in [`docs/fork-design.md`](./docs/fork-design.md), revised 2026-07-26 — paraphrased: the rebuild work starts immediately; only the adapter ports wait on core-agent's code cleanup milestones closing).
+Phase 1 is in flight: this repo takes both design-doc PRs and Go code PRs for Phase-1 workstreams (see [`AGENTS.md`](./AGENTS.md) for house rules and [`docs/fork-design.md`](./docs/fork-design.md) for what's in scope). Adapter ports from core-agent (P1.3) remain gated on its cleanup milestones — runtime changes that belong there still go there first.
 
-For code-level changes that anticipate landing in mast post-fork, open the PR against [`core-agent`](https://github.com/go-steer/core-agent) and reference the relevant `docs/` design here.
+> **Early-access note:** the sibling repos linked here are private during early access; those links may 404 until they open up.
 
 ## License
 
