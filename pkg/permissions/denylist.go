@@ -31,6 +31,15 @@
 //
 // # Port status: compiled, tested, NOT wired into the mast runtime
 //
+// # Wiring-time design inputs (recorded 2026-07-27, from upstream
+// go-steer/core-agent#385): before this gate goes live in mast, revisit
+// (1) plan-first exempting network egress (fetch_url) and the whole
+// skill namespace — an unattended runtime should record a plan before
+// any egress; (2) acceptEdits auto-allowing out-of-scope filesystem
+// writes — mast's unattended posture likely wants that mode narrowed
+// or excluded rather than documented-louder. Track upstream's
+// resolution and adapt at wiring time; do not wire as-is.
+//
 // Honest scope note for the P1.3a port: mast's runtime does not yet
 // consult this gate anywhere — no tool execution path calls CheckBash
 // / CheckPath / CheckGeneric, and no config surface populates
