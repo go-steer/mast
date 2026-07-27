@@ -1,0 +1,368 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Originally derived from go-steer/core-agent@83ec0713ade7a5c05d72ad280039f336f561414b
+
+// Package digest consolidates the digesting primitives mast
+// uses to keep large tool responses out of the parent context.
+// Inspired by Headroom (Netflix, Apache 2.0), which ships the same
+// idea as a Python library.
+//
+// Three primitives, each independently useful and testable:
+//
+//   - Content router — sniff the payload shape and dispatch
+//     (passthrough / structural JSON / LLM fallback).
+//   - Structural JSON pruner — preserve identifier-shaped keys,
+//     collapse long strings and arrays, recurse with a depth cap.
+//     Deterministic, no API call.
+//   - CCR store — keep the raw payload locally keyed by tool-call
+//     ID so the model can fetch it back via a retrieve_raw built-in
+//     tool.
+//
+// Port descope note (P1.3a): the parent project also ships an
+// eventlog-backed Store implementation (store_eventlog.go) whose
+// durability rides its pkg/eventlog on ADK v1 session types. mast has
+// neither the eventlog package nor ADK v1, so that file and its tests
+// were deliberately not ported; the in-memory and filesystem stores
+// here are the v0.1 surface. Revisit when mast's eventlog story lands
+// (docs/fork-design.md P1.3 staging). (Skeleton PR: store interface + implementations land in
+//
+//	the follow-up per docs/digest-design.md sequencing.)
+//
+// LLM-agnostic: this package digests payloads. It does not import
+// pkg/agent, does not know what an MCP tool is, does not reach for
+// the model loop. Callers pass an LLMFallback function if they want
+// one.
+//
+// Full design: docs/digest-design.md. Tracking issue: #128.
+package digest
+
+import (
+	"context"
+	"errors"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// tracer is the OTel tracer used by Process. Resolved once at package
+// load — no-op when the global tracer provider is noop (telemetry off).
+// Name matches the design doc's span-namespace convention
+// (docs/agentic-mcp-design.md, "OTel spans + attributes" addendum).
+var tracer = otel.Tracer("mast/digest")
+
+// Method values populated on Result.Method — the observable dispatch
+// decision the router made. Callers surface these in telemetry
+// (per-tool method distribution → drives the decision on whether to
+// add tool-specific pruners).
+const (
+	MethodPassthrough    = "passthrough"
+	MethodStructuralJSON = "structural_json"
+	MethodLLMFallback    = "llm_fallback"
+)
+
+// Result is what Process returns to the caller. RawBytes is the
+// serialized size of the original payload — useful for telemetry
+// even when Method is passthrough. CallID is populated when a Store
+// is wired (follow-up PR); the skeleton always leaves it empty.
+//
+// Savings is populated on every success path (including passthrough,
+// where OriginalBytes ≈ DigestBytes so savings are ~0) and gives
+// callers the per-call byte + token math they need to surface
+// operator-visible savings totals without recomputing from Digest /
+// RawBytes themselves. See docs/agentic-mcp-design.md
+// § "savings telemetry" for the full display + OTel wiring.
+type Result struct {
+	Digest   string         // compressed payload (caller hands this to the model)
+	Method   string         // one of the Method* constants above
+	RawBytes int            // serialized size of the original
+	CallID   string         // opaque ID for CCR retrieval (empty until Store lands)
+	Metadata map[string]any // pruner-specific stats (e.g. {"arrays_collapsed": 3})
+	Savings  *Savings       // per-call byte + token reduction; nil only on nil-ctx error
+}
+
+// Savings quantifies the byte + token reduction one Process call
+// achieved, plus (agentic path only) the offsetting subagent LLM
+// cost. Populated on every Result Process returns; the pointer wrap
+// keeps a nil marker available for the (only) failure path (nil ctx)
+// where nothing was measured.
+//
+// The 4-char-per-token estimate for Original/DigestTokensEst is a
+// cheap heuristic — no tokenizer round-trip. Accurate to ±15% for
+// typical mixed content (JSON / prose / code). Suitable for savings
+// display; not suitable for billing enforcement.
+//
+// SubagentModel / SubagentInputTokens / SubagentOutputTokens are
+// left ZERO by pkg/digest — the package doesn't own the subagent
+// LLM (that lives in the caller, e.g. the MCP agentic wrapper).
+// Callers populate these AFTER Process returns from the subagent's
+// ResponseUsage, then hand the Result off to whatever surfaces the
+// telemetry (eventlog, /stats, OTel span attributes).
+//
+// Dollar-cost figures are NOT stored here. They're computed at
+// display time via usage.Tracker's layered pricing chain so
+// historical digests re-price correctly when rates change and so
+// pkg/digest stays free of the pricing dependency graph.
+type Savings struct {
+	// Path mirrors Result.Method — denormalized for callers that
+	// only carry Savings around (e.g. an eventlog metadata blob).
+	Path string
+
+	// Byte counts of the payload before and after digesting.
+	// Deterministic; measured on serialized JSON (or raw prose for
+	// passthrough).
+	OriginalBytes int
+	DigestBytes   int
+
+	// Token estimates. See package docs on the 4-char-per-token
+	// heuristic and its accuracy bounds.
+	OriginalTokensEst int
+	DigestTokensEst   int
+
+	// Agentic path only. Zero on structural / passthrough. Populated
+	// by the caller after invoking the small-tier subagent, from
+	// the subagent's ResponseUsage.
+	SubagentModel        string
+	SubagentInputTokens  int
+	SubagentOutputTokens int
+}
+
+// estimateTokens returns a cheap token count from a byte length
+// using the 4-char-per-token heuristic. Rounds up so a 3-byte
+// payload doesn't estimate 0 tokens.
+func estimateTokens(bytes int) int {
+	if bytes <= 0 {
+		return 0
+	}
+	return (bytes + 3) / 4
+}
+
+// Options configure a single Process call. All fields are optional;
+// a zero Options passes payloads through verbatim (which is useful
+// for telemetry-only wiring where the caller wants byte counts but
+// not compression).
+type Options struct {
+	// Threshold: payloads smaller than this bypass digesting entirely.
+	// Zero = 0 bytes = always digest; callers typically want a
+	// meaningful value (e.g. 4096) so tiny responses skip the router
+	// overhead.
+	Threshold int
+
+	// Store: optional CCR backing. When non-nil AND CallID is
+	// non-empty, Process writes the raw payload to the store before
+	// returning and populates Result.CallID so the caller can weave
+	// the ID into the synthetic map handed to the model. When nil or
+	// CallID is empty, no retrieval is possible and CallID stays
+	// empty on the way back.
+	//
+	// Store errors are surfaced in Result.Metadata["store_err"] but
+	// don't fail Process — losing retrieval capability shouldn't
+	// break the primary digest path.
+	Store Store
+
+	// LLMFallback: optional prose digester. Called when the router
+	// cannot dispatch to a structural pruner. When nil, payloads that
+	// would fall through return Method == passthrough with Digest
+	// truncated to a safe upper bound (see MaxPassthroughBytes) so we
+	// never silently dump megabytes into the model's context.
+	LLMFallback func(ctx context.Context, raw []byte) (string, error)
+
+	// CallID: caller-provided identifier (e.g. tool-call ID). When
+	// empty, Process leaves Result.CallID empty and skips the Store
+	// write even when Store is non-nil.
+	CallID string
+}
+
+// MaxPassthroughBytes bounds how much prose data is returned verbatim
+// when neither a structural pruner nor an LLMFallback is available.
+// Payloads over this cap are truncated with a "…<N more bytes>" suffix
+// so a caller who forgot to wire an LLMFallback still doesn't slam
+// the model with a megabyte of raw text.
+const MaxPassthroughBytes = 64 * 1024
+
+// Process digests payload according to opts. It never returns an
+// error for content-shape reasons — pruner failures fall through to
+// the LLM fallback or passthrough. The only error path is a caller
+// mistake (nil ctx) or an LLMFallback that errors out; even the
+// latter degrades to a truncated-passthrough Result so the caller
+// still has *something* to hand to the model.
+//
+// When opts.Store is wired AND opts.CallID is set, the raw payload
+// is persisted to the store before the dispatch decision is made
+// (so retrieve_raw works even when the router chose passthrough).
+// Store failures degrade to a Result with Metadata["store_err"] set
+// — losing retrieval capability shouldn't break the primary digest
+// path.
+func Process(ctx context.Context, payload []byte, opts Options) (Result, error) {
+	if ctx == nil {
+		return Result{}, errors.New("digest: nil context")
+	}
+	rawBytes := len(payload)
+
+	// digest.process span. No-op when the global tracer provider is
+	// noop (telemetry off, the default). Path + savings attributes
+	// stamp at End time so the span carries the router's actual
+	// decision, not just "we started digesting."
+	ctx, span := tracer.Start(ctx, "digest.process", trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
+	span.SetAttributes(attribute.Int("core_agent.digest.original_bytes", rawBytes))
+
+	// Persist to the CCR store BEFORE routing. If the write fails,
+	// we still process — the caller gets a digest, just no retrieval
+	// backdoor for this payload. The error surfaces in Metadata so
+	// telemetry can catch it.
+	var storeErr error
+	if opts.Store != nil && opts.CallID != "" {
+		storeErr = opts.Store.Put(ctx, opts.CallID, payload)
+	}
+
+	// Route on payload shape. The router owns the "which method" call;
+	// each branch below owns the actual compression work.
+	method := route(payload, opts.Threshold, opts.LLMFallback != nil)
+
+	res := Result{
+		RawBytes: rawBytes,
+		CallID:   opts.CallID,
+	}
+	switch method {
+	case MethodPassthrough:
+		// truncatePassthrough is a no-op when payload fits under
+		// MaxPassthroughBytes (the common under-threshold case), and
+		// bounds oversize prose that reached here because no
+		// LLMFallback was wired. Either way, the model never sees an
+		// unbounded blob.
+		res.Digest = truncatePassthrough(payload)
+		res.Method = MethodPassthrough
+
+	case MethodStructuralJSON:
+		digest, meta := PruneJSON(payload)
+		res.Digest = digest
+		res.Method = MethodStructuralJSON
+		res.Metadata = meta
+
+		// Second-chance fallthrough. If the structural pruner
+		// produced a digest that's STILL over threshold (payload
+		// was structurally minimal — one field, one long value; or
+		// many small fields the pruner has nothing to truncate)
+		// AND the caller wired an LLMFallback, re-dispatch to the
+		// LLM. Design intent: "structural is fast path; LLM wrap
+		// sees what structural couldn't reduce." Without this,
+		// JSON payloads that resist structural pruning silently
+		// stay large and the caller's LLMFallback is dead code for
+		// the MCP surface (which is 100% JSON in practice).
+		if opts.LLMFallback != nil && len(digest) >= opts.Threshold {
+			llmDigest, err := opts.LLMFallback(ctx, payload)
+			if err == nil {
+				res.Digest = llmDigest
+				res.Method = MethodLLMFallback
+				// Preserve pruner metadata for observability
+				// even though the LLM overrode the digest —
+				// operators can see "structural tried and left
+				// N bytes; LLM further compressed to M."
+				if res.Metadata == nil {
+					res.Metadata = map[string]any{}
+				}
+				res.Metadata["structural_digest_bytes"] = len(digest)
+			}
+			// LLM error: keep the structural digest. It's the
+			// best we've got; the caller can still hand it to the
+			// model. Error surfaces in a separate metadata key
+			// (llm_err_after_structural) so telemetry can catch
+			// the pattern of chronic LLM failures on this path.
+			if err != nil {
+				if res.Metadata == nil {
+					res.Metadata = map[string]any{}
+				}
+				res.Metadata["llm_err_after_structural"] = err.Error()
+			}
+		}
+
+	case MethodLLMFallback:
+		digest, err := opts.LLMFallback(ctx, payload)
+		if err != nil {
+			// The LLM path errored — fall back to a bounded passthrough
+			// so the caller still gets a usable Result. Callers who want
+			// to surface the error can inspect Result.Metadata["llm_err"].
+			res.Digest = truncatePassthrough(payload)
+			res.Method = MethodPassthrough
+			res.Metadata = map[string]any{"llm_err": err.Error()}
+			break
+		}
+		res.Digest = digest
+		res.Method = MethodLLMFallback
+
+	default:
+		// Unreachable: route() returns one of the three consts above.
+		res.Digest = truncatePassthrough(payload)
+		res.Method = MethodPassthrough
+	}
+
+	if storeErr != nil {
+		// Losing retrieval capability shouldn't invalidate the digest
+		// itself, but operators need to see the failure. Retrieval is
+		// silently broken for this CallID going forward.
+		if res.Metadata == nil {
+			res.Metadata = map[string]any{}
+		}
+		res.Metadata["store_err"] = storeErr.Error()
+	}
+	// Populate per-call Savings so the caller can surface operator-
+	// visible reduction numbers without recomputing from Digest /
+	// RawBytes. Callers layering an LLM subagent on top (agentic MCP
+	// wrap, agentic_read_file, etc.) fill Subagent* AFTER we return.
+	digestBytes := len(res.Digest)
+	res.Savings = &Savings{
+		Path:              res.Method,
+		OriginalBytes:     rawBytes,
+		DigestBytes:       digestBytes,
+		OriginalTokensEst: estimateTokens(rawBytes),
+		DigestTokensEst:   estimateTokens(digestBytes),
+	}
+	// Global counter update — feeds the /usage endpoint's
+	// digest_methods breakdown so operators can see which path
+	// dominates without wiring per-call telemetry themselves.
+	recordTelemetry(res.Method, res.RawBytes, digestBytes)
+
+	// Stamp the router's decision + savings math onto the span so
+	// OTel dashboards can slice by path (structural vs. agentic vs.
+	// passthrough) and rank tools by savings without hand-scraping
+	// eventlog. Subagent cost stays out — the LLMFallback closure's
+	// own subagent.llm_call child span carries that.
+	savingsTokens := res.Savings.OriginalTokensEst - res.Savings.DigestTokensEst
+	if savingsTokens < 0 {
+		savingsTokens = 0
+	}
+	span.SetAttributes(
+		attribute.String("core_agent.digest.path", res.Method),
+		attribute.Int("core_agent.digest.digest_bytes", digestBytes),
+		attribute.Int("core_agent.digest.original_tokens_est", res.Savings.OriginalTokensEst),
+		attribute.Int("core_agent.digest.digest_tokens_est", res.Savings.DigestTokensEst),
+		attribute.Int("core_agent.digest.savings_tokens_est", savingsTokens),
+	)
+	return res, nil
+}
+
+// truncatePassthrough returns payload verbatim if it fits under
+// MaxPassthroughBytes, or a truncated form with a size marker
+// otherwise. Prevents a caller who forgot to wire LLMFallback from
+// silently dumping megabytes into the model context.
+func truncatePassthrough(payload []byte) string {
+	if len(payload) <= MaxPassthroughBytes {
+		return string(payload)
+	}
+	head := payload[:MaxPassthroughBytes]
+	dropped := len(payload) - MaxPassthroughBytes
+	return string(head) + truncationSuffix(dropped)
+}
