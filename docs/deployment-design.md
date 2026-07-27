@@ -49,7 +49,7 @@ Mast targets four production topologies. Each has different consequences for ses
 
 **Deployment shape.** Whatever the host's is. If host is Cloud Run, mast is Cloud-Run-embedded. If host is GKE, mast is GKE-embedded.
 
-**Fit.** Best for cogo-shaped and non-cogo Go services that want to add agent capabilities without operating a separate mast fleet. Also the primary shape for testing (a Go test can spin up an in-process mast trivially).
+**Fit.** Best for any Go service that wants to add agent capabilities without operating a separate mast fleet. Also the primary shape for testing (a Go test can spin up an in-process mast trivially).
 
 ### 4. Standalone (`mast` binary on a VM / bare metal)
 
