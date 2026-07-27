@@ -27,6 +27,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -54,6 +55,7 @@ import (
 	"github.com/go-steer/mast/pkg/observability"
 	mastsession "github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
+	"github.com/go-steer/mast/pkg/taskclass"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -78,15 +80,21 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "sessions" {
 		os.Exit(runSessions(os.Args[2:]))
 	}
-	serve()
+	run()
 }
 
-// serve runs the daemon: inject endpoint + runner + session store.
-func serve() {
+// run parses the flag surface shared by serve and one-shot modes and
+// dispatches: a positional prompt runs one turn to completion and
+// prints the result (oneshot.go); no prompt serves the daemon —
+// exactly the pre-one-shot behavior, so scripts/demo-spike2.sh's
+// flag-only invocations pass unchanged.
+func run() {
 	var (
 		workloadFlag = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
 		dispatchMode = flag.String("dispatch", "coordinator", "dispatch shape: `coordinator` (spike-1 SubAgents pattern) or `graph` (workflow-graph LLM-as-router)")
 		modelName    = flag.String("model", "echo", "model to use: `echo` (fake, for smoke) or a Gemini model id like `gemini-2.5-flash`")
+		providerFlag = flag.String("provider", "", "model provider alias: `echo` or `gemini`. Validates against --model when both are set; picks the provider's default model (for gemini, the --task profile's tier via pkg/taskclass) when --model is unset")
+		taskFlag     = flag.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)")
 		listen       = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
 		sessionDB    = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
 		sessionDrv   = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
@@ -106,6 +114,64 @@ func serve() {
 
 	logger := newLogger(*logLevel)
 	slog.SetDefault(logger)
+
+	// --provider is an alias over --model; "explicitly set" matters
+	// because --model's default is "echo", not empty.
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	resolvedModel, err := resolveModelSelection(*providerFlag, *modelName, explicit["model"], *taskFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mast:", err)
+		os.Exit(2)
+	}
+	*modelName = resolvedModel
+
+	// One-shot mode: a positional prompt runs a single turn instead of
+	// serving. --task shapes the agent (default chat); --workload is a
+	// serve-mode flag and combining the two would silently pick one
+	// semantics, so it errors instead.
+	if flag.NArg() > 0 {
+		class := *taskFlag
+		if class == "" {
+			class = taskclass.Chat
+		}
+		if _, ok := taskclass.Resolve(class); !ok {
+			fmt.Fprintf(os.Stderr, "mast: unknown --task %q (want one of: %s)\n",
+				class, strings.Join(taskclass.Classes(), ", "))
+			os.Exit(2)
+		}
+		if *workloadFlag != "" {
+			fmt.Fprintln(os.Stderr, "mast: --workload is a serve-mode flag; one-shot mode runs a single --task-class agent")
+			os.Exit(2)
+		}
+		if explicit["dispatch"] {
+			logger.Warn("--dispatch is a serve-mode flag; ignored in one-shot mode")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		opts := oneShotOptions{
+			Class:      class,
+			Model:      *modelName,
+			SessionDB:  *sessionDB,
+			SessionDrv: *sessionDrv,
+			Prompt:     strings.Join(flag.Args(), " "),
+		}
+		if err := runOneShot(ctx, logger, opts, os.Stdout); err != nil {
+			logger.Error("one-shot turn failed", "task", class, "error", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if *taskFlag != "" {
+		fmt.Fprintln(os.Stderr, "mast: --task requires a positional prompt (one-shot mode); serve mode takes --workload")
+		os.Exit(2)
+	}
+
+	serve(logger, *workloadFlag, *dispatchMode, *modelName, *listen, *sessionDB, *sessionDrv)
+}
+
+// serve runs the daemon: inject endpoint + runner + session store.
+func serve(logger *slog.Logger, workloadArg, dispatchMode, modelName, listen, sessionDB, sessionDrv string) {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -132,14 +198,14 @@ func serve() {
 		logger.Info("OTel trace export enabled", "endpoint_source", "OTEL_EXPORTER_OTLP_* env")
 	}
 
-	llm, err := buildModel(ctx, *modelName)
+	llm, err := buildModel(ctx, modelName)
 	if err != nil {
-		logger.Error("failed to construct model", "model", *modelName, "error", err.Error())
+		logger.Error("failed to construct model", "model", modelName, "error", err.Error())
 		os.Exit(1)
 	}
 	logger.Info("model constructed", "name", llm.Name())
 
-	root, bundle, err := buildRoot(ctx, logger, llm, *modelName, *workloadFlag, *dispatchMode)
+	root, bundle, err := buildRoot(ctx, logger, llm, modelName, workloadArg, dispatchMode)
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		os.Exit(1)
@@ -149,7 +215,7 @@ func serve() {
 		"sub_agents", len(root.SubAgents()),
 	)
 
-	sessionSvc, err := buildSessionService(*sessionDrv, *sessionDB, logger)
+	sessionSvc, err := buildSessionService(sessionDrv, sessionDB, logger)
 	if err != nil {
 		logger.Error("failed to construct session service", "error", err.Error())
 		os.Exit(1)
@@ -165,7 +231,7 @@ func serve() {
 		os.Exit(1)
 	}
 
-	meters := newMeterPool(bundle, *modelName)
+	meters := newMeterPool(bundle, modelName)
 
 	// Operator surface over the same session service the runner writes
 	// through (docs/durable-execution-design.md, "Operator-facing
@@ -197,7 +263,7 @@ func serve() {
 	}
 
 	srv, err := inject.New(inject.Config{
-		Listen:        *listen,
+		Listen:        listen,
 		BearerToken:   bearer,
 		Handler:       handler,
 		ResumeHandler: resumeHandler,
