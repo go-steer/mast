@@ -96,6 +96,13 @@ type RefreshOutcome struct {
 //
 // userHome must resolve to a writable directory (typically
 // ~/.mast). Empty userHome is an error.
+// maxRefreshBodyBytes caps how much of a remote pricing body Refresh
+// will buffer — a hostile or misconfigured mirror must not be able to
+// OOM the process (upstream: go-steer/core-agent#372, fixed here ahead
+// of the upstream patch per the sibling-sync discipline; real pricing
+// payloads are tens of KB). Variable, not const, so tests can shrink it.
+var maxRefreshBodyBytes int64 = 8 << 20
+
 func Refresh(ctx context.Context, userHome string, opts RefreshOptions) (RefreshOutcome, error) {
 	if userHome == "" {
 		return RefreshOutcome{}, errors.New("pricing refresh: userHome is required")
@@ -184,11 +191,20 @@ func Refresh(ctx context.Context, userHome string, opts RefreshOptions) (Refresh
 		}, nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBodyBytes+1))
 	if err != nil {
 		return RefreshOutcome{
 			NetworkFailed: true,
 			NetworkError:  fmt.Errorf("pricing refresh: read body: %w", err),
+			FetchedAt:     existingFetchedAt,
+			StaleAge:      ageOrZero(now, existingFetchedAt),
+			ModelCount:    externalCount(existing),
+		}, nil
+	}
+	if int64(len(body)) > maxRefreshBodyBytes {
+		return RefreshOutcome{
+			NetworkFailed: true,
+			NetworkError:  fmt.Errorf("pricing refresh: %s body exceeds %d-byte cap; refusing to buffer", opts.Source, maxRefreshBodyBytes),
 			FetchedAt:     existingFetchedAt,
 			StaleAge:      ageOrZero(now, existingFetchedAt),
 			ModelCount:    externalCount(existing),
