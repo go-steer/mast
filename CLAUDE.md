@@ -59,15 +59,15 @@ The resolved-decisions cross-reference at the bottom of [`docs/README.md`](./doc
 
 These are non-negotiable. They reflect lessons from prior incidents or hard-won design discipline.
 
-### 1. No AI / Claude attribution on commits, PRs, or artifacts
+### 1. No AI-assistant attribution on commits, PRs, or artifacts
 
-When committing on behalf of a human, do **not** add:
+Work in this repo is committed by its human author, regardless of which tooling helped produce it. When committing on behalf of a human, do **not** add:
 
-- `Co-Authored-By: Claude` / `Co-Authored-By: <any-model>` lines
-- "🤖 Generated with [Claude Code](https://claude.com/claude-code)" or similar footers
-- Marketing-style trailers in commit messages
+- `Co-Authored-By:` lines naming any AI assistant, agent, or model — Claude, Gemini, Copilot, Codex, or anything that comes later
+- "Generated with <tool>" badges, footers, emoji trailers, or tool-marketing links of any kind
+- Any other marketing-style trailer in commit messages, PR titles/bodies, release notes, or docs
 
-Use the human's `user.email` and `user.name` (configurable via `git -c user.email=... -c user.name=...`). The change is theirs; you're the typing.
+This applies to every agent and every artifact, not just the tools named above. Use the human's `user.email` and `user.name` (configurable via `git -c user.email=... -c user.name=...`). The change is theirs; you're the typing.
 
 ### 2. Apache 2.0 license header on every new source file
 
@@ -82,9 +82,9 @@ Every new `.go` / `.sh` / `.yaml` / `.js` file (when code lands) gets the 13-lin
 
 Match the syntax-comment style for the file type. The `LICENSE` file at the repo root is the canonical text.
 
-### 3. Never write "[redacted-internal-codename]" — use "Antigravity"
+### 3. Public names only — no internal codenames
 
-If you encounter an internal codename — or are tempted to invent one — call it **Antigravity**. The string "[redacted-internal-codename]" must not appear in any committed artifact (docs, PR titles/bodies, commit messages, code, file names). This is an internal naming decision; respect it.
+Every name written into a committed artifact (docs, PR titles/bodies, commit messages, code, file names) must be a public name. Internal codenames — for this project, for adjacent projects, or ones you're tempted to invent — never get committed. For the adjacent interactive-IDE work referenced in this corpus, the public name is **Antigravity**; write that. If you only know something by an internal name and don't know its public one, stop and ask rather than committing it. This is a standing decision; respect it.
 
 ### 4. Docs-site pages alongside README/DESIGN changes — NOW ACTIVE
 
