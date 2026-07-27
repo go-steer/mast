@@ -20,12 +20,14 @@ import starlight from '@astrojs/starlight';
 // Starlight setup (the go-steer convention; fork-design's earlier Hugo
 // references were stale — corrected 2026-07-26).
 //
-// Deliberately NOT set yet: `site` + `base` for GitHub Pages. Deploy is
-// deferred until the repo goes public (see docs/site/README.md); when
-// the Pages workflow lands, add site/base here plus core-agent's
-// remark-prepend-base plugin so relative links resolve identically in
-// dev and prod.
+// `site` + `base` set 2026-07-27 when the repo went public and the
+// Pages workflow (.github/workflows/docs.yml) landed. Project-pages
+// hosting: https://go-steer.github.io/mast/. Starlight prefixes its
+// own links with `base`; content uses root-relative links that
+// Starlight resolves against it.
 export default defineConfig({
+  site: 'https://go-steer.github.io',
+  base: '/mast',
   integrations: [
     starlight({
       title: 'mast',

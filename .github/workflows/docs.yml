@@ -1,0 +1,66 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Builds and deploys docs/site to GitHub Pages on main pushes
+# (adapted from go-steer/core-agent's docs.yml; landed 2026-07-27 when
+# the repo went public). PR-side build verification is ci-docs.yml's
+# job; this workflow only ships.
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/site/**', 'dev/tools/docs-site.sh', '.github/workflows/docs.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: docs/site/package-lock.json
+      - id: pages
+        uses: actions/configure-pages@v5
+      - name: Build
+        run: dev/tools/docs-site.sh build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
