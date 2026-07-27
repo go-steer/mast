@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"google.golang.org/genai"
 
@@ -41,6 +42,7 @@ import (
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/planner"
+	"github.com/go-steer/mast/pkg/pricing"
 	"github.com/go-steer/mast/pkg/router"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
@@ -209,14 +211,45 @@ func BuildModel(ctx context.Context, name string) (model.LLM, error) {
 	}
 }
 
-// RatePer1K is the spike's flat pricing table: enough structure to
-// prove cost derivation from UsageMetadata, not a real price list.
+// builtinCatalog is the compiled-in pricing catalog (pkg/pricing's
+// builtin layer only — no config overrides or pricing.json files are
+// wired into the daemon yet). Built once; catalog construction with
+// empty Options cannot fail.
+var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
+	c, err := pricing.NewCatalog(pricing.Options{})
+	if err != nil {
+		// Unreachable with empty Options (no files are read), kept
+		// explicit so a future wiring of file layers can't silently
+		// swallow a load error here.
+		panic(fmt.Sprintf("compose: builtin pricing catalog: %v", err))
+	}
+	return c
+})
+
+// RatePer1K derives pkg/budget's flat USD-per-1K-total-tokens rate
+// for a model name (budget.Limits.RatePer1K — API unchanged).
+//
+// Gemini rates come from pkg/pricing's builtin catalog (longest-
+// prefix lookup, so dated/suffixed IDs land). The catalog prices
+// input and output tokens separately, but the budget meter only sees
+// UsageMetadata.TotalTokenCount, so the flat rate is the plain
+// average of the two per-MTok rates scaled to per-1K — a deliberate
+// v0.1 approximation that overcharges input-heavy sessions and
+// undercharges output-heavy ones rather than complicating the budget
+// API. Gemini IDs the catalog doesn't know keep the old flat spike
+// rate so cost metering never silently drops to zero.
+//
+// The echo fake keeps its inflated rate: offline smoke tests
+// (scripts/demo-spike2.sh scenario 3) trip small caps with it.
 func RatePer1K(modelName string) float64 {
 	switch {
 	case modelName == "echo":
 		return 0.05 // inflated so offline smoke tests can trip small caps
 	case strings.HasPrefix(modelName, "gemini-"):
-		return 0.0006
+		if r, ok := builtinCatalog().Lookup(modelName); ok && !r.IsZero() {
+			return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000
+		}
+		return 0.0006 // catalog miss: pre-catalog flat spike rate
 	default:
 		return 0.001
 	}
