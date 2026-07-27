@@ -1,0 +1,167 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Originally derived from go-steer/core-agent@83ec0713ade7a5c05d72ad280039f336f561414b
+
+package modeltier_test
+
+import (
+	"testing"
+
+	"github.com/go-steer/mast/pkg/modeltier"
+)
+
+func TestClassify(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		// Anthropic Claude 4.x.
+		{"claude-opus-4-7", modeltier.TierFrontier},
+		{"claude-opus-4-8", modeltier.TierFrontier},
+		{"claude-opus-4-7-1m", modeltier.TierFrontier},
+		{"claude-sonnet-4-6", modeltier.TierMid},
+		{"claude-sonnet-4-6-1m", modeltier.TierMid},
+		{"claude-haiku-4-5", modeltier.TierSmall},
+		{"claude-haiku-4-5-20251001", modeltier.TierSmall},
+
+		// Anthropic Claude 3.x.
+		{"claude-3-5-sonnet-20241022", modeltier.TierMid},
+		{"claude-3-5-haiku-20241022", modeltier.TierSmall},
+
+		// Gemini 3.x. 3.5-flash is mid-tier despite the "flash" name
+		// (Google's I/O 2026 headline agentic release; beats 3.1-pro on
+		// agent + coding benchmarks per Google's own scorecards). Older
+		// 3.x flashes remain small-tier — no evidence they're
+		// agentic-strong.
+		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
+		{"gemini-3.5-pro", modeltier.TierFrontier},
+		{"gemini-3.5-flash", modeltier.TierMid},
+		{"gemini-3.5-flash-05-2026", modeltier.TierMid}, // dated snapshot
+		{"gemini-3.1-flash", modeltier.TierSmall},
+		{"gemini-3-flash", modeltier.TierSmall},
+
+		// Gemini 2.x.
+		{"gemini-2.5-pro", modeltier.TierMid},
+		{"gemini-2.5-flash", modeltier.TierSmall},
+		{"gemini-2.0-flash", modeltier.TierSmall},
+
+		// Case-insensitive — operators sometimes type capitalized IDs.
+		{"CLAUDE-OPUS-4-7", modeltier.TierFrontier},
+
+		// Unknown / future / empty.
+		{"", ""},
+		{"some-future-model-9000", ""},
+		{"gpt-5", ""}, // not classified yet; explicit zero-value contract
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			if got := modeltier.Classify(tc.model); got != tc.want {
+				t.Errorf("Classify(%q) = %q, want %q", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultCompactionThresholds(t *testing.T) {
+	thresholds := modeltier.DefaultCompactionThresholds()
+
+	want := map[string]float64{
+		modeltier.TierFrontier: 0.85,
+		modeltier.TierMid:      0.65,
+		modeltier.TierSmall:    0.35,
+	}
+
+	for tier, expected := range want {
+		got, ok := thresholds[tier]
+		if !ok {
+			t.Errorf("DefaultCompactionThresholds() missing tier %q", tier)
+			continue
+		}
+		if got != expected {
+			t.Errorf("DefaultCompactionThresholds()[%q] = %v, want %v", tier, got, expected)
+		}
+	}
+
+	// Ordering invariant — smaller tier should get more aggressive
+	// (lower) threshold. Validates against a future regression where
+	// someone bumps small above mid or mid above frontier.
+	if thresholds[modeltier.TierSmall] >= thresholds[modeltier.TierMid] {
+		t.Errorf("small threshold (%v) should be < mid threshold (%v)",
+			thresholds[modeltier.TierSmall], thresholds[modeltier.TierMid])
+	}
+	if thresholds[modeltier.TierMid] >= thresholds[modeltier.TierFrontier] {
+		t.Errorf("mid threshold (%v) should be < frontier threshold (%v)",
+			thresholds[modeltier.TierMid], thresholds[modeltier.TierFrontier])
+	}
+
+	// Caller-mutation safety — DefaultCompactionThresholds returns a
+	// fresh map per call so a caller scribbling on it doesn't poison
+	// the package default for everyone else.
+	thresholds[modeltier.TierSmall] = 0.99
+	fresh := modeltier.DefaultCompactionThresholds()
+	if fresh[modeltier.TierSmall] != 0.35 {
+		t.Errorf("DefaultCompactionThresholds() should return a fresh map; caller mutation leaked through")
+	}
+}
+
+// Pins the small-tier-parent guard's classifier (#121). The CLI
+// uses IsSmall to decide whether to fire the warn/refuse path —
+// false-positives are operator-hostile (refuse on a frontier
+// model) and false-negatives let small-tier sessions through. Both
+// directions need explicit coverage so an accidental Classify
+// table edit (e.g. mis-tagging a new Flash variant) fails CI here
+// rather than in operator smoke.
+func TestIsSmall(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// Small-tier — must trigger the guard.
+		{"gemini-2.5-flash", true},
+		{"gemini-3-flash", true},
+		{"gemini-3.1-flash", true},
+		{"claude-haiku-4-5", true},
+		{"claude-haiku-4-5-20251001", true},
+		{"claude-3-5-haiku-latest", true},
+
+		// Not small — must NOT trigger. Note: gemini-3.5-flash is
+		// mid-tier (see Classify test above) so the small-tier-parent
+		// guard should NOT fire on it; recipes shipping
+		// --small-tier-parent=allow purely to suppress a false-positive
+		// warning on 3.5-flash can drop that flag once this ships.
+		{"gemini-3.5-flash", false},
+		{"gemini-3.5-pro", false},
+		{"gemini-2.5-pro", false},
+		{"claude-opus-4-7", false},
+		{"claude-opus-4-8", false},
+		{"claude-sonnet-4-6", false},
+
+		// Unknown — must NOT trigger (false-positive risk on
+		// newly-released models the table doesn't know yet).
+		{"some-future-model-7b", false},
+		{"", false},
+		{"echo", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			if got := modeltier.IsSmall(tc.model); got != tc.want {
+				t.Errorf("IsSmall(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
