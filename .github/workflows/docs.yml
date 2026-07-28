@@ -22,7 +22,7 @@ name: docs
 on:
   push:
     branches: [main]
-    paths: ['docs/site/**', 'dev/tools/docs-site.sh', '.github/workflows/docs.yml']
+    paths: ['docs/site/**', 'dev/tools/docs-site.sh', 'scripts/verify-internal-links.py', '.github/workflows/docs.yml']
   workflow_dispatch:
 
 concurrency:
@@ -51,6 +51,10 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Build
         run: dev/tools/docs-site.sh build
+      # Gate the deploy on the same link verification ci-docs.yml runs
+      # on PRs — a dead or un-prefixed link never ships to Pages.
+      - name: Verify internal links
+        run: python3 scripts/verify-internal-links.py
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/site/dist

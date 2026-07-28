@@ -14,7 +14,11 @@
 
 // @ts-check
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 import starlight from '@astrojs/starlight';
+import { remarkPrependBase } from './src/plugins/remark-prepend-base.mjs';
+
+const BASE = '/mast';
 
 // v0.1 skeleton config, mirroring core-agent's docs/site Astro +
 // Starlight setup (the go-steer convention; fork-design's earlier Hugo
@@ -22,12 +26,17 @@ import starlight from '@astrojs/starlight';
 //
 // `site` + `base` set 2026-07-27 when the repo went public and the
 // Pages workflow (.github/workflows/docs.yml) landed. Project-pages
-// hosting: https://go-steer.github.io/mast/. Starlight prefixes its
-// own links with `base`; content uses root-relative links that
-// Starlight resolves against it.
+// hosting: https://go-steer.github.io/mast/. Starlight prefixes only
+// its own chrome (sidebar, nav) with `base` — raw Markdown links in
+// content pass through untouched, so the remark-prepend-base plugin
+// (ported from core-agent) rewrites root-relative content links onto
+// the base at build time. Authors keep writing `[text](/reference/...)`.
 export default defineConfig({
   site: 'https://go-steer.github.io',
-  base: '/mast',
+  base: BASE,
+  markdown: {
+    processor: unified({ remarkPlugins: [remarkPrependBase(BASE)] }),
+  },
   integrations: [
     starlight({
       title: 'mast',
