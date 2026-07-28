@@ -20,11 +20,14 @@
 #
 #   dev      (default) astro dev with --host, so the server is reachable
 #            from containers/VMs, not just localhost
-#   build    astro build — exactly what CI runs (.github/workflows/
-#            ci-docs.yml calls this script, so local build == CI build)
+#   build    astro build
 #   preview  astro preview of the built site (run `build` first)
-#   check    build with Starlight's link validation (Starlight validates
-#            internal links at build time; no extra deps needed)
+#   check    build + scripts/verify-internal-links.py — exactly what CI
+#            runs (.github/workflows/ci-docs.yml calls this script, so
+#            local check == CI check). Needs python3. The verifier is
+#            required: a green astro build does NOT validate links
+#            (Starlight core has none), and links missing the /mast
+#            deploy base survive the build but 404 on Pages.
 #
 # Deliberately NOT part of dev/ci/presubmits/all.sh: the site build
 # needs Node, and the Go presubmits must stay runnable by every Go
@@ -76,10 +79,8 @@ case "${cmd}" in
     exec npx astro preview "$@"
     ;;
   check)
-    # Starlight validates internal links during `astro build`; a green
-    # build is the link check. Kept as a named subcommand so a richer
-    # checker can slot in without callers changing.
-    exec npx astro build "$@"
+    npx astro build "$@"
+    exec python3 "${site_dir}/../../scripts/verify-internal-links.py"
     ;;
   *)
     echo "usage: dev/tools/docs-site.sh [dev|build|preview|check] [extra astro args...]" >&2

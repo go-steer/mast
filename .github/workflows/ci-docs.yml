@@ -12,15 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# CI for the docs site (docs/site — Astro + Starlight). Build ONLY, no
-# deploy: the repo is private until the fork lands + sanity checks pass
-# (AGENTS.md "Operational facts"), so publishing is deliberately
-# deferred. When the repo goes public, the deploy lands as a separate
-# GitHub Pages workflow mirroring core-agent's docs.yml pattern
-# (configure-pages + upload-pages-artifact + deploy-pages), and
-# astro.config.mjs grows its site/base pair.
+# CI for the docs site (docs/site — Astro + Starlight). Verification
+# only, no deploy — deploy is docs.yml's job (landed 2026-07-27 when
+# the repo went public).
 #
-# The build step goes through dev/tools/docs-site.sh so local == CI
+# Runs `docs-site.sh check` = astro build + the internal-link verifier
+# (scripts/verify-internal-links.py): a green astro build does NOT
+# validate links, so the verifier catches dead targets and links
+# missing the /mast deploy base before they 404 on Pages.
+#
+# The check goes through dev/tools/docs-site.sh so local == CI
 # exactly (same philosophy as ci.yml running dev/ci/presubmits/all.sh).
 # The site build is deliberately NOT a presubmit: Go contributors
 # shouldn't need a Node toolchain.
@@ -33,11 +34,13 @@ on:
     paths:
       - 'docs/site/**'
       - 'dev/tools/docs-site.sh'
+      - 'scripts/verify-internal-links.py'
       - '.github/workflows/ci-docs.yml'
   pull_request:
     paths:
       - 'docs/site/**'
       - 'dev/tools/docs-site.sh'
+      - 'scripts/verify-internal-links.py'
       - '.github/workflows/ci-docs.yml'
 
 concurrency:
@@ -65,5 +68,5 @@ jobs:
           cache: 'npm'
           cache-dependency-path: docs/site/package-lock.json
 
-      - name: Build site
-        run: dev/tools/docs-site.sh build
+      - name: Build site + verify links
+        run: dev/tools/docs-site.sh check

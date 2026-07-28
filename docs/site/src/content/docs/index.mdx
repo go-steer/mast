@@ -5,17 +5,17 @@ template: doc
 tableOfContents: false
 banner:
   content: |
-    v0.1.0-pre — pre-release. APIs are experimental except the five stable-from-v0.1 packages; see the <a href="/roadmap/">roadmap</a>.
+    v0.1.0-pre — pre-release. APIs are experimental except the five stable-from-v0.1 packages; see the <a href="/mast/roadmap/">roadmap</a>.
 hero:
   title: mast
   tagline: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads. Not a Claude Code competitor.
   actions:
     - text: Install
-      link: /install/
+      link: /mast/install/
       icon: right-arrow
       variant: primary
     - text: Quickstart
-      link: /quickstart/unattended-triage/
+      link: /mast/quickstart/unattended-triage/
       icon: right-arrow
       variant: secondary
     - text: GitHub
@@ -60,12 +60,12 @@ import { CardGrid, LinkCard, Card } from '@astrojs/starlight/components';
   <LinkCard
     title="Run the daemon"
     description="mast --workload=... serves an inject endpoint, dispatches to specialists, pauses for approvals, exports Prometheus metrics."
-    href="/quickstart/unattended-triage/"
+    href="/mast/quickstart/unattended-triage/"
   />
   <LinkCard
     title="Embed the library"
     description="mast.RunWorkload for the batteries-included path, or compose the slim pkg-level slice directly."
-    href="/quickstart/library-embed/"
+    href="/mast/quickstart/library-embed/"
   />
 </CardGrid>
 
