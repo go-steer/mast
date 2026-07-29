@@ -23,10 +23,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"google.golang.org/genai"
 	"gorm.io/gorm"
@@ -62,6 +64,7 @@ type oneShotOptions struct {
 	SessionDB  string // empty = in-memory
 	SessionDrv string // sqlite | postgres
 	Prompt     string
+	Timeout    time.Duration // whole-turn deadline; 0 = none
 }
 
 // runOneShot runs one turn of the class-shaped agent to completion and
@@ -69,6 +72,18 @@ type oneShotOptions struct {
 // same session service the daemon uses: with --session-db set, the
 // turn's events are durable and inspectable via `mast sessions`.
 func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, out io.Writer) error {
+	// Whole-turn deadline (--timeout, default 5m): a one-shot against
+	// an unresponsive backend must fail loudly, not hang a script
+	// forever — genai's silent retry-with-backoff on quota errors
+	// looks exactly like a hang from the outside (observed live
+	// 2026-07-29). Serve mode is not covered here; workload budgets
+	// own its wallclock ceilings.
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+
 	llm, err := buildModel(ctx, opts.Provider, opts.Model)
 	if err != nil {
 		return fmt.Errorf("construct model %q: %w", opts.Model, err)
@@ -115,6 +130,9 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 		StreamingMode: adkagent.StreamingModeNone,
 	}), wd, onAlert) {
 		if err != nil {
+			if opts.Timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("turn exceeded --timeout %s after %d events (raise --timeout or pass --timeout=0 to disable): %w", opts.Timeout, events, err)
+			}
 			return fmt.Errorf("turn failed after %d events: %w", events, err)
 		}
 		events++

@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	mastsession "github.com/go-steer/mast/pkg/session"
 )
@@ -219,5 +220,36 @@ func TestEnsureSQLiteDir(t *testing.T) {
 		if err := ensureSQLiteDir(dsn); err != nil {
 			t.Errorf("ensureSQLiteDir(%q) = %v, want nil no-op", dsn, err)
 		}
+	}
+}
+
+// TestRunOneShot_TimeoutTripsLoudly pins the --timeout contract: an
+// expired deadline surfaces as a named --timeout error instead of a
+// silent hang (genai's quota retry-backoff looks like a hang from
+// the outside), and Timeout: 0 means no deadline at all.
+func TestRunOneShot_TimeoutTripsLoudly(t *testing.T) {
+	err := runOneShot(context.Background(), discardLogger(), oneShotOptions{
+		Class:      "chat",
+		Model:      "echo",
+		SessionDrv: "sqlite",
+		Prompt:     "hi",
+		Timeout:    time.Nanosecond, // expires before the first model call
+	}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "--timeout") {
+		t.Errorf("got err %v, want a --timeout-naming error", err)
+	}
+
+	var out bytes.Buffer
+	if err := runOneShot(context.Background(), discardLogger(), oneShotOptions{
+		Class:      "chat",
+		Model:      "echo",
+		SessionDrv: "sqlite",
+		Prompt:     "hi",
+		Timeout:    0, // disabled
+	}, &out); err != nil {
+		t.Fatalf("Timeout=0 must mean no deadline: %v", err)
+	}
+	if strings.TrimSpace(out.String()) == "" {
+		t.Error("Timeout=0 run produced no output")
 	}
 }
