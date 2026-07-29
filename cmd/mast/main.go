@@ -596,12 +596,45 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters 
 func sessionDialector(driver, dsn string) (gorm.Dialector, error) {
 	switch driver {
 	case "sqlite":
+		if err := ensureSQLiteDir(dsn); err != nil {
+			return nil, err
+		}
 		return sqlite.Open(dsn), nil
 	case "postgres":
 		return postgres.Open(dsn), nil
 	default:
 		return nil, fmt.Errorf("unknown --session-db-driver %q (want `sqlite` or `postgres`)", driver)
 	}
+}
+
+// ensureSQLiteDir creates the parent directory for a SQLite file DSN.
+// SQLite won't create intermediate directories and reports a missing
+// parent as the cryptic "unable to open database file: out of memory
+// (14)" (SQLITE_CANTOPEN) — hit on the first smoke run with
+// --session-db=/tmp/mast/smoke.db before /tmp/mast existed. An
+// unattended daemon's first boot must not fail on an empty state
+// directory, so create it instead of demanding a clearer error from
+// the operator's runbook. file: URIs are unwrapped (query params
+// stripped); in-memory forms pass through untouched.
+func ensureSQLiteDir(dsn string) error {
+	path := dsn
+	if rest, ok := strings.CutPrefix(path, "file:"); ok {
+		path = strings.TrimPrefix(rest, "//")
+		if i := strings.IndexByte(path, '?'); i >= 0 {
+			path = path[:i]
+		}
+	}
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, ":") {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "/" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create session-db directory %s: %w", dir, err)
+	}
+	return nil
 }
 
 func buildSessionService(driver, dsn string, logger *slog.Logger) (session.Service, error) {
