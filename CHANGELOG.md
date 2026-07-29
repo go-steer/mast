@@ -77,6 +77,19 @@
   runs through a per-session watchdog tap (alerts are logged — the
   model-context routing of core-agent #159 remains bucket-3 work).
 
+- **CI split into parallel jobs (core-agent's ci.yml shape).** The single
+  `build-test` job running `all.sh` sequentially becomes four parallel
+  jobs — `test` (build/vet/fmt/-race tests), `lint`, `hygiene`
+  (mod-tidy/govulncheck/slim-deps), `docs-lint` — each step still
+  invoking the identical presubmit scripts, so the scripts remain the
+  single source of truth and local `all.sh` remains the sequential
+  equivalent. Buys: per-check status on PRs (a red run names the
+  failing category instead of one opaque `build-test`), shorter wall
+  clock (slowest leg paces instead of the sum), per-job re-runs,
+  `concurrency: cancel-in-progress` on superseded pushes, and cached
+  golangci-lint/govulncheck binaries. Branch protection needs its
+  required check renamed from `build-test` to the four new job names.
+
 - **CI parity with core-agent: lint, mod-tidy, vuln, docs-lint presubmits.**
   Four checks ported from core-agent's presubmit set: `lint`
   (golangci-lint v2.12.1 pinned, same linter set and settings as

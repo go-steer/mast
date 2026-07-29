@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# CI for mast. This workflow runs dev/ci/presubmits/all.sh — the same
-# script operators run locally — so local presubmit == CI exactly
-# (docs/fork-design.md P1.5; house rule #6). Don't add inline check
-# steps here; add a script under dev/ci/presubmits/ instead.
+# CI for mast. Every step runs a script under dev/ci/presubmits/ — the
+# same scripts dev/ci/presubmits/all.sh runs locally — so local
+# presubmit == CI exactly (docs/fork-design.md P1.5; house rule #6).
+# Don't add inline check steps here; add a script under
+# dev/ci/presubmits/, wire it into a job below AND into all.sh's steps
+# list. The split into parallel jobs (core-agent's ci.yml shape) buys
+# wall-clock and per-check status granularity only — the scripts stay
+# the single source of truth.
 name: ci
 
 on:
@@ -23,16 +27,69 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  build-test:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Presubmits
-        run: dev/ci/presubmits/all.sh
+      - name: Build
+        run: dev/ci/presubmits/build.sh
+      - name: Vet
+        run: dev/ci/presubmits/vet.sh
+      - name: Format
+        run: dev/ci/presubmits/fmt.sh
+      - name: Test (-race)
+        run: dev/ci/presubmits/test.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Cache the compiled golangci-lint binary. Keep the key's version
+      # in sync with GOLANGCI_LINT_VERSION in dev/tools/lint-go —
+      # ensure_tool finds the cached binary on GOBIN and skips the
+      # (slow, from-source) go install.
+      - uses: actions/cache@v4
+        with:
+          path: ~/go/bin/golangci-lint
+          key: ${{ runner.os }}-golangci-lint-v2.12.1
+      - name: golangci-lint
+        run: dev/ci/presubmits/lint.sh
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/cache@v4
+        with:
+          path: ~/go/bin/govulncheck
+          key: ${{ runner.os }}-govulncheck
+      - name: go mod tidy is clean
+        run: dev/ci/presubmits/mod-tidy.sh
+      - name: govulncheck
+        run: dev/ci/presubmits/vuln.sh
+      - name: slim-deps guarantee
+        run: dev/ci/presubmits/slim-deps.sh
+
+  docs-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docs-lint
+        run: dev/ci/presubmits/docs-lint.sh
