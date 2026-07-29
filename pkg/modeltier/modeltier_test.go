@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//
+
 // Originally derived from go-steer/core-agent@83ec0713ade7a5c05d72ad280039f336f561414b
 
 package modeltier_test
