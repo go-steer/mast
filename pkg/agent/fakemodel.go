@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"math"
 	"regexp"
 
 	"google.golang.org/genai"
@@ -56,7 +57,7 @@ func (m *echoModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 		// Synthesize plausible usage so budget metering can be
 		// exercised offline (real models populate this the same way).
 		usage := &genai.GenerateContentResponseUsageMetadata{
-			PromptTokenCount:     int32(len(last) / 4),
+			PromptTokenCount:     int32(min(len(last)/4, math.MaxInt32)), // #nosec G115 -- clamped to MaxInt32
 			CandidatesTokenCount: 16,
 		}
 		usage.TotalTokenCount = usage.PromptTokenCount + usage.CandidatesTokenCount
