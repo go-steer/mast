@@ -566,3 +566,58 @@ func TestBuildParams_GenerationConfigMapped(t *testing.T) {
 		}
 	})
 }
+
+// TestToolsParam_NormalizesGenaiTypeEnums pins the draft-2020-12
+// normalization: genai marshals Schema.Type as uppercase proto enums
+// ("OBJECT"/"STRING"), which Anthropic's strict input_schema
+// validation 400s on. Hit live by ADK v2's finish_task declaration
+// on the first anthropic-vertex smoke run.
+func TestToolsParam_NormalizesGenaiTypeEnums(t *testing.T) {
+	t.Parallel()
+	cfg := &genai.GenerateContentConfig{Tools: []*genai.Tool{{
+		FunctionDeclarations: []*genai.FunctionDeclaration{{
+			Name: "finish_task",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"result": {Type: genai.TypeString, Description: "final answer"},
+					"tags":   {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+					"loose":  {}, // TYPE_UNSPECIFIED — must drop "type" entirely
+				},
+				Required: []string{"result"},
+			},
+		}},
+	}}}
+
+	tools, err := toolsParam(cfg)
+	if err != nil {
+		t.Fatalf("toolsParam: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("got %d tools, want 1", len(tools))
+	}
+	props, ok := tools[0].OfTool.InputSchema.Properties.(map[string]any)
+	if !ok {
+		t.Fatalf("InputSchema.Properties is %T, want map[string]any", tools[0].OfTool.InputSchema.Properties)
+	}
+
+	result, ok := props["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result property missing or wrong shape: %#v", props["result"])
+	}
+	if got := result["type"]; got != "string" {
+		t.Errorf(`result.type = %v, want "string" (lowercase draft 2020-12)`, got)
+	}
+	tags, _ := props["tags"].(map[string]any)
+	if got := tags["type"]; got != "array" {
+		t.Errorf(`tags.type = %v, want "array"`, got)
+	}
+	items, _ := tags["items"].(map[string]any)
+	if got := items["type"]; got != "string" {
+		t.Errorf(`tags.items.type = %v, want "string" (recursion into nested schemas)`, got)
+	}
+	loose, _ := props["loose"].(map[string]any)
+	if _, present := loose["type"]; present {
+		t.Errorf(`loose.type = %v, want absent (TYPE_UNSPECIFIED drops the key)`, loose["type"])
+	}
+}

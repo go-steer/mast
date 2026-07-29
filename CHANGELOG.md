@@ -2,15 +2,32 @@
 
 ## Unreleased
 
-- **Fix: gemini frontier-tier default is now `gemini-3.6-flash`.** The
-  ported tier table (and core-agent's, still) said `gemini-3.5-pro` — a
-  model id that never shipped; the first live-credential `--task=debug
-  --provider=gemini` run hit it. Both directions updated together per
-  the table's own maintenance note (`taskclass.ModelForTier` and
-  `modeltier.Classify`, which now recognizes `gemini-3.6-flash` as
-  frontier). Known gap: the builtin pricing catalog (generated
-  2026-07-20) has no `gemini-3.6-*` entry yet, so budget metering uses
-  the flat non-zero fallback rate until the next catalog regen.
+- **Live-smoke fallout: three provider fixes (2026-07-29).** The first
+  credentialed runs surfaced three port seams, all fixed:
+  - *gemini frontier-tier default is now `gemini-3.6-flash`.* The
+    ported tier table (and core-agent's, still) said `gemini-3.5-pro` —
+    a model id that never shipped. Both directions updated together per
+    the table's own maintenance note (`taskclass.ModelForTier` and
+    `modeltier.Classify`, which now recognizes `gemini-3.6-flash` as
+    frontier). Known gap: the builtin pricing catalog (generated
+    2026-07-20) has no `gemini-3.6-*` entry yet, so budget metering uses
+    the flat non-zero fallback rate until the next catalog regen.
+  - *Gemini built-ins now skip pre-3.0 models when function tools are
+    present.* Gemini 2.x rejects server-side search built-ins alongside
+    client-side function declarations ("Multiple tools are supported
+    only when they are all search tools"), and mast's Task/SingleTurn
+    agents always carry `finish_task` — so blanket injection 400'd
+    every turn on `gemini-2.5-pro`. The wrapper now degrades per
+    request (model keeps working unGrounded, one operator log line);
+    requests with no function tools keep built-ins on every generation.
+  - *Anthropic tool schemas normalized to JSON Schema draft 2020-12.*
+    genai marshals `Schema.Type` as uppercase proto enums
+    ("OBJECT"/"STRING"), which Anthropic's strict `input_schema`
+    validation rejects — hit by ADK v2's `finish_task` declaration on
+    the first anthropic-vertex run. `schemaToInput` now recursively
+    lowercases type enums (and drops `TYPE_UNSPECIFIED`), leaving
+    schema data untouched. core-agent shares this latent seam; flagged
+    upstream.
 
 - **P1.3b: provider adapters + watchdog (2026-07-29).** The staged adapter
   ports resume — core-agent closed all four cleanup milestones on

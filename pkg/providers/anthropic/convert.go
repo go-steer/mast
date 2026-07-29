@@ -416,6 +416,7 @@ func schemaToInput(s *genai.Schema) (map[string]any, []string, error) {
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		return nil, nil, fmt.Errorf("unmarshal schema: %w", err)
 	}
+	normalizeSchemaTypes(generic)
 	var props map[string]any
 	if p, ok := generic["properties"].(map[string]any); ok {
 		props = p
@@ -431,4 +432,37 @@ func schemaToInput(s *genai.Schema) (map[string]any, []string, error) {
 		}
 	}
 	return props, required, nil
+}
+
+// normalizeSchemaTypes rewrites genai.Type enum spellings into JSON
+// Schema draft 2020-12 types, recursively. genai marshals Type as its
+// proto enum string ("OBJECT", "STRING", ...), which Anthropic's
+// strict input_schema validation rejects with 400 invalid_request
+// ("It must match JSON Schema draft 2020-12") — hit live by ADK v2's
+// finish_task declaration, whose Parameters are built from
+// genai.TypeObject/TypeString. Only "type" keys holding a known enum
+// spelling are touched, so schema *data* (enum values, const strings,
+// a property literally named "type" — whose value is a schema map,
+// not a string) passes through untouched.
+func normalizeSchemaTypes(v any) {
+	switch node := v.(type) {
+	case map[string]any:
+		if ts, ok := node["type"].(string); ok {
+			switch ts {
+			case "TYPE_UNSPECIFIED":
+				// genai's zero enum; draft 2020-12 has no equivalent —
+				// absent "type" means unconstrained, which matches.
+				delete(node, "type")
+			case "STRING", "NUMBER", "INTEGER", "BOOLEAN", "ARRAY", "OBJECT", "NULL":
+				node["type"] = strings.ToLower(ts)
+			}
+		}
+		for _, child := range node {
+			normalizeSchemaTypes(child)
+		}
+	case []any:
+		for _, child := range node {
+			normalizeSchemaTypes(child)
+		}
+	}
 }
