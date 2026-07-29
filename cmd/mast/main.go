@@ -99,6 +99,7 @@ func run() {
 		listen       = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
 		sessionDB    = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
 		sessionDrv   = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
+		timeoutFlag  = flag.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets")
 		logLevel     = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
@@ -170,6 +171,7 @@ func run() {
 			SessionDB:  *sessionDB,
 			SessionDrv: *sessionDrv,
 			Prompt:     strings.Join(flag.Args(), " "),
+			Timeout:    *timeoutFlag,
 		}
 		err := runOneShot(ctx, logger, opts, os.Stdout)
 		stop()
@@ -182,6 +184,9 @@ func run() {
 	if *taskFlag != "" {
 		fmt.Fprintln(os.Stderr, "mast: --task requires a positional prompt (one-shot mode); serve mode takes --workload")
 		os.Exit(2)
+	}
+	if explicit["timeout"] {
+		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
 	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *sessionDB, *sessionDrv); err != nil {

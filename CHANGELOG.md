@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **One-shot turns get a `--timeout` deadline (default 5m; `0`
+  disables).** A one-shot against an unresponsive backend hung forever
+  — genai's silent retry-with-backoff on quota errors looks exactly
+  like a hang from the outside, observed live. The deadline covers the
+  whole turn (model construction included) and trips with an error
+  naming the flag. Serve mode is unaffected; workload budgets own its
+  wallclock ceilings.
+
 - **gemini mid-tier default is now `gemini-3.5-flash`.** Mid-tier
   classes (research, chat) previously defaulted to `gemini-2.5-pro`,
   which predates mixed built-in + function tools — so `--task=research
