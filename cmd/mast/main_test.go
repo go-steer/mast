@@ -96,3 +96,39 @@ func TestBuildSessionServiceSQLite(t *testing.T) {
 // postgres DSN needs a reachable server (gorm.Open pings). The driver
 // selection above is the unit-testable seam; end-to-end Postgres is a
 // deployment concern (examples/deploy/cloud-run).
+
+// TestMisplacedFlag pins the trailing-flag guard: defined flags after
+// the positional prompt are refused (Go flag parsing would silently
+// feed them to the model as prompt text — hit live twice on
+// 2026-07-29 with a trailing --session-db), while prompt words that
+// merely look flag-ish pass through.
+func TestMisplacedFlag(t *testing.T) {
+	t.Parallel()
+	defined := func(name string) bool {
+		switch name {
+		case "session-db", "task", "provider", "model":
+			return true
+		}
+		return false
+	}
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"trailing --session-db=path", []string{"What is the latest Go release?", "--session-db=/tmp/mast/smoke.db"}, "--session-db=/tmp/mast/smoke.db"},
+		{"trailing bare --task", []string{"prompt", "--task", "debug"}, "--task"},
+		{"single-dash form", []string{"prompt", "-provider=gemini"}, "-provider=gemini"},
+		{"quoted prompt is one clean arg", []string{"explain the --session-db flag to me"}, ""},
+		{"flag-ish word that is not a defined flag", []string{"summarize", "-race", "output"}, ""},
+		{"no args", nil, ""},
+		{"bare dashes ignored", []string{"prompt", "--"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := misplacedFlag(tc.args, defined); got != tc.want {
+				t.Errorf("misplacedFlag(%q) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+}

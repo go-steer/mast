@@ -132,6 +132,20 @@ func run() {
 	// serve-mode flag and combining the two would silently pick one
 	// semantics, so it errors instead.
 	if flag.NArg() > 0 {
+		// Go's flag package stops parsing at the first positional
+		// argument, so a flag placed AFTER the prompt silently
+		// becomes prompt text — `mast --task=x "prompt" --session-db=y`
+		// ran with in-memory sessions and sent the flag to the model
+		// (observed live 2026-07-29, twice). Refuse the ambiguity when
+		// the trailing token names a flag we actually define; prompts
+		// that legitimately mention flag-like words survive by quoting
+		// (one argument, not starting with `-`).
+		if misplaced := misplacedFlag(flag.Args(), func(name string) bool {
+			return flag.Lookup(name) != nil
+		}); misplaced != "" {
+			fmt.Fprintf(os.Stderr, "mast: %q looks like a flag but appears after the positional prompt — Go flag parsing stops at the first positional argument, so it would be sent to the model as prompt text. Put flags before the prompt.\n", misplaced)
+			os.Exit(2)
+		}
 		class := *taskFlag
 		if class == "" {
 			class = taskclass.Chat
@@ -300,6 +314,26 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		return err
 	}
 	return nil
+}
+
+// misplacedFlag returns the first positional argument that names a
+// defined flag (leading dashes stripped, =value ignored), or "" when
+// none do. defined reports whether a flag name exists — injected so
+// tests don't depend on package-level flag registration order.
+func misplacedFlag(args []string, defined func(string) bool) string {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if name != "" && defined(name) {
+			return a
+		}
+	}
+	return ""
 }
 
 // buildModel constructs the model.LLM for the given provider alias
