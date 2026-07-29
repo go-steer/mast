@@ -2,7 +2,41 @@
 
 ## Unreleased
 
-- (nothing yet)
+- **P1.3b: provider adapters + watchdog (2026-07-29).** The staged adapter
+  ports resume — core-agent closed all four cleanup milestones on
+  2026-07-28, so P1.3b's gate (the correctness bugs #357/#367/#370/#363/#372)
+  is cleared; attribution pinned at
+  `go-steer/core-agent@b8dd225e9ae7fdeb3ff23772cc5be25eed34b818`. New
+  packages: `pkg/providers/anthropic` (first-party + Vertex backends;
+  preserves the thinking-block round-trip #357, per-request tool_use ID
+  synthesis #367, streaming-close #487, pause_turn continuation, and the
+  three-bucket prompt-cache usage fold); `pkg/providers/gemini` (the
+  builtin-tool wrapper — GoogleSearch/URLContext defaults, server-side
+  invocation gating, Vertex context-cache stamp/strip + eviction retry,
+  empty-response retry #220 — plus the GoogleSearch grounding audit
+  projection); `pkg/providers/vertexcache` (context-cache manager with the
+  transient-Init retry #370; relocated from core-agent's `internal/` so
+  compose and library consumers can wire it); `pkg/providers/mock`
+  (scripted JSONL replay with a self-contained `RecordedTurn` format);
+  `pkg/watchdog` (repeated-tool-call signal plus the session-event bridge
+  carrying the #363 aggregator-dedup fix). Deliberate reshape, mirroring
+  core-agent #492 item 7: no `*config.Config` constructors and no `init()`
+  registry — per-provider Options structs are the construction API, and
+  `internal/compose.BuildModel` dispatches `echo`/`scripted`/`gemini-*`/
+  `claude-*` (`--provider` picks the Anthropic backend; without it,
+  `ANTHROPIC_API_KEY` then a Vertex project decides). CLI: `--provider`
+  grows `anthropic`, `anthropic-vertex`, and `scripted`; claude-* budget
+  rates derive from the builtin pricing catalog; every runner stream now
+  runs through a per-session watchdog tap (alerts are logged — the
+  model-context routing of core-agent #159 remains bucket-3 work).
+
+- **Presubmit tests run under the race detector.** `dev/ci/presubmits/
+  test.sh` (and therefore CI) now runs `go test -race -timeout 5m ./...`,
+  matching core-agent's bar — the P1.3b ports introduced mast's first
+  real concurrency, and the ported regression tests were written against
+  `-race` upstream. The vertexcache tests' 1s poll deadlines widen to 10s
+  so mast doesn't inherit core-agent's #499 flake under loaded CI (a
+  passing poll still returns in milliseconds).
 
 ## v0.1.0-pre (2026-07-26)
 

@@ -16,6 +16,7 @@ package compose
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/go-steer/mast/pkg/pricing"
@@ -57,8 +58,70 @@ func TestRatePer1K(t *testing.T) {
 		t.Errorf("RatePer1K(unknown gemini) = %v, want 0.0006 fallback", got)
 	}
 
+	// Claude models price from the same catalog blend (P1.3b).
+	cr, ok := builtinCatalog().Lookup("claude-opus-4-7")
+	if !ok || cr.IsZero() {
+		t.Fatal("builtin catalog lost claude-opus-4-7; pick another catalog-known model for this test")
+	}
+	cwant := (cr.InputPerMTok + cr.OutputPerMTok) / 2 / 1000
+	if got := RatePer1K("claude-opus-4-7"); math.Abs(got-cwant) > 1e-12 {
+		t.Errorf("RatePer1K(claude-opus-4-7) = %v, want %v (builtin catalog blend)", got, cwant)
+	}
+	if got := RatePer1K("claude-99-imaginary"); got != 0.003 {
+		t.Errorf("RatePer1K(unknown claude) = %v, want 0.003 fallback", got)
+	}
+
+	// The scripted replay shares echo's inflated offline rate.
+	if got := RatePer1K("scripted"); got != 0.05 {
+		t.Errorf("RatePer1K(scripted) = %v, want 0.05 (offline test double)", got)
+	}
+
 	if got := RatePer1K("something-else"); got != 0.001 {
 		t.Errorf("RatePer1K(non-gemini) = %v, want 0.001", got)
+	}
+}
+
+// TestBuildModel_ErrorsAndMocks pins BuildModel's credential-free
+// paths: the mocks construct, scripted demands MAST_SCRIPT, claude-*
+// without credentials names every way to supply them, and unknown
+// names enumerate the accepted shapes.
+func TestBuildModel_ErrorsAndMocks(t *testing.T) {
+	ctx := t.Context()
+
+	if llm, err := BuildModel(ctx, "", "echo"); err != nil || llm == nil {
+		t.Fatalf("BuildModel(echo) = (%v, %v), want a model", llm, err)
+	}
+
+	t.Setenv("MAST_SCRIPT", "")
+	if _, err := BuildModel(ctx, "", "scripted"); err == nil || !strings.Contains(err.Error(), "MAST_SCRIPT") {
+		t.Errorf("BuildModel(scripted) without MAST_SCRIPT: err = %v, want mention of MAST_SCRIPT", err)
+	}
+
+	// No creds anywhere: the claude-* error must name the recovery
+	// paths (API key, Vertex project, explicit --provider).
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_VERTEX_PROJECT_ID", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	if _, err := BuildModel(ctx, "", "claude-sonnet-4-6"); err == nil ||
+		!strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Errorf("BuildModel(claude, no creds): err = %v, want guidance naming ANTHROPIC_API_KEY", err)
+	}
+
+	// A gemini/echo alias can't serve a claude model id.
+	if _, err := BuildModel(ctx, "gemini", "claude-sonnet-4-6"); err == nil ||
+		!strings.Contains(err.Error(), "anthropic") {
+		t.Errorf("BuildModel(provider=gemini, claude-*): err = %v, want anthropic guidance", err)
+	}
+
+	if _, err := BuildModel(ctx, "", "gpt-42"); err == nil || !strings.Contains(err.Error(), "claude-*") {
+		t.Errorf("BuildModel(gpt-42): err = %v, want the accepted-shapes enumeration", err)
+	}
+
+	// First-party anthropic constructs without network as soon as a
+	// key is present (client dialing happens per-request).
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+	if llm, err := BuildModel(ctx, "anthropic", "claude-sonnet-4-6"); err != nil || llm == nil {
+		t.Fatalf("BuildModel(anthropic, claude-sonnet-4-6) = (%v, %v), want a model", llm, err)
 	}
 }
 

@@ -13,7 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# test.sh — presubmit: the whole module's unit tests.
+# test.sh — presubmit: the whole module's unit tests, under the race
+# detector. -race matches core-agent's CI bar (dev/tools/test-unit
+# there) — the P1.3b ports brought real concurrency (vertexcache
+# background init/refresh, the watchdog tap, the inject handlers'
+# session pools) and their upstream regression tests were written
+# against -race; running without it would silently weaken them.
 #
 # These scripts are exactly what CI runs (.github/workflows/ci.yml →
 # dev/ci/presubmits/all.sh); run all.sh locally before pushing.
@@ -21,4 +26,4 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
-go test ./...
+go test -race -timeout 5m ./...
