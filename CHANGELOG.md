@@ -30,6 +30,28 @@
   runs through a per-session watchdog tap (alerts are logged — the
   model-context routing of core-agent #159 remains bucket-3 work).
 
+- **CI parity with core-agent: lint, mod-tidy, vuln, docs-lint presubmits.**
+  Four checks ported from core-agent's presubmit set: `lint`
+  (golangci-lint v2.12.1 pinned, same linter set and settings as
+  core-agent's `.golangci.yml` so ported code lints identically on both
+  sides), `mod-tidy` (`go mod tidy` must be a no-op; content-compared,
+  not git-compared, so uncommitted local edits don't false-positive),
+  `vuln` (govulncheck, symbol-level), and `docs-lint` (prose-drift rules
+  over README + site content: tool/specialist counts, variant counts,
+  pinned self-install snippets — with a self-test so a defanged regex
+  fails loudly). First run caught real issues: two reachable
+  vulnerabilities (grpc → v1.82.1 for GO-2026-6061; pgx/v5 → v5.9.2 for
+  GO-2026-5004, a SQL-injection path reachable through the Postgres
+  session store), three doc-drift instances, and a sweep of lint
+  findings — including `serve()` restructured to return errors instead
+  of `os.Exit` so the OTel flush and signal cleanup defers actually run
+  on fatal startup errors. Ported-file attribution lines moved from
+  inside the license comment block to their own comment group below it
+  (goheader can't express an optional template suffix; the convention
+  is otherwise unchanged). core-agent's `verify-version-fallback` is
+  deliberately not ported: mast's ldflags fallback is the constant
+  string `dev`, which cannot go stale.
+
 - **Presubmit tests run under the race detector.** `dev/ci/presubmits/
   test.sh` (and therefore CI) now runs `go test -race -timeout 5m ./...`,
   matching core-agent's bar — the P1.3b ports introduced mast's first

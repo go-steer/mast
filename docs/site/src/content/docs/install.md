@@ -34,7 +34,7 @@ Each tarball contains the `mast` binary plus `LICENSE`, `README.md`, and
 ## go install
 
 ```sh
-go install github.com/go-steer/mast/cmd/mast@v0.1.0-pre
+go install github.com/go-steer/mast/cmd/mast@latest
 ```
 
 ## Verify

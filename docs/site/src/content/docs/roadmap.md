@@ -20,7 +20,7 @@ version named in the
 ## Shipped in v0.1.0-pre
 
 Workflow-graph and SubAgents dispatch on ADK v2.1.0; durable HITL surviving
-process death; budget metering with cost + turn caps; the 13-specialist GKE
+process death; budget metering with cost + turn caps; the full GKE
 triage roster; `.agents/` discovery; the sessions operator surface (CLI +
 HTTP); observability v0.1 (seven fixed counter families + env-gated OTel
 trace export); the synchronous A2A v0.3 client, `federation.Adapter`, and
