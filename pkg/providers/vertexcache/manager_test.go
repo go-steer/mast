@@ -465,12 +465,20 @@ func TestInit_TransientCancelRetriesInsteadOfStickyFail(t *testing.T) {
 				return !s.Active && !s.Failed
 			})
 
-			// Blip over: the next turn's Init retries and activates.
+			// Blip over: later turns retry and activate. Poll Init
+			// rather than calling it once — a single call can land in
+			// the window between Create returning and doInit resetting
+			// the gate, get swallowed, and leave nobody to retry (the
+			// real shape of core-agent #499: a lost retry, not a slow
+			// one). Polling mirrors the product contract — every real
+			// turn calls Init again.
 			f.mu.Lock()
 			f.createErr = nil
 			f.mu.Unlock()
-			m.Init(context.Background(), sys, nil)
-			waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Active })
+			waitFor(t, 10*time.Second, func() bool {
+				m.Init(context.Background(), sys, nil)
+				return m.Snapshot().Active
+			})
 			if got := f.createCount.Load(); got != 2 {
 				t.Errorf("createCount = %d, want 2 (one failed, one retried)", got)
 			}
