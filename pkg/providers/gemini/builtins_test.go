@@ -194,7 +194,11 @@ func TestBuiltinsLLM_PreservesExistingTools(t *testing.T) {
 	userTool := &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "my_func"}},
 	}
+	// Model must be 3.0+ — with function tools present, the mixed-tool
+	// guard skips injection entirely on older ids (see
+	// TestBuiltins_MixedToolGuard for that behavior).
 	req := &adkmodel.LLMRequest{
+		Model:  "gemini-3.6-flash",
 		Config: &genai.GenerateContentConfig{Tools: []*genai.Tool{userTool}},
 	}
 	for range wrapped.GenerateContent(context.Background(), req, false) {
@@ -572,5 +576,92 @@ func TestBuiltinsLLM_NoCacheHooks_LeavesConfigUnchanged(t *testing.T) {
 	}
 	if req.Config.CachedContent != "" {
 		t.Errorf("CachedContent set without hooks: %q", req.Config.CachedContent)
+	}
+}
+
+// TestBuiltins_MixedToolGuard pins the pre-3.0 degradation: Gemini
+// 2.x rejects server-side built-ins alongside client-side function
+// declarations ("Multiple tools are supported only when they are all
+// search tools"), so the wrapper must skip injection on those models
+// when the request carries function tools — and keep injecting
+// everywhere else. Caught live: --task=research --provider=gemini
+// resolved to gemini-2.5-pro and 400'd on every turn.
+func TestBuiltins_MixedToolGuard(t *testing.T) {
+	t.Parallel()
+
+	fnTools := func() []*genai.Tool {
+		return []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "finish_task"}}}}
+	}
+
+	cases := []struct {
+		name         string
+		model        string
+		reqTools     []*genai.Tool
+		wantBuiltins bool
+	}{
+		{"gemini-2.5 with function tools skips builtins", "gemini-2.5-pro", fnTools(), false},
+		{"gemini-2.5 without function tools keeps builtins", "gemini-2.5-pro", nil, true},
+		{"gemini-3.6 with function tools keeps builtins", "gemini-3.6-flash", fnTools(), true},
+		{"gemini-3.0 with function tools keeps builtins", "gemini-3-pro", fnTools(), true},
+		{"unparseable id with function tools skips builtins", "custom-tuned-model", fnTools(), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeLLM{}
+			llm := Wrap(fake, Options{BuiltinTools: DefaultBuiltinTools()})
+			req := &adkmodel.LLMRequest{Model: tc.model}
+			if tc.reqTools != nil {
+				req.Config = &genai.GenerateContentConfig{Tools: tc.reqTools}
+			}
+			for range llm.GenerateContent(context.Background(), req, false) {
+			}
+			got := 0
+			for _, tool := range fake.last.Config.Tools {
+				if tool != nil && (tool.GoogleSearch != nil || tool.URLContext != nil) {
+					got++
+				}
+			}
+			if tc.wantBuiltins && got == 0 {
+				t.Errorf("builtins not injected for %s; want GoogleSearch+URLContext appended", tc.model)
+			}
+			if !tc.wantBuiltins && got != 0 {
+				t.Errorf("builtins injected for %s with function tools; want skipped (pre-3.0 mix rejection)", tc.model)
+			}
+			// Function declarations must survive untouched either way.
+			if tc.reqTools != nil {
+				found := false
+				for _, tool := range fake.last.Config.Tools {
+					if tool != nil && len(tool.FunctionDeclarations) > 0 {
+						found = true
+					}
+				}
+				if !found {
+					t.Error("function declarations lost from the request")
+				}
+			}
+		})
+	}
+}
+
+// TestGeminiMajorVersion pins the version parse the mix guard rides on.
+func TestGeminiMajorVersion(t *testing.T) {
+	t.Parallel()
+	cases := map[string]int{
+		"gemini-3.6-flash":      3,
+		"gemini-3-pro":          3,
+		"gemini-2.5-pro":        2,
+		"gemini-2.0-flash":      2,
+		"Gemini-3.6-Flash":      3,
+		"gemini-10.1-pro":       10,
+		"gemini-flash":          0,
+		"claude-sonnet-4-6":     0,
+		"":                      0,
+		"gemini-3.6-flash-lite": 3,
+	}
+	for model, want := range cases {
+		if got := geminiMajorVersion(model); got != want {
+			t.Errorf("geminiMajorVersion(%q) = %d, want %d", model, got, want)
+		}
 	}
 }
