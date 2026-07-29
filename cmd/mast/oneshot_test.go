@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -165,5 +166,58 @@ func TestResolveModelSelection(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRunOneShot_CreatesSessionDBParentDir pins the ensureSQLiteDir
+// behavior end to end: a --session-db path whose parent directories
+// don't exist yet must work on first boot instead of surfacing
+// SQLite's "unable to open database file: out of memory (14)"
+// (SQLITE_CANTOPEN) — hit live on the first smoke run.
+func TestRunOneShot_CreatesSessionDBParentDir(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "nested", "deeper", "sessions.db")
+	var out bytes.Buffer
+	err := runOneShot(context.Background(), discardLogger(), oneShotOptions{
+		Class:      "chat",
+		Model:      "echo",
+		SessionDB:  db,
+		SessionDrv: "sqlite",
+		Prompt:     "hi",
+	}, &out)
+	if err != nil {
+		t.Fatalf("runOneShot with missing parent dirs: %v", err)
+	}
+	if _, err := os.Stat(db); err != nil {
+		t.Errorf("session db was not created at %s: %v", db, err)
+	}
+}
+
+// TestEnsureSQLiteDir pins the DSN-shape handling: plain paths get
+// their parents created, file: URIs are unwrapped, and in-memory
+// forms are left alone.
+func TestEnsureSQLiteDir(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+
+	plain := filepath.Join(base, "a", "b", "x.db")
+	if err := ensureSQLiteDir(plain); err != nil {
+		t.Fatalf("plain path: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(base, "a", "b")); err != nil || !fi.IsDir() {
+		t.Errorf("plain path parent not created: %v", err)
+	}
+
+	uri := "file:" + filepath.Join(base, "c", "y.db") + "?cache=shared"
+	if err := ensureSQLiteDir(uri); err != nil {
+		t.Fatalf("file URI: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(base, "c")); err != nil || !fi.IsDir() {
+		t.Errorf("file URI parent not created: %v", err)
+	}
+
+	for _, dsn := range []string{"", ":memory:", "file::memory:?cache=shared", "x.db"} {
+		if err := ensureSQLiteDir(dsn); err != nil {
+			t.Errorf("ensureSQLiteDir(%q) = %v, want nil no-op", dsn, err)
+		}
 	}
 }

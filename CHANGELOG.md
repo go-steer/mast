@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fix: `--session-db` creates missing parent directories (SQLite).**
+  SQLite won't create intermediate directories and reports a missing
+  parent as "unable to open database file: out of memory (14)"
+  (SQLITE_CANTOPEN) — hit on the first smoke run with
+  `--session-db=/tmp/mast/smoke.db` before `/tmp/mast` existed. The
+  sqlite dialector path now MkdirAlls the parent (0750) so an
+  unattended daemon's first boot works against an empty state
+  directory; `file:` URIs are unwrapped, in-memory forms untouched.
+
 - **Live-smoke fallout: three provider fixes (2026-07-29).** The first
   credentialed runs surfaced three port seams, all fixed:
   - *gemini frontier-tier default is now `gemini-3.6-flash`.* The
