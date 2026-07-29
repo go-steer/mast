@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **gemini mid-tier default is now `gemini-3.5-flash`.** Mid-tier
+  classes (research, chat) previously defaulted to `gemini-2.5-pro`,
+  which predates mixed built-in + function tools — so `--task=research
+  --provider=gemini` could never ground: observed live, the model
+  hallucinated a `search` tool (ADK's tool-not-found recovery answered
+  it) and then apologized. The 3.5-flash line supports the mix, is
+  already classified mid by `pkg/modeltier`, and is cheaper per the
+  pricing catalog.
+
+- **One-shot mode refuses flags placed after the prompt.** Go's flag
+  package stops parsing at the first positional argument, so
+  `mast --task=x "prompt" --session-db=y` silently ran with in-memory
+  sessions and sent `--session-db=y` to the model as prompt text (hit
+  live twice). A trailing token that names a defined flag is now a
+  hard error with an explanation; prompts that legitimately mention
+  flag-like words are unaffected when quoted.
+
 - **Fix: the Anthropic adapter respects `stream=false`.** The ported
   adapter ignored model.LLM's stream flag and always yielded
   partial-text chunks; under ADK v2's `StreamingModeNone` every
