@@ -17,9 +17,11 @@
 # step and a summary at the end. Exits non-zero if any step failed
 # (all steps run regardless, so one run shows every failure).
 #
-# This is exactly what CI runs (.github/workflows/ci.yml); a local
-# `dev/ci/presubmits/all.sh` pass means the CI checks pass (house
-# rule #6: don't ship preventable red builds).
+# CI (.github/workflows/ci.yml) runs these same scripts, split across
+# parallel jobs for wall-clock and per-check granularity; this runner
+# is the sequential local equivalent, so a local all.sh pass means
+# every CI check passes (house rule #6: don't ship preventable red
+# builds). Adding a step means wiring it here AND into a ci.yml job.
 
 set -euo pipefail
 
