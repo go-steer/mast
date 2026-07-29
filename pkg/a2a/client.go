@@ -146,7 +146,7 @@ func (c *Client) cardLocked(ctx context.Context) (*AgentCard, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: fetch agent card %s: %v", federation.ErrUnreachable, c.cfg.Name, cardURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return nil, fmt.Errorf("%w: %s: agent card fetch returned HTTP %d", federation.ErrAuthFailed, c.cfg.Name, resp.StatusCode)
 	}
@@ -417,7 +417,7 @@ func (c *Client) call(ctx context.Context, endpoint, method string, params any) 
 			return nil, fmt.Errorf("%w: %s: %s: %v", federation.ErrUnreachable, c.cfg.Name, method, err)
 		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return nil, fmt.Errorf("%w: %s: %s returned HTTP %d", federation.ErrAuthFailed, c.cfg.Name, method, resp.StatusCode)
 	}

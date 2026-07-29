@@ -7,7 +7,7 @@ mast ships as a Go library with **two embedding paths**. Pick by dependency
 appetite, not by feature list — both run the same subsystems.
 
 ```sh
-go get github.com/go-steer/mast@v0.1.0-pre
+go get github.com/go-steer/mast@latest
 ```
 
 ## Path 1: the batteries-included root package

@@ -284,6 +284,8 @@ func (c *sessionsCmd) post(ctx context.Context, out io.Writer, path string, body
 		return fmt.Errorf("marshal request: %w", err)
 	}
 	url := strings.TrimSuffix(c.addr, "/") + path
+	// #nosec G704 -- url derives from the operator's own --addr flag;
+	// posting to the operator-chosen daemon address is the feature.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
@@ -292,11 +294,11 @@ func (c *sessionsCmd) post(ctx context.Context, out io.Writer, path string, body
 	if token := os.Getenv("MAST_INJECT_TOKEN"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- see above; operator-chosen --addr
 	if err != nil {
 		return fmt.Errorf("POST %s: %w (is the daemon running?)", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("POST %s: %s: %s", url, resp.Status, strings.TrimSpace(string(respBody)))

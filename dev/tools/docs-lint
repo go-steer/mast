@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# docs-lint — prose-drift checks over the user-facing markdown, ported
+# from core-agent's dev/tools/docs-lint and adapted to mast:
+#
+#   1. numeric tool/specialist counts   ("13 tools", "13-specialist")
+#   2. hard-coded container/image/variant counts
+#   3. pinned @vX.Y.Z installs of our own module
+#
+# core-agent's fourth rule (wrong-major v1.X.Y prose pins) is
+# deliberately not ported yet: mast is pre-1.0 and its v0.x status
+# lines are legitimate. Revisit at v1.0.
+#
+# Usage: dev/tools/docs-lint            scan
+#        dev/tools/docs-lint --self-test  verify the rules still fire
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+scoped_paths() {
+  # README + all Astro Starlight site content markdown. Nothing under
+  # docs/*.md at the top level (design docs cite versions/counts as
+  # historical record), nothing under CHANGELOG.md (version headers
+  # and shipped-scope counts are the point there).
+  find README.md docs/site/src/content -type f \( -name '*.md' -o -name '*.mdx' \) 2>/dev/null | sort
+}
+
+# Check 1: numeric tool/specialist counts in prose. Both drift on
+# every roster or catalog change; name the categories instead.
+check_tool_counts() {
+  local path="$1"
+  awk -v p="$path" '
+    # Skip lines that look like directory-tree entries or contain a
+    # markdown/go filename — these are code-shaped, not prose.
+    /^[ \t│├└─┌┐┘┴┬┼]+/ && /\.(md|go|yaml|yml|json|sh|ts|tsx|py)/ { next }
+
+    # Digit form, hyphenated: "13-tool(s)" / "13-specialist(s)" only
+    # when followed by a sentence delimiter, not another hyphen.
+    match($0, /(^|[^A-Za-z0-9])[0-9]+-(tools?|specialists?)([ .,;:)]|$)/) {
+      printf "%s:%d: numeric tool/specialist count — name the categories or the roster instead of a count that drifts on every change\n", p, NR
+      next
+    }
+    # Digit form, space-separated. Require the PLURAL to avoid
+    # matching "20 tool-heavy" style adjectives.
+    match($0, /(^|[^A-Za-z0-9])[0-9]+ (tools|specialists)\b/) {
+      printf "%s:%d: numeric tool/specialist count — name the categories or the roster instead of a count that drifts on every change\n", p, NR
+      next
+    }
+    # Spelled form: Ten..Twenty [space or hyphen] tool[s]/specialist[s].
+    match($0, /(^|[^A-Za-z])(Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty)[- ]?(tools?|specialists?)/) {
+      printf "%s:%d: spelled tool/specialist count — name the categories or the roster instead of a count that drifts on every change\n", p, NR
+    }
+  ' "$path"
+}
+
+# Check 2: hard-coded container/image/variant counts.
+check_image_counts() {
+  local path="$1"
+  grep -n -E '\b(two|three|four|five|six|seven|[2-9]|1[0-9])[- ]?(container|image|variant)s?\b' "$path" 2>/dev/null | \
+    awk -F: -v p="$path" '{
+      msg = "hard-coded container/image/variant count — describe variants by name or use a table";
+      printf "%s:%s: %s\n", p, $1, msg
+    }' || true
+}
+
+# Check 3: pinned @vX.Y.Z in a go get / go install snippet referencing
+# our own module. Use @latest (or a shell variable) instead.
+check_pinned_installs() {
+  local path="$1"
+  grep -n -E 'go (get|install)\s+github\.com/go-steer/mast[^ ]*@v[0-9]+\.[0-9]+\.[0-9]+' "$path" 2>/dev/null | \
+    awk -F: -v p="$path" '{
+      msg = "pinned @vX.Y.Z in install snippet — use @latest so the doc doesn'\''t rot after the next release";
+      printf "%s:%s: %s\n", p, $1, msg
+    }' || true
+}
+
+# ---- driver -----------------------------------------------------------
+
+run_all_checks() {
+  local findings=0
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    local out
+    out=$(
+      check_tool_counts "$path"
+      check_image_counts "$path"
+      check_pinned_installs "$path"
+    )
+    if [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+      findings=$((findings + $(printf '%s\n' "$out" | wc -l)))
+    fi
+  done < <(scoped_paths)
+
+  if (( findings > 0 )); then
+    echo ""
+    echo "docs-lint: $findings finding(s). See remediation hints above."
+    echo "Reference: dev/tools/docs-lint --self-test to see each rule in action."
+    return 1
+  fi
+  echo "docs-lint: OK"
+  return 0
+}
+
+# ---- self-test --------------------------------------------------------
+#
+# Writes a fixture into a temp dir and verifies every rule fires at
+# least once, so regex edits can't silently defang a rule.
+
+self_test() {
+  local tmp
+  tmp=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+
+  cat > "$tmp/fixture.md" <<'EOF'
+# Fixture
+
+The 13-tool built-in catalog is stale phrasing.
+The 13-specialist roster is the same trap.
+Thirteen specialists are registered by default.
+
+We ship three container images.
+
+Install with:
+
+```
+go get github.com/go-steer/mast/cmd/mast@v0.1.0
+```
+EOF
+
+  local out=0
+  local n
+  n=$(check_tool_counts "$tmp/fixture.md" | wc -l)
+  (( n >= 1 )) || { echo "self-test: check_tool_counts fired 0 times, expected ≥1"; out=1; }
+
+  n=$(check_image_counts "$tmp/fixture.md" | wc -l)
+  (( n >= 1 )) || { echo "self-test: check_image_counts fired 0 times, expected ≥1"; out=1; }
+
+  n=$(check_pinned_installs "$tmp/fixture.md" | wc -l)
+  (( n >= 1 )) || { echo "self-test: check_pinned_installs fired 0 times, expected ≥1"; out=1; }
+
+  if (( out == 0 )); then
+    echo "docs-lint self-test: OK (all 3 rules fired on the fixture)"
+  fi
+  return $out
+}
+
+# ---- entry point ------------------------------------------------------
+
+case "${1:-}" in
+  --self-test) self_test ;;
+  "") run_all_checks ;;
+  *) echo "usage: dev/tools/docs-lint [--self-test]" >&2; exit 2 ;;
+esac

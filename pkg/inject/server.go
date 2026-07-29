@@ -165,7 +165,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var payload envelope.InjectPayload
 	dec := json.NewDecoder(r.Body)
@@ -203,7 +203,7 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "resume not enabled", http.StatusNotFound)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req ResumeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -235,7 +235,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "abort not enabled", http.StatusNotFound)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req AbortRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
