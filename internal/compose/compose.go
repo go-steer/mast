@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 
@@ -43,6 +44,9 @@ import (
 	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/pricing"
+	"github.com/go-steer/mast/pkg/providers/anthropic"
+	geminiprov "github.com/go-steer/mast/pkg/providers/gemini"
+	"github.com/go-steer/mast/pkg/providers/mock"
 	"github.com/go-steer/mast/pkg/router"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
@@ -196,18 +200,82 @@ func BuildRoot(cfg RootConfig) (adkagent.Agent, error) {
 	})
 }
 
-// BuildModel constructs the model.LLM for the given name. "echo"
-// builds a fake in-process echo model (no credentials required);
-// anything starting with "gemini-" builds a Vertex/Gemini model via
-// ADK.
-func BuildModel(ctx context.Context, name string) (model.LLM, error) {
+// BuildModel constructs the model.LLM for the given provider alias
+// and model name. The provider alias is only consulted where the
+// model id alone is ambiguous (claude-* serves against
+// api.anthropic.com or Vertex); everything else dispatches on the
+// name.
+//
+//   - "echo": fake in-process echo model (no credentials required).
+//   - "scripted": JSONL recorded-turn replay via pkg/providers/mock;
+//     the recording path comes from MAST_SCRIPT, and
+//     MAST_SCRIPT_STRICT=1 enables strict Contents matching.
+//   - "gemini-*": ADK's Gemini model wrapped in pkg/providers/gemini's
+//     builtin-tool layer (GoogleSearch + URLContext on — core-agent's
+//     defaults; Vertex vs API key is genai's env-driven selection).
+//   - "claude-*": pkg/providers/anthropic; see anthropicProvider for
+//     backend selection.
+func BuildModel(ctx context.Context, provider, name string) (model.LLM, error) {
 	switch {
 	case name == "echo":
 		return mastagent.NewEchoModel("mast-echo"), nil
+	case name == "scripted":
+		path := os.Getenv("MAST_SCRIPT")
+		if path == "" {
+			return nil, fmt.Errorf("model %q requires MAST_SCRIPT (path to a recorded-turns JSONL)", name)
+		}
+		return mock.NewScripted(path, os.Getenv("MAST_SCRIPT_STRICT") == "1")
 	case strings.HasPrefix(name, "gemini-"):
-		return gemini.NewModel(ctx, name, &genai.ClientConfig{})
+		base, err := gemini.NewModel(ctx, name, &genai.ClientConfig{})
+		if err != nil {
+			return nil, err
+		}
+		return geminiprov.Wrap(base, geminiprov.Options{
+			BuiltinTools:        geminiprov.DefaultBuiltinTools(),
+			TolerateEmptyChunks: geminiOnVertex(),
+		}), nil
+	case strings.HasPrefix(name, "claude-"):
+		p, err := anthropicProvider(ctx, provider)
+		if err != nil {
+			return nil, err
+		}
+		return p.Model(ctx, name)
 	default:
-		return nil, fmt.Errorf("unknown model %q (want `echo` or a `gemini-*` model id)", name)
+		return nil, fmt.Errorf("unknown model %q (want `echo`, `scripted`, a `gemini-*` or a `claude-*` model id)", name)
+	}
+}
+
+// geminiOnVertex mirrors genai's own backend selection: the Gemini
+// model runs against Vertex when GOOGLE_GENAI_USE_VERTEXAI is truthy.
+// Vertex streaming interleaves candidate-less heartbeat chunks, so the
+// builtins wrapper's empty-chunk tolerance follows the same switch.
+func geminiOnVertex() bool {
+	v := strings.ToLower(os.Getenv("GOOGLE_GENAI_USE_VERTEXAI"))
+	return v == "true" || v == "1"
+}
+
+// anthropicProvider picks the Anthropic backend for claude-* models.
+// An explicit --provider alias wins; with no alias, ANTHROPIC_API_KEY
+// selects the first-party API and a resolvable Vertex project selects
+// Anthropic-on-Vertex — the same detection order core-agent's registry
+// used, scoped to the two Anthropic backends. CacheSystem stays off,
+// matching core-agent's default (no non-test caller ever enabled it).
+func anthropicProvider(ctx context.Context, provider string) (*anthropic.Provider, error) {
+	switch provider {
+	case anthropic.ProviderName:
+		return anthropic.New(anthropic.Options{})
+	case anthropic.VertexProviderName:
+		return anthropic.NewVertex(ctx, anthropic.VertexOptions{})
+	case "":
+		if os.Getenv(anthropic.EnvAPIKey) != "" {
+			return anthropic.New(anthropic.Options{})
+		}
+		if os.Getenv(anthropic.EnvVertexProject) != "" || os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
+			return anthropic.NewVertex(ctx, anthropic.VertexOptions{})
+		}
+		return nil, fmt.Errorf("claude-* models need ANTHROPIC_API_KEY (first-party) or a Vertex project (ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT), or an explicit --provider=anthropic|anthropic-vertex")
+	default:
+		return nil, fmt.Errorf("provider %q cannot serve claude-* models (want `anthropic` or `anthropic-vertex`)", provider)
 	}
 }
 
@@ -229,8 +297,8 @@ var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
 // RatePer1K derives pkg/budget's flat USD-per-1K-total-tokens rate
 // for a model name (budget.Limits.RatePer1K — API unchanged).
 //
-// Gemini rates come from pkg/pricing's builtin catalog (longest-
-// prefix lookup, so dated/suffixed IDs land). The catalog prices
+// Gemini and Claude rates come from pkg/pricing's builtin catalog
+// (longest-prefix lookup, so dated/suffixed IDs land). The catalog prices
 // input and output tokens separately, but the budget meter only sees
 // UsageMetadata.TotalTokenCount, so the flat rate is the plain
 // average of the two per-MTok rates scaled to per-1K — a deliberate
@@ -240,11 +308,17 @@ var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
 // rate so cost metering never silently drops to zero.
 //
 // The echo fake keeps its inflated rate: offline smoke tests
-// (scripts/demo-spike2.sh scenario 3) trip small caps with it.
+// (scripts/demo-spike2.sh scenario 3) trip small caps with it. The
+// scripted replay shares it — both are offline test doubles.
 func RatePer1K(modelName string) float64 {
 	switch {
-	case modelName == "echo":
+	case modelName == "echo", modelName == "scripted":
 		return 0.05 // inflated so offline smoke tests can trip small caps
+	case strings.HasPrefix(modelName, "claude-"):
+		if r, ok := builtinCatalog().Lookup(modelName); ok && !r.IsZero() {
+			return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000
+		}
+		return 0.003 // catalog miss: haiku-class flat fallback, never zero
 	case strings.HasPrefix(modelName, "gemini-"):
 		if r, ok := builtinCatalog().Lookup(modelName); ok && !r.IsZero() {
 			return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000

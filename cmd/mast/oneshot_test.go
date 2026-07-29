@@ -139,6 +139,14 @@ func TestResolveModelSelection(t *testing.T) {
 		// default (debug -> frontier; no class -> mid).
 		{name: "gemini provider derives frontier from debug", provider: "gemini", model: "echo", class: "debug", want: "gemini-3.5-pro"},
 		{name: "gemini provider derives mid without class", provider: "gemini", model: "echo", want: "gemini-2.5-pro"},
+		{name: "anthropic provider accepts claude model", provider: "anthropic", model: "claude-sonnet-4-6", modelSet: true, want: "claude-sonnet-4-6"},
+		{name: "anthropic provider rejects gemini model", provider: "anthropic", model: "gemini-2.5-flash", modelSet: true, wantErr: "conflicts"},
+		{name: "anthropic provider derives frontier from debug", provider: "anthropic", model: "echo", class: "debug", want: "claude-opus-4-7"},
+		{name: "anthropic provider derives mid without class", provider: "anthropic", model: "echo", want: "claude-sonnet-4-6"},
+		{name: "anthropic-vertex resolves the same model ids", provider: "anthropic-vertex", model: "claude-haiku-4-5", modelSet: true, want: "claude-haiku-4-5"},
+		{name: "anthropic-vertex derives mid without class", provider: "anthropic-vertex", model: "echo", want: "claude-sonnet-4-6"},
+		{name: "scripted provider defaults model", provider: "scripted", model: "echo", want: "scripted"},
+		{name: "scripted provider rejects other model", provider: "scripted", model: "gemini-2.5-flash", modelSet: true, wantErr: "conflicts"},
 		{name: "unknown provider errors", provider: "vertex", model: "echo", wantErr: "unknown --provider"},
 	}
 	for _, tt := range tests {

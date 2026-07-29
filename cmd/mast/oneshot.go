@@ -39,6 +39,7 @@ import (
 
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/pkg/taskclass"
+	"github.com/go-steer/mast/pkg/watchdog"
 )
 
 // oneShotUserID owns one-shot sessions in the session store,
@@ -56,6 +57,7 @@ func oneShotSessionID(class string) string { return "task-" + class }
 // separated from flag parsing so the e2e test can drive it in-process.
 type oneShotOptions struct {
 	Class      string // validated public task class
+	Provider   string // --provider alias (backend hint for claude-*)
 	Model      string // resolved model name (post --provider validation)
 	SessionDB  string // empty = in-memory
 	SessionDrv string // sqlite | postgres
@@ -67,7 +69,7 @@ type oneShotOptions struct {
 // same session service the daemon uses: with --session-db set, the
 // turn's events are durable and inspectable via `mast sessions`.
 func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, out io.Writer) error {
-	llm, err := buildModel(ctx, opts.Model)
+	llm, err := buildModel(ctx, opts.Provider, opts.Model)
 	if err != nil {
 		return fmt.Errorf("construct model %q: %w", opts.Model, err)
 	}
@@ -96,13 +98,22 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// One turn to completion: iterate the full event stream, keeping
 	// the last structured output (Task-mode finish_task value) and the
 	// last text part as the printable result.
+	// Watchdog tap (pkg/watchdog): one turn, so a fresh watchdog per
+	// invocation; alerts are logged on stderr like every other log line
+	// (the model-context routing is bucket-3 per docs/fork-design.md).
+	wd := watchdog.NewDefaultWatchdog()
+	onAlert := func(a watchdog.Alert) {
+		logger.Warn("watchdog alert", "task", opts.Class, "session", sessionID,
+			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
+	}
+
 	var lastOutput any
 	var lastText string
 	events := 0
 	msg := genai.NewContentFromText(opts.Prompt, genai.RoleUser)
-	for event, err := range r.Run(ctx, oneShotUserID, sessionID, msg, adkagent.RunConfig{
+	for event, err := range watchdog.Tap(r.Run(ctx, oneShotUserID, sessionID, msg, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeNone,
-	}) {
+	}), wd, onAlert) {
 		if err != nil {
 			return fmt.Errorf("turn failed after %d events: %w", events, err)
 		}
@@ -187,20 +198,29 @@ func formatOutput(v any) string {
 
 // resolveModelSelection applies the --provider alias against --model
 // (exit criterion 2's literal flag): --provider validates an explicit
-// --model, and supplies a default when --model was left unset —
-// `echo` for the echo provider, and the --task profile's tier default
-// via taskclass.ModelForTier for gemini (mid tier when no class is
-// declared). modelSet reports whether the operator set --model
-// explicitly (flag.Visit), since the flag's default is "echo".
+// --model, and supplies a default when --model was left unset — the
+// mock's own name for echo/scripted, and the --task profile's tier
+// default via taskclass.ModelForTier for gemini/anthropic (mid tier
+// when no class is declared). modelSet reports whether the operator
+// set --model explicitly (flag.Visit), since the flag's default is
+// "echo". anthropic and anthropic-vertex resolve the same model ids —
+// the alias's backend choice is consumed later by compose.BuildModel.
 func resolveModelSelection(provider, model string, modelSet bool, class string) (string, error) {
+	tierDefault := func(providerKey string) string {
+		tier := taskclass.TierMid
+		if p, ok := taskclass.Resolve(class); ok && p.Tier != "" {
+			tier = p.Tier
+		}
+		return taskclass.ModelForTier(providerKey, tier)
+	}
 	switch provider {
 	case "":
 		return model, nil
-	case "echo":
-		if modelSet && model != "echo" {
-			return "", fmt.Errorf("--provider=echo conflicts with --model=%s", model)
+	case "echo", "scripted":
+		if modelSet && model != provider {
+			return "", fmt.Errorf("--provider=%s conflicts with --model=%s", provider, model)
 		}
-		return "echo", nil
+		return provider, nil
 	case "gemini":
 		if modelSet {
 			if !strings.HasPrefix(model, "gemini-") {
@@ -208,12 +228,16 @@ func resolveModelSelection(provider, model string, modelSet bool, class string) 
 			}
 			return model, nil
 		}
-		tier := taskclass.TierMid
-		if p, ok := taskclass.Resolve(class); ok && p.Tier != "" {
-			tier = p.Tier
+		return tierDefault("gemini"), nil
+	case "anthropic", "anthropic-vertex":
+		if modelSet {
+			if !strings.HasPrefix(model, "claude-") {
+				return "", fmt.Errorf("--provider=%s conflicts with --model=%s (want a claude-* model id)", provider, model)
+			}
+			return model, nil
 		}
-		return taskclass.ModelForTier("gemini", tier), nil
+		return tierDefault("anthropic"), nil
 	default:
-		return "", fmt.Errorf("unknown --provider %q (want `gemini` or `echo`)", provider)
+		return "", fmt.Errorf("unknown --provider %q (want `gemini`, `anthropic`, `anthropic-vertex`, `echo`, or `scripted`)", provider)
 	}
 }

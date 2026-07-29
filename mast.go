@@ -287,7 +287,11 @@ func resolveModel(ctx context.Context, cfg Config) (model.LLM, string, error) {
 	if cfg.ModelName == "" {
 		return nil, "", errors.New("mast: Config.Model or Config.ModelName is required")
 	}
-	llm, err := compose.BuildModel(ctx, cfg.ModelName)
+	// No provider alias on the library surface: claude-* backend
+	// selection is env-driven here (ANTHROPIC_API_KEY vs Vertex
+	// project). Consumers who need to force a backend construct the
+	// model via pkg/providers/anthropic and set Config.Model.
+	llm, err := compose.BuildModel(ctx, "", cfg.ModelName)
 	if err != nil {
 		return nil, "", fmt.Errorf("mast: %w", err)
 	}

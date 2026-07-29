@@ -56,6 +56,7 @@ import (
 	mastsession "github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/taskclass"
+	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -92,8 +93,8 @@ func run() {
 	var (
 		workloadFlag = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
 		dispatchMode = flag.String("dispatch", "coordinator", "dispatch shape: `coordinator` (spike-1 SubAgents pattern) or `graph` (workflow-graph LLM-as-router)")
-		modelName    = flag.String("model", "echo", "model to use: `echo` (fake, for smoke) or a Gemini model id like `gemini-2.5-flash`")
-		providerFlag = flag.String("provider", "", "model provider alias: `echo` or `gemini`. Validates against --model when both are set; picks the provider's default model (for gemini, the --task profile's tier via pkg/taskclass) when --model is unset")
+		modelName    = flag.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`")
+		providerFlag = flag.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. For claude-* models the alias also picks the backend (first-party vs Vertex)")
 		taskFlag     = flag.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)")
 		listen       = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
 		sessionDB    = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
@@ -151,6 +152,7 @@ func run() {
 		defer stop()
 		opts := oneShotOptions{
 			Class:      class,
+			Provider:   *providerFlag,
 			Model:      *modelName,
 			SessionDB:  *sessionDB,
 			SessionDrv: *sessionDrv,
@@ -167,11 +169,11 @@ func run() {
 		os.Exit(2)
 	}
 
-	serve(logger, *workloadFlag, *dispatchMode, *modelName, *listen, *sessionDB, *sessionDrv)
+	serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *sessionDB, *sessionDrv)
 }
 
 // serve runs the daemon: inject endpoint + runner + session store.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, modelName, listen, sessionDB, sessionDrv string) {
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, sessionDB, sessionDrv string) {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -198,7 +200,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, modelName, listen, se
 		logger.Info("OTel trace export enabled", "endpoint_source", "OTEL_EXPORTER_OTLP_* env")
 	}
 
-	llm, err := buildModel(ctx, modelName)
+	llm, err := buildModel(ctx, providerName, modelName)
 	if err != nil {
 		logger.Error("failed to construct model", "model", modelName, "error", err.Error())
 		os.Exit(1)
@@ -232,6 +234,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, modelName, listen, se
 	}
 
 	meters := newMeterPool(bundle, modelName)
+	wds := newWatchdogPool()
 
 	// Operator surface over the same session service the runner writes
 	// through (docs/durable-execution-design.md, "Operator-facing
@@ -250,13 +253,13 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, modelName, listen, se
 	obs.Prime(workloadName)
 
 	handler := func(reqCtx context.Context, p envelope.InjectPayload) error {
-		return dispatch(reqCtx, r, logger, meters, obs, workloadName, bundle, p)
+		return dispatch(reqCtx, r, logger, meters, wds, obs, workloadName, bundle, p)
 	}
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == mastsession.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
 		}
-		return resume(reqCtx, r, logger, meters, obs, workloadName, req)
+		return resume(reqCtx, r, logger, meters, wds, obs, workloadName, req)
 	}
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
 		return store.Abort(reqCtx, "", req.SessionID, req.Reason)
@@ -290,11 +293,11 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, modelName, listen, se
 	}
 }
 
-// buildModel constructs the model.LLM for the given name. Thin alias
-// over the shared core (internal/compose) so the flag surface and the
-// library surface can't drift.
-func buildModel(ctx context.Context, name string) (model.LLM, error) {
-	return compose.BuildModel(ctx, name)
+// buildModel constructs the model.LLM for the given provider alias
+// and name. Thin alias over the shared core (internal/compose) so the
+// flag surface and the library surface can't drift.
+func buildModel(ctx context.Context, provider, name string) (model.LLM, error) {
+	return compose.BuildModel(ctx, provider, name)
 }
 
 // resolveWorkload turns the --workload flag value into a loaded bundle
@@ -460,7 +463,32 @@ func (mp *meterPool) meter(sessionID string) *budget.Meter {
 	return m
 }
 
-func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, obs *observability.Registry, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
+// watchdogPool hands out one watchdog per session, mirroring
+// meterPool: the repeated-tool-call signal counts consecutive
+// identical calls across turns, so its state must live with the
+// session, not the turn — and a daemon-global watchdog would blend
+// unrelated sessions' tool streams into false positives.
+type watchdogPool struct {
+	mu   sync.Mutex
+	byID map[string]*watchdog.DefaultWatchdog
+}
+
+func newWatchdogPool() *watchdogPool {
+	return &watchdogPool{byID: map[string]*watchdog.DefaultWatchdog{}}
+}
+
+func (wp *watchdogPool) watchdog(sessionID string) *watchdog.DefaultWatchdog {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	w, ok := wp.byID[sessionID]
+	if !ok {
+		w = watchdog.NewDefaultWatchdog()
+		wp.byID[sessionID] = w
+	}
+	return w
+}
+
+func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal inject payload: %w", err)
@@ -472,14 +500,14 @@ func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters
 		defer cancel()
 	}
 	msg := genai.NewContentFromText(fmt.Sprintf("INJECT %s", string(body)), genai.RoleUser)
-	return runTurn(ctx, r, logger, meters, obs, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
+	return runTurn(ctx, r, logger, meters, wds, obs, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
 }
 
 // resume feeds an operator's approval verdict back into a paused
 // session. The runner treats a user turn carrying a FunctionResponse
 // whose ID matches a pending InterruptID as a resume (see adk/v2
 // runner buildResumeResponses).
-func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, obs *observability.Registry, workloadName string, req inject.ResumeRequest) error {
+func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, workloadName string, req inject.ResumeRequest) error {
 	msg := &genai.Content{
 		Role: genai.RoleUser,
 		Parts: []*genai.Part{genai.NewPartFromFunctionResponse("adk_request_input", map[string]any{
@@ -488,10 +516,10 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *
 	}
 	msg.Parts[0].FunctionResponse.ID = req.InterruptID
 	obs.HITLResume(workloadName)
-	return runTurn(ctx, r, logger, meters, obs, workloadName, req.SessionID, msg, "resume:"+req.InterruptID)
+	return runTurn(ctx, r, logger, meters, wds, obs, workloadName, req.SessionID, msg, "resume:"+req.InterruptID)
 }
 
-func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, obs *observability.Registry, workloadName, sessionID string, msg *genai.Content, label string) error {
+func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, workloadName, sessionID string, msg *genai.Content, label string) error {
 	// Budget enforcement point: the meter folds UsageMetadata from
 	// each streamed event; crossing a ceiling cancels the run context,
 	// aborting any in-flight model/tool work.
@@ -508,10 +536,20 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters 
 		obs.AddCost(workloadName, costAfter-costBefore)
 	}()
 
+	// Watchdog tap (pkg/watchdog): per-session accumulation across
+	// turns, per-turn dedup of aggregator re-emissions (core-agent
+	// #363). Alerts are logged, not routed into model context — the
+	// #159-style routing is bucket-3 work per docs/fork-design.md.
+	onAlert := func(a watchdog.Alert) {
+		logger.Warn("watchdog alert",
+			"turn", label, "session", sessionID,
+			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
+	}
+
 	events := 0
-	for event, err := range r.Run(ctx, defaultUserID, sessionID, msg, adkagent.RunConfig{
+	for event, err := range watchdog.Tap(r.Run(ctx, defaultUserID, sessionID, msg, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeNone,
-	}) {
+	}), wds.watchdog(sessionID), onAlert) {
 		if err != nil {
 			logger.Error("runner emitted error", "turn", label, "session", sessionID, "error", err.Error(), "events_before_error", events)
 			obs.TurnComplete(workloadName, observability.OutcomeError)
