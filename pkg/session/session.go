@@ -335,9 +335,7 @@ func scanPending(events adksession.Events) []PendingInput {
 			if part == nil || part.FunctionResponse == nil {
 				continue
 			}
-			if _, ok := byID[part.FunctionResponse.ID]; ok {
-				delete(byID, part.FunctionResponse.ID)
-			}
+			delete(byID, part.FunctionResponse.ID)
 		}
 	}
 	var pending []PendingInput

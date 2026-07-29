@@ -176,6 +176,6 @@ func discover(envDir, cwd, userDir, systemDir string) (Root, error) {
 }
 
 func dirExists(path string) bool {
-	fi, err := os.Stat(path)
+	fi, err := os.Stat(path) // #nosec G703 -- discovery stats operator-configured candidate paths by design
 	return err == nil && fi.IsDir()
 }

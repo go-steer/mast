@@ -149,7 +149,6 @@ func run() {
 			logger.Warn("--dispatch is a serve-mode flag; ignored in one-shot mode")
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
 		opts := oneShotOptions{
 			Class:      class,
 			Provider:   *providerFlag,
@@ -158,7 +157,9 @@ func run() {
 			SessionDrv: *sessionDrv,
 			Prompt:     strings.Join(flag.Args(), " "),
 		}
-		if err := runOneShot(ctx, logger, opts, os.Stdout); err != nil {
+		err := runOneShot(ctx, logger, opts, os.Stdout)
+		stop()
+		if err != nil {
 			logger.Error("one-shot turn failed", "task", class, "error", err.Error())
 			os.Exit(1)
 		}
@@ -169,11 +170,18 @@ func run() {
 		os.Exit(2)
 	}
 
-	serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *sessionDB, *sessionDrv)
+	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *sessionDB, *sessionDrv); err != nil {
+		// serve already logged the failure with context; the error
+		// return only carries the exit status (and lets serve's defers
+		// — signal stop, OTel flush — run before the process dies).
+		os.Exit(1)
+	}
 }
 
 // serve runs the daemon: inject endpoint + runner + session store.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, sessionDB, sessionDrv string) {
+// Fatal startup errors are logged in place and returned (not
+// os.Exit'd) so the deferred cleanups run.
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, sessionDB, sessionDrv string) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -189,7 +197,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	otelShutdown, otelEnabled, err := observability.SetupOTel(ctx)
 	if err != nil {
 		logger.Error("failed to configure OTel trace export", "error", err.Error())
-		os.Exit(1)
+		return err
 	}
 	defer func() {
 		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -203,14 +211,14 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	llm, err := buildModel(ctx, providerName, modelName)
 	if err != nil {
 		logger.Error("failed to construct model", "model", modelName, "error", err.Error())
-		os.Exit(1)
+		return err
 	}
 	logger.Info("model constructed", "name", llm.Name())
 
 	root, bundle, err := buildRoot(ctx, logger, llm, modelName, workloadArg, dispatchMode)
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
-		os.Exit(1)
+		return err
 	}
 	logger.Info("root agent constructed",
 		"name", root.Name(),
@@ -220,7 +228,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	sessionSvc, err := buildSessionService(sessionDrv, sessionDB, logger)
 	if err != nil {
 		logger.Error("failed to construct session service", "error", err.Error())
-		os.Exit(1)
+		return err
 	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
@@ -230,7 +238,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	})
 	if err != nil {
 		logger.Error("failed to construct runner", "error", err.Error())
-		os.Exit(1)
+		return err
 	}
 
 	meters := newMeterPool(bundle, modelName)
@@ -276,7 +284,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	})
 	if err != nil {
 		logger.Error("failed to construct inject server", "error", err.Error())
-		os.Exit(1)
+		return err
 	}
 
 	go func() {
@@ -289,8 +297,9 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("inject server terminated", "error", err.Error())
-		os.Exit(1)
+		return err
 	}
+	return nil
 }
 
 // buildModel constructs the model.LLM for the given provider alias

@@ -99,7 +99,7 @@ func newStubA2AServer(t *testing.T) *stubA2AServer {
 		s.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		resp := map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(rawReq.ID)}
+		resp := map[string]any{"jsonrpc": "2.0", "id": rawReq.ID}
 		if handler == nil {
 			resp["error"] = &RPCError{Code: -32601, Message: "method not found: " + rawReq.Method}
 		} else if result, rpcErr := handler(rawReq.Params); rpcErr != nil {
