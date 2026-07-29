@@ -125,10 +125,10 @@ func TestModelForTier(t *testing.T) {
 		provider, tier, want string
 	}{
 		// Gemini family.
-		{"gemini", "frontier", "gemini-3.5-pro"},
+		{"gemini", "frontier", "gemini-3.6-flash"},
 		{"gemini", "mid", "gemini-2.5-pro"},
 		{"gemini", "small", "gemini-2.5-flash"},
-		{"vertex", "frontier", "gemini-3.5-pro"}, // vertex aliases gemini
+		{"vertex", "frontier", "gemini-3.6-flash"}, // vertex aliases gemini
 		{"vertex", "small", "gemini-2.5-flash"},
 
 		// Anthropic family.

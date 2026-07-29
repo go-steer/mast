@@ -46,6 +46,7 @@ func TestClassify(t *testing.T) {
 		// 3.x flashes remain small-tier — no evidence they're
 		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
+		{"gemini-3.6-flash", modeltier.TierFrontier},
 		{"gemini-3.5-pro", modeltier.TierFrontier},
 		{"gemini-3.5-flash", modeltier.TierMid},
 		{"gemini-3.5-flash-05-2026", modeltier.TierMid}, // dated snapshot
