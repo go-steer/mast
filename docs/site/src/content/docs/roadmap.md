@@ -5,8 +5,10 @@ description: What v0.1.0-pre ships, what's gated on the adapter ports, and what 
 
 mast is at **v0.1.0-pre**. Ten of the eleven v0.1 exit criteria from the
 fork design are green — the `--task` profile criterion cleared with the
-P1.3a/P1.3b adapter ports (a live-credential provider smoke remains on the
-checklist); this page is the honest account of the rest.
+P1.3a/P1.3b adapter ports and was verified against live endpoints on
+2026-07-29 (gemini one-shot with grounded search on the tier defaults,
+Claude on Vertex completing the Task-mode tool loop, sessions durable
+across runs and providers); this page is the honest account of the rest.
 
 ## Stability, precisely
 
