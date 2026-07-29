@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Fix: gemini frontier-tier default is now `gemini-3.6-flash`.** The
+  ported tier table (and core-agent's, still) said `gemini-3.5-pro` — a
+  model id that never shipped; the first live-credential `--task=debug
+  --provider=gemini` run hit it. Both directions updated together per
+  the table's own maintenance note (`taskclass.ModelForTier` and
+  `modeltier.Classify`, which now recognizes `gemini-3.6-flash` as
+  frontier). Known gap: the builtin pricing catalog (generated
+  2026-07-20) has no `gemini-3.6-*` entry yet, so budget metering uses
+  the flat non-zero fallback rate until the next catalog regen.
+
 - **P1.3b: provider adapters + watchdog (2026-07-29).** The staged adapter
   ports resume — core-agent closed all four cleanup milestones on
   2026-07-28, so P1.3b's gate (the correctness bugs #357/#367/#370/#363/#372)

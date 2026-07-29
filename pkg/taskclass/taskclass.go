@@ -215,7 +215,12 @@ func ModelForTier(provider, tier string) string {
 	case "gemini", "vertex":
 		switch tier {
 		case TierFrontier:
-			return "gemini-3.5-pro"
+			// gemini-3.6-flash: the current top of the flash-first
+			// agentic line. The ported table said gemini-3.5-pro — a
+			// model id that never shipped (inherited from core-agent,
+			// stale there too; corrected 2026-07-29 when the first
+			// live-credential run hit it).
+			return "gemini-3.6-flash"
 		case TierMid:
 			return "gemini-2.5-pro"
 		case TierSmall:
