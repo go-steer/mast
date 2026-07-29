@@ -3,8 +3,10 @@ title: Roadmap
 description: What v0.1.0-pre ships, what's gated on the adapter ports, and what lands in v0.2 — honestly.
 ---
 
-mast is at **v0.1.0-pre**. Nine of the eleven v0.1 exit criteria from the
-fork design are green; this page is the honest account of the rest.
+mast is at **v0.1.0-pre**. Ten of the eleven v0.1 exit criteria from the
+fork design are green — the `--task` profile criterion cleared with the
+P1.3a/P1.3b adapter ports (a live-credential provider smoke remains on the
+checklist); this page is the honest account of the rest.
 
 ## Stability, precisely
 
@@ -29,18 +31,21 @@ library API.
 
 ## Gated on the P1.3 adapter ports
 
-Two v0.1 exit criteria wait on the adapter ports from core-agent, which are
-themselves gated on core-agent's code-cleanup milestones closing (the
-revised trigger in
-[`docs/fork-design.md`](https://github.com/go-steer/mast/blob/main/docs/fork-design.md)
-— the rule is *don't port moving code*):
+The staged ports are landing as core-agent's cleanup milestones close (all
+four closed 2026-07-28; the rule is *don't port moving code* — the revised
+trigger in
+[`docs/fork-design.md`](https://github.com/go-steer/mast/blob/main/docs/fork-design.md)):
 
-- **`--task` profiles** — the task-class profile surface (`--task=chat`,
-  `--task=debug`, …) over the ported provider/permission/task-class
-  packages.
-- **Attach mode + mast-web reachability** — the attach HTTP/SSE transport,
-  and with it the [mast-web](https://github.com/go-steer/mast-web)
-  operator UI.
+- **`--task` profiles — shipped.** P1.3a landed the task-class,
+  permission, pricing, and model-tier packages; P1.3b landed the provider
+  adapters (Anthropic first-party + Vertex, the Gemini builtin-tool layer,
+  Vertex context caching, scripted replay) and the watchdog. One-shot
+  `--task` runs now take `echo`, `scripted`, `gemini-*`, or `claude-*`
+  models.
+- **Attach mode + mast-web reachability — still gated.** The attach
+  HTTP/SSE transport ports as P1.3c once core-agent's attach surface stops
+  moving (it kept absorbing fixes after the milestones closed), and with
+  it the [mast-web](https://github.com/go-steer/mast-web) operator UI.
 
 ## v0.2
 

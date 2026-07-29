@@ -51,7 +51,7 @@ import { CardGrid, LinkCard, Card } from '@astrojs/starlight/components';
 
 1. **Unattended.** Runs without a human watching: HTTP-triggered workloads, budget ceilings, HITL pauses that wait for an operator instead of failing.
 2. **Library-embedded.** Composes as a Go library inside larger services — with a [tested slim-embed guarantee](/quickstart/library-embed/): pay for what you import.
-3. **Multi-provider.** Same config switches models without code changes (v0.1 ships Gemini and an offline echo model; the provider surface is one of the stable-from-v0.1 interfaces).
+3. **Multi-provider.** Same config switches models without code changes (v0.1 ships Gemini — with Google Search and URL-context builtins — Claude on the first-party API or Vertex, and offline echo/scripted test models; the provider surface is one of the stable-from-v0.1 interfaces).
 4. **Durable.** Sessions live in SQLite or Postgres and survive process death — a paused approval outlives `kill -9` and resumes in a fresh process.
 
 ## Two ways to run it
