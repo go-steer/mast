@@ -222,7 +222,15 @@ func ModelForTier(provider, tier string) string {
 			// live-credential run hit it).
 			return "gemini-3.6-flash"
 		case TierMid:
-			return "gemini-2.5-pro"
+			// gemini-3.5-flash, not the older 2.5-pro: mid-tier
+			// classes (research, chat) need built-in grounding to
+			// coexist with function tools, which Gemini supports only
+			// from 3.0 on — on 2.5-pro the research class literally
+			// could not search (observed live 2026-07-29: the model
+			// hallucinated a `search` tool and then apologized). Also
+			// cheaper per the pricing catalog, and modeltier already
+			// classifies the 3.5-flash line as mid.
+			return "gemini-3.5-flash"
 		case TierSmall:
 			return "gemini-2.5-flash"
 		}

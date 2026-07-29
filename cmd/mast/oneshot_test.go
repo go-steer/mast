@@ -139,7 +139,7 @@ func TestResolveModelSelection(t *testing.T) {
 		// No explicit --model: the --task profile's tier picks the
 		// default (debug -> frontier; no class -> mid).
 		{name: "gemini provider derives frontier from debug", provider: "gemini", model: "echo", class: "debug", want: "gemini-3.6-flash"},
-		{name: "gemini provider derives mid without class", provider: "gemini", model: "echo", want: "gemini-2.5-pro"},
+		{name: "gemini provider derives mid without class", provider: "gemini", model: "echo", want: "gemini-3.5-flash"},
 		{name: "anthropic provider accepts claude model", provider: "anthropic", model: "claude-sonnet-4-6", modelSet: true, want: "claude-sonnet-4-6"},
 		{name: "anthropic provider rejects gemini model", provider: "anthropic", model: "gemini-2.5-flash", modelSet: true, wantErr: "conflicts"},
 		{name: "anthropic provider derives frontier from debug", provider: "anthropic", model: "echo", class: "debug", want: "claude-opus-4-7"},
