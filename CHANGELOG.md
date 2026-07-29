@@ -30,6 +30,14 @@
   runs through a per-session watchdog tap (alerts are logged — the
   model-context routing of core-agent #159 remains bucket-3 work).
 
+- **Presubmit tests run under the race detector.** `dev/ci/presubmits/
+  test.sh` (and therefore CI) now runs `go test -race -timeout 5m ./...`,
+  matching core-agent's bar — the P1.3b ports introduced mast's first
+  real concurrency, and the ported regression tests were written against
+  `-race` upstream. The vertexcache tests' 1s poll deadlines widen to 10s
+  so mast doesn't inherit core-agent's #499 flake under loaded CI (a
+  passing poll still returns in milliseconds).
+
 ## v0.1.0-pre (2026-07-26)
 
 Phase-1 pre-release: nine of fork-design's eleven v0.1 exit criteria are

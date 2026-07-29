@@ -136,7 +136,11 @@ func discardLogger() *log.Logger { return log.New(os.Stderr, "", 0) }
 
 // waitFor polls fn until it returns true or the deadline elapses.
 // Backoff is a tight 5ms loop — sufficient for the goroutine hops
-// this file exercises without extending unit-test wall time.
+// this file exercises without extending unit-test wall time. Call
+// sites pass a deliberately generous 10s deadline: passing tests
+// return on the first poll that succeeds, and only genuine failures
+// pay the full wait — the upstream 1s deadline flaked under loaded
+// -race CI runs (core-agent #499).
 func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -165,7 +169,7 @@ func TestManager_InitHappyPath(t *testing.T) {
 	}
 
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
-	waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+	waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Active })
 
 	// Post-init, Name resolves.
 	if got := m.Name(context.Background()); got != "projects/p/locations/l/cachedContents/abc" {
@@ -195,7 +199,7 @@ func TestManager_InitError(t *testing.T) {
 	m := NewManager(fake, "gemini-2.5-flash", Options{Logger: discardLogger()})
 
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
-	waitFor(t, time.Second, func() bool { return m.Snapshot().Failed })
+	waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Failed })
 
 	if got := m.Name(context.Background()); got != "" {
 		t.Errorf("Name after failed Init = %q, want empty (degrade to uncached)", got)
@@ -228,7 +232,7 @@ func TestManager_InitAtMostOnce(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+	waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Active })
 	if fake.createCount.Load() != 1 {
 		t.Errorf("Create called %d times under concurrent Init, want 1", fake.createCount.Load())
 	}
@@ -251,11 +255,11 @@ func TestManager_RefreshTriggersOnLowTTL(t *testing.T) {
 		RefreshThreshold: 30 * time.Minute, // 500ms remaining << 30min → refresh
 	})
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
-	waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+	waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Active })
 
 	// First Name call reads the cache + schedules a Refresh goroutine.
 	_ = m.Name(context.Background())
-	waitFor(t, time.Second, func() bool { return fake.updateCount.Load() >= 1 })
+	waitFor(t, 10*time.Second, func() bool { return fake.updateCount.Load() >= 1 })
 
 	// After Refresh completes, the cache has a full 1h remaining —
 	// well outside the 30min refresh window. A burst of Name() calls
@@ -281,7 +285,7 @@ func TestManager_DeleteHappyPath(t *testing.T) {
 	fake := &fakeCaches{}
 	m := NewManager(fake, "gemini-2.5-flash", Options{})
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
-	waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+	waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Active })
 
 	m.Delete(context.Background())
 	if fake.deleteCount.Load() != 1 {
@@ -328,7 +332,7 @@ func TestManager_MarkEvicted_ResetsForFreshInit(t *testing.T) {
 
 	sys := &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}
 	m.Init(context.Background(), sys, nil)
-	waitFor(t, time.Second, func() bool { return m.Name(context.Background()) != "" })
+	waitFor(t, 10*time.Second, func() bool { return m.Name(context.Background()) != "" })
 	if fake.createCount.Load() != 1 {
 		t.Fatalf("expected 1 Create call, got %d", fake.createCount.Load())
 	}
@@ -344,7 +348,7 @@ func TestManager_MarkEvicted_ResetsForFreshInit(t *testing.T) {
 	// half of eviction recovery.
 	fake.nextCacheNameOnce = "projects/p/l/l/cc/second"
 	m.Init(context.Background(), sys, nil)
-	waitFor(t, time.Second, func() bool { return m.Name(context.Background()) == "projects/p/l/l/cc/second" })
+	waitFor(t, 10*time.Second, func() bool { return m.Name(context.Background()) == "projects/p/l/l/cc/second" })
 	if fake.createCount.Load() != 2 {
 		t.Errorf("expected 2 Create calls after eviction + re-init, got %d", fake.createCount.Load())
 	}
@@ -364,7 +368,7 @@ func TestManager_MarkEvicted_NoOpBeforeActive(t *testing.T) {
 
 	// Drive Init to stateFailed.
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
-	waitFor(t, time.Second, func() bool {
+	waitFor(t, 10*time.Second, func() bool {
 		return fake.createCount.Load() >= 1
 	})
 	// Give the goroutine one more scheduler tick to write the state.
@@ -432,7 +436,7 @@ func TestInit_DetachedFromRequestContext(t *testing.T) {
 	cancel() // the spawning turn is already gone
 	m.Init(ctx, &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
 
-	waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+	waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Active })
 	if got := f.createCount.Load(); got != 1 {
 		t.Errorf("createCount = %d, want 1", got)
 	}
@@ -455,8 +459,8 @@ func TestInit_TransientCancelRetriesInsteadOfStickyFail(t *testing.T) {
 			m.Init(context.Background(), sys, nil)
 			// The failed attempt must NOT go sticky-failed, and must
 			// re-open the Init gate.
-			waitFor(t, time.Second, func() bool { return f.createCount.Load() == 1 })
-			waitFor(t, time.Second, func() bool {
+			waitFor(t, 10*time.Second, func() bool { return f.createCount.Load() == 1 })
+			waitFor(t, 10*time.Second, func() bool {
 				s := m.Snapshot()
 				return !s.Active && !s.Failed
 			})
@@ -466,7 +470,7 @@ func TestInit_TransientCancelRetriesInsteadOfStickyFail(t *testing.T) {
 			f.createErr = nil
 			f.mu.Unlock()
 			m.Init(context.Background(), sys, nil)
-			waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+			waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Active })
 			if got := f.createCount.Load(); got != 2 {
 				t.Errorf("createCount = %d, want 2 (one failed, one retried)", got)
 			}
@@ -485,7 +489,7 @@ func TestInit_RealErrorStaysSticky(t *testing.T) {
 	sys := &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}
 
 	m.Init(context.Background(), sys, nil)
-	waitFor(t, time.Second, func() bool { return m.Snapshot().Failed })
+	waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Failed })
 
 	m.Init(context.Background(), sys, nil) // must no-op
 	time.Sleep(20 * time.Millisecond)
@@ -513,7 +517,7 @@ func TestManager_RefreshLandingAfterEvictionIsDropped(t *testing.T) {
 		Logger:           discardLogger(),
 	})
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
-	waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+	waitFor(t, 10*time.Second, func() bool { return m.Snapshot().Active })
 
 	// Schedule the refresh, then hold its Update RPC in flight.
 	_ = m.Name(context.Background())
@@ -528,7 +532,7 @@ func TestManager_RefreshLandingAfterEvictionIsDropped(t *testing.T) {
 
 	// Let the in-flight refresh complete and settle.
 	close(fake.updateRelease)
-	waitFor(t, time.Second, func() bool {
+	waitFor(t, 10*time.Second, func() bool {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		return !m.refreshing
