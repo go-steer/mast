@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Fix: the Anthropic adapter respects `stream=false`.** The ported
+  adapter ignored model.LLM's stream flag and always yielded
+  partial-text chunks; under ADK v2's `StreamingModeNone` every
+  fragment became a runner event — ~30 noise log lines per one-shot
+  turn on the first live anthropic-vertex run (the runner persists
+  only non-partial events, so session stores were unaffected). With
+  `stream=false` the caller now sees exactly one TurnComplete
+  response; the transport still streams SSE underneath (pause_turn
+  continuation and the #487 close discipline depend on that shape).
+  core-agent's adapter has the same signature quirk; flagged upstream.
+
 - **Fix: `--session-db` creates missing parent directories (SQLite).**
   SQLite won't create intermediate directories and reports a missing
   parent as "unable to open database file: out of memory (14)"

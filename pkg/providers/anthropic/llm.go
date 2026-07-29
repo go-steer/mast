@@ -48,12 +48,21 @@ type llm struct {
 // Name reports the model ID — used by ADK telemetry and the runner.
 func (l *llm) Name() string { return l.modelID }
 
-// GenerateContent implements model.LLM. The returned iterator yields
-// streaming partial-text events (Partial: true) followed by exactly
-// one terminal event (TurnComplete: true) carrying the full content,
-// usage, and mapped FinishReason. Errors are yielded inline and stop
+// GenerateContent implements model.LLM. In streaming mode the
+// returned iterator yields partial-text events (Partial: true)
+// followed by exactly one terminal event (TurnComplete: true)
+// carrying the full content, usage, and mapped FinishReason; with
+// stream=false only the terminal event is yielded. The HTTP transport
+// streams SSE either way (that's the API shape the pause_turn
+// continuation and the #487 close discipline are built around) — the
+// flag only controls what the CALLER sees. The ported source ignored
+// the flag and always yielded partials, which under ADK v2's
+// StreamingModeNone turned every text fragment into a runner event:
+// ~30 noise log lines per turn on the first live anthropic-vertex
+// smoke run (the runner persists only non-partial events, so the
+// session store was unaffected). Errors are yielded inline and stop
 // the iteration.
-func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		params, err := buildParams(req.Model, req.Contents, req.Config, l.cacheSystem, l.builtins)
 		if err != nil {
@@ -77,7 +86,7 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ b
 		var usage anthropic.Usage
 
 		for continuation := 0; ; continuation++ {
-			stream := l.client.Messages.NewStreaming(ctx, params)
+			sse := l.client.Messages.NewStreaming(ctx, params)
 			final := anthropic.Message{}
 
 			// Drain inside a closure so the deferred Close releases
@@ -93,14 +102,14 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ b
 			// call. Returns false when GenerateContent must stop
 			// (consumer said stop, or an error was already yielded).
 			drained := func() bool {
-				defer func() { _ = stream.Close() }()
-				for stream.Next() {
-					ev := stream.Current()
+				defer func() { _ = sse.Close() }()
+				for sse.Next() {
+					ev := sse.Current()
 					if err := final.Accumulate(ev); err != nil {
 						yield(nil, fmt.Errorf("anthropic: accumulate: %w", err))
 						return false
 					}
-					if delta, ok := textDelta(ev); ok {
+					if delta, ok := textDelta(ev); ok && stream {
 						partial := &adkmodel.LLMResponse{
 							Content: &genai.Content{
 								Role:  genai.RoleModel,
@@ -113,7 +122,7 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ b
 						}
 					}
 				}
-				if err := stream.Err(); err != nil {
+				if err := sse.Err(); err != nil {
 					yield(nil, fmt.Errorf("anthropic: stream: %w", err))
 					return false
 				}

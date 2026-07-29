@@ -531,3 +531,40 @@ func TestGenerateContent_PauseTurnLoopBound(t *testing.T) {
 			final.UsageMetadata, 30*wantRequests, 7*wantRequests, wantRequests)
 	}
 }
+
+// TestGenerateContent_NonStreamingYieldsOnlyTerminal pins the
+// stream=false contract: the transport still speaks SSE (pause_turn
+// and #487 close discipline depend on it) but the caller sees exactly
+// one TurnComplete response — no partials. The ported source ignored
+// the flag; under ADK v2's StreamingModeNone every text fragment
+// became a runner event (~30 noise log lines per turn on the first
+// live anthropic-vertex smoke run).
+func TestGenerateContent_NonStreamingYieldsOnlyTerminal(t *testing.T) {
+	t.Parallel()
+	l, _ := newOfflineLLM(t, "claude-test", messagesSSEFixture)
+
+	var got []*adkmodel.LLMResponse
+	for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+		Contents: userText("what's the weather in Paris?"),
+	}, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent yielded error: %v", err)
+		}
+		got = append(got, resp)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("stream=false yielded %d responses, want exactly 1 terminal: %+v", len(got), got)
+	}
+	final := got[0]
+	if final.Partial || !final.TurnComplete {
+		t.Errorf("response flags = Partial:%v TurnComplete:%v, want terminal-only", final.Partial, final.TurnComplete)
+	}
+	// The accumulated content must match what streaming mode delivers.
+	if final.Content == nil || len(final.Content.Parts) == 0 || final.Content.Parts[0].Text != "Hello world" {
+		t.Errorf("terminal text = %+v, want the full accumulated \"Hello world\"", final.Content)
+	}
+	if final.UsageMetadata == nil {
+		t.Error("terminal response lost UsageMetadata in non-streaming mode")
+	}
+}
