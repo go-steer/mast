@@ -30,7 +30,7 @@ builds:
     goarch: [amd64, arm64]
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
+      - -X github.com/go-steer/mast/internal/version.Version={{.Version}}
       - -X main.commit={{.ShortCommit}}
       - -X main.date={{.CommitDate}}
     mod_timestamp: "{{ .CommitTimestamp }}"
