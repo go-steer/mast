@@ -4,14 +4,14 @@
 # Originally derived from
 # go-steer/core-agent@c5efbb9e:examples/gke-troubleshoot-agent/deploy/base/50-deployment-daemon.yaml.
 #
+# Durable by default (issue #40, decided 2026-07-30): a StatefulSet
+# with a PVC at /var/lib/mast and --session-db, per the v0.1 GKE row in
+# docs/deployment-design.md — a rescheduled bare-Deployment pod loses
+# the SQLite DB, and with it durable pauses, abort markers, and
+# shutdown interruption markers. Multi-instance (2-N replicas) is the
+# v0.2 row and means Postgres, not a shared PVC.
+#
 # Simplified for the mast spike vs. the core-agent recipe:
-#   - No session-db PVC or --session-db* args (single-session substrate).
-#     NOTE: in-memory sessions mean a pod restart loses ALL session
-#     state — durable pauses, abort markers, and shutdown interruption
-#     markers included. Fine for the triage demo only; for durability
-#     convert to a StatefulSet + PVC (examples/deploy/gke/README.md) or
-#     use --session-db-driver=postgres. Whether this base should be
-#     durable by default is tracked in issue #40.
 #   - No users.json Secret + initContainer shuffle (single-bearer auth
 #     via MAST_INJECT_TOKEN env from a Secret).
 #   - No X-Asserted-Caller / proxy-identity / admin_identities config.
@@ -20,7 +20,7 @@
 #   - No record_plan writable /plans emptyDir — mast has no plan artifact
 #     writer yet.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: mast
   namespace: mast-triage
@@ -31,8 +31,13 @@ metadata:
     apphub.cloud.google.com/functional-type: "AGENT"
 spec:
   replicas: 1
-  strategy:
-    type: Recreate
+  # serviceName is a StatefulSet requirement; pointing it at the
+  # existing ClusterIP service is fine at replicas: 1 (stable per-pod
+  # DNS only matters for multi-instance, which is v0.2 + Postgres).
+  # The default RollingUpdate strategy recreates the single pod
+  # sequentially — delete-then-create, same effective semantics as the
+  # old Deployment's Recreate, which the RWO volume requires.
+  serviceName: mast
   selector:
     matchLabels:
       app.kubernetes.io/name: mast
@@ -64,6 +69,9 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
+        # PVC writability for the non-root user: the volume is
+        # group-owned by this GID at mount time.
+        fsGroup: 65532
       containers:
         - name: mast
           image: ghcr.io/go-steer/mast:latest
@@ -72,6 +80,7 @@ spec:
             - "--workload=/workspace/workload"
             - "--model=gemini-2.5-flash"
             - "--listen=:7777"
+            - "--session-db=/var/lib/mast/sessions.db"
             - "--log-level=info"
           env:
             - name: MAST_INJECT_TOKEN
@@ -101,6 +110,8 @@ spec:
             - name: workload
               mountPath: /workspace/workload
               readOnly: true
+            - name: state
+              mountPath: /var/lib/mast
           readinessProbe:
             # HTTP probe on GET / (mast's inject server serves 200 on
             # the health path unauthenticated) — safe to poll from the
@@ -135,3 +146,14 @@ spec:
                 path: specialists/ImagePullBackOff.tmpl
               - key: specialists__fallback.tmpl
                 path: specialists/_fallback.tmpl
+  volumeClaimTemplates:
+    # Session state: SQLite DB (sessions, durable pauses, abort +
+    # interruption markers) plus room for growth. Uses the cluster's
+    # default StorageClass; overlays can patch storageClassName.
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

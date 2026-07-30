@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The `deploy/` kustomize base is durable by default (#40).** The
+  daemon converts from a bare Deployment to a **StatefulSet** with a
+  1Gi `volumeClaimTemplate` mounted at `/var/lib/mast` and
+  `--session-db=/var/lib/mast/sessions.db` — bringing the shipped base
+  in line with the v0.1 GKE row in `docs/deployment-design.md`, which
+  already pinned SQLite-on-GKE to StatefulSet+PVC (a rescheduled
+  bare-Deployment pod loses the session DB, and with it durable
+  pauses, abort markers, and the new shutdown interruption markers).
+  `fsGroup: 65532` makes the volume writable for the non-root user;
+  the single-replica RollingUpdate recreate preserves the old
+  `Recreate` semantics the RWO claim needs. In-memory sessions remain
+  a deliberate opt-out (omit `--session-db`), not a deploy default.
+
 - **Shutdown contract: SIGTERM now actually drains (#38, #39, #40).**
   The daemon's graceful-shutdown path returned as soon as the drain
   *began* (`http.Server.ListenAndServe` unblocks the moment `Shutdown`

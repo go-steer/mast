@@ -140,4 +140,9 @@ scripts/demo-spike2.sh
   auth on `/inject`, `/resume`, and `/abort` (unset = unauthenticated, dev
   only).
 - For production topologies (Cloud Run + Postgres sessions, GKE, systemd)
-  see `examples/deploy/` in the repo.
+  see `examples/deploy/` in the repo. The GKE kustomize base under
+  `deploy/` is durable by default — the daemon runs as a StatefulSet
+  with a PVC-backed `--session-db`, so pauses, abort markers, and
+  shutdown interruption markers survive pod rescheduling. In-memory
+  sessions (omitting `--session-db`) are a local-development opt-out,
+  not a deploy default.

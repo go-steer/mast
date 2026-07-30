@@ -16,15 +16,18 @@ Shape notes against the v0.1 row in
 - **Single instance** (`replicas: 1`, `strategy: Recreate`) — GKE
   multi-instance (2-N replicas, Postgres store, advisory-lock
   handoff) is the v0.2 row.
-- **Session durability:** the kustomize base as shipped runs without
-  `--session-db` (in-memory sessions — fine for the triage demo, not
-  for durable pauses). For durable sessions on GKE, deployment-design
-  pins SQLite to a **StatefulSet + PVC** (a rescheduled bare-Deployment
-  pod would lose the DB): convert the daemon Deployment to a
-  StatefulSet with a `volumeClaimTemplate` mounted at `/var/lib/mast`
-  and add `--session-db=/var/lib/mast/sessions.db` to its args.
-  Alternatively use `--session-db-driver=postgres` with a DSN, as in
-  the [Cloud Run starter](../cloud-run/).
+- **Session durability — on by default:** the daemon runs as a
+  **StatefulSet** with a `volumeClaimTemplate` mounted at
+  `/var/lib/mast` and `--session-db=/var/lib/mast/sessions.db`, per
+  the v0.1 GKE row in
+  [`docs/deployment-design.md`](../../../docs/deployment-design.md) —
+  a rescheduled bare-Deployment pod would lose the SQLite DB, and with
+  it durable pauses, abort markers, and shutdown interruption markers.
+  The claim uses the cluster's default StorageClass (1Gi; patch
+  `storageClassName`/size in an overlay). Alternatively use
+  `--session-db-driver=postgres` with a DSN, as in the
+  [Cloud Run starter](../cloud-run/) — the right answer for
+  multi-instance, which a shared PVC is not.
 - **Rolling restarts / node drains:** on SIGTERM the daemon drains
   in-flight turns for up to the workload's
   `budget.max_wallclock_seconds` (30s without a budget), writing
