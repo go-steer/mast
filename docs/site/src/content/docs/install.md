@@ -3,28 +3,28 @@ title: Install
 description: Install the mast binary from release tarballs or with go install.
 ---
 
-Current release: **v0.1.0-pre** (pre-release — see the [roadmap](/roadmap/)
-for what's still gated).
+Current release: **v0.1.0** — Phase 1 complete; all eleven v0.1 exit
+criteria are green (see the [roadmap](/roadmap/)).
 
 ## Release tarballs
 
 Each release ships cross-compiled tarballs plus a `checksums.txt`
-(SHA-256). Assets for v0.1.0-pre:
+(SHA-256). Assets for v0.1.0:
 
-- `mast_0.1.0-pre_linux_amd64.tar.gz`
-- `mast_0.1.0-pre_linux_arm64.tar.gz`
-- `mast_0.1.0-pre_darwin_amd64.tar.gz`
-- `mast_0.1.0-pre_darwin_arm64.tar.gz`
+- `mast_0.1.0_linux_amd64.tar.gz`
+- `mast_0.1.0_linux_arm64.tar.gz`
+- `mast_0.1.0_darwin_amd64.tar.gz`
+- `mast_0.1.0_darwin_arm64.tar.gz`
 - `checksums.txt`
 
 Download, verify, unpack (Linux amd64 shown — swap the asset name for your
 platform):
 
 ```sh
-curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.1.0-pre/mast_0.1.0-pre_linux_amd64.tar.gz
-curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.1.0-pre/checksums.txt
+curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.1.0/mast_0.1.0_linux_amd64.tar.gz
+curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.1.0/checksums.txt
 sha256sum --check --ignore-missing checksums.txt
-tar -xzf mast_0.1.0-pre_linux_amd64.tar.gz
+tar -xzf mast_0.1.0_linux_amd64.tar.gz
 sudo install -m 0755 mast /usr/local/bin/mast
 ```
 

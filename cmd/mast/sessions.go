@@ -48,7 +48,7 @@ import (
 	"time"
 
 	"github.com/go-steer/mast/pkg/inject"
-	mastsession "github.com/go-steer/mast/pkg/session"
+	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // sessionsCmd is the parsed form of a `mast sessions ...` invocation.
@@ -129,7 +129,7 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 			return nil, errors.New("mast sessions list: --session-db is required")
 		}
 		switch cmd.state {
-		case "", mastsession.StatePaused, mastsession.StateAborted, mastsession.StateIdle:
+		case "", transcript.StatePaused, transcript.StateAborted, transcript.StateIdle:
 		default:
 			return nil, fmt.Errorf("mast sessions list: unknown --state %q (want paused|aborted|idle)", cmd.state)
 		}
@@ -206,7 +206,7 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 }
 
 func (c *sessionsCmd) runList(ctx context.Context, out io.Writer) error {
-	store, err := mastsession.Open(c.db, c.app)
+	store, err := transcript.Open(c.db, c.app)
 	if err != nil {
 		return err
 	}
@@ -222,7 +222,7 @@ func (c *sessionsCmd) runList(ctx context.Context, out io.Writer) error {
 			continue
 		}
 		pending := strings.Join(s.PendingInterruptIDs, ",")
-		if s.State == mastsession.StateAborted {
+		if s.State == transcript.StateAborted {
 			pending = "(aborted: " + s.AbortReason + ")"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
@@ -240,7 +240,7 @@ func (c *sessionsCmd) runList(ctx context.Context, out io.Writer) error {
 }
 
 func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
-	store, err := mastsession.Open(c.db, c.app)
+	store, err := transcript.Open(c.db, c.app)
 	if err != nil {
 		return err
 	}
@@ -254,7 +254,7 @@ func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
 	fmt.Fprintf(out, "State:      %s\n", d.State)
 	fmt.Fprintf(out, "Last event: %s\n", d.LastEventTime.UTC().Format(time.RFC3339))
 	fmt.Fprintf(out, "Events:     %d\n", d.EventCount)
-	if d.State == mastsession.StateAborted {
+	if d.State == transcript.StateAborted {
 		fmt.Fprintf(out, "Aborted:    %s\n", d.AbortReason)
 	}
 	for _, p := range d.Pending {

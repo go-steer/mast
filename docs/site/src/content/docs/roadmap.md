@@ -18,8 +18,10 @@ v0.1.0.
 ## Stability, precisely
 
 Semver stability from v0.1 is reserved for the **five packages the four
-pillars stand on**: the root `mast` package, `agent`, `session`, and the
-`provider` and `tool` interfaces. Everything else is explicitly
+pillars stand on**: the root `mast` package, `agent`, `transcript` (the
+session operator surface — named `session` pre-v0.1.0, renamed to avoid
+colliding with ADK's own `session` package), and the `provider` and
+`tool` interfaces. Everything else is explicitly
 **experimental** — API may change without a deprecation cycle until the
 version named in the
 [library API design's import-surface table](https://github.com/go-steer/mast/blob/main/docs/library-api-design.md).

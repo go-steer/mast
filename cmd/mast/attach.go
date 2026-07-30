@@ -23,7 +23,7 @@ import (
 
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/auth"
-	mastsession "github.com/go-steer/mast/pkg/session"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -52,7 +52,7 @@ type attachDeps struct {
 // path prefixed "unix:" ("unix:/var/run/mast.sock"). attach.NewServer
 // owns the security policy: non-loopback TCP binds are refused unless
 // an auth gate (MAST_ATTACH_TOKEN bearer, TLS client CA) is set.
-func buildAttach(logger *slog.Logger, listenSpec, bearer string, store *mastsession.Store, adapterFor func(sid string) (attach.Registrant, error)) (*attachDeps, error) {
+func buildAttach(logger *slog.Logger, listenSpec, bearer string, store *transcript.Store, adapterFor func(sid string) (attach.Registrant, error)) (*attachDeps, error) {
 	reg := attach.NewSessionRegistry().WithResumer(&storeResumer{
 		store:      store,
 		adapterFor: adapterFor,
@@ -124,7 +124,7 @@ func (a *attachDeps) ensure(sid string) {
 // multi-session auth), so resumed sessions carry a zero ACL — the
 // same trust model as the legacy Register path.
 type storeResumer struct {
-	store      *mastsession.Store
+	store      *transcript.Store
 	adapterFor func(sid string) (attach.Registrant, error)
 }
 

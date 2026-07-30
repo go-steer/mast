@@ -25,7 +25,7 @@
 #     pkg/graph, pkg/router, pkg/config are the subsystems a slim
 #     embed must not pay for. The slim slice is pkg/agent,
 #     pkg/specialists (+ optionally pkg/workload, pkg/budget,
-#     pkg/session).
+#     pkg/transcript).
 #
 #   * go.opentelemetry.io is denylisted at the SDK/exporter level
 #     only, NOT wholesale. Structural finding (2026-07-26): ADK v2's
@@ -80,7 +80,7 @@ if [[ -n "$offenders" ]]; then
   echo "" >&2
   echo "The slim reference consumer must only pull the slim slice" >&2
   echo "(pkg/agent, pkg/specialists, optionally pkg/workload," >&2
-  echo "pkg/budget, pkg/session) plus ADK and stdlib. See" >&2
+  echo "pkg/budget, pkg/transcript) plus ADK and stdlib. See" >&2
   echo "docs/library-api-design.md, 'Slim-embed guarantee'." >&2
   exit 1
 fi

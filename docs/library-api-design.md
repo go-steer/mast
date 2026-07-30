@@ -21,7 +21,7 @@ Public packages under `github.com/go-steer/mast/`:
 |---|---|---|
 | `github.com/go-steer/mast` | Top-level convenience API: `mast.Run`, `mast.RunWorkload`, `mast.Serve`, `mast.ListSessions`, `mast.Resume` | **Stable from v0.1** |
 | `github.com/go-steer/mast/agent` | Core types: `Agent`, `Config`, `Context`, `Result`, mode constants | **Stable from v0.1** |
-| `github.com/go-steer/mast/session` | Session types: `Store` interface, `Event`, `PauseSpec`, `ResumeSpec` | **Stable from v0.1** |
+| `github.com/go-steer/mast/transcript` | Session operator projections: `Store`, `Summary`, `Detail`, `PendingInput`, durable abort markers *(named `session` pre-v0.1.0; renamed to end the alias dance with ADK's own `session` package, mirroring core-agent #513)* | **Stable from v0.1** |
 | `github.com/go-steer/mast/provider` | Provider interface + built-in registrations | **Interface stable from v0.1**; built-ins may add |
 | `github.com/go-steer/mast/tool` | Tool interface + built-in tools | **Interface stable from v0.1** |
 | `github.com/go-steer/mast/workload` | Workload bundle types: `Bundle`, `Loader`, `Resolver`, `Registry` | Experimental v0.1 → stable v0.2 |
@@ -46,7 +46,7 @@ Public packages under `github.com/go-steer/mast/`:
 
 "Library-embedded" is hollow if the minimum viable embed drags in the kitchen sink. The guarantee, as a tested v0.1 property rather than an intention:
 
-*(Shipped 2026-07-26: `examples/deploy/slim/` (the reference consumer) + `scripts/check-slim-deps.sh` (the `go list -deps` denylist check) + the CI step in `.github/workflows/ci.yml` are all in the tree — the guarantee is now enforced, not intended. Two build-verified refinements to the mechanism as sketched below: (1) the check is a **denylist**, not an allowlist — the slim slice (`pkg/agent`, `pkg/specialists`, optionally `pkg/workload`/`pkg/budget`/`pkg/session`) must not pull `pkg/inject`, `pkg/observability`, `pkg/mcp`, `pkg/graph`, `pkg/router`, `pkg/config`, nor `github.com/prometheus/...`, the MCP SDK (`github.com/modelcontextprotocol/...`), or the OTel **SDK/exporters**. (2) The OTel entry is deliberately narrowed to SDK/exporters rather than `go.opentelemetry.io` wholesale, because ADK's model path (`google.golang.org/genai`) **structurally imports the OTel API packages** (+`otelhttp`) — no-op stubs without an SDK, and unsheddable without shedding ADK itself; see [`./adk-v2-usage.md`](./adk-v2-usage.md)'s telemetry section. The check also confirmed `pkg/specialists` is MCP-free — it declares MCP *allowlist types* without importing the MCP SDK, so specialists stay inside the slim slice.)*
+*(Shipped 2026-07-26: `examples/deploy/slim/` (the reference consumer) + `scripts/check-slim-deps.sh` (the `go list -deps` denylist check) + the CI step in `.github/workflows/ci.yml` are all in the tree — the guarantee is now enforced, not intended. Two build-verified refinements to the mechanism as sketched below: (1) the check is a **denylist**, not an allowlist — the slim slice (`pkg/agent`, `pkg/specialists`, optionally `pkg/workload`/`pkg/budget`/`pkg/transcript`) must not pull `pkg/inject`, `pkg/observability`, `pkg/mcp`, `pkg/graph`, `pkg/router`, `pkg/config`, nor `github.com/prometheus/...`, the MCP SDK (`github.com/modelcontextprotocol/...`), or the OTel **SDK/exporters**. (2) The OTel entry is deliberately narrowed to SDK/exporters rather than `go.opentelemetry.io` wholesale, because ADK's model path (`google.golang.org/genai`) **structurally imports the OTel API packages** (+`otelhttp`) — no-op stubs without an SDK, and unsheddable without shedding ADK itself; see [`./adk-v2-usage.md`](./adk-v2-usage.md)'s telemetry section. The check also confirmed `pkg/specialists` is MCP-free — it declares MCP *allowlist types* without importing the MCP SDK, so specialists stay inside the slim slice.)*
 
 - **Pay for what you import.** A consumer importing only the loop-and-loaders slice (`agent` + `session` + `provider` + `tool`, optionally `specialist`/`workload`/`budget`) must not pull `attach`, `observability`'s Prometheus/OTel exporters, `mcp`, `a2a`, or `skill` into its module graph. Enforced by package structure (no convenience cross-imports from core packages into subsystem packages; the top-level `mast` convenience package is the one place that imports everything, and slim consumers simply don't use it).
 - **Reference consumer:** `examples/deploy/slim/` — a single-file host service embedding one control loop (classifier → specialist, in-memory or SQLite sessions) with no attach server, no metrics endpoint, no interop surfaces. This is the "I just need a purpose-built control loop in my own binary" on-ramp; the starters in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) are its standalone-binary siblings.
@@ -227,7 +227,7 @@ Registrations are process-global. For test isolation, use a per-config provider 
 ### Session store
 
 ```go
-// github.com/go-steer/mast/session
+// github.com/go-steer/mast/transcript
 type Store interface {
     Create(ctx context.Context, s *StartInfo) (SessionID, error)
     AppendEvent(ctx context.Context, id SessionID, e Event) error

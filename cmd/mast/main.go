@@ -57,9 +57,9 @@ import (
 	"github.com/go-steer/mast/pkg/inject"
 	mastmcp "github.com/go-steer/mast/pkg/mcp"
 	"github.com/go-steer/mast/pkg/observability"
-	mastsession "github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/taskclass"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -307,7 +307,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// through (docs/durable-execution-design.md, "Operator-facing
 	// surface"): /abort appends the durable abort marker, and /resume
 	// refuses sessions that carry one.
-	store := mastsession.NewStore(sessionSvc, appName)
+	store := transcript.NewStore(sessionSvc, appName)
 
 	// Fixed metric registry (pkg/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,
@@ -368,7 +368,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		return dispatch(reqCtx, r, logger, meters, wds, obs, workloadName, bundle, p)
 	}
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
-		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == mastsession.StateAborted {
+		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
 		}
 		att.ensure(req.SessionID)

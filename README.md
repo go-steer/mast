@@ -1,34 +1,66 @@
 # mast
 
-The agent-infrastructure substrate for **unattended, library-embedded, multi-provider** workloads. Lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent).
+The agent-infrastructure substrate for **unattended, library-embedded, multi-provider, durable** agent workloads — built for platform and SRE teams deploying agents into Cloud Run, Kubernetes, and their own Go services. Lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent), native to [ADK v2](https://google.golang.org/adk/v2).
 
-> **Status: Phase 1 in progress (since 2026-07-26).** The design corpus lives under [`docs/`](./docs/README.md); the code rebuild has begun — the spike-validated prototype graduated in P1.1 (`cmd/mast/`, `pkg/`, GKE triage example, CI). Adapter ports from [`core-agent`](https://github.com/go-steer/core-agent) land when its code-cleanup milestones close (revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)).
+> **Status: v0.1.0 — Phase 1 complete.** All eleven v0.1 exit criteria from [`docs/fork-design.md`](./docs/fork-design.md) are green, including live-credential verification of the multi-provider one-shot path and attach-mode reachability from [mast-web](https://github.com/go-steer/mast-web). Docs: [go-steer.github.io/mast](https://go-steer.github.io/mast/).
 
-## What `mast` is
+## Is mast for you?
 
-- **Headless / unattended.** Runs as Cloud Run pods, Kubernetes services, scheduled monitors, daemons behind attach sockets.
-- **Library-embeddable.** A Go library you compile into your own service, not just a CLI.
-- **Multi-provider.** Same config, Claude or Gemini — switch without code changes.
-- **Audit + governance first.** Session DB, event log, permission gate, cost ceilings as first-class citizens.
+Thirty seconds of honesty before anything else:
+
+- **You're a platform / SRE team putting agents where no human is watching** — incident triage in a Cloud Run pod, a scheduled drift monitor, runbook automation behind a webhook, an agent compiled into your own service. **You're in the right place; keep reading.**
+- **You're a developer who wants brilliant interactive coding at your laptop.** Use [Claude Code](https://claude.com/claude-code), Antigravity, or Cursor. That experience is downstream of model + IDE investment this substrate doesn't compete with — and doesn't try to.
+- **You want one simple agent loop in Go — no governance, no durability, no operator surface.** Use [raw ADK v2](https://google.golang.org/adk/v2); that niche is ADK's, and mast would be overhead. Come back when the loop must survive restarts, needs budget or permission governance, needs to switch providers without code changes, or stops having a human watching it.
+
+## The four pillars
+
+1. **Unattended.** Runs without a human watching: workload bundles declare specialists, tool catalogs, budgets, and HITL policy; envelopes dispatch turns via webhook; watchdog + cost ceilings guard the loop; the operator surface (attach + mast-web, `mast sessions`) is for looking in, not for babysitting.
+2. **Library-embedded.** A Go library first (`mast.RunWorkload(ctx, ...)` from your own service, with a CI-enforced slim-embed guarantee — pay only for what you import) and a standalone binary second (`mast serve` for Cloud Run / GKE / systemd). Same subsystems in both shapes.
+3. **Multi-provider.** The same config runs Gemini or Claude (first-party or Vertex) — switch with a flag, not a rewrite. Task-class profiles pick sensible model tiers per job; budget metering prices both.
+4. **Durable.** Sessions live in SQLite or Postgres via ADK's session store; HITL pauses survive `kill -9`, pod restarts, and cluster migrations, and resume where they stopped — verified, not aspirational.
+
+Audit and governance run through all four: an append-only event log behind every session, permission gating, per-workload cost ceilings, and structured JSON logs with session correlation.
+
+## Quick start
+
+```bash
+# Unattended daemon: workload bundle + durable sessions + operator surface
+mast --workload=examples/workloads/gke-triage \
+     --session-db=/var/lib/mast/sessions.db \
+     --attach-listen=127.0.0.1:8484
+
+# One-shot, same binary: task-class profile picks the model tier
+mast --task=research --provider=gemini "what changed in the last deploy?"
+
+# Operator surface
+mast sessions list --session-db=/var/lib/mast/sessions.db
+```
+
+Point [mast-web](https://github.com/go-steer/mast-web) at the attach address for the browser operator UI. Full walkthroughs — unattended triage, forking a workflow starter, library embedding — live on the [docs site](https://go-steer.github.io/mast/).
+
+## What ships in v0.1
+
+Workflow-graph and SubAgents dispatch on ADK v2; specialists (subagent-as-tool with budgets and tool allowlists); workload bundles + `.agents/` discovery; durable HITL; budget metering with cost and turn caps; the provider adapters (Gemini built-in-tool layer, Anthropic first-party + Vertex, Vertex context caching, scripted replay); the attach operator surface (HTTP/SSE) with mast-web reachability; sessions CLI; observability (Prometheus counters + env-gated OTel trace export); the synchronous A2A v0.3 client and federation interface; forkable workflow starters; Cloud Run / GKE deploy recipes. Details: [CHANGELOG](./CHANGELOG.md) and the [design corpus](./docs/README.md).
 
 ## What `mast` is *not*
 
-- **Not a Claude Code competitor.** Developer-laptop interactive coding is downstream of model + IDE + training investment we can't match. Use Claude Code, Antigravity, or Cursor for that shape.
-- **Not a one-tool-for-everything.** Sibling to [`core-agent`](https://github.com/go-steer/core-agent) under the (E) — sibling products with divergent agendas — motivation: `mast` targets platform-agent runtime; `core-agent` stays the experimentation + integration substrate for embedded consumers.
+- **Not a Claude Code competitor** — see the routing above; this is a deliberate scope decision, not a gap.
+- **Not the successor to core-agent.** Sibling products with different jobs: `mast` is the platform-agent runtime; [`core-agent`](https://github.com/go-steer/core-agent) stays the experimentation + integration substrate. Both are maintained.
+- **Not a framework sampler.** The interop surfaces (MCP now; A2A server, AG-UI in v0.2) exist so workloads compose with the ecosystem, not to chase every protocol.
 
 ## Related repos
 
 | Repo | Role |
 |---|---|
-| [`go-steer/core-agent`](https://github.com/go-steer/core-agent) | Parent project. Until the fork executes, `mast`'s code lives there. Stays alive as the experimentation/integration substrate. |
-| [`go-steer/mast-web`](https://github.com/go-steer/mast-web) | Operator-facing web UI for `mast` (and any attach-mode core-agent variant). Already initialized; ships independently. |
-| [`go-steer/core-tui`](https://github.com/go-steer/core-tui) | Terminal UI alternative for developer / experimentation workflows. Stays paired with core-agent, not mast. |
+| [`go-steer/core-agent`](https://github.com/go-steer/core-agent) | Parent project and sibling product: the experimentation/integration substrate. Adapter packages port from here with per-file derivation headers. |
+| [`go-steer/mast-web`](https://github.com/go-steer/mast-web) | Operator-facing web UI over the attach protocol (works with `mast` and any attach-mode core-agent variant). |
+| [`go-steer/core-tui`](https://github.com/go-steer/core-tui) | Terminal UI for developer / experimentation workflows. Paired with core-agent, not mast. |
 
 ## Contributing
 
-Phase 1 is in flight: this repo takes both design-doc PRs and Go code PRs for Phase-1 workstreams (see [`AGENTS.md`](./AGENTS.md) for house rules and [`docs/fork-design.md`](./docs/fork-design.md) for what's in scope). Adapter ports from core-agent (P1.3) remain gated on its cleanup milestones — runtime changes that belong there still go there first.
+PRs against `main`; run `dev/ci/presubmits/all.sh` before pushing (CI runs the identical scripts). House rules in [`AGENTS.md`](./AGENTS.md); scope questions resolve through the [design corpus](./docs/README.md) — check the resolved-decisions table before re-proposing something settled.
 
-> **Early-access note:** the sibling repos linked here are private during early access; those links may 404 until they open up.
+> **Early-access note:** some sibling repos linked here are private during early access; those links may 404 until they open up.
 
 ## License
 
