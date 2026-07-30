@@ -25,7 +25,7 @@ resources:
   - 11-serviceaccount-watcher.yaml
   - 12-clusterrole-watcher.yaml
   - 13-clusterrolebinding-watcher.yaml
-  - 50-deployment-daemon.yaml
+  - 50-statefulset-daemon.yaml
   - 51-deployment-watcher.yaml
   - 60-service.yaml
 
