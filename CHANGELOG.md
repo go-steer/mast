@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.1.0 (2026-07-30)
+
+Phase 1 complete: **all eleven v0.1 exit criteria** from
+[`docs/fork-design.md`](./docs/fork-design.md) are green. This release
+finishes the staged adapter ports from
+[`go-steer/core-agent`](https://github.com/go-steer/core-agent) — the
+ported packages are originally derived from core-agent at the
+per-stage pins `83ec0713` (P1.3a, 2026-07-27), `b8dd225e` (P1.3b,
+2026-07-29), and `25d8531c` (P1.3c, 2026-07-30); every ported file
+carries a per-file derivation header with its stage's SHA. Everything
+else is mast-native on ADK v2.1.0.
 
 - **P1.3c: the operator attach surface, ported and wired
   (`--attach-listen`).** `pkg/attach` (HTTP/SSE protocol v1.4.0:
@@ -128,6 +138,17 @@
   rates derive from the builtin pricing catalog; every runner stream now
   runs through a per-session watchdog tap (alerts are logged — the
   model-context routing of core-agent #159 remains bucket-3 work).
+
+- **P1.3a: the ADK-independent adapter packages (2026-07-27).**
+  *(Recorded at roll time — this stage landed in PRs #21/#22 without a
+  CHANGELOG entry.)* Pinned at `go-steer/core-agent@83ec0713`:
+  `pkg/taskclass` (task-class profiles + tier defaults, and with it
+  one-shot mode — `mast --task=<class> "<prompt>"`), `pkg/permissions`
+  (ported, deliberately not runtime-wired: the package doc records
+  core-agent #385's gate findings as wiring-time inputs), `pkg/pricing`
+  (builtin catalog wired into budget-meter rates), `pkg/instruction`,
+  `pkg/digest` (minus the ADK-v1-entangled `store_eventlog.go` — an
+  honest descope), and `pkg/modeltier`.
 
 - **CI split into parallel jobs (core-agent's ci.yml shape).** The single
   `build-test` job running `all.sh` sequentially becomes four parallel
