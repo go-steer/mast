@@ -46,10 +46,14 @@ import (
 	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/mast/internal/compose"
+	buildversion "github.com/go-steer/mast/internal/version"
 	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/pkg/attachadapter"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/config"
 	"github.com/go-steer/mast/pkg/envelope"
+	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/inject"
 	mastmcp "github.com/go-steer/mast/pkg/mcp"
 	"github.com/go-steer/mast/pkg/observability"
@@ -61,11 +65,12 @@ import (
 )
 
 // Release identity, stamped by GoReleaser via -ldflags (see
-// .goreleaser.yaml). "dev" for local builds.
+// .goreleaser.yaml). "dev" for local builds. The version string
+// itself lives in internal/version so library surfaces (attach
+// capabilities frames, agent cards) can report it too.
 var (
-	version = "dev"
-	commit  = ""
-	date    = ""
+	commit = ""
+	date   = ""
 )
 
 const (
@@ -97,6 +102,7 @@ func run() {
 		providerFlag = flag.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. For claude-* models the alias also picks the backend (first-party vs Vertex)")
 		taskFlag     = flag.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)")
 		listen       = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
+		attachListen = flag.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Requires --session-db (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN")
 		sessionDB    = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
 		sessionDrv   = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
 		timeoutFlag  = flag.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets")
@@ -106,7 +112,7 @@ func run() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("mast %s", version)
+		fmt.Printf("mast %s", buildversion.Version)
 		if commit != "" {
 			fmt.Printf(" (%s %s)", commit, date)
 		}
@@ -160,6 +166,10 @@ func run() {
 			fmt.Fprintln(os.Stderr, "mast: --workload is a serve-mode flag; one-shot mode runs a single --task-class agent")
 			os.Exit(2)
 		}
+		if *attachListen != "" {
+			fmt.Fprintln(os.Stderr, "mast: --attach-listen is a serve-mode flag; one-shot mode has no operator surface to attach to")
+			os.Exit(2)
+		}
 		if explicit["dispatch"] {
 			logger.Warn("--dispatch is a serve-mode flag; ignored in one-shot mode")
 		}
@@ -189,7 +199,7 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
-	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *sessionDB, *sessionDrv); err != nil {
+	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *sessionDB, *sessionDrv); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
@@ -200,7 +210,7 @@ func run() {
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, sessionDB, sessionDrv string) error {
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, sessionDB, sessionDrv string) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -244,10 +254,40 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		"sub_agents", len(root.SubAgents()),
 	)
 
-	sessionSvc, err := buildSessionService(sessionDrv, sessionDB, logger)
-	if err != nil {
-		logger.Error("failed to construct session service", "error", err.Error())
-		return err
+	// Session backend. With --attach-listen the store opens through
+	// pkg/eventlog instead of raw session/database: same ADK tables,
+	// plus the seq-overlay the attach broadcaster live-tails. Without
+	// attach the plain service keeps the pre-P1.3c shape (including
+	// in-memory sessions when --session-db is empty).
+	var (
+		sessionSvc session.Service
+		elHandle   *eventlog.Handle
+	)
+	if attachListen != "" {
+		if sessionDB == "" {
+			logger.Error(errAttachNeedsSessionDB.Error())
+			return errAttachNeedsSessionDB
+		}
+		dial, err := sessionDialector(sessionDrv, sessionDB)
+		if err != nil {
+			logger.Error("failed to construct session service", "error", err.Error())
+			return err
+		}
+		elHandle, err = eventlog.Open(ctx, dial)
+		if err != nil {
+			logger.Error("failed to open eventlog-backed session store", "error", err.Error())
+			return err
+		}
+		defer func() { _ = elHandle.Close() }()
+		sessionSvc = elHandle.Service
+		logger.Info("session db opened (eventlog overlay for attach)", "driver", sessionDrv)
+	} else {
+		var err error
+		sessionSvc, err = buildSessionService(sessionDrv, sessionDB, logger)
+		if err != nil {
+			logger.Error("failed to construct session service", "error", err.Error())
+			return err
+		}
 	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
@@ -279,13 +319,59 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}
 	obs.Prime(workloadName)
 
+	// Operator attach surface (--attach-listen): registry + resumer +
+	// per-session adapters over the same runTurn path the inject
+	// endpoint drives. Bound here (fail-fast), served after the inject
+	// server is up.
+	var att *attachDeps
+	if attachListen != "" {
+		adapterFor := func(sid string) (attach.Registrant, error) {
+			return attachadapter.New(attachadapter.Config{
+				AppName:     appName,
+				UserID:      defaultUserID,
+				SessionID:   sid,
+				EventLog:    elHandle,
+				BaseContext: ctx,
+				ModelName:   llm.Name(),
+				Description: attachDescription(bundle),
+				RunTurn: func(turnCtx context.Context, message string) (attachadapter.TurnResult, error) {
+					// Same wallclock ceiling as the inject dispatch
+					// path — operator turns are not budget-exempt.
+					if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
+						var cancel context.CancelFunc
+						turnCtx, cancel = context.WithTimeout(turnCtx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
+						defer cancel()
+					}
+					msg := genai.NewContentFromText(message, genai.RoleUser)
+					err := runTurn(turnCtx, r, logger, meters, wds, obs, workloadName, sid, msg, "attach:inject")
+					// Token split is unknown at this layer (the meter
+					// folds totals only); cost rides the usage snapshot.
+					return attachadapter.TurnResult{}, err
+				},
+				UsageFn: func() attach.UsageInfo {
+					_, cost, calls := meters.meter(sid).Snapshot()
+					return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}
+				},
+			})
+		}
+		var err error
+		att, err = buildAttach(logger, attachListen, os.Getenv("MAST_ATTACH_TOKEN"), store, adapterFor)
+		if err != nil {
+			logger.Error("failed to construct attach surface", "error", err.Error())
+			return err
+		}
+		defer func() { _ = att.srv.Close() }()
+	}
+
 	handler := func(reqCtx context.Context, p envelope.InjectPayload) error {
+		att.ensure(sessionIDFor(p))
 		return dispatch(reqCtx, r, logger, meters, wds, obs, workloadName, bundle, p)
 	}
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == mastsession.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
 		}
+		att.ensure(req.SessionID)
 		return resume(reqCtx, r, logger, meters, wds, obs, workloadName, req)
 	}
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
@@ -313,6 +399,19 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
+
+	if att != nil {
+		go func() {
+			// The listener is already bound (buildAttach); Serve only
+			// returns on Close or a hard accept failure. A hard failure
+			// takes the daemon down — a half-alive daemon whose operator
+			// surface silently died is worse than a restart.
+			if err := att.srv.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
+				logger.Error("attach server terminated", "error", err.Error())
+				stop()
+			}
+		}()
+	}
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("inject server terminated", "error", err.Error())
