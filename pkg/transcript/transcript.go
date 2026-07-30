@@ -30,10 +30,17 @@
 //   - StatePaused:  at least one pending (unresolved) RequestedInput.
 //   - StateAborted: an operator abort marker is present in session state
 //     (written by Store.Abort; see its doc for the semantics contract).
+//   - StateInterrupted: a daemon shutdown cut a turn short — the daemon
+//     wrote an interruption marker before draining (Store.MarkInterrupted)
+//     and no clean completion cleared it (Store.ClearInterrupted). This
+//     is still strictly log-proven: the process that WAS running the
+//     turn recorded the fact durably before it stopped.
 //   - StateIdle:    everything else. The store cannot distinguish "a turn
 //     is in flight right now" from "the last turn completed" — that is
 //     in-process runner state, not event-log state — so this package
 //     deliberately does not claim "running" or "completed".
+//
+// Precedence: aborted > paused > interrupted > idle.
 package transcript
 
 import (
@@ -57,9 +64,10 @@ import (
 // Session states derived from the event log. See the package doc for
 // why there is no "running" or "completed".
 const (
-	StatePaused  = "paused"
-	StateAborted = "aborted"
-	StateIdle    = "idle"
+	StatePaused      = "paused"
+	StateAborted     = "aborted"
+	StateInterrupted = "interrupted"
+	StateIdle        = "idle"
 )
 
 // Session-state keys written by Store.Abort. Unprefixed, so they land
@@ -68,6 +76,14 @@ const (
 const (
 	abortReasonKey = "mast_abort_reason"
 	abortTimeKey   = "mast_abort_time"
+)
+
+// Session-state keys written by Store.MarkInterrupted and cleared (set
+// to the empty string, not deleted — last-write-wins is the only state
+// semantic ADK guarantees) by Store.ClearInterrupted.
+const (
+	interruptReasonKey = "mast_interrupted_reason"
+	interruptTimeKey   = "mast_interrupted_time"
 )
 
 // ErrNotFound reports that no session with the requested ID exists in
@@ -109,6 +125,9 @@ type Summary struct {
 	PendingInterruptIDs []string `json:"pending_interrupt_ids,omitempty"`
 	// AbortReason is set when State is StateAborted.
 	AbortReason string `json:"abort_reason,omitempty"`
+	// InterruptReason is set when State is StateInterrupted: the reason
+	// recorded by the daemon whose shutdown cut the session's turn short.
+	InterruptReason string `json:"interrupt_reason,omitempty"`
 }
 
 // Detail is the show-view projection: Summary plus event count and the
@@ -257,6 +276,70 @@ func (s *Store) Abort(ctx context.Context, userID, sessionID, reason string) err
 	return nil
 }
 
+// MarkInterrupted appends a durable interrupted-by-shutdown marker to
+// the session (docs/durable-execution-design.md, "Shutdown contract").
+//
+// The daemon writes it for every session with a turn in flight when a
+// shutdown begins, BEFORE draining — so a SIGKILL mid-drain leaves the
+// marker on disk — and clears it via ClearInterrupted when the turn
+// completes inside the drain window. Like the abort marker it is
+// state, not preemption: the engine ignores it, and a later turn on
+// the session proceeds normally (reconstruct-and-re-execute); it
+// exists so operators can see which sessions a restart cut short.
+// Re-marking an already-marked session overwrites (last write wins) —
+// a second shutdown racing the first is not worth an error.
+func (s *Store) MarkInterrupted(ctx context.Context, userID, sessionID, reason string) error {
+	if reason == "" {
+		return errors.New("mark interrupted: reason must be non-empty (the empty string is the cleared state)")
+	}
+	return s.appendStateDelta(ctx, userID, sessionID, "shutdown-interrupt",
+		fmt.Sprintf("turn interrupted by daemon shutdown: %s", reason),
+		map[string]any{
+			interruptReasonKey: reason,
+			interruptTimeKey:   time.Now().UTC().Format(time.RFC3339Nano),
+		})
+}
+
+// ClearInterrupted resolves a MarkInterrupted marker after the turn
+// completed inside the drain window. Clearing an unmarked session is a
+// harmless no-op event (shutdown-path callers cannot atomically check).
+func (s *Store) ClearInterrupted(ctx context.Context, userID, sessionID string) error {
+	return s.appendStateDelta(ctx, userID, sessionID, "shutdown-interrupt-clear",
+		"turn completed within the shutdown drain window; interruption marker cleared",
+		map[string]any{interruptReasonKey: "", interruptTimeKey: ""})
+}
+
+// appendStateDelta appends one daemon-authored event whose StateDelta
+// carries the given keys — the shared mechanics of the abort and
+// interruption markers.
+func (s *Store) appendStateDelta(ctx context.Context, userID, sessionID, invocation, text string, delta map[string]any) error {
+	if userID == "" {
+		var err error
+		userID, err = s.findUserID(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+	}
+	resp, err := s.svc.Get(ctx, &adksession.GetRequest{
+		AppName:   s.appName,
+		UserID:    userID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("get session %q: %w", sessionID, err)
+	}
+	ev := adksession.NewEvent(ctx, invocation)
+	ev.Author = "daemon"
+	ev.Content = genai.NewContentFromText(text, genai.RoleUser)
+	for k, v := range delta {
+		ev.Actions.StateDelta[k] = v
+	}
+	if err := s.svc.AppendEvent(ctx, resp.Session, ev); err != nil {
+		return fmt.Errorf("append %s event to session %q: %w", invocation, sessionID, err)
+	}
+	return nil
+}
+
 // findUserID resolves the user ID owning sessionID by scanning the
 // app's session list. Session IDs are the operator-visible handle
 // (e.g. "incident-<uid>"); the user ID is a daemon-internal constant
@@ -298,9 +381,20 @@ func project(sess adksession.Session) *Detail {
 	}
 
 	if len(d.Pending) > 0 {
+		// Paused trumps interrupted: a session that reached a HITL pause
+		// is resumable and should say so, whatever a shutdown marker says.
 		d.State = StatePaused
 		for _, p := range d.Pending {
 			d.PendingInterruptIDs = append(d.PendingInterruptIDs, p.InterruptID)
+		}
+		return d
+	}
+
+	if reason, err := sess.State().Get(interruptReasonKey); err == nil {
+		// The cleared state is the empty string, not a deleted key.
+		if r := fmt.Sprintf("%v", reason); r != "" {
+			d.State = StateInterrupted
+			d.InterruptReason = r
 		}
 	}
 	return d
