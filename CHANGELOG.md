@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **P1.3c: the operator attach surface, ported and wired
+  (`--attach-listen`).** `pkg/attach` (HTTP/SSE protocol v1.4.0:
+  session listing, seq'd replay + live tail, inject/wake/interrupt,
+  capabilities frames, agent card, prompt broker, peer registry,
+  per-caller rate limiting), `pkg/auth`, and `pkg/eventlog` port from
+  `core-agent@25d8531c` — pinned at the first HEAD after attach went
+  quiet, deliberately including #519's transport-neutral
+  OperatorEventTarget seam so mast never carries the deprecated
+  emitter shape. The eventlog lands in the re-scoped shape the fork
+  design called for: ADK v2's `session/database` owns the session
+  tables; the package adds the seq-overlay + Since/Watch stream on
+  top. New `pkg/attachadapter` bridges mast's runner-driven daemon
+  into the Registrant contract (one injected message = one serialized
+  turn; typed operator events in spec order; interrupt cancels the
+  in-flight turn; callers ride the turn context into eventlog
+  metadata). `mast serve --attach-listen` binds the surface (TCP or
+  `unix:` socket; requires `--session-db`; bearer auth via
+  `MAST_ATTACH_TOKEN`; loopback-only without auth). **Exit criterion
+  4 verified with the real client:** mast-web (headless chromium,
+  proxy mode) connected to a live daemon, listed its sessions, and
+  round-tripped a prompt through a real turn over SSE.
+
+- **Build identity moved to `internal/version`.** `mast --version`
+  output is unchanged; the version string is now importable so the
+  attach capabilities frame and agent card can report it
+  (`mast/<version>` server banner). GoReleaser ldflags path updated.
+
 - **One-shot turns get a `--timeout` deadline (default 5m; `0`
   disables).** A one-shot against an unresponsive backend hung forever
   — genai's silent retry-with-backoff on quota errors looks exactly

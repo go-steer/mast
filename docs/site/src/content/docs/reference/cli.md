@@ -17,6 +17,7 @@ runner, and the session store.
 | `--model` | `echo` | `echo` (offline fake, no credentials), `scripted` (JSONL recorded-turn replay; path via `MAST_SCRIPT`, strict matching via `MAST_SCRIPT_STRICT=1`), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`. |
 | `--provider` | — | Provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates `--model` when both are set; picks the provider's default model from the `--task` profile's tier when `--model` is unset. For `claude-*` models the alias also picks the backend — without it, `ANTHROPIC_API_KEY` selects the first-party API, then a Vertex project (`ANTHROPIC_VERTEX_PROJECT_ID` / `GOOGLE_CLOUD_PROJECT`) selects Vertex. |
 | `--listen` | `:7777` | HTTP bind address for `/inject`, `/resume`, `/abort`, `/metrics`. |
+| `--attach-listen` | (empty) | Operator attach surface (HTTP/SSE for [mast-web](https://github.com/go-steer/mast-web) and other attach clients): a TCP address like `127.0.0.1:8484`, or a Unix socket as `unix:/path/mast.sock`. Empty = disabled. Requires `--session-db` (live-tail pumps from the eventlog overlay). Non-loopback TCP binds are refused unless auth is configured — set `MAST_ATTACH_TOKEN`. Serve mode only. |
 | `--session-db` | (empty) | SQLite file path (default driver) or Postgres DSN/URL with `--session-db-driver=postgres`. Empty = in-memory sessions, **no durability**. |
 | `--session-db-driver` | `sqlite` | `sqlite` or `postgres`. `postgres` with an empty `--session-db` is a startup error, never a silent in-memory downgrade. |
 | `--timeout` | `5m` | One-shot turn deadline (`2m`, `90s`, …); `0` disables. One-shot only — serve-mode wallclock ceilings come from workload budgets. An unresponsive backend (or a provider SDK silently retrying on quota errors) fails loudly instead of hanging a script. |
@@ -24,7 +25,10 @@ runner, and the session store.
 | `--version` | — | Print version and exit. |
 
 Set `MAST_INJECT_TOKEN` to require bearer auth on the HTTP endpoints;
-unset means unauthenticated (dev only, warned at startup).
+unset means unauthenticated (dev only, warned at startup). The attach
+surface has its own token, `MAST_ATTACH_TOKEN` — attach can read
+transcripts and inject operator messages, so treat it as a separate
+trust boundary from the inject webhook.
 
 ## `mast sessions` (operator surface)
 
