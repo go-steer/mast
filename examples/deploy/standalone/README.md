@@ -71,6 +71,13 @@ Files here:
   because they live in the SQLite DB — kill the process mid-pause and
   `mast sessions resume` still works after restart
   ([`docs/durable-execution-design.md`](../../../docs/durable-execution-design.md)).
+- **Shutdown:** on SIGTERM (`systemctl stop`) the daemon drains
+  in-flight turns for up to the workload's
+  `budget.max_wallclock_seconds` (30s without a budget), durably
+  marking their sessions *before* waiting. Turns that outrun the drain
+  show as `interrupted` in `mast sessions list`, with the marker
+  intact even if systemd escalates to SIGKILL. Keep the unit's
+  `TimeoutStopSec` above the drain bound.
 - **Backups:** back up `/var/lib/mast/sessions.db` like any SQLite
   file (e.g. `sqlite3 ... ".backup"`); mast adds no backup layer.
 - **Exposure:** the unit binds `127.0.0.1`. If a remote producer needs

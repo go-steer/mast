@@ -25,3 +25,14 @@ Shape notes against the v0.1 row in
   and add `--session-db=/var/lib/mast/sessions.db` to its args.
   Alternatively use `--session-db-driver=postgres` with a DSN, as in
   the [Cloud Run starter](../cloud-run/).
+- **Rolling restarts / node drains:** on SIGTERM the daemon drains
+  in-flight turns for up to the workload's
+  `budget.max_wallclock_seconds` (30s without a budget), writing
+  durable interruption markers *before* waiting — a SIGKILL at
+  `terminationGracePeriodSeconds` still leaves the markers on disk
+  (with a durable `--session-db`). Size the pod's
+  `terminationGracePeriodSeconds` above the drain bound plus headroom;
+  the base sets 330 against the demo workload's 300s turn ceiling.
+  Sessions cut short report `interrupted` in `mast sessions list`
+  ([`docs/durable-execution-design.md`](../../../docs/durable-execution-design.md),
+  "Shutdown contract").

@@ -6,6 +6,12 @@
 #
 # Simplified for the mast spike vs. the core-agent recipe:
 #   - No session-db PVC or --session-db* args (single-session substrate).
+#     NOTE: in-memory sessions mean a pod restart loses ALL session
+#     state — durable pauses, abort markers, and shutdown interruption
+#     markers included. Fine for the triage demo only; for durability
+#     convert to a StatefulSet + PVC (examples/deploy/gke/README.md) or
+#     use --session-db-driver=postgres. Whether this base should be
+#     durable by default is tracked in issue #40.
 #   - No users.json Secret + initContainer shuffle (single-bearer auth
 #     via MAST_INJECT_TOKEN env from a Secret).
 #   - No X-Asserted-Caller / proxy-identity / admin_identities config.
@@ -38,6 +44,15 @@ spec:
         app.kubernetes.io/component: daemon
     spec:
       serviceAccountName: mast-daemon
+      # Sized against the shutdown drain bound: on SIGTERM the daemon
+      # drains in-flight turns for up to the workload's
+      # budget.max_wallclock_seconds (300 in config/workload.yaml; 30s
+      # when no budget is set), pre-marking their sessions durably
+      # before waiting — so even a SIGKILL at this deadline leaves the
+      # interruption markers on disk. Keep this above the drain bound
+      # plus teardown headroom; shrinking the budget lets you shrink
+      # this. See docs/durable-execution-design.md, "Shutdown contract".
+      terminationGracePeriodSeconds: 330
       # Standard-cluster gate — uncomment to pin onto GKE-metadata-server
       # nodes. Required for WIF on Standard; REJECTED on Autopilot
       # (Autopilot ships the metadata server universally). Leaving
