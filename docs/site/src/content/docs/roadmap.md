@@ -3,12 +3,17 @@ title: Roadmap
 description: What v0.1.0-pre ships, what's gated on the adapter ports, and what lands in v0.2 — honestly.
 ---
 
-mast is at **v0.1.0-pre**. Ten of the eleven v0.1 exit criteria from the
-fork design are green — the `--task` profile criterion cleared with the
+mast is at **v0.1.0-pre**. **All eleven v0.1 exit criteria from the fork
+design are green.** The `--task` profile criterion cleared with the
 P1.3a/P1.3b adapter ports and was verified against live endpoints on
 2026-07-29 (gemini one-shot with grounded search on the tier defaults,
 Claude on Vertex completing the Task-mode tool loop, sessions durable
-across runs and providers); this page is the honest account of the rest.
+across runs and providers). The final criterion — attach-mode
+reachability from mast-web — cleared the same day with the P1.3c port:
+the real mast-web SPA, served in proxy mode against a live
+`mast serve --attach-listen` daemon, connected, listed sessions, and
+round-tripped a prompt through a real turn over SSE. Next stop:
+v0.1.0.
 
 ## Stability, precisely
 
@@ -44,10 +49,17 @@ trigger in
   Vertex context caching, scripted replay) and the watchdog. One-shot
   `--task` runs now take `echo`, `scripted`, `gemini-*`, or `claude-*`
   models.
-- **Attach mode + mast-web reachability — still gated.** The attach
-  HTTP/SSE transport ports as P1.3c once core-agent's attach surface stops
-  moving (it kept absorbing fixes after the milestones closed), and with
-  it the [mast-web](https://github.com/go-steer/mast-web) operator UI.
+- **Attach mode + mast-web reachability — shipped.** P1.3c ported the
+  attach HTTP/SSE transport (protocol v1.4.0: session listing, seq'd
+  replay + live tail, inject/wake/interrupt, capabilities frames, agent
+  card) plus `pkg/auth` and the eventlog overlay, pinned at
+  `core-agent@25d8531c`. `mast serve --attach-listen` binds the surface
+  (requires `--session-db`; bearer auth via `MAST_ATTACH_TOKEN`;
+  loopback-only without auth), and the
+  [mast-web](https://github.com/go-steer/mast-web) operator UI connects
+  to it — verified end-to-end in a real browser session. Attach runs
+  single-user in v0.1: multi-session auth, the session ACL store, and
+  operator session creation (`POST /sessions`) are v0.2 work.
 
 ## v0.2
 
