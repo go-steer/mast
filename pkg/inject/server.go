@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -105,6 +106,12 @@ type Config struct {
 	// the inject bearer token, and the payload is aggregate counters
 	// only. Nil leaves the route unregistered.
 	Metrics http.Handler
+
+	// BaseContext, when non-nil, is the context every request context
+	// derives from. The daemon passes its turn-lifetime context so
+	// that when the shutdown drain window elapses, in-flight handler
+	// turns are cancelled and unwind instead of dying at process exit.
+	BaseContext context.Context
 }
 
 // Server is the HTTP inject endpoint.
@@ -139,6 +146,9 @@ func New(cfg Config) (*Server, error) {
 		Addr:              cfg.Listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if cfg.BaseContext != nil {
+		s.srv.BaseContext = func(net.Listener) context.Context { return cfg.BaseContext }
 	}
 	return s, nil
 }

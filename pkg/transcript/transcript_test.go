@@ -343,3 +343,104 @@ func TestOpen(t *testing.T) {
 		t.Fatalf("List via Open = %+v, want s-cli paused", got)
 	}
 }
+
+func TestInterruptedMarker(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			seed(t, svc, "op", "s-interrupted",
+				textEvent("triager", "working..."))
+
+			store := NewStore(svc, testApp)
+			if err := store.MarkInterrupted(ctx, "op", "s-interrupted", "daemon shutdown (SIGTERM)"); err != nil {
+				t.Fatalf("MarkInterrupted: %v", err)
+			}
+
+			d, err := store.Get(ctx, "", "s-interrupted")
+			if err != nil {
+				t.Fatalf("Get after mark: %v", err)
+			}
+			if d.State != StateInterrupted {
+				t.Errorf("state = %q, want %q", d.State, StateInterrupted)
+			}
+			if d.InterruptReason != "daemon shutdown (SIGTERM)" {
+				t.Errorf("InterruptReason = %q", d.InterruptReason)
+			}
+
+			// Clean completion inside the drain window clears the marker.
+			if err := store.ClearInterrupted(ctx, "op", "s-interrupted"); err != nil {
+				t.Fatalf("ClearInterrupted: %v", err)
+			}
+			d, err = store.Get(ctx, "", "s-interrupted")
+			if err != nil {
+				t.Fatalf("Get after clear: %v", err)
+			}
+			if d.State != StateIdle {
+				t.Errorf("state after clear = %q, want %q", d.State, StateIdle)
+			}
+			if d.InterruptReason != "" {
+				t.Errorf("InterruptReason after clear = %q, want empty", d.InterruptReason)
+			}
+
+			// Re-marking after a clear works (a later shutdown).
+			if err := store.MarkInterrupted(ctx, "op", "s-interrupted", "second shutdown"); err != nil {
+				t.Fatalf("re-MarkInterrupted: %v", err)
+			}
+			d, err = store.Get(ctx, "", "s-interrupted")
+			if err != nil {
+				t.Fatalf("Get after re-mark: %v", err)
+			}
+			if d.State != StateInterrupted || d.InterruptReason != "second shutdown" {
+				t.Errorf("after re-mark: state=%q reason=%q", d.State, d.InterruptReason)
+			}
+
+			// The empty string is the cleared state, so it is not a
+			// valid marking reason.
+			if err := store.MarkInterrupted(ctx, "op", "s-interrupted", ""); err == nil {
+				t.Error("MarkInterrupted with empty reason succeeded, want error")
+			}
+
+			// Marking a missing session surfaces ErrNotFound.
+			if err := store.MarkInterrupted(ctx, "", "no-such-session", "x"); !errors.Is(err, ErrNotFound) {
+				t.Errorf("MarkInterrupted(no-such-session) err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
+func TestInterruptedPrecedence(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Paused trumps interrupted: a marked session whose log
+			// carries a pending RequestedInput is resumable and reports
+			// paused.
+			seed(t, svc, "op", "s-mark-paused",
+				interruptEvent("triager", "approve-a", "Approve?"))
+			store := NewStore(svc, testApp)
+			if err := store.MarkInterrupted(ctx, "op", "s-mark-paused", "daemon shutdown"); err != nil {
+				t.Fatalf("MarkInterrupted: %v", err)
+			}
+			d, err := store.Get(ctx, "", "s-mark-paused")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if d.State != StatePaused {
+				t.Errorf("marked+pending state = %q, want %q", d.State, StatePaused)
+			}
+
+			// Aborted trumps both.
+			if err := store.Abort(ctx, "op", "s-mark-paused", "operator cancelled"); err != nil {
+				t.Fatalf("Abort: %v", err)
+			}
+			d, err = store.Get(ctx, "", "s-mark-paused")
+			if err != nil {
+				t.Fatalf("Get after abort: %v", err)
+			}
+			if d.State != StateAborted {
+				t.Errorf("marked+pending+aborted state = %q, want %q", d.State, StateAborted)
+			}
+		})
+	}
+}

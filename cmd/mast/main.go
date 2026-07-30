@@ -217,13 +217,21 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		logger.Warn("MAST_INJECT_TOKEN not set; inject endpoint is unauthenticated (dev only)")
 	}
 
+	// Two lifetimes (docs/durable-execution-design.md, "Shutdown
+	// contract"): ctx ends when a shutdown SIGNAL arrives and triggers
+	// the drain; turnCtx is what turns, toolsets, and the eventlog
+	// actually live on, and ends only when the drain window elapses —
+	// so an in-flight turn keeps its tools and its context for up to
+	// its own budget ceiling after SIGTERM instead of dying instantly.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	turnCtx, cancelTurns := context.WithCancel(context.Background())
+	defer cancelTurns()
 
 	// Env-gated OTel trace export: a no-op unless OTEL_EXPORTER_OTLP_*
 	// endpoints are set. mast opens no spans of its own in v0.1 — ADK
 	// v2's runner emits the span tree; this only exports it.
-	otelShutdown, otelEnabled, err := observability.SetupOTel(ctx)
+	otelShutdown, otelEnabled, err := observability.SetupOTel(turnCtx)
 	if err != nil {
 		logger.Error("failed to configure OTel trace export", "error", err.Error())
 		return err
@@ -237,14 +245,14 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		logger.Info("OTel trace export enabled", "endpoint_source", "OTEL_EXPORTER_OTLP_* env")
 	}
 
-	llm, err := buildModel(ctx, providerName, modelName)
+	llm, err := buildModel(turnCtx, providerName, modelName)
 	if err != nil {
 		logger.Error("failed to construct model", "model", modelName, "error", err.Error())
 		return err
 	}
 	logger.Info("model constructed", "name", llm.Name())
 
-	root, bundle, err := buildRoot(ctx, logger, llm, modelName, workloadArg, dispatchMode)
+	root, bundle, err := buildRoot(turnCtx, logger, llm, modelName, workloadArg, dispatchMode)
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		return err
@@ -273,7 +281,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			logger.Error("failed to construct session service", "error", err.Error())
 			return err
 		}
-		elHandle, err = eventlog.Open(ctx, dial)
+		elHandle, err = eventlog.Open(turnCtx, dial)
 		if err != nil {
 			logger.Error("failed to open eventlog-backed session store", "error", err.Error())
 			return err
@@ -309,6 +317,10 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// refuses sessions that carry one.
 	store := transcript.NewStore(sessionSvc, appName)
 
+	// Shutdown bookkeeping: which sessions have a turn in flight, and
+	// the pre-mark/clear ordering for their interruption markers.
+	tracker := newTurnTracker(store, defaultUserID, logger)
+
 	// Fixed metric registry (pkg/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,
 	// so the workload label is resolved once.
@@ -331,7 +343,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 				UserID:      defaultUserID,
 				SessionID:   sid,
 				EventLog:    elHandle,
-				BaseContext: ctx,
+				BaseContext: turnCtx,
 				ModelName:   llm.Name(),
 				Description: attachDescription(bundle),
 				RunTurn: func(turnCtx context.Context, message string) (attachadapter.TurnResult, error) {
@@ -343,7 +355,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 						defer cancel()
 					}
 					msg := genai.NewContentFromText(message, genai.RoleUser)
-					err := runTurn(turnCtx, r, logger, meters, wds, obs, workloadName, sid, msg, "attach:inject")
+					err := runTurn(turnCtx, r, logger, meters, wds, obs, tracker, workloadName, sid, msg, "attach:inject")
 					// Token split is unknown at this layer (the meter
 					// folds totals only); cost rides the usage snapshot.
 					return attachadapter.TurnResult{}, err
@@ -365,14 +377,14 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 
 	handler := func(reqCtx context.Context, p envelope.InjectPayload) error {
 		att.ensure(sessionIDFor(p))
-		return dispatch(reqCtx, r, logger, meters, wds, obs, workloadName, bundle, p)
+		return dispatch(reqCtx, r, logger, meters, wds, obs, tracker, workloadName, bundle, p)
 	}
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
 		}
 		att.ensure(req.SessionID)
-		return resume(reqCtx, r, logger, meters, wds, obs, workloadName, req)
+		return resume(reqCtx, r, logger, meters, wds, obs, tracker, workloadName, req)
 	}
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
 		return store.Abort(reqCtx, "", req.SessionID, req.Reason)
@@ -386,18 +398,47 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		AbortHandler:  abortHandler,
 		Logger:        logger,
 		Metrics:       obs.Handler(),
+		// Request contexts derive from the turn lifetime, so when the
+		// drain window elapses the surviving handler turns are
+		// cancelled (and unwind) rather than dying at process exit.
+		BaseContext: turnCtx,
 	})
 	if err != nil {
 		logger.Error("failed to construct inject server", "error", err.Error())
 		return err
 	}
 
+	// Shutdown sequence (#38/#39): pre-mark in-flight sessions durably,
+	// then drain up to the bound, then cancel survivors. The attach
+	// surface deliberately stays up through the drain — operators
+	// live-tailing a finishing turn see its final events; the deferred
+	// att.srv.Close() runs after serve returns.
+	drain := drainBound(bundle)
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
-		logger.Info("shutdown signal received")
-		shutdownCtx, cancel := context.WithCancel(context.Background())
+		logger.Info("shutdown signal received; draining in-flight turns", "drain_bound", drain.String())
+		drainCtx, cancel := context.WithTimeout(context.Background(), drain)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		// Pre-mark BEFORE waiting: a SIGKILL mid-drain must find the
+		// interruption markers already on disk.
+		tracker.beginDrain(drainCtx)
+		// Shutdown stops the listener and waits for inject handlers;
+		// tracker.wait additionally covers attach-driven turns, which
+		// run outside HTTP handlers. Both share the one deadline.
+		errShutdown := srv.Shutdown(drainCtx)
+		remaining := tracker.wait(drainCtx)
+		if errShutdown == nil && len(remaining) == 0 {
+			logger.Info("drain complete; all in-flight turns finished")
+			return
+		}
+		// Freeze before cancelling: the surviving turns ARE interrupted,
+		// and their unwinding must not clear the markers that say so.
+		tracker.freeze()
+		cancelTurns()
+		logger.Warn("drain window elapsed; interrupted sessions carry durable markers",
+			"sessions", remaining, "drain_bound", drain.String())
 	}()
 
 	if att != nil {
@@ -414,9 +455,16 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// Startup/hard failure: the shutdown goroutine is still parked
+		// on ctx.Done, so return without waiting on it.
 		logger.Error("inject server terminated", "error", err.Error())
 		return err
 	}
+	// ListenAndServe returns ErrServerClosed the moment Shutdown BEGINS;
+	// the drain (and its marker bookkeeping) completes in the shutdown
+	// goroutine. Returning before it finishes was #38.
+	<-shutdownDone
+	logger.Info("shutdown complete")
 	return nil
 }
 
@@ -635,7 +683,7 @@ func (wp *watchdogPool) watchdog(sessionID string) *watchdog.DefaultWatchdog {
 	return w
 }
 
-func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
+func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal inject payload: %w", err)
@@ -647,14 +695,14 @@ func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters
 		defer cancel()
 	}
 	msg := genai.NewContentFromText(fmt.Sprintf("INJECT %s", string(body)), genai.RoleUser)
-	return runTurn(ctx, r, logger, meters, wds, obs, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
+	return runTurn(ctx, r, logger, meters, wds, obs, tracker, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
 }
 
 // resume feeds an operator's approval verdict back into a paused
 // session. The runner treats a user turn carrying a FunctionResponse
 // whose ID matches a pending InterruptID as a resume (see adk/v2
 // runner buildResumeResponses).
-func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, workloadName string, req inject.ResumeRequest) error {
+func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, workloadName string, req inject.ResumeRequest) error {
 	msg := &genai.Content{
 		Role: genai.RoleUser,
 		Parts: []*genai.Part{genai.NewPartFromFunctionResponse("adk_request_input", map[string]any{
@@ -663,10 +711,14 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *
 	}
 	msg.Parts[0].FunctionResponse.ID = req.InterruptID
 	obs.HITLResume(workloadName)
-	return runTurn(ctx, r, logger, meters, wds, obs, workloadName, req.SessionID, msg, "resume:"+req.InterruptID)
+	return runTurn(ctx, r, logger, meters, wds, obs, tracker, workloadName, req.SessionID, msg, "resume:"+req.InterruptID)
 }
 
-func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, workloadName, sessionID string, msg *genai.Content, label string) error {
+func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, workloadName, sessionID string, msg *genai.Content, label string) error {
+	// Shutdown bookkeeping brackets the whole turn (see turnTracker).
+	tracker.begin(sessionID)
+	defer tracker.end(sessionID)
+
 	// Budget enforcement point: the meter folds UsageMetadata from
 	// each streamed event; crossing a ceiling cancels the run context,
 	// aborting any in-flight model/tool work.

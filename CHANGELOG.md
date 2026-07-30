@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- **Shutdown contract: SIGTERM now actually drains (#38, #39, #40).**
+  The daemon's graceful-shutdown path returned as soon as the drain
+  *began* (`http.Server.ListenAndServe` unblocks the moment `Shutdown`
+  is called), so in-flight turns died at process exit with no
+  bookkeeping. `mast serve` now: drains in-flight turns — inject and
+  attach alike — for up to the workload's
+  `budget.max_wallclock_seconds` (30s without a budget); durably marks
+  every in-flight session **before** waiting, so a SIGKILL mid-drain
+  still leaves the markers on disk; clears the marker for turns that
+  finish inside the window; and cancels survivors' contexts instead of
+  abandoning them. `pkg/transcript` derives the new `interrupted`
+  state (precedence `aborted > paused > interrupted > idle`), and
+  `mast sessions list --state=interrupted` filters on it. Deploy
+  surfaces sized to match: the K8s base sets
+  `terminationGracePeriodSeconds: 330` against the demo workload's
+  300s turn ceiling, and the standalone unit gains
+  `TimeoutStopSec=330` plus `Restart=always` (the daemon exits 0 on
+  any signal-initiated stop; `on-failure` left it down after a stray
+  SIGTERM). Boot-time auto-resume of interrupted sessions is
+  deliberately deferred to v0.2 behind the recorded-effect outbox
+  (#41); planned-stop classification folds into the v0.2 pause/abort
+  work (#42). See docs/durable-execution-design.md, "Shutdown
+  contract".
+
 ## v0.1.0 (2026-07-30)
 
 Phase 1 complete: **all eleven v0.1 exit criteria** from

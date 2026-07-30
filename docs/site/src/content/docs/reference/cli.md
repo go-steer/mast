@@ -33,7 +33,7 @@ trust boundary from the inject webhook.
 ## `mast sessions` (operator surface)
 
 ```
-mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|idle]
+mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|interrupted|idle]
 mast sessions show   <session-id> --session-db=...
 mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--addr=...]
 mast sessions abort  <session-id> [--reason=...] [--addr=...]
@@ -43,7 +43,8 @@ The split is deliberate:
 
 - **`list` / `show` read the session DB directly** (SQLite path) — they
   work with or without a running daemon. `list` prints one row per session
-  with state (`paused` / `aborted` / `idle`) and pending interrupt IDs;
+  with state (`paused` / `aborted` / `interrupted` / `idle`) and pending
+  interrupt IDs;
   `show` prints session detail including each pending interrupt's message,
   response schema, and a copy-pasteable resume command.
 - **`resume` / `abort` go through a running daemon** (`--addr`, default
@@ -57,3 +58,14 @@ engine preemption (engine-level terminal state is v0.2 work).
 
 Resume is keyed by **interrupt ID** (`--interrupt` + `--response`), not by
 token — resume tokens are the v0.2 programmatic-pause surface.
+
+`interrupted` marks a session whose turn was cut short by a daemon
+shutdown: on SIGTERM the daemon drains in-flight turns for up to the
+workload's `budget.max_wallclock_seconds` (30s without a budget),
+durably marking their sessions *before* waiting, and clearing the
+marker for turns that finish inside the window. The marker survives
+even a SIGKILL mid-drain. It is state, not preemption — the next turn
+on the session proceeds normally, and a session that reached a HITL
+pause reports `paused`, not `interrupted`. Boot-time auto-resume of
+interrupted sessions is deliberately v0.2 work (it gates on the
+recorded-effect outbox for mutating-tool idempotency).

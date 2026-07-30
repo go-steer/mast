@@ -54,8 +54,20 @@ ExecStart=/usr/local/bin/mast \
     --listen=127.0.0.1:7777 \
     --log-level=info
 
-Restart=on-failure
+# `always`, not `on-failure`: the daemon exits 0 on any SIGTERM (a
+# planned-stop/unexpected-stop exit-code distinction is deferred to the
+# v0.2 pause/abort work), so `on-failure` would leave the service down
+# after a stray external SIGTERM. `systemctl stop` still wins: systemd
+# does not restart a unit stopped by its own stop job.
+Restart=always
 RestartSec=5
+
+# On SIGTERM the daemon drains in-flight turns for up to the workload's
+# budget.max_wallclock_seconds (30s when no budget is set), writing
+# durable interruption markers before waiting. Keep TimeoutStopSec
+# above the drain bound plus headroom so systemd's SIGKILL never beats
+# the drain; this matches a 300s turn ceiling.
+TimeoutStopSec=330
 
 # Hardening (safe with the flags above; loosen deliberately if your
 # workload's tools need more).

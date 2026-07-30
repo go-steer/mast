@@ -15,7 +15,7 @@
 // mast sessions — the v0.1 operator-facing session surface
 // (docs/durable-execution-design.md, "Operator-facing surface").
 //
-//	mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|idle]
+//	mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|interrupted|idle]
 //	mast sessions show   <session-id> --session-db=...
 //	mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--addr=...]
 //	mast sessions abort  <session-id> [--reason=...] [--addr=...]
@@ -94,7 +94,7 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 		fs.StringVar(&cmd.db, "session-db", "", "path to the SQLite session DB (required)")
 		fs.StringVar(&cmd.app, "app", appName, "app name the sessions were stored under")
 		fs.StringVar(&cmd.user, "user", "", "filter to one user ID (empty = all)")
-		fs.StringVar(&cmd.state, "state", "", "filter by state: paused|aborted|idle (empty = all)")
+		fs.StringVar(&cmd.state, "state", "", "filter by state: paused|aborted|interrupted|idle (empty = all)")
 	case "show":
 		fs.StringVar(&cmd.db, "session-db", "", "path to the SQLite session DB (required)")
 		fs.StringVar(&cmd.app, "app", appName, "app name the sessions were stored under")
@@ -129,9 +129,9 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 			return nil, errors.New("mast sessions list: --session-db is required")
 		}
 		switch cmd.state {
-		case "", transcript.StatePaused, transcript.StateAborted, transcript.StateIdle:
+		case "", transcript.StatePaused, transcript.StateAborted, transcript.StateInterrupted, transcript.StateIdle:
 		default:
-			return nil, fmt.Errorf("mast sessions list: unknown --state %q (want paused|aborted|idle)", cmd.state)
+			return nil, fmt.Errorf("mast sessions list: unknown --state %q (want paused|aborted|interrupted|idle)", cmd.state)
 		}
 	case "show":
 		if cmd.sessionID == "" {
@@ -225,6 +225,9 @@ func (c *sessionsCmd) runList(ctx context.Context, out io.Writer) error {
 		if s.State == transcript.StateAborted {
 			pending = "(aborted: " + s.AbortReason + ")"
 		}
+		if s.State == transcript.StateInterrupted {
+			pending = "(interrupted: " + s.InterruptReason + ")"
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.ID, s.UserID, s.AppName,
 			s.LastEventTime.UTC().Format(time.RFC3339), s.State, pending)
@@ -256,6 +259,9 @@ func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
 	fmt.Fprintf(out, "Events:     %d\n", d.EventCount)
 	if d.State == transcript.StateAborted {
 		fmt.Fprintf(out, "Aborted:    %s\n", d.AbortReason)
+	}
+	if d.State == transcript.StateInterrupted {
+		fmt.Fprintf(out, "Interrupted: %s\n", d.InterruptReason)
 	}
 	for _, p := range d.Pending {
 		fmt.Fprintf(out, "\nPending input:\n")
