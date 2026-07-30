@@ -12,6 +12,15 @@ per-stage pins `83ec0713` (P1.3a, 2026-07-27), `b8dd225e` (P1.3b,
 carries a per-file derivation header with its stage's SHA. Everything
 else is mast-native on ADK v2.1.0.
 
+- **`pkg/session` renamed `pkg/transcript`.** The operator-projection
+  package collided with ADK v2's own `session` package, forcing an
+  alias (`mastsession` / `adksession`) in every file touching both —
+  including library embedders' code. Renamed before the v0.1 freeze
+  (this package is one of the five stable-from-v0.1 surfaces), while
+  the change costs nothing; mirrors core-agent's own rename (#513).
+  The `mast sessions` CLI and the root-package API
+  (`mast.ListSessions` / `mast.ResumeSession`) are unchanged.
+
 - **P1.3c: the operator attach surface, ported and wired
   (`--attach-listen`).** `pkg/attach` (HTTP/SSE protocol v1.4.0:
   session listing, seq'd replay + live tail, inject/wake/interrupt,

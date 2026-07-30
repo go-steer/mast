@@ -34,7 +34,7 @@
 //     is in flight right now" from "the last turn completed" — that is
 //     in-process runner state, not event-log state — so this package
 //     deliberately does not claim "running" or "completed".
-package session
+package transcript
 
 import (
 	"context"

@@ -18,7 +18,7 @@
 // It delegates to the pkg/ subsystems for everything; no type defined
 // here duplicates a subsystem type: workloads are pkg/workload.Bundle,
 // specialists are pkg/specialists.Spec, session projections are
-// pkg/session values, budget ceilings are pkg/budget.Limits.
+// pkg/transcript values, budget ceilings are pkg/budget.Limits.
 //
 // # Stability
 //
@@ -37,7 +37,7 @@
 // minimal dependency graph (docs/library-api-design.md, "Slim-embed
 // guarantee") must NOT import this package — they compose the slim
 // slice directly (pkg/agent, pkg/specialists, optionally pkg/workload,
-// pkg/budget, pkg/session), as examples/deploy/slim does.
+// pkg/budget, pkg/transcript), as examples/deploy/slim does.
 //
 // # Example
 //
@@ -71,8 +71,8 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -213,21 +213,21 @@ func Run(ctx context.Context, cfg Config, instruction, input string) (*Result, e
 	return runTurn(ctx, cfg, root, limits(cfg, nil, modelName), newSessionID(), msg)
 }
 
-// ListSessions returns the operator projections (pkg/session) for
+// ListSessions returns the operator projections (pkg/transcript) for
 // every session in Config.Sessions under mast's app name: state
 // (paused/aborted/idle), pending interrupt IDs, last-event times.
-// Thin delegation to pkg/session's Store; use that package directly
+// Thin delegation to pkg/transcript's Store; use that package directly
 // for detail views and abort markers.
-func ListSessions(ctx context.Context, cfg Config) ([]session.Summary, error) {
+func ListSessions(ctx context.Context, cfg Config) ([]transcript.Summary, error) {
 	if cfg.Sessions == nil {
 		return nil, errors.New("mast: ListSessions requires Config.Sessions (sessions from a nil service are per-call and never listable)")
 	}
-	return session.NewStore(cfg.Sessions, appName).List(ctx, "")
+	return transcript.NewStore(cfg.Sessions, appName).List(ctx, "")
 }
 
 // ResumeSession feeds an operator verdict back into a session that
 // parked on a HITL interrupt (a durable RequestInput; see
-// session.Detail.Pending for pending interrupt IDs and response
+// transcript.Detail.Pending for pending interrupt IDs and response
 // schemas). bundle and specs must describe the same workload the
 // session was started with — the resume turn is executed by a runner
 // over the same root shape — and Config.Sessions must be the service
@@ -241,10 +241,10 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 	if cfg.Sessions == nil {
 		return nil, errors.New("mast: ResumeSession requires Config.Sessions (the service holding the paused session)")
 	}
-	store := session.NewStore(cfg.Sessions, appName)
+	store := transcript.NewStore(cfg.Sessions, appName)
 	if d, err := store.Get(ctx, "", sessionID); err != nil {
 		return nil, fmt.Errorf("mast: resume session %q: %w", sessionID, err)
-	} else if d.State == session.StateAborted {
+	} else if d.State == transcript.StateAborted {
 		return nil, fmt.Errorf("mast: session %q is aborted (%s); refusing resume", sessionID, d.AbortReason)
 	}
 

@@ -60,7 +60,7 @@ type ResumeHandler func(ctx context.Context, req ResumeRequest) error
 
 // AbortRequest asks the daemon to mark a session aborted.
 //
-// Semantics are those of pkg/session's Store.Abort — a durable
+// Semantics are those of pkg/transcript's Store.Abort — a durable
 // operator-abort marker appended to the session's event log, not
 // preemption of in-flight work. See that method's doc for the full
 // contract (docs/durable-execution-design.md, "Operator-facing

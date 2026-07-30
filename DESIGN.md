@@ -61,7 +61,7 @@ Two first-class shapes, same subsystems ([`docs/library-api-design.md`](./docs/l
   "<prompt>"`), and the `mast sessions` operator CLI.
 
 Semver stability from v0.1 is reserved for the five packages the
-pillars stand on (the root `mast` package, `agent`, `session`, and the
+pillars stand on (the root `mast` package, `agent`, `transcript`, and the
 provider and tool interfaces); everything else is experimental until
 the version named in the library API design's import-surface table.
 
@@ -87,7 +87,7 @@ the version named in the library API design's import-surface table.
 
 | Package | Role |
 |---|---|
-| `pkg/session` | Operator surface over the ADK session store: list/show summaries, pending-interrupt scan, durable abort markers. |
+| `pkg/transcript` | Operator surface over the ADK session store: list/show summaries, pending-interrupt scan, durable abort markers. (Named `session` pre-v0.1.0; renamed to end the alias collision with ADK's `session`.) |
 | `pkg/eventlog` | Seq-overlay + `Since`/`Watch` stream + audit metadata sidecar layered **on** ADK `session/database` (ADK owns the tables). Ported from core-agent. |
 | `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. |
 | `pkg/permissions` | Permission gate + prompt contract (ported; deliberately not runtime-wired in v0.1 — the package doc records the wiring-time inputs). |

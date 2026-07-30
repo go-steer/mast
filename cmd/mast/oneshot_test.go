@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	mastsession "github.com/go-steer/mast/pkg/session"
+	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // TestRunOneShot_EchoDebugPersistsSession is the one-shot e2e: echo
@@ -55,7 +55,7 @@ func TestRunOneShot_EchoDebugPersistsSession(t *testing.T) {
 
 	// Persistence: reopen the SQLite DB read-through and assert the
 	// turn's events survived the (simulated) process exit.
-	store, err := mastsession.Open(db, appName)
+	store, err := transcript.Open(db, appName)
 	if err != nil {
 		t.Fatalf("reopen session db: %v", err)
 	}

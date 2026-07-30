@@ -28,8 +28,8 @@ import (
 
 	"github.com/go-steer/mast"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/session"
 	"github.com/go-steer/mast/pkg/specialists"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -204,8 +204,8 @@ func TestHITLPauseListResume(t *testing.T) {
 	if got.ID != res.SessionID {
 		t.Errorf("session ID = %q, want %q", got.ID, res.SessionID)
 	}
-	if got.State != session.StatePaused {
-		t.Fatalf("session state = %q, want %q", got.State, session.StatePaused)
+	if got.State != transcript.StatePaused {
+		t.Fatalf("session state = %q, want %q", got.State, transcript.StatePaused)
 	}
 	if len(got.PendingInterruptIDs) != 1 || got.PendingInterruptIDs[0] != "approve-ImagePullBackOff" {
 		t.Fatalf("pending interrupts = %v, want [approve-ImagePullBackOff]", got.PendingInterruptIDs)
@@ -224,7 +224,7 @@ func TestHITLPauseListResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSessions after resume: %v", err)
 	}
-	if after[0].State != session.StateIdle {
-		t.Errorf("post-resume state = %q, want %q", after[0].State, session.StateIdle)
+	if after[0].State != transcript.StateIdle {
+		t.Errorf("post-resume state = %q, want %q", after[0].State, transcript.StateIdle)
 	}
 }
