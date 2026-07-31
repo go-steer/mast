@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.1.2 (2026-07-31)
+
+Patch release: the v0.1.1 shutdown contract hardened through two
+further adversarial review rounds, the second gated pre-merge. All
+twelve v0.1.2-milestone issues (#53-#58, #60-#65) are closed; the
+fixes are backed by reproducers verified to fail on the pre-fix code.
 
 - **Round-three hardening from the pre-merge adversarial gate (#60,
   #61, #62, #63, #64, #65).** The third review round refuted two of

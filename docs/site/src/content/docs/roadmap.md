@@ -1,9 +1,9 @@
 ---
 title: Roadmap
-description: What v0.1.1 ships, and what lands in v0.2 — honestly.
+description: What v0.1.2 ships, and what lands in v0.2 — honestly.
 ---
 
-mast is at **v0.1.1**. **All eleven v0.1 exit criteria from the fork
+mast is at **v0.1.2**. **All eleven v0.1 exit criteria from the fork
 design are green.** The `--task` profile criterion cleared with the
 P1.3a/P1.3b adapter ports and was verified against live endpoints on
 2026-07-29 (gemini one-shot with grounded search on the tier defaults,
