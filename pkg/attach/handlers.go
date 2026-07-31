@@ -525,8 +525,15 @@ func (h *handlers) doInterrupt(w http.ResponseWriter, r *http.Request, entry *En
 	canceled := ip.AttachInterrupt()
 	if canceled {
 		// Best-effort audit row. Don't fail the request if the
-		// emission errors — the cancel already fired.
-		appendInterruptAudit(r.Context(), entry)
+		// emission errors — the cancel already fired. Registrants
+		// that self-audit (InterruptSelfAuditor) suppress this
+		// fallback: appending here races the interrupted turn's final
+		// event flush and stales the runner's session handle (the ADK
+		// write-lease constraint) — the registrant's own turn loop is
+		// the only place with a guaranteed handle-free window.
+		if _, selfAudits := entry.Agent.(InterruptSelfAuditor); !selfAudits {
+			appendInterruptAudit(r.Context(), entry)
+		}
 	} else {
 		w.Header().Set("X-Interrupted", "nothing-in-flight")
 	}
@@ -536,12 +543,29 @@ func (h *handlers) doInterrupt(w http.ResponseWriter, r *http.Request, entry *En
 	})
 }
 
+// InterruptSelfAuditor is an optional Registrant capability: the
+// registrant records the operator-interrupt audit event itself, in a
+// window it can prove holds no live runner session handle (mast's
+// attachadapter does it in its serialized turn loop, after the
+// interrupted RunTurn returns). Implementers suppress the protocol
+// layer's fallback appendInterruptAudit, whose out-of-band append
+// can stale a still-unwinding turn's handle (issue #57).
+type InterruptSelfAuditor interface {
+	// AuditsInterrupts is a capability marker; the method body is
+	// never called for effect.
+	AuditsInterrupts()
+}
+
 // appendInterruptAudit writes one event row recording the operator's
 // interrupt intent. Author + CustomMetadata identify the source so a
 // later audit query (or attach /events tail) can distinguish
 // operator-initiated cancels from any other ctx.Canceled flowing
 // through the agent loop. Best-effort: an eventlog write failure
 // is logged-only — never fails the HTTP request.
+//
+// Fallback path only (see InterruptSelfAuditor): this append targets
+// the live session row and can invalidate the interrupted turn's
+// runner handle while it unwinds.
 func appendInterruptAudit(ctx context.Context, entry *Entry) {
 	log := entry.Agent.EventLog()
 	if log == nil {

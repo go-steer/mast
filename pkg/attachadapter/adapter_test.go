@@ -24,6 +24,8 @@ import (
 
 	"github.com/glebarez/sqlite"
 
+	"google.golang.org/adk/v2/session"
+
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/eventlog"
@@ -164,6 +166,15 @@ func TestAttachInterruptCancelsTurn(t *testing.T) {
 	if ad.AttachInterrupt() {
 		t.Error("AttachInterrupt with no turn in flight returned true")
 	}
+	// The audit append targets the session row, which in production
+	// the runner creates on the first turn; the stub RunTurn doesn't,
+	// so create it here (the audit is best-effort and silently skips
+	// sessions that don't exist yet).
+	if _, err := ad.cfg.EventLog.Service.Create(context.Background(), &session.CreateRequest{
+		AppName: ad.cfg.AppName, UserID: ad.cfg.UserID, SessionID: ad.cfg.SessionID,
+	}); err != nil {
+		t.Fatalf("create session row: %v", err)
+	}
 	if err := ad.Inject("long turn"); err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +190,38 @@ func TestAttachInterruptCancelsTurn(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("interrupt did not cancel the turn")
 	}
+
+	// The adapter self-audits interrupts (attach.InterruptSelfAuditor):
+	// drain appends the audit event after the interrupted turn
+	// returns. Wait for it — both to verify the behavior and because
+	// returning earlier races t.TempDir cleanup against the write.
+	deadline := time.Now().Add(5 * time.Second)
+	for !hasInterruptAudit(t, ad) {
+		if time.Now().After(deadline) {
+			t.Fatal("no attach/interrupt audit event appeared after the interrupted turn returned")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// hasInterruptAudit reports whether the adapter's session carries an
+// operator-interrupt audit event.
+func hasInterruptAudit(t *testing.T, ad *Adapter) bool {
+	t.Helper()
+	resp, err := ad.cfg.EventLog.Service.Get(context.Background(), &session.GetRequest{
+		AppName:   ad.cfg.AppName,
+		UserID:    ad.cfg.UserID,
+		SessionID: ad.cfg.SessionID,
+	})
+	if err != nil {
+		return false
+	}
+	for ev := range resp.Session.Events().All() {
+		if ev.Author == "attach/interrupt" {
+			return true
+		}
+	}
+	return false
 }
 
 // TestOperatorEventSequence proves the emitter sees the spec order:

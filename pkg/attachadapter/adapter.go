@@ -42,6 +42,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/adk/v2/session"
+
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/eventlog"
@@ -113,6 +115,11 @@ type Adapter struct {
 	draining bool
 	// cancelTurn interrupts the in-flight RunTurn; nil between turns.
 	cancelTurn context.CancelFunc
+
+	// auditPending records that AttachInterrupt fired against the
+	// current turn; drain appends the audit event after that turn
+	// returns (see appendInterruptAudit).
+	auditPending bool
 
 	emitMu sync.Mutex
 	emit   func(eventType string, payload any)
@@ -227,8 +234,21 @@ func (ad *Adapter) drain() {
 
 		ad.mu.Lock()
 		ad.cancelTurn = nil
+		auditPending := ad.auditPending
+		ad.auditPending = false
 		ad.mu.Unlock()
 		cancel()
+
+		if auditPending {
+			// Operator interrupted this turn: record the audit event
+			// NOW — the turn has returned, so no runner session
+			// handle is live, and the next turn cannot start until
+			// this loop iteration continues. Appending from the
+			// protocol layer at interrupt time instead would race the
+			// unwinding turn's final event flush and stale its handle
+			// (the ADK write-lease constraint, #57).
+			ad.appendInterruptAudit()
+		}
 
 		if err != nil {
 			ad.emitEvent(attach.EventTurnError, attach.ClassifyTurnError(err))
@@ -256,12 +276,48 @@ func (ad *Adapter) drain() {
 func (ad *Adapter) AttachInterrupt() bool {
 	ad.mu.Lock()
 	cancel := ad.cancelTurn
+	if cancel != nil {
+		ad.auditPending = true
+	}
 	ad.mu.Unlock()
 	if cancel == nil {
 		return false
 	}
 	cancel()
 	return true
+}
+
+// AuditsInterrupts implements attach.InterruptSelfAuditor (a
+// capability marker, never called for effect): this adapter records
+// the operator-interrupt audit event from its own turn loop, so the
+// protocol layer's fallback append — which would stale the unwinding
+// turn's session handle — is suppressed.
+func (ad *Adapter) AuditsInterrupts() {}
+
+// appendInterruptAudit writes the operator-interrupt audit event.
+// Called from drain between turns — the only window this adapter can
+// guarantee holds no live runner session handle. Best-effort: the
+// cancel already fired; a failed audit write is log-worthy at most,
+// and this layer has no logger, so it is silently dropped like the
+// protocol-layer fallback it replaces.
+func (ad *Adapter) appendInterruptAudit() {
+	if ad.cfg.EventLog == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	getResp, err := ad.cfg.EventLog.Service.Get(ctx, &session.GetRequest{
+		AppName:   ad.cfg.AppName,
+		UserID:    ad.cfg.UserID,
+		SessionID: ad.cfg.SessionID,
+	})
+	if err != nil {
+		return
+	}
+	ev := session.NewEvent(ctx, "attach-interrupt")
+	ev.Author = "attach/interrupt"
+	ev.CustomMetadata = map[string]any{"source": "operator"}
+	_ = ad.cfg.EventLog.Service.AppendEvent(ctx, getResp.Session, ev)
 }
 
 // AttachStatus implements attach.StatusProvider.
