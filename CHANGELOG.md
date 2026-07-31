@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.1.1 (2026-07-31)
+
+Patch release: the SIGTERM shutdown contract, shipped and then
+hardened by adversarial review — plus the durable-by-default GKE base.
+All seven v0.1.1-milestone issues (#38-#40, #45-#48) are closed.
 
 - **Session markers move to a companion ops row; fixes shutdown
   markers and abort killing live turns on database stores (#45, #46,
