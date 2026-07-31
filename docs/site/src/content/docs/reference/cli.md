@@ -65,7 +65,8 @@ token — resume tokens are the v0.2 programmatic-pause surface.
 `interrupted` marks a session whose turn was cut short by a daemon
 shutdown: on SIGTERM the daemon stops accepting new work (`/inject`
 and `/resume` answer **503 + Retry-After**; new attach turns are
-refused), drains in-flight turns for up to the workload's
+refused; requests naming a reserved `…:mast-ops` ID answer **400** on
+all three write endpoints), drains in-flight turns for up to the workload's
 `budget.max_wallclock_seconds` (30s without a budget), durably
 marking their sessions *before* waiting, and clearing the marker for
 turns that finish inside the window. The marker survives even a

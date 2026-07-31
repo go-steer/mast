@@ -415,6 +415,9 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		return resume(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req)
 	}
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
+		if transcript.IsReservedSessionID(req.SessionID) {
+			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not an abortable session: %w", req.SessionID, inject.ErrBadPayload)
+		}
 		return store.Abort(reqCtx, "", req.SessionID, req.Reason)
 	}
 
@@ -796,6 +799,12 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters 
 	// budget, the request lifetime, and drain-expiry cancellation.
 	unlock, err := turnLocks.lock(ctx, sessionID)
 	if err != nil {
+		if tracker.isDraining() {
+			// The wait was cut by drain-expiry cancellation: this is
+			// the daemon refusing work, not a dispatch failure — 503,
+			// same contract as the drain gate (#65).
+			return fmt.Errorf("%w (queued turn cancelled: %v)", inject.ErrUnavailable, err)
+		}
 		return err
 	}
 	defer unlock()

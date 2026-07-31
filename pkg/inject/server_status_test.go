@@ -43,11 +43,14 @@ func TestErrorStatusMapping(t *testing.T) {
 		{"other error", fmt.Errorf("model exploded"), http.StatusInternalServerError, false, "failed"},
 	}
 	for _, tc := range cases {
-		t.Run("inject/"+tc.name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			srv, err := New(Config{
 				Listen:  "127.0.0.1:0",
 				Handler: func(context.Context, envelope.InjectPayload) error { return tc.err },
 				ResumeHandler: func(context.Context, ResumeRequest) error {
+					return tc.err
+				},
+				AbortHandler: func(context.Context, AbortRequest) error {
 					return tc.err
 				},
 			})
@@ -57,7 +60,14 @@ func TestErrorStatusMapping(t *testing.T) {
 			for _, route := range []struct{ path, body string }{
 				{"/inject", `{"kind":"Event","reason":"r","namespace":"n","name":"p","uid":"u","cluster":"c","message":"m"}`},
 				{"/resume", `{"session_id":"s","interrupt_id":"i","response":{}}`},
+				{"/abort", `{"session_id":"s"}`},
 			} {
+				if route.path == "/abort" && tc.wantStatus == http.StatusServiceUnavailable {
+					// Abort is deliberately NOT drain-gated (a marker
+					// write is legitimate during termination); the
+					// unavailable sentinel never flows through it.
+					continue
+				}
 				req := httptest.NewRequest(http.MethodPost, route.path, strings.NewReader(route.body))
 				rec := httptest.NewRecorder()
 				srv.srv.Handler.ServeHTTP(rec, req)
@@ -66,6 +76,9 @@ func TestErrorStatusMapping(t *testing.T) {
 				}
 				if tc.wantRetry && rec.Header().Get("Retry-After") == "" {
 					t.Errorf("%s %s: missing Retry-After", route.path, tc.name)
+				}
+				if !tc.wantRetry && rec.Header().Get("Retry-After") != "" {
+					t.Errorf("%s %s: unexpected Retry-After on %d", route.path, tc.name, rec.Code)
 				}
 				if !strings.Contains(rec.Body.String(), tc.wantInBody) {
 					t.Errorf("%s %s: body %q missing %q", route.path, tc.name, rec.Body.String(), tc.wantInBody)

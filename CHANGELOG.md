@@ -12,7 +12,8 @@
   40-sessions-finishing-during-drain reproducer is in the suite and
   fails 3/3 on the pre-fix code (#60). (2) `/inject` could mint a
   reserved `:mast-ops` session from the untrusted payload UID; now
-  refused like every other surface (#61). (3) Two concurrent turns on
+  refused like every other surface, with reserved-ID rejections
+  answering HTTP 400 on all three write endpoints (#61). (3) Two concurrent turns on
   the SAME session lost one to ADK's stale-session check — the daemon
   now runs one turn per session, queueing same-session injects and
   resumes behind the in-flight turn (#62). (4) The pre-mark pass is

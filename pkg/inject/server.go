@@ -294,6 +294,10 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("abort received", "session", req.SessionID, "reason", req.Reason)
 
 	if err := s.cfg.AbortHandler(r.Context(), req); err != nil {
+		if errors.Is(err, ErrBadPayload) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		s.logger.Error("abort failed", "error", err.Error())
 		http.Error(w, "abort failed", http.StatusInternalServerError)
 		return
