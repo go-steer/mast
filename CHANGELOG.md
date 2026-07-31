@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **Session markers move to a companion ops row; fixes shutdown
+  markers and abort killing live turns on database stores (#45, #46,
+  #47, #48).** Adversarial review of the shutdown contract found that
+  ADK's database session service treats a session handle as a write
+  lease (optimistic concurrency on `last_update_time`): appending the
+  interruption marker — or an operator abort — to the session's own
+  row invalidated the live runner handle, killed the in-flight turn
+  with a `stale session error`, and (for shutdown markers) the dying
+  turn's cleanup then erased the marker and the drain logged clean.
+  All marker writes (abort + interruption) now go to a companion ops
+  row (`<sid>:mast-ops`, reserved suffix, hidden from `sessions
+  list`), mirroring core-agent's derived-session-ID fix for the same
+  ADK behavior; projections fold ops-row state into the primary, and
+  legacy v0.1.0 abort markers in primary-row state are still honored.
+  Consequences: abort truly is marker-not-preemption now (its
+  documented contract), markers work even before the runner has
+  created the session, and marker events no longer appear in the
+  model-visible transcript. Also from the same review: `/resume`
+  turns now get the workload wallclock budget like inject and attach
+  turns; new attach-injected turns are refused once a shutdown drain
+  begins (live tail unaffected); cancelled drain survivors get a
+  short bounded grace to unwind before teardown; and the tracker's
+  marker writes are timeout-bounded. Regression tests now run the
+  marker paths against a real SQLite database service with a held
+  live handle — the in-memory-only test blind spot that hid the bug.
+
 - **The `deploy/` kustomize base is durable by default (#40).** The
   daemon converts from a bare Deployment to a **StatefulSet** with a
   1Gi `volumeClaimTemplate` mounted at `/var/lib/mast` and

@@ -54,7 +54,10 @@ The split is deliberate:
 
 `abort` writes a durable abort marker with a reason; the daemon then
 refuses resumes for that session. It's a marker plus resume-refusal, not
-engine preemption (engine-level terminal state is v0.2 work).
+engine preemption (engine-level terminal state is v0.2 work). Markers
+live in a companion row beside the session, not in its transcript — an
+in-flight turn is never disturbed by an abort (or by a shutdown
+marker), and the model never sees marker events.
 
 Resume is keyed by **interrupt ID** (`--interrupt` + `--response`), not by
 token — resume tokens are the v0.2 programmatic-pause surface.

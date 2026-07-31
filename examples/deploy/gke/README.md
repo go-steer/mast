@@ -2,8 +2,9 @@
 
 The GKE starter is not duplicated here: the canonical, working GKE
 recipe lives at the repo root under [`deploy/`](../../../deploy/) — a
-kustomize base (namespace, service accounts, watcher RBAC, daemon +
-event-watcher Deployments, Service) with an example overlay, running
+kustomize base (namespace, service accounts, watcher RBAC, daemon
+StatefulSet + event-watcher Deployment, Service) with an example
+overlay, running
 the [`gke-triage`](../../workloads/gke-triage/) workload. Start there:
 
 ```sh
@@ -13,8 +14,9 @@ kubectl apply -k deploy/overlays/example
 Shape notes against the v0.1 row in
 [`docs/deployment-design.md`](../../../docs/deployment-design.md):
 
-- **Single instance** (`replicas: 1`, `strategy: Recreate`) — GKE
-  multi-instance (2-N replicas, Postgres store, advisory-lock
+- **Single instance** (`replicas: 1`; the StatefulSet's sequential
+  delete-then-create update preserves the old `Recreate` semantics) —
+  GKE multi-instance (2-N replicas, Postgres store, advisory-lock
   handoff) is the v0.2 row.
 - **Session durability — on by default:** the daemon runs as a
   **StatefulSet** with a `volumeClaimTemplate` mounted at
