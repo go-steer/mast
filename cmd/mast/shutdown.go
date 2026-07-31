@@ -32,12 +32,18 @@ import (
 // invites SIGKILL-mid-teardown from the supervisor.
 const defaultDrainBound = 30 * time.Second
 
+// storeWriteTimeout bounds the tracker's marker writes so a wedged
+// session store cannot stall turn completion or the drain itself.
+const storeWriteTimeout = 10 * time.Second
+
 // drainBound returns how long a shutdown waits for in-flight turns.
-// Serve-mode turns are already wallclock-bounded by the workload
-// budget, so the drain bound IS that ceiling — a finishing turn is
-// never cut shorter than its own budget allows, and the worst-case
-// drain is known at deploy time (size terminationGracePeriodSeconds /
-// TimeoutStopSec above it).
+// When the workload sets budget.max_wallclock_seconds, every turn
+// (inject, attach, and resume alike) is bounded by it, so the drain
+// bound IS that ceiling — a finishing turn is never cut shorter than
+// its own budget allows, and the worst-case drain is known at deploy
+// time (size terminationGracePeriodSeconds / TimeoutStopSec above
+// it). Without a budget, turns are unbounded and the default is a
+// hard cut at 30s.
 func drainBound(bundle *workload.Bundle) time.Duration {
 	if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
 		return time.Duration(bundle.Budget.MaxWallclockSeconds) * time.Second
@@ -114,10 +120,22 @@ func (t *turnTracker) end(sessionID string) {
 	}
 	t.mu.Unlock()
 	if clear {
-		if err := t.store.ClearInterrupted(context.Background(), t.userID, sessionID); err != nil {
+		// Bounded: a wedged store write here would otherwise stall the
+		// turn's return and burn the drain window (#48).
+		ctx, cancel := context.WithTimeout(context.Background(), storeWriteTimeout)
+		defer cancel()
+		if err := t.store.ClearInterrupted(ctx, t.userID, sessionID); err != nil {
 			t.logger.Warn("failed to clear interruption marker", "session", sessionID, "error", err.Error())
 		}
 	}
+}
+
+// isDraining reports whether a shutdown drain has begun. The attach
+// RunTurn path consults it to refuse new work during termination.
+func (t *turnTracker) isDraining() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.draining
 }
 
 // beginDrain flips the tracker into draining mode and durably marks
@@ -178,6 +196,8 @@ func (t *turnTracker) activeSessions() []string {
 }
 
 func (t *turnTracker) writeMark(ctx context.Context, sessionID string) {
+	ctx, cancel := context.WithTimeout(ctx, storeWriteTimeout)
+	defer cancel()
 	if err := t.store.MarkInterrupted(ctx, t.userID, sessionID, "daemon shutdown"); err != nil {
 		t.logger.Warn("failed to write interruption marker", "session", sessionID, "error", err.Error())
 	}

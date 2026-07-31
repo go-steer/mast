@@ -347,6 +347,13 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 				ModelName:   llm.Name(),
 				Description: attachDescription(bundle),
 				RunTurn: func(turnCtx context.Context, message string) (attachadapter.TurnResult, error) {
+					// The attach surface stays up through the shutdown
+					// drain so operators can live-tail finishing turns —
+					// but NEW work is refused once draining (#48), or an
+					// operator could burn the whole grace period.
+					if tracker.isDraining() {
+						return attachadapter.TurnResult{}, errors.New("daemon is shutting down; not accepting new turns")
+					}
 					// Same wallclock ceiling as the inject dispatch
 					// path — operator turns are not budget-exempt.
 					if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
@@ -384,7 +391,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
 		}
 		att.ensure(req.SessionID)
-		return resume(reqCtx, r, logger, meters, wds, obs, tracker, workloadName, req)
+		return resume(reqCtx, r, logger, meters, wds, obs, tracker, workloadName, bundle, req)
 	}
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
 		return store.Abort(reqCtx, "", req.SessionID, req.Reason)
@@ -437,6 +444,13 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// and their unwinding must not clear the markers that say so.
 		tracker.freeze()
 		cancelTurns()
+		// Give the cancelled turns a short beat to unwind before the
+		// deferred teardown (attach close, eventlog close) yanks their
+		// dependencies — cancellation is useless if the process exits
+		// before the cancelled goroutines observe it (#48).
+		graceCtx, graceCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer graceCancel()
+		tracker.wait(graceCtx)
 		logger.Warn("drain window elapsed; interrupted sessions carry durable markers",
 			"sessions", remaining, "drain_bound", drain.String())
 	}()
@@ -702,7 +716,14 @@ func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters
 // session. The runner treats a user turn carrying a FunctionResponse
 // whose ID matches a pending InterruptID as a resume (see adk/v2
 // runner buildResumeResponses).
-func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, workloadName string, req inject.ResumeRequest) error {
+func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, workloadName string, bundle *workload.Bundle, req inject.ResumeRequest) error {
+	// Same wallclock ceiling as the inject and attach paths — resume
+	// turns are not budget-exempt either (#47).
+	if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
+		defer cancel()
+	}
 	msg := &genai.Content{
 		Role: genai.RoleUser,
 		Parts: []*genai.Part{genai.NewPartFromFunctionResponse("adk_request_input", map[string]any{
