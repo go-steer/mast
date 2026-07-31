@@ -267,8 +267,11 @@ func TestAbort(t *testing.T) {
 			if len(d.Pending) != 0 || len(d.PendingInterruptIDs) != 0 {
 				t.Errorf("aborted session still reports pending: %+v", d.Pending)
 			}
-			if d.EventCount != 2 { // interrupt + abort marker
-				t.Errorf("EventCount = %d, want 2", d.EventCount)
+			// The abort marker lives in the companion ops row, not the
+			// primary transcript (issue #46) — EventCount is the
+			// primary's alone.
+			if d.EventCount != 1 {
+				t.Errorf("EventCount = %d, want 1 (abort marker must not land in the primary row)", d.EventCount)
 			}
 
 			err = store.Abort(ctx, "", "s-abort", "again")
@@ -440,6 +443,161 @@ func TestInterruptedPrecedence(t *testing.T) {
 			}
 			if d.State != StateAborted {
 				t.Errorf("marked+pending+aborted state = %q, want %q", d.State, StateAborted)
+			}
+		})
+	}
+}
+
+// liveHandleEvent builds an appendable text event for write-lease
+// tests (fresh ID per call so database-service primary keys don't
+// collide).
+func liveHandleEvent(text string) *adksession.Event {
+	ev := adksession.NewEvent(context.Background(), "inv-live")
+	ev.Author = "triager"
+	ev.Content = genai.NewContentFromText(text, genai.RoleModel)
+	return ev
+}
+
+// TestMarkersDoNotInvalidateLiveHandle is the regression test for
+// issues #45/#46: ADK's database service treats a session handle as a
+// write lease (optimistic concurrency on last_update_time), so a
+// marker appended to the PRIMARY row would make the runner's next
+// AppendEvent fail with "stale session error" — killing the very turn
+// the shutdown marker was recording (and, for Abort, violating its
+// marker-not-preemption contract). Markers therefore go to the
+// companion ops row; this test simulates the runner by holding a live
+// handle across marker writes and appending through it afterwards.
+func TestMarkersDoNotInvalidateLiveHandle(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			seed(t, svc, "op", "s-live") // created empty; events appended below
+
+			// The "runner": grab a handle and stream an event through it.
+			live, err := svc.Get(ctx, &adksession.GetRequest{
+				AppName: testApp, UserID: "op", SessionID: "s-live",
+			})
+			if err != nil {
+				t.Fatalf("get live handle: %v", err)
+			}
+			ev1 := liveHandleEvent("turn event 1")
+			ev1.Timestamp = time.Now().Add(time.Second)
+			if err := svc.AppendEvent(ctx, live.Session, ev1); err != nil {
+				t.Fatalf("append via live handle (pre-mark): %v", err)
+			}
+
+			store := NewStore(svc, testApp)
+
+			// Shutdown marks the session mid-turn...
+			if err := store.MarkInterrupted(ctx, "op", "s-live", "daemon shutdown"); err != nil {
+				t.Fatalf("MarkInterrupted: %v", err)
+			}
+			// ...and an operator aborts it mid-turn too.
+			if err := store.Abort(ctx, "op", "s-live", "operator cancelled"); err != nil {
+				t.Fatalf("Abort: %v", err)
+			}
+
+			// The runner's next streamed event MUST still append —
+			// this line failed with "stale session error" when markers
+			// wrote to the primary row.
+			ev2 := liveHandleEvent("turn event 2")
+			ev2.Timestamp = time.Now().Add(2 * time.Second)
+			if err := svc.AppendEvent(ctx, live.Session, ev2); err != nil {
+				t.Fatalf("append via live handle after markers: %v (write-lease regression — markers must not touch the primary row)", err)
+			}
+
+			// And the markers are visible through the projection.
+			d, err := store.Get(ctx, "", "s-live")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if d.State != StateAborted || d.AbortReason != "operator cancelled" {
+				t.Errorf("state = %q (%q), want aborted", d.State, d.AbortReason)
+			}
+			if d.EventCount != 2 {
+				t.Errorf("primary EventCount = %d, want 2 (both runner events, no marker events)", d.EventCount)
+			}
+		})
+	}
+}
+
+// TestOpsRowsHiddenFromList: companion rows are marker storage, not
+// sessions — List must not surface them.
+func TestOpsRowsHiddenFromList(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			seed(t, svc, "op", "s-hide", textEvent("triager", "hello"))
+			store := NewStore(svc, testApp)
+			if err := store.MarkInterrupted(ctx, "op", "s-hide", "daemon shutdown"); err != nil {
+				t.Fatalf("MarkInterrupted: %v", err)
+			}
+			summaries, err := store.List(ctx, "")
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(summaries) != 1 || summaries[0].ID != "s-hide" {
+				t.Fatalf("List = %+v, want exactly the primary session", summaries)
+			}
+			if summaries[0].State != StateInterrupted {
+				t.Errorf("state = %q, want interrupted (ops-row marker must fold into the primary)", summaries[0].State)
+			}
+		})
+	}
+}
+
+// TestMarkBeforeSessionExists: a SIGTERM can land before the runner's
+// auto-create has committed the primary row. The marker parks in the
+// ops row and surfaces once the primary appears.
+func TestMarkBeforeSessionExists(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewStore(svc, testApp)
+
+			if err := store.MarkInterrupted(ctx, "op", "s-ghost", "daemon shutdown"); err != nil {
+				t.Fatalf("MarkInterrupted before primary exists: %v", err)
+			}
+			if _, err := store.Get(ctx, "op", "s-ghost"); err == nil {
+				t.Fatal("Get(ghost primary) succeeded, want error while primary is missing")
+			}
+
+			seed(t, svc, "op", "s-ghost", textEvent("triager", "late create"))
+			d, err := store.Get(ctx, "op", "s-ghost")
+			if err != nil {
+				t.Fatalf("Get after primary created: %v", err)
+			}
+			if d.State != StateInterrupted {
+				t.Errorf("state = %q, want interrupted (parked marker must surface)", d.State)
+			}
+		})
+	}
+}
+
+// TestLegacyAbortMarkerStillHonored: v0.1.0 wrote abort markers into
+// the primary row's own state; existing DBs must keep reporting
+// aborted, and re-aborting them stays idempotent.
+func TestLegacyAbortMarkerStillHonored(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			legacy := adksession.NewEvent(ctx, "operator-abort")
+			legacy.Author = "operator"
+			legacy.Content = genai.NewContentFromText("session aborted by operator: old style", genai.RoleUser)
+			legacy.Actions.StateDelta[abortReasonKey] = "old style"
+			legacy.Actions.StateDelta[abortTimeKey] = time.Now().UTC().Format(time.RFC3339Nano)
+			seed(t, svc, "op", "s-legacy", legacy)
+
+			store := NewStore(svc, testApp)
+			d, err := store.Get(ctx, "", "s-legacy")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if d.State != StateAborted || d.AbortReason != "old style" {
+				t.Errorf("state = %q (%q), want legacy aborted", d.State, d.AbortReason)
+			}
+			if err := store.Abort(ctx, "op", "s-legacy", "again"); !errors.Is(err, ErrAlreadyAborted) {
+				t.Errorf("re-abort of legacy-aborted err = %v, want ErrAlreadyAborted", err)
 			}
 		})
 	}

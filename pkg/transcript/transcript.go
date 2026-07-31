@@ -28,8 +28,9 @@
 // State labels are derived strictly from what the store can prove:
 //
 //   - StatePaused:  at least one pending (unresolved) RequestedInput.
-//   - StateAborted: an operator abort marker is present in session state
-//     (written by Store.Abort; see its doc for the semantics contract).
+//   - StateAborted: an operator abort marker is present (written by
+//     Store.Abort to the session's companion ops row — see opsSuffix;
+//     v0.1.0 markers in the primary row's state are still honored).
 //   - StateInterrupted: a daemon shutdown cut a turn short — the daemon
 //     wrote an interruption marker before draining (Store.MarkInterrupted)
 //     and no clean completion cleared it (Store.ClearInterrupted). This
@@ -49,6 +50,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -85,6 +87,22 @@ const (
 	interruptReasonKey = "mast_interrupted_reason"
 	interruptTimeKey   = "mast_interrupted_time"
 )
+
+// opsSuffix derives the companion ops row's session ID from the
+// primary's. All operator/daemon marker writes (abort, interruption)
+// go to the ops row, NEVER to the primary session row, because ADK's
+// database session service enforces optimistic concurrency: a session
+// handle is a write lease, and any out-of-band append to a row
+// invalidates every other holder's handle — the runner's next
+// AppendEvent on a live turn fails with "stale session error"
+// (adk/v2 session/database/service.go; core-agent hit the identical
+// failure with subagents writing to the parent's row and fixed it the
+// same way, with derived session IDs — see their
+// docs/eventlog-decisions.md). The suffix is reserved: List hides ops
+// rows, and a real session must not use an ID ending in it.
+const opsSuffix = ":mast-ops"
+
+func opsSessionID(sid string) string { return sid + opsSuffix }
 
 // ErrNotFound reports that no session with the requested ID exists in
 // the store (under the store's app name).
@@ -190,6 +208,11 @@ func (s *Store) List(ctx context.Context, userID string) ([]Summary, error) {
 	}
 	summaries := make([]Summary, 0, len(resp.Sessions))
 	for _, sess := range resp.Sessions {
+		// Companion ops rows are marker storage, not sessions; their
+		// content surfaces through the primary's projection.
+		if strings.HasSuffix(sess.ID(), opsSuffix) {
+			continue
+		}
 		d, err := s.Get(ctx, sess.UserID(), sess.ID())
 		if err != nil {
 			return nil, fmt.Errorf("inspect session %q: %w", sess.ID(), err)
@@ -224,16 +247,22 @@ func (s *Store) Get(ctx context.Context, userID, sessionID string) (*Detail, err
 	if err != nil {
 		return nil, fmt.Errorf("get session %q: %w", sessionID, err)
 	}
-	return project(resp.Session), nil
+	return project(resp.Session, s.opsState(ctx, userID, sessionID)), nil
 }
 
-// Abort appends a durable operator-abort marker to the session.
+// Abort appends a durable operator-abort marker for the session.
 //
 // Semantics contract (minimal and honest — read before relying on it):
 //
 //   - Abort is a marker, not preemption. It does NOT cancel a turn that
 //     is in flight in some daemon process; it appends an event whose
-//     StateDelta records the abort reason and time in session state.
+//     StateDelta records the abort reason and time in the session's
+//     companion ops row (see opsSuffix — writing to the primary row
+//     would invalidate a live runner handle and kill the turn, the
+//     opposite of this contract; issue #46). The abort event is
+//     therefore NOT part of the primary transcript the model sees —
+//     previously incidental, since the daemon refuses resumes on
+//     aborted sessions anyway.
 //   - ADK's workflow reconstruction does not read the marker: as far as
 //     the engine is concerned, a pending RequestedInput is still
 //     resumable. It is mast's surface that treats the marker as
@@ -243,7 +272,8 @@ func (s *Store) Get(ctx context.Context, userID, sessionID string) (*Detail, err
 //     v0.2 programmatic-pause/abort work
 //     (docs/durable-execution-design.md, Phasing).
 //   - Idempotency: a second Abort returns ErrAlreadyAborted rather than
-//     stacking markers.
+//     stacking markers. Legacy v0.1.0 abort markers (written to the
+//     primary row's state) count.
 func (s *Store) Abort(ctx context.Context, userID, sessionID, reason string) error {
 	if userID == "" {
 		var err error
@@ -252,6 +282,8 @@ func (s *Store) Abort(ctx context.Context, userID, sessionID, reason string) err
 			return err
 		}
 	}
+	// Aborting a session that doesn't exist is an operator error
+	// (ErrNotFound), so probe the primary read-only before writing.
 	resp, err := s.svc.Get(ctx, &adksession.GetRequest{
 		AppName:   s.appName,
 		UserID:    userID,
@@ -263,36 +295,43 @@ func (s *Store) Abort(ctx context.Context, userID, sessionID, reason string) err
 	if _, err := resp.Session.State().Get(abortReasonKey); err == nil {
 		return fmt.Errorf("session %q: %w", sessionID, ErrAlreadyAborted)
 	}
-
-	ev := adksession.NewEvent(ctx, "operator-abort")
-	ev.Author = "operator"
-	ev.Content = genai.NewContentFromText(
-		fmt.Sprintf("session aborted by operator: %s", reason), genai.RoleUser)
-	ev.Actions.StateDelta[abortReasonKey] = reason
-	ev.Actions.StateDelta[abortTimeKey] = ev.Timestamp.UTC().Format(time.RFC3339Nano)
-	if err := s.svc.AppendEvent(ctx, resp.Session, ev); err != nil {
-		return fmt.Errorf("append abort event to session %q: %w", sessionID, err)
+	if v, ok := s.opsState(ctx, userID, sessionID)[abortReasonKey]; ok && v != "" {
+		return fmt.Errorf("session %q: %w", sessionID, ErrAlreadyAborted)
 	}
-	return nil
+
+	return s.appendOpsDelta(ctx, userID, sessionID, "operator-abort", "operator",
+		fmt.Sprintf("session aborted by operator: %s", reason),
+		map[string]any{
+			abortReasonKey: reason,
+			abortTimeKey:   time.Now().UTC().Format(time.RFC3339Nano),
+		})
 }
 
-// MarkInterrupted appends a durable interrupted-by-shutdown marker to
+// MarkInterrupted appends a durable interrupted-by-shutdown marker for
 // the session (docs/durable-execution-design.md, "Shutdown contract").
 //
 // The daemon writes it for every session with a turn in flight when a
 // shutdown begins, BEFORE draining — so a SIGKILL mid-drain leaves the
 // marker on disk — and clears it via ClearInterrupted when the turn
-// completes inside the drain window. Like the abort marker it is
-// state, not preemption: the engine ignores it, and a later turn on
-// the session proceeds normally (reconstruct-and-re-execute); it
-// exists so operators can see which sessions a restart cut short.
-// Re-marking an already-marked session overwrites (last write wins) —
-// a second shutdown racing the first is not worth an error.
+// completes inside the drain window. The marker lives in the
+// companion ops row (see opsSuffix): writing it to the primary row
+// would invalidate the live runner handle and kill the very turn
+// being marked (issue #45). Like the abort marker it is state, not
+// preemption: the engine ignores it, and a later turn on the session
+// proceeds normally (reconstruct-and-re-execute); it exists so
+// operators can see which sessions a restart cut short.
+//
+// The primary session need not exist yet (a turn interrupted before
+// the runner's auto-create): the marker parks in the ops row and
+// surfaces if/when the primary appears. userID must then be explicit —
+// with userID == "" resolution scans primaries and returns
+// ErrNotFound. Re-marking overwrites (last write wins) — a second
+// shutdown racing the first is not worth an error.
 func (s *Store) MarkInterrupted(ctx context.Context, userID, sessionID, reason string) error {
 	if reason == "" {
 		return errors.New("mark interrupted: reason must be non-empty (the empty string is the cleared state)")
 	}
-	return s.appendStateDelta(ctx, userID, sessionID, "shutdown-interrupt",
+	return s.appendOpsDelta(ctx, userID, sessionID, "shutdown-interrupt", "daemon",
 		fmt.Sprintf("turn interrupted by daemon shutdown: %s", reason),
 		map[string]any{
 			interruptReasonKey: reason,
@@ -304,15 +343,16 @@ func (s *Store) MarkInterrupted(ctx context.Context, userID, sessionID, reason s
 // completed inside the drain window. Clearing an unmarked session is a
 // harmless no-op event (shutdown-path callers cannot atomically check).
 func (s *Store) ClearInterrupted(ctx context.Context, userID, sessionID string) error {
-	return s.appendStateDelta(ctx, userID, sessionID, "shutdown-interrupt-clear",
+	return s.appendOpsDelta(ctx, userID, sessionID, "shutdown-interrupt-clear", "daemon",
 		"turn completed within the shutdown drain window; interruption marker cleared",
 		map[string]any{interruptReasonKey: "", interruptTimeKey: ""})
 }
 
-// appendStateDelta appends one daemon-authored event whose StateDelta
-// carries the given keys — the shared mechanics of the abort and
-// interruption markers.
-func (s *Store) appendStateDelta(ctx context.Context, userID, sessionID, invocation, text string, delta map[string]any) error {
+// appendOpsDelta appends one marker event to the session's companion
+// ops row, creating the row on first use — the shared mechanics of the
+// abort and interruption markers. It never touches the primary row
+// (see opsSuffix for why that is load-bearing).
+func (s *Store) appendOpsDelta(ctx context.Context, userID, sessionID, invocation, author, text string, delta map[string]any) error {
 	if userID == "" {
 		var err error
 		userID, err = s.findUserID(ctx, sessionID)
@@ -320,24 +360,59 @@ func (s *Store) appendStateDelta(ctx context.Context, userID, sessionID, invocat
 			return err
 		}
 	}
-	resp, err := s.svc.Get(ctx, &adksession.GetRequest{
-		AppName:   s.appName,
-		UserID:    userID,
-		SessionID: sessionID,
-	})
-	if err != nil {
-		return fmt.Errorf("get session %q: %w", sessionID, err)
+	opsID := opsSessionID(sessionID)
+	var sess adksession.Session
+	if resp, err := s.svc.Get(ctx, &adksession.GetRequest{
+		AppName: s.appName, UserID: userID, SessionID: opsID,
+	}); err == nil {
+		sess = resp.Session
+	} else {
+		created, cerr := s.svc.Create(ctx, &adksession.CreateRequest{
+			AppName: s.appName, UserID: userID, SessionID: opsID,
+		})
+		if cerr != nil {
+			// A racing writer may have created it between our Get and
+			// Create; one retry settles it.
+			retry, gerr := s.svc.Get(ctx, &adksession.GetRequest{
+				AppName: s.appName, UserID: userID, SessionID: opsID,
+			})
+			if gerr != nil {
+				return fmt.Errorf("open ops row for session %q: %w", sessionID, cerr)
+			}
+			sess = retry.Session
+		} else {
+			sess = created.Session
+		}
 	}
 	ev := adksession.NewEvent(ctx, invocation)
-	ev.Author = "daemon"
+	ev.Author = author
 	ev.Content = genai.NewContentFromText(text, genai.RoleUser)
 	for k, v := range delta {
 		ev.Actions.StateDelta[k] = v
 	}
-	if err := s.svc.AppendEvent(ctx, resp.Session, ev); err != nil {
-		return fmt.Errorf("append %s event to session %q: %w", invocation, sessionID, err)
+	if err := s.svc.AppendEvent(ctx, sess, ev); err != nil {
+		return fmt.Errorf("append %s event to ops row of session %q: %w", invocation, sessionID, err)
 	}
 	return nil
+}
+
+// opsState reads the companion ops row's marker keys. A missing row —
+// or any read failure — means "no markers": the ops row is an overlay,
+// and a session without one is simply unmarked.
+func (s *Store) opsState(ctx context.Context, userID, sessionID string) map[string]string {
+	resp, err := s.svc.Get(ctx, &adksession.GetRequest{
+		AppName: s.appName, UserID: userID, SessionID: opsSessionID(sessionID),
+	})
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, 4)
+	for _, k := range []string{abortReasonKey, abortTimeKey, interruptReasonKey, interruptTimeKey} {
+		if v, err := resp.Session.State().Get(k); err == nil {
+			out[k] = fmt.Sprintf("%v", v)
+		}
+	}
+	return out
 }
 
 // findUserID resolves the user ID owning sessionID by scanning the
@@ -357,8 +432,12 @@ func (s *Store) findUserID(ctx context.Context, sessionID string) (string, error
 	return "", fmt.Errorf("session %q (app %q): %w", sessionID, s.appName, ErrNotFound)
 }
 
-// project computes the Detail view from a fully-loaded session.
-func project(sess adksession.Session) *Detail {
+// project computes the Detail view from a fully-loaded primary session
+// plus its companion ops-row marker state (nil = no ops row). Marker
+// keys are also read from the primary's own state for back-compat:
+// v0.1.0 wrote abort markers there, before the write-lease constraint
+// moved marker writes to the ops row (issues #45/#46).
+func project(sess adksession.Session, ops map[string]string) *Detail {
 	d := &Detail{
 		Summary: Summary{
 			ID:            sess.ID(),
@@ -371,11 +450,21 @@ func project(sess adksession.Session) *Detail {
 		Pending:    scanPending(sess.Events()),
 	}
 
-	if reason, err := sess.State().Get(abortReasonKey); err == nil {
+	markerValue := func(key string) string {
+		if v, ok := ops[key]; ok && v != "" {
+			return v
+		}
+		if v, err := sess.State().Get(key); err == nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return ""
+	}
+
+	if reason := markerValue(abortReasonKey); reason != "" {
 		// Abort trumps paused: the marker is terminal on mast's
 		// surface, so pending interrupts are reported resolved-by-abort.
 		d.State = StateAborted
-		d.AbortReason = fmt.Sprintf("%v", reason)
+		d.AbortReason = reason
 		d.Pending = nil
 		return d
 	}
@@ -390,12 +479,10 @@ func project(sess adksession.Session) *Detail {
 		return d
 	}
 
-	if reason, err := sess.State().Get(interruptReasonKey); err == nil {
-		// The cleared state is the empty string, not a deleted key.
-		if r := fmt.Sprintf("%v", reason); r != "" {
-			d.State = StateInterrupted
-			d.InterruptReason = r
-		}
+	// The cleared state is the empty string, not a deleted key.
+	if reason := markerValue(interruptReasonKey); reason != "" {
+		d.State = StateInterrupted
+		d.InterruptReason = reason
 	}
 	return d
 }
