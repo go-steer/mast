@@ -64,23 +64,34 @@ func drainBound(bundle *workload.Bundle) time.Duration {
 //     contexts — those turns ARE interrupted, and their unwinding
 //     must not scrub the marker that says so.
 //
+// Locking discipline (#55): mu guards the counters; writeMu serializes
+// each mark/clear DECISION together with its store write, with the
+// decision re-checked under writeMu. Without that pairing, a turn
+// finishing while beginDrain was still writing could land its clear
+// BEFORE the mark — last-write-wins then reported a cleanly-finished
+// session as interrupted. writeMu is never held while acquiring mu's
+// critical sections' callers (mu is only taken inside writeMu, never
+// the reverse).
+//
 // The zero tracker is not usable; construct via newTurnTracker.
+// The tracker always operates as defaultUserID — the daemon's only
+// writer identity; a per-tracker user would be dead configurability.
 type turnTracker struct {
 	store  *transcript.Store
-	userID string
 	logger *slog.Logger
 
 	mu       sync.Mutex
 	active   map[string]int  // sessionID → in-flight turn count
-	marked   map[string]bool // sessions carrying an uncleared marker
+	marked   map[string]bool // sessions with a durably-written, uncleared marker
 	draining bool
 	frozen   bool
+
+	writeMu sync.Mutex // serializes mark/clear decision + store write
 }
 
-func newTurnTracker(store *transcript.Store, userID string, logger *slog.Logger) *turnTracker {
+func newTurnTracker(store *transcript.Store, logger *slog.Logger) *turnTracker {
 	return &turnTracker{
 		store:  store,
-		userID: userID,
 		logger: logger,
 		active: map[string]int{},
 		marked: map[string]bool{},
@@ -96,12 +107,9 @@ func (t *turnTracker) begin(sessionID string) {
 	t.mu.Lock()
 	t.active[sessionID]++
 	mark := t.draining && !t.frozen && !t.marked[sessionID]
-	if mark {
-		t.marked[sessionID] = true
-	}
 	t.mu.Unlock()
 	if mark {
-		t.writeMark(context.Background(), sessionID)
+		t.mark(sessionID)
 	}
 }
 
@@ -114,19 +122,63 @@ func (t *turnTracker) end(sessionID string) {
 	if t.active[sessionID] <= 0 {
 		delete(t.active, sessionID)
 	}
-	clear := t.marked[sessionID] && !t.frozen && t.active[sessionID] == 0
-	if clear {
+	maybeClear := t.marked[sessionID] && !t.frozen && t.active[sessionID] == 0
+	t.mu.Unlock()
+	if maybeClear {
+		t.clear(sessionID)
+	}
+}
+
+// mark durably writes the interruption marker for sessionID, holding
+// writeMu across the decision re-check AND the write so a racing
+// clear cannot be reordered ahead of it. marked[sid] flips true only
+// after the write actually landed — a failed write must not suppress
+// a later attempt or trigger a phantom clear.
+func (t *turnTracker) mark(sessionID string) {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+	t.mu.Lock()
+	skip := t.frozen || t.marked[sessionID] || t.active[sessionID] == 0
+	t.mu.Unlock()
+	if skip {
+		// Already marked, frozen, or the turn finished while we
+		// queued behind writeMu — nothing to record.
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), storeWriteTimeout)
+	defer cancel()
+	if err := t.store.MarkInterrupted(ctx, defaultUserID, sessionID, "daemon shutdown"); err != nil {
+		// Error, not Warn (#53): a lost marker means an interrupted
+		// turn a restart will never surface. A counter belongs here
+		// too — that is the v0.2 fixed-registry work (#50).
+		t.logger.Error("failed to write interruption marker", "session", sessionID, "error", err.Error())
+		return
+	}
+	t.mu.Lock()
+	t.marked[sessionID] = true
+	t.mu.Unlock()
+}
+
+// clear resolves sessionID's marker after a clean finish, under the
+// same writeMu so it is strictly ordered after any in-flight mark.
+func (t *turnTracker) clear(sessionID string) {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+	t.mu.Lock()
+	skip := !t.marked[sessionID] || t.frozen || t.active[sessionID] > 0
+	if !skip {
 		delete(t.marked, sessionID)
 	}
 	t.mu.Unlock()
-	if clear {
-		// Bounded: a wedged store write here would otherwise stall the
-		// turn's return and burn the drain window (#48).
-		ctx, cancel := context.WithTimeout(context.Background(), storeWriteTimeout)
-		defer cancel()
-		if err := t.store.ClearInterrupted(ctx, t.userID, sessionID); err != nil {
-			t.logger.Warn("failed to clear interruption marker", "session", sessionID, "error", err.Error())
-		}
+	if skip {
+		return
+	}
+	// Bounded: a wedged store write here would otherwise stall the
+	// turn's return and burn the drain window (#48).
+	ctx, cancel := context.WithTimeout(context.Background(), storeWriteTimeout)
+	defer cancel()
+	if err := t.store.ClearInterrupted(ctx, defaultUserID, sessionID); err != nil {
+		t.logger.Error("failed to clear interruption marker", "session", sessionID, "error", err.Error())
 	}
 }
 
@@ -140,21 +192,21 @@ func (t *turnTracker) isDraining() bool {
 
 // beginDrain flips the tracker into draining mode and durably marks
 // every session with a turn currently in flight. Called once, from the
-// shutdown goroutine, before waiting out the drain window.
-func (t *turnTracker) beginDrain(ctx context.Context) {
+// shutdown goroutine, before waiting out the drain window. Each mark
+// re-checks under writeMu that its session is still mid-turn, so a
+// turn that finishes while the loop is writing is skipped rather than
+// falsely recorded interrupted (#55).
+func (t *turnTracker) beginDrain() {
 	t.mu.Lock()
 	t.draining = true
-	var toMark []string
+	toMark := make([]string, 0, len(t.active))
 	for sid := range t.active {
-		if !t.marked[sid] {
-			t.marked[sid] = true
-			toMark = append(toMark, sid)
-		}
+		toMark = append(toMark, sid)
 	}
 	t.mu.Unlock()
 	sort.Strings(toMark)
 	for _, sid := range toMark {
-		t.writeMark(ctx, sid)
+		t.mark(sid)
 	}
 }
 
@@ -195,10 +247,19 @@ func (t *turnTracker) activeSessions() []string {
 	return sids
 }
 
-func (t *turnTracker) writeMark(ctx context.Context, sessionID string) {
-	ctx, cancel := context.WithTimeout(ctx, storeWriteTimeout)
-	defer cancel()
-	if err := t.store.MarkInterrupted(ctx, t.userID, sessionID, "daemon shutdown"); err != nil {
-		t.logger.Warn("failed to write interruption marker", "session", sessionID, "error", err.Error())
+// markedActiveSessions returns the sessions that are BOTH still
+// mid-turn and durably marked — the honest survivor list for the
+// drain-expiry warning (#58): a session that finished (and cleared)
+// in the wait-to-freeze window must not be reported interrupted.
+func (t *turnTracker) markedActiveSessions() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sids := make([]string, 0, len(t.active))
+	for sid := range t.active {
+		if t.marked[sid] {
+			sids = append(sids, sid)
+		}
 	}
+	sort.Strings(sids)
+	return sids
 }

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -65,7 +66,7 @@ func TestSessionDialector(t *testing.T) {
 // postgres driver with no DSN is an operator mistake, not a silent
 // in-memory downgrade (that would falsify Cloud Run durability).
 func TestBuildSessionServiceInMemory(t *testing.T) {
-	svc, err := buildSessionService("sqlite", "", discardLogger())
+	svc, err := buildSessionService(context.Background(), "sqlite", "", discardLogger())
 	if err != nil {
 		t.Fatalf("buildSessionService(sqlite, \"\"): %v", err)
 	}
@@ -73,7 +74,7 @@ func TestBuildSessionServiceInMemory(t *testing.T) {
 		t.Fatal("buildSessionService(sqlite, \"\"): nil service")
 	}
 
-	if _, err := buildSessionService("postgres", "", discardLogger()); err == nil {
+	if _, err := buildSessionService(context.Background(), "postgres", "", discardLogger()); err == nil {
 		t.Fatal("buildSessionService(postgres, \"\"): want error, got nil")
 	}
 }
@@ -83,7 +84,7 @@ func TestBuildSessionServiceInMemory(t *testing.T) {
 // test temp dir, never $HOME).
 func TestBuildSessionServiceSQLite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
-	svc, err := buildSessionService("sqlite", path, discardLogger())
+	svc, err := buildSessionService(context.Background(), "sqlite", path, discardLogger())
 	if err != nil {
 		t.Fatalf("buildSessionService(sqlite, %q): %v", path, err)
 	}

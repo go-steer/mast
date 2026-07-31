@@ -16,8 +16,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,7 +63,7 @@ func trackerFixture(t *testing.T, sessionIDs ...string) (*turnTracker, *transcri
 		}
 	}
 	store := transcript.NewStore(svc, appName)
-	return newTurnTracker(store, defaultUserID, slog.Default()), store
+	return newTurnTracker(store, slog.Default()), store
 }
 
 func stateOf(t *testing.T, store *transcript.Store, sid string) string {
@@ -80,7 +82,7 @@ func TestTrackerPreMarksAndClearsOnCleanFinish(t *testing.T) {
 	tr.begin("s1")
 
 	// Drain start pre-marks the in-flight session durably — and only it.
-	tr.beginDrain(ctx)
+	tr.beginDrain()
 	if got := stateOf(t, store, "s1"); got != transcript.StateInterrupted {
 		t.Errorf("s1 after beginDrain = %q, want interrupted", got)
 	}
@@ -104,7 +106,7 @@ func TestTrackerPreMarksAndClearsOnCleanFinish(t *testing.T) {
 func TestTrackerFreezeKeepsMarkerOnCancelledTurn(t *testing.T) {
 	tr, store := trackerFixture(t, "s1")
 	tr.begin("s1")
-	tr.beginDrain(context.Background())
+	tr.beginDrain()
 
 	// The drain window elapsed: freeze, then the daemon cancels the
 	// turn, whose unwinding calls end. The marker must survive.
@@ -117,7 +119,7 @@ func TestTrackerFreezeKeepsMarkerOnCancelledTurn(t *testing.T) {
 
 func TestTrackerMarksTurnStartedMidDrain(t *testing.T) {
 	tr, store := trackerFixture(t, "s1")
-	tr.beginDrain(context.Background())
+	tr.beginDrain()
 
 	// A turn that starts while draining is marked immediately...
 	tr.begin("s1")
@@ -137,7 +139,7 @@ func TestTrackerWaitTimesOutWithSurvivors(t *testing.T) {
 	tr.begin("s2")
 	tr.begin("s2") // two concurrent turns on s2 count once
 
-	tr.beginDrain(context.Background())
+	tr.beginDrain()
 	waitCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	remaining := tr.wait(waitCtx)
@@ -176,26 +178,28 @@ func TestTrackerMarkingDoesNotKillLiveTurn(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// The "runner": stream one event through a held handle.
+	// The "runner": stream one event through a held handle. Natural
+	// timestamps only — future-pinned stamps disarmed the OCC check
+	// and let this test pass on the pre-fix code (#54).
+	time.Sleep(2 * time.Millisecond)
 	ev1 := adksession.NewEvent(ctx, "inv-live")
 	ev1.Author = "triager"
 	ev1.Content = genai.NewContentFromText("turn event 1", genai.RoleModel)
-	ev1.Timestamp = time.Now().Add(time.Second)
 	if err := svc.AppendEvent(ctx, created.Session, ev1); err != nil {
 		t.Fatalf("append pre-mark: %v", err)
 	}
 
 	store := transcript.NewStore(svc, appName)
-	tr := newTurnTracker(store, defaultUserID, slog.Default())
+	tr := newTurnTracker(store, slog.Default())
 	tr.begin("s-live")
-	tr.beginDrain(ctx)
+	tr.beginDrain()
 
 	// The marked turn keeps streaming — this append failed with
 	// "stale session error" when markers wrote to the primary row.
+	time.Sleep(2 * time.Millisecond)
 	ev2 := adksession.NewEvent(ctx, "inv-live")
 	ev2.Author = "triager"
 	ev2.Content = genai.NewContentFromText("turn event 2", genai.RoleModel)
-	ev2.Timestamp = time.Now().Add(2 * time.Second)
 	if err := svc.AppendEvent(ctx, created.Session, ev2); err != nil {
 		t.Fatalf("append after pre-mark: %v (write-lease regression)", err)
 	}
@@ -206,5 +210,119 @@ func TestTrackerMarkingDoesNotKillLiveTurn(t *testing.T) {
 	tr.end("s-live")
 	if got := stateOf(t, store, "s-live"); got != transcript.StateIdle {
 		t.Errorf("state after clean finish = %q, want idle", got)
+	}
+}
+
+// TestDefaultSessionPathConcurrentWrites is #53's acceptance test:
+// the plain --session-db path (no --attach-listen) must survive
+// concurrent sessions writing at once — the raw, unhardened service
+// lost transcript events AND drain-time interruption markers to
+// immediate SQLITE_BUSY (lock-upgrade conflicts ignore busy_timeout;
+// only write serialization prevents them). buildSessionService now
+// routes through eventlog.OpenSessionService, which applies the same
+// hardening as the attach path minus the overlay.
+func TestDefaultSessionPathConcurrentWrites(t *testing.T) {
+	ctx := context.Background()
+	svc, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
+	if err != nil {
+		t.Fatalf("buildSessionService: %v", err)
+	}
+
+	const sessions = 6
+	const eventsPerSession = 20
+	sids := make([]string, sessions)
+	handles := make([]adksession.Session, sessions)
+	for i := range sids {
+		sids[i] = fmt.Sprintf("s-conc-%d", i)
+		resp, err := svc.Create(ctx, &adksession.CreateRequest{
+			AppName: appName, UserID: defaultUserID, SessionID: sids[i],
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", sids[i], err)
+		}
+		handles[i] = resp.Session
+	}
+
+	// Concurrent turns: each session streams events through its own
+	// held handle (the runner's shape), all sessions at once.
+	var wg sync.WaitGroup
+	errs := make(chan error, sessions*eventsPerSession)
+	for i := range sids {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < eventsPerSession; j++ {
+				ev := adksession.NewEvent(ctx, "inv-conc")
+				ev.Author = "triager"
+				ev.Content = genai.NewContentFromText(fmt.Sprintf("event %d", j), genai.RoleModel)
+				if err := svc.AppendEvent(ctx, handles[i], ev); err != nil {
+					errs <- fmt.Errorf("%s event %d: %w", sids[i], j, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent append failed: %v", err)
+	}
+
+	// Drain-time marking with every session mid-turn: all must be
+	// durably marked (the unhardened path left up to 5/6 unmarked).
+	store := transcript.NewStore(svc, appName)
+	tr := newTurnTracker(store, slog.Default())
+	for _, sid := range sids {
+		tr.begin(sid)
+	}
+	tr.beginDrain()
+	for _, sid := range sids {
+		if got := stateOf(t, store, sid); got != transcript.StateInterrupted {
+			t.Errorf("%s after beginDrain = %q, want interrupted (marker lost)", sid, got)
+		}
+	}
+}
+
+// TestReservedOpsRowRefusedEverywhere pins #56: reserved IDs are not
+// sessions on any surface.
+func TestReservedOpsRowRefusedEverywhere(t *testing.T) {
+	ctx := context.Background()
+	tr, store := trackerFixture(t, "s1")
+	_ = tr
+	if err := store.MarkInterrupted(ctx, defaultUserID, "s1", "daemon shutdown"); err != nil {
+		t.Fatalf("MarkInterrupted: %v", err)
+	}
+	reserved := "s1:mast-ops"
+	if !transcript.IsReservedSessionID(reserved) {
+		t.Fatal("IsReservedSessionID(reserved) = false")
+	}
+	if _, err := store.Get(ctx, defaultUserID, reserved); err == nil {
+		t.Error("Get(reserved) succeeded — phantom session")
+	}
+	if err := store.Abort(ctx, defaultUserID, reserved, "x"); err == nil {
+		t.Error("Abort(reserved) succeeded")
+	}
+	if err := store.MarkInterrupted(ctx, defaultUserID, reserved, "x"); err == nil {
+		t.Error("MarkInterrupted(reserved) succeeded — would nest ops rows")
+	}
+}
+
+// TestTrackerMarkSkipsFinishedSession pins the #55 re-check: a mark
+// decided while the turn was in flight but executed after it finished
+// (the beginDrain-loop race window) must be skipped, not written —
+// the old ordering could land the clear BEFORE the mark and leave a
+// cleanly-finished session reporting interrupted.
+func TestTrackerMarkSkipsFinishedSession(t *testing.T) {
+	tr, store := trackerFixture(t, "s1")
+	tr.mu.Lock()
+	tr.draining = true
+	tr.mu.Unlock()
+
+	tr.begin("s1")
+	tr.end("s1") // finished cleanly before the queued mark runs
+
+	tr.mark("s1") // the stale queued mark
+	if got := stateOf(t, store, "s1"); got != transcript.StateIdle {
+		t.Errorf("state after stale mark = %q, want idle (finished session must not be marked)", got)
 	}
 }

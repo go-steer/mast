@@ -104,6 +104,23 @@ const opsSuffix = ":mast-ops"
 
 func opsSessionID(sid string) string { return sid + opsSuffix }
 
+// IsReservedSessionID reports whether sessionID names a companion ops
+// row rather than a real session. Every surface that accepts a
+// session ID must refuse reserved IDs (#56) — a runner turn driven
+// into an ops row would hold its write lease and corrupt subsequent
+// marker writes; a Get would present marker storage as a phantom
+// session.
+func IsReservedSessionID(sessionID string) bool {
+	return strings.HasSuffix(sessionID, opsSuffix)
+}
+
+// errReserved builds the uniform rejection for reserved IDs. It wraps
+// ErrNotFound so read paths (CLI show, daemon lookups) degrade to the
+// same "no such session" handling an operator typo gets.
+func errReserved(sessionID string) error {
+	return fmt.Errorf("session ID %q uses the reserved ops-row suffix %q: %w", sessionID, opsSuffix, ErrNotFound)
+}
+
 // ErrNotFound reports that no session with the requested ID exists in
 // the store (under the store's app name).
 var ErrNotFound = errors.New("session not found")
@@ -230,8 +247,12 @@ func (s *Store) List(ctx context.Context, userID string) ([]Summary, error) {
 
 // Get returns the detail view for one session. An empty userID is
 // resolved by scanning List for the session ID (the CLI knows session
-// IDs, not the daemon-internal user ID).
+// IDs, not the daemon-internal user ID). Reserved ops-row IDs are
+// refused as not-found (#56).
 func (s *Store) Get(ctx context.Context, userID, sessionID string) (*Detail, error) {
+	if IsReservedSessionID(sessionID) {
+		return nil, errReserved(sessionID)
+	}
 	if userID == "" {
 		var err error
 		userID, err = s.findUserID(ctx, sessionID)
@@ -275,6 +296,9 @@ func (s *Store) Get(ctx context.Context, userID, sessionID string) (*Detail, err
 //     stacking markers. Legacy v0.1.0 abort markers (written to the
 //     primary row's state) count.
 func (s *Store) Abort(ctx context.Context, userID, sessionID, reason string) error {
+	if IsReservedSessionID(sessionID) {
+		return errReserved(sessionID)
+	}
 	if userID == "" {
 		var err error
 		userID, err = s.findUserID(ctx, sessionID)
@@ -328,6 +352,9 @@ func (s *Store) Abort(ctx context.Context, userID, sessionID, reason string) err
 // ErrNotFound. Re-marking overwrites (last write wins) — a second
 // shutdown racing the first is not worth an error.
 func (s *Store) MarkInterrupted(ctx context.Context, userID, sessionID, reason string) error {
+	if IsReservedSessionID(sessionID) {
+		return errReserved(sessionID)
+	}
 	if reason == "" {
 		return errors.New("mark interrupted: reason must be non-empty (the empty string is the cleared state)")
 	}
@@ -343,6 +370,9 @@ func (s *Store) MarkInterrupted(ctx context.Context, userID, sessionID, reason s
 // completed inside the drain window. Clearing an unmarked session is a
 // harmless no-op event (shutdown-path callers cannot atomically check).
 func (s *Store) ClearInterrupted(ctx context.Context, userID, sessionID string) error {
+	if IsReservedSessionID(sessionID) {
+		return errReserved(sessionID)
+	}
 	return s.appendOpsDelta(ctx, userID, sessionID, "shutdown-interrupt-clear", "daemon",
 		"turn completed within the shutdown drain window; interruption marker cleared",
 		map[string]any{interruptReasonKey: "", interruptTimeKey: ""})
@@ -425,6 +455,9 @@ func (s *Store) findUserID(ctx context.Context, sessionID string) (string, error
 		return "", fmt.Errorf("list sessions: %w", err)
 	}
 	for _, sess := range resp.Sessions {
+		if IsReservedSessionID(sess.ID()) {
+			continue // ops rows are marker storage, never a lookup hit
+		}
 		if sess.ID() == sessionID {
 			return sess.UserID(), nil
 		}

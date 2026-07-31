@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **The default `--session-db` path gets the attach path's SQLite
+  write hardening; fixes silent loss of markers and transcript events
+  under concurrent sessions (#53, #54, #55, #56, #57, #58).**
+  Adversarial re-review of v0.1.1 found all SQLite write safety
+  (serialization + WAL + busy_timeout) lived in `pkg/eventlog` and
+  engaged only with `--attach-listen`; the plain path — what
+  `deploy/base` runs — opened raw SQLite and, under concurrent
+  incidents, lost transcript events (killing their turns) and
+  drain-time interruption markers (silently, warn-only), falsifying
+  v0.1.1's SIGKILL-survivability claim on the shipped deploy shape.
+  Both paths now share `eventlog.OpenSessionService`; a concurrency
+  test pins the behavior. Also from the same review: the write-lease
+  regression tests were neutralized by future-pinned timestamps and
+  passed on the pre-fix code — rewritten with natural timestamps and
+  verified to fail against it (#54); mark/clear ordering is now
+  serialized with its store writes so a turn finishing mid-pre-mark
+  can no longer be left falsely `interrupted` (#55); the reserved
+  `:mast-ops` suffix is enforced on every surface — Get/show, resume,
+  abort, and the attach resumer all refuse ops-row IDs instead of
+  presenting phantom sessions or driving turns into marker rows
+  (#56); the attach interrupt-audit event moved from the protocol
+  layer (where it could stale the interrupted turn's session handle —
+  the last write-lease violation, present upstream too) into the
+  adapter's serialized turn loop (#57); and the drain now closes the
+  inject listener before pre-marking, gates the inject/resume
+  handlers, and reports only genuinely-marked survivors (#58).
+  Marker-write failures are now error-level logs. Known limitations,
+  tracked in #50: no marker-failure metric yet (v0.2 fixed-registry
+  work), no teardown watchdog, and boot-time auto-resume remains
+  deliberately deferred behind the recorded-effect outbox (#41).
+
 ## v0.1.1 (2026-07-31)
 
 Patch release: the SIGTERM shutdown contract, shipped and then
