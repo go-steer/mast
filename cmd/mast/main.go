@@ -42,7 +42,6 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
-	"google.golang.org/adk/v2/session/database"
 	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/mast/internal/compose"
@@ -291,7 +290,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		logger.Info("session db opened (eventlog overlay for attach)", "driver", sessionDrv)
 	} else {
 		var err error
-		sessionSvc, err = buildSessionService(sessionDrv, sessionDB, logger)
+		sessionSvc, err = buildSessionService(turnCtx, sessionDrv, sessionDB, logger)
 		if err != nil {
 			logger.Error("failed to construct session service", "error", err.Error())
 			return err
@@ -319,7 +318,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 
 	// Shutdown bookkeeping: which sessions have a turn in flight, and
 	// the pre-mark/clear ordering for their interruption markers.
-	tracker := newTurnTracker(store, defaultUserID, logger)
+	tracker := newTurnTracker(store, logger)
 
 	// Fixed metric registry (pkg/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,
@@ -383,10 +382,23 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}
 
 	handler := func(reqCtx context.Context, p envelope.InjectPayload) error {
+		// Drain gate (#58): a request that made it past accept before
+		// the listener closed must not start a fresh turn mid-drain.
+		if tracker.isDraining() {
+			return errors.New("daemon is shutting down; not accepting new work")
+		}
 		att.ensure(sessionIDFor(p))
 		return dispatch(reqCtx, r, logger, meters, wds, obs, tracker, workloadName, bundle, p)
 	}
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
+		if tracker.isDraining() {
+			return errors.New("daemon is shutting down; not accepting new work")
+		}
+		// Companion ops rows are marker storage, not sessions (#56):
+		// resuming one would drive a runner turn into the marker row.
+		if transcript.IsReservedSessionID(req.SessionID) {
+			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a resumable session", req.SessionID)
+		}
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
 		}
@@ -428,15 +440,28 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		logger.Info("shutdown signal received; draining in-flight turns", "drain_bound", drain.String())
 		drainCtx, cancel := context.WithTimeout(context.Background(), drain)
 		defer cancel()
+		// Close the inject listener FIRST (#58): Shutdown stops
+		// accepting immediately and then waits for handlers, so
+		// launching it before the pre-mark pass means no new turn can
+		// arrive while markers are being written. The drain-gate in
+		// the handlers covers requests already past accept.
+		shutdownErr := make(chan error, 1)
+		go func() { shutdownErr <- srv.Shutdown(drainCtx) }()
 		// Pre-mark BEFORE waiting: a SIGKILL mid-drain must find the
 		// interruption markers already on disk.
-		tracker.beginDrain(drainCtx)
-		// Shutdown stops the listener and waits for inject handlers;
-		// tracker.wait additionally covers attach-driven turns, which
-		// run outside HTTP handlers. Both share the one deadline.
-		errShutdown := srv.Shutdown(drainCtx)
+		tracker.beginDrain()
+		// Shutdown waits for inject handlers; tracker.wait additionally
+		// covers attach-driven turns, which run outside HTTP handlers.
+		// Both share the one deadline.
+		errShutdown := <-shutdownErr
 		remaining := tracker.wait(drainCtx)
-		if errShutdown == nil && len(remaining) == 0 {
+		if len(remaining) == 0 {
+			if errShutdown != nil {
+				// No turns in flight — the listener just has lingering
+				// non-turn connections (an SSE scrape, a slow client).
+				logger.Warn("inject server still draining connections at the deadline; no turns were in flight", "error", errShutdown.Error())
+				return
+			}
 			logger.Info("drain complete; all in-flight turns finished")
 			return
 		}
@@ -451,8 +476,11 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		graceCtx, graceCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer graceCancel()
 		tracker.wait(graceCtx)
+		// Report only sessions that are truly both mid-turn and durably
+		// marked — a turn that finished in the wait-to-freeze window
+		// cleared its marker and must not be named here (#58).
 		logger.Warn("drain window elapsed; interrupted sessions carry durable markers",
-			"sessions", remaining, "drain_bound", drain.String())
+			"sessions", tracker.markedActiveSessions(), "drain_bound", drain.String())
 	}()
 
 	if att != nil {
@@ -848,7 +876,7 @@ func ensureSQLiteDir(dsn string) error {
 	return nil
 }
 
-func buildSessionService(driver, dsn string, logger *slog.Logger) (session.Service, error) {
+func buildSessionService(ctx context.Context, driver, dsn string, logger *slog.Logger) (session.Service, error) {
 	if dsn == "" {
 		if driver != "sqlite" {
 			return nil, fmt.Errorf("--session-db-driver=%s requires --session-db (a DSN); empty --session-db means in-memory sessions", driver)
@@ -860,12 +888,13 @@ func buildSessionService(driver, dsn string, logger *slog.Logger) (session.Servi
 	if err != nil {
 		return nil, err
 	}
-	svc, err := database.NewSessionService(dial)
+	// Same storage hardening as the attach path (write serialization
+	// + busy_timeout + WAL for SQLite) minus the seq overlay — the
+	// raw service lost markers and transcript events to SQLITE_BUSY
+	// under concurrent sessions (#53).
+	svc, err := eventlog.OpenSessionService(ctx, dial)
 	if err != nil {
 		return nil, fmt.Errorf("open session db (driver %s): %w", driver, err)
-	}
-	if err := database.AutoMigrate(svc); err != nil {
-		return nil, fmt.Errorf("migrate session db (driver %s): %w", driver, err)
 	}
 	// Deliberately not logging the DSN: a Postgres DSN carries
 	// credentials. The sqlite path is safe and useful for operators.
