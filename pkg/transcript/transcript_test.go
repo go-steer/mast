@@ -480,8 +480,13 @@ func TestMarkersDoNotInvalidateLiveHandle(t *testing.T) {
 			if err != nil {
 				t.Fatalf("get live handle: %v", err)
 			}
+			// Natural timestamps only (small sleeps for strict
+			// monotonicity): pinning timestamps into the future here
+			// drove the row's UpdateTime backwards on the marker
+			// append and neutralized the OCC check this test exists
+			// to exercise — the pre-fix code PASSED it (#54).
+			time.Sleep(2 * time.Millisecond)
 			ev1 := liveHandleEvent("turn event 1")
-			ev1.Timestamp = time.Now().Add(time.Second)
 			if err := svc.AppendEvent(ctx, live.Session, ev1); err != nil {
 				t.Fatalf("append via live handle (pre-mark): %v", err)
 			}
@@ -500,8 +505,8 @@ func TestMarkersDoNotInvalidateLiveHandle(t *testing.T) {
 			// The runner's next streamed event MUST still append —
 			// this line failed with "stale session error" when markers
 			// wrote to the primary row.
+			time.Sleep(2 * time.Millisecond)
 			ev2 := liveHandleEvent("turn event 2")
-			ev2.Timestamp = time.Now().Add(2 * time.Second)
 			if err := svc.AppendEvent(ctx, live.Session, ev2); err != nil {
 				t.Fatalf("append via live handle after markers: %v (write-lease regression — markers must not touch the primary row)", err)
 			}
