@@ -37,9 +37,16 @@ import (
 	"github.com/go-steer/mast/pkg/envelope"
 )
 
+// ErrUnavailable, returned (or wrapped) by a Handler or ResumeHandler,
+// tells the server the daemon is refusing new work — a shutdown drain
+// is underway. The server maps it to 503 + Retry-After instead of the
+// generic 500, so emitters retry against the replacement pod rather
+// than treating a rolling restart as a crash.
+var ErrUnavailable = errors.New("daemon is shutting down; not accepting new work")
+
 // Handler receives a validated inject payload and drives the mast
 // runtime. It returns an error if dispatch fails; the server maps that
-// to a 5xx response.
+// to a 5xx response (503 + Retry-After for ErrUnavailable).
 type Handler func(ctx context.Context, payload envelope.InjectPayload) error
 
 // ResumeRequest is the operator's answer to a pending HITL interrupt.
@@ -196,6 +203,11 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err := s.cfg.Handler(r.Context(), payload); err != nil {
+		if errors.Is(err, ErrUnavailable) {
+			w.Header().Set("Retry-After", "10")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		s.logger.Error("inject dispatch failed", "error", err.Error())
 		http.Error(w, "dispatch failed", http.StatusInternalServerError)
 		return
@@ -228,6 +240,11 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("resume received", "session", req.SessionID, "interrupt_id", req.InterruptID)
 
 	if err := s.cfg.ResumeHandler(r.Context(), req); err != nil {
+		if errors.Is(err, ErrUnavailable) {
+			w.Header().Set("Retry-After", "10")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		s.logger.Error("resume dispatch failed", "error", err.Error())
 		http.Error(w, "resume failed", http.StatusInternalServerError)
 		return

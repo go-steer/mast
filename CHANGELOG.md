@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Round-three hardening from the pre-merge adversarial gate (#60,
+  #61, #62, #63, #64, #65).** The third review round refuted two of
+  the round-two fixes and the fixes here were validated by re-running
+  the discovering reproducers against them (now the standing rule):
+  (1) the #55 fix had reintroduced false-`interrupted` through the
+  opposite door — `end()` read the marked flag outside the write
+  mutex — so the clear decision moved fully inside it; the
+  40-sessions-finishing-during-drain reproducer is in the suite and
+  fails 3/3 on the pre-fix code (#60). (2) `/inject` could mint a
+  reserved `:mast-ops` session from the untrusted payload UID; now
+  refused like every other surface (#61). (3) Two concurrent turns on
+  the SAME session lost one to ADK's stale-session check — the daemon
+  now runs one turn per session, queueing same-session injects and
+  resumes behind the in-flight turn (#62). (4) The pre-mark pass is
+  bounded by the drain window again, and the drain-expiry log
+  separates survivors with durable markers from those whose mark
+  write failed (#63). (5) The "every SQLite construction" hardening
+  claim is now true — the one-shot and sessions-CLI paths route
+  through the same hardened opener, ops-row writers serialize through
+  a store-level mutex, and a failed clear keeps its bookkeeping so
+  the marker stays visible (#64). (6) Drain refusal answers 503 +
+  Retry-After instead of a 500, the InterruptSelfAuditor capability
+  is compile-time pinned, and the docs site caught up with the v0.1.2
+  behavior changes (#65).
+
 - **The default `--session-db` path gets the attach path's SQLite
   write hardening; fixes silent loss of markers and transcript events
   under concurrent sessions (#53, #54, #55, #56, #57, #58).**

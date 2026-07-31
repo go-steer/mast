@@ -63,12 +63,21 @@ Resume is keyed by **interrupt ID** (`--interrupt` + `--response`), not by
 token — resume tokens are the v0.2 programmatic-pause surface.
 
 `interrupted` marks a session whose turn was cut short by a daemon
-shutdown: on SIGTERM the daemon drains in-flight turns for up to the
-workload's `budget.max_wallclock_seconds` (30s without a budget),
-durably marking their sessions *before* waiting, and clearing the
-marker for turns that finish inside the window. The marker survives
-even a SIGKILL mid-drain. It is state, not preemption — the next turn
-on the session proceeds normally, and a session that reached a HITL
-pause reports `paused`, not `interrupted`. Boot-time auto-resume of
+shutdown: on SIGTERM the daemon stops accepting new work (`/inject`
+and `/resume` answer **503 + Retry-After**; new attach turns are
+refused), drains in-flight turns for up to the workload's
+`budget.max_wallclock_seconds` (30s without a budget), durably
+marking their sessions *before* waiting, and clearing the marker for
+turns that finish inside the window. The marker survives even a
+SIGKILL mid-drain. It is state, not preemption — the next turn on the
+session proceeds normally, and a session that reached a HITL pause
+reports `paused`, not `interrupted`. Boot-time auto-resume of
 interrupted sessions is deliberately v0.2 work (it gates on the
 recorded-effect outbox for mutating-tool idempotency).
+
+Two related contracts: the daemon runs **one turn per session at a
+time** — a second inject or resume for the same session queues behind
+the in-flight turn (bounded by the wallclock budget) rather than
+corrupting it; and every SQLite session store the tooling opens
+(serve, one-shot, the sessions CLI) carries the same write hardening,
+so concurrent access waits instead of failing.
