@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -29,6 +30,8 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/session/database"
 
+	"github.com/go-steer/mast/pkg/envelope"
+	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -435,7 +438,11 @@ func TestSessionTurnLocksPreventSameSessionCollision(t *testing.T) {
 			wg.Add(1)
 			go func(turn int) {
 				defer wg.Done()
-				unlock := locks.lock("s-same") // the runTurn discipline
+				unlock, err := locks.lock(ctx, "s-same") // the runTurn discipline
+				if err != nil {
+					errs <- err
+					return
+				}
 				defer unlock()
 				h := get() // fresh handle per turn, like the runner
 				for j := 0; j < 10; j++ {
@@ -453,4 +460,62 @@ func TestSessionTurnLocksPreventSameSessionCollision(t *testing.T) {
 			t.Errorf("serialized same-session append failed: %v", err)
 		}
 	})
+}
+
+// TestReservedPayloadErr pins the #61 inject-surface guard: a payload
+// UID deriving a reserved ops-row session ID is rejected with the
+// 400-mapped sentinel; ordinary UIDs pass.
+func TestReservedPayloadErr(t *testing.T) {
+	bad := envelope.InjectPayload{UID: "x:mast-ops"}
+	err := reservedPayloadErr(bad)
+	if err == nil {
+		t.Fatal("reserved UID accepted")
+	}
+	if !errors.Is(err, inject.ErrBadPayload) {
+		t.Errorf("reserved UID error = %v, want wrapped inject.ErrBadPayload (400, not 500)", err)
+	}
+	if err := reservedPayloadErr(envelope.InjectPayload{UID: "ordinary-uid"}); err != nil {
+		t.Errorf("ordinary UID rejected: %v", err)
+	}
+	// Empty UID falls back to defaultSessionID, which must never be
+	// reserved.
+	if err := reservedPayloadErr(envelope.InjectPayload{}); err != nil {
+		t.Errorf("empty UID rejected: %v", err)
+	}
+}
+
+// TestSessionTurnLockHonorsContext pins the semaphore contract the
+// pre-merge gate refuted for the sync.Mutex version: a queued waiter
+// must abandon the wait when its context ends, so drain-expiry
+// cancellation reclaims queued turns instead of leaving them pinned.
+func TestSessionTurnLockHonorsContext(t *testing.T) {
+	locks := newSessionTurnLocks()
+	unlock, err := locks.lock(context.Background(), "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waited := make(chan error, 1)
+	go func() {
+		_, err := locks.lock(ctx, "s1")
+		waited <- err
+	}()
+	cancel()
+	select {
+	case err := <-waited:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("queued waiter err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued waiter ignored context cancellation")
+	}
+
+	unlock()
+	// The slot is reusable after release.
+	unlock2, err := locks.lock(context.Background(), "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock2()
 }

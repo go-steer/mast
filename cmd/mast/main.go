@@ -393,12 +393,8 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		if tracker.isDraining() {
 			return inject.ErrUnavailable
 		}
-		// The inject payload's UID is untrusted and mints the session
-		// ID, so it is a session-ID surface like any other (#61): a
-		// UID ending in the reserved suffix would create a session the
-		// marker machinery corrupts and the operator surface hides.
-		if sid := sessionIDFor(p); transcript.IsReservedSessionID(sid) {
-			return fmt.Errorf("payload uid %q derives reserved session ID %q; rejected", p.UID, sid)
+		if err := reservedPayloadErr(p); err != nil {
+			return err
 		}
 		att.ensure(sessionIDFor(p))
 		return dispatch(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, p)
@@ -410,7 +406,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// Companion ops rows are marker storage, not sessions (#56):
 		// resuming one would drive a runner turn into the marker row.
 		if transcript.IsReservedSessionID(req.SessionID) {
-			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a resumable session", req.SessionID)
+			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a resumable session: %w", req.SessionID, inject.ErrBadPayload)
 		}
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
@@ -674,6 +670,19 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 	return a, &bundle, nil
 }
 
+// reservedPayloadErr rejects payloads whose derived session ID uses
+// the reserved ops-row suffix (#61): the UID is untrusted and mints
+// the session ID, so it is a session-ID surface like any other — a
+// reserved ID would create a session the marker machinery corrupts
+// and the operator surface hides. Wraps inject.ErrBadPayload so the
+// server answers 400, not 500 (emitters must not retry it).
+func reservedPayloadErr(p envelope.InjectPayload) error {
+	if sid := sessionIDFor(p); transcript.IsReservedSessionID(sid) {
+		return fmt.Errorf("payload uid %q derives reserved session ID %q: %w", p.UID, sid, inject.ErrBadPayload)
+	}
+	return nil
+}
+
 // sessionIDFor derives a per-incident session ID from the payload so
 // each incident's history, pauses, and resumes are isolated (spike-2
 // change; spike 1 funneled every inject into one shared session).
@@ -782,9 +791,13 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *
 func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string) error {
 	// One turn per session (#62): ADK's stale-session check makes a
 	// second concurrent runner turn on the same row fatal to one of
-	// them, so same-session turns queue here. The wait is bounded by
-	// the caller's context (wallclock budget / request lifetime).
-	unlock := turnLocks.lock(sessionID)
+	// them, so same-session turns queue here. The wait genuinely
+	// honors ctx (channel semaphore) — bounded by the wallclock
+	// budget, the request lifetime, and drain-expiry cancellation.
+	unlock, err := turnLocks.lock(ctx, sessionID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	// Shutdown bookkeeping brackets the whole turn (see turnTracker).

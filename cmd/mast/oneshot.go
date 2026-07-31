@@ -39,6 +39,7 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/taskclass"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 
@@ -105,6 +106,13 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	}
 
 	sessionID := oneShotSessionID(opts.Class)
+	// The CLI validates Class against the closed taskclass set, but
+	// in-process callers (the e2e test, future library surface) can
+	// pass anything — the reserved-suffix discipline applies to every
+	// session-minting path (#61).
+	if transcript.IsReservedSessionID(sessionID) {
+		return fmt.Errorf("task class %q derives reserved session ID %q; rejected", opts.Class, sessionID)
+	}
 	logger.Info("one-shot turn starting",
 		"task", opts.Class, "model", opts.Model, "session", sessionID)
 

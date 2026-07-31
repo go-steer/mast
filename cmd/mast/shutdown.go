@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -189,7 +190,7 @@ func (t *turnTracker) clear(sessionID string) {
 	defer cancel()
 	if err := t.store.ClearInterrupted(ctx, defaultUserID, sessionID); err != nil {
 		// Keep marked set (#64): the marker is still on disk, and
-		// forgetting it here would hide it from markedActiveSessions
+		// forgetting it here would hide it from survivors()
 		// with nothing left to retry the clear.
 		t.logger.Error("failed to clear interruption marker", "session", sessionID, "error", err.Error())
 		return
@@ -294,27 +295,37 @@ func (t *turnTracker) survivors() (marked, unmarked []string) {
 // runner turns on one session row are unsupported by ADK's
 // optimistic concurrency — the second turn's first append kills it
 // with a stale session error — so a same-session inject/resume waits
-// for the in-flight turn instead of destroying one. Locks are never
-// deleted; the map is bounded by the number of distinct sessions a
-// daemon lifetime sees, same as meterPool/watchdogPool.
+// for the in-flight turn instead of destroying one. The wait is a
+// channel semaphore, not a sync.Mutex, so it honors the caller's
+// context: a queued turn dies with its request/budget deadline, and
+// cancelTurns at drain expiry reclaims waiters instead of leaving
+// them pinned invisibly on a mutex (pre-merge gate finding on #66).
+// Semaphores are never deleted; the map is bounded by the number of
+// distinct sessions a daemon lifetime sees, same as meterPool.
 type sessionTurnLocks struct {
 	mu   sync.Mutex
-	byID map[string]*sync.Mutex
+	byID map[string]chan struct{}
 }
 
 func newSessionTurnLocks() *sessionTurnLocks {
-	return &sessionTurnLocks{byID: map[string]*sync.Mutex{}}
+	return &sessionTurnLocks{byID: map[string]chan struct{}{}}
 }
 
-// lock acquires sessionID's turn lock and returns the unlock func.
-func (l *sessionTurnLocks) lock(sessionID string) func() {
+// lock acquires sessionID's turn slot, waiting until it is free or
+// ctx ends. On success it returns the release func; on context end it
+// returns ctx's error and the caller must not proceed with the turn.
+func (l *sessionTurnLocks) lock(ctx context.Context, sessionID string) (func(), error) {
 	l.mu.Lock()
-	m, ok := l.byID[sessionID]
+	sem, ok := l.byID[sessionID]
 	if !ok {
-		m = &sync.Mutex{}
-		l.byID[sessionID] = m
+		sem = make(chan struct{}, 1)
+		l.byID[sessionID] = sem
 	}
 	l.mu.Unlock()
-	m.Lock()
-	return m.Unlock
+	select {
+	case sem <- struct{}{}:
+		return func() { <-sem }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("waiting for session %q turn slot: %w", sessionID, ctx.Err())
+	}
 }

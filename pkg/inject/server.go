@@ -44,6 +44,12 @@ import (
 // than treating a rolling restart as a crash.
 var ErrUnavailable = errors.New("daemon is shutting down; not accepting new work")
 
+// ErrBadPayload, returned (or wrapped) by a Handler, marks a request
+// the daemon refuses on its content (e.g. a payload UID deriving a
+// reserved session ID). Mapped to 400 instead of the generic 500 so
+// emitters don't retry a request that can never succeed.
+var ErrBadPayload = errors.New("invalid inject payload")
+
 // Handler receives a validated inject payload and drives the mast
 // runtime. It returns an error if dispatch fails; the server maps that
 // to a 5xx response (503 + Retry-After for ErrUnavailable).
@@ -204,8 +210,15 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.cfg.Handler(r.Context(), payload); err != nil {
 		if errors.Is(err, ErrUnavailable) {
+			// Generic body on purpose: the 500 path below hides error
+			// detail, and this path must not become a leak if a later
+			// caller wraps context into the drain error.
 			w.Header().Set("Retry-After", "10")
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			http.Error(w, "shutting down; retry against the replacement instance", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, ErrBadPayload) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		s.logger.Error("inject dispatch failed", "error", err.Error())
@@ -242,7 +255,11 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	if err := s.cfg.ResumeHandler(r.Context(), req); err != nil {
 		if errors.Is(err, ErrUnavailable) {
 			w.Header().Set("Retry-After", "10")
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			http.Error(w, "shutting down; retry against the replacement instance", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, ErrBadPayload) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		s.logger.Error("resume dispatch failed", "error", err.Error())
