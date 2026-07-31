@@ -17,10 +17,15 @@ package main
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
+	"google.golang.org/genai"
+
 	adksession "google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/session/database"
 
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
@@ -145,5 +150,61 @@ func TestTrackerWaitTimesOutWithSurvivors(t *testing.T) {
 	tr.end("s2")
 	if got := tr.activeSessions(); len(got) != 2 {
 		t.Errorf("activeSessions after one of two s2 turns ended = %v", got)
+	}
+}
+
+// TestTrackerMarkingDoesNotKillLiveTurn closes the blind spot the
+// adversarial review of #43 found: the original tests ran only against
+// the in-memory service — the one implementation WITHOUT ADK's
+// stale-session (write-lease) check — so they could not catch markers
+// killing the turns they marked (#45). This runs the pre-mark path
+// against a real SQLite database service while a simulated runner
+// holds a live session handle.
+func TestTrackerMarkingDoesNotKillLiveTurn(t *testing.T) {
+	svc, err := database.NewSessionService(sqlite.Open(filepath.Join(t.TempDir(), "sessions.db")))
+	if err != nil {
+		t.Fatalf("open sqlite session service: %v", err)
+	}
+	if err := database.AutoMigrate(svc); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ctx := context.Background()
+	created, err := svc.Create(ctx, &adksession.CreateRequest{
+		AppName: appName, UserID: defaultUserID, SessionID: "s-live",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The "runner": stream one event through a held handle.
+	ev1 := adksession.NewEvent(ctx, "inv-live")
+	ev1.Author = "triager"
+	ev1.Content = genai.NewContentFromText("turn event 1", genai.RoleModel)
+	ev1.Timestamp = time.Now().Add(time.Second)
+	if err := svc.AppendEvent(ctx, created.Session, ev1); err != nil {
+		t.Fatalf("append pre-mark: %v", err)
+	}
+
+	store := transcript.NewStore(svc, appName)
+	tr := newTurnTracker(store, defaultUserID, slog.Default())
+	tr.begin("s-live")
+	tr.beginDrain(ctx)
+
+	// The marked turn keeps streaming — this append failed with
+	// "stale session error" when markers wrote to the primary row.
+	ev2 := adksession.NewEvent(ctx, "inv-live")
+	ev2.Author = "triager"
+	ev2.Content = genai.NewContentFromText("turn event 2", genai.RoleModel)
+	ev2.Timestamp = time.Now().Add(2 * time.Second)
+	if err := svc.AppendEvent(ctx, created.Session, ev2); err != nil {
+		t.Fatalf("append after pre-mark: %v (write-lease regression)", err)
+	}
+
+	if got := stateOf(t, store, "s-live"); got != transcript.StateInterrupted {
+		t.Errorf("state during drain = %q, want interrupted", got)
+	}
+	tr.end("s-live")
+	if got := stateOf(t, store, "s-live"); got != transcript.StateIdle {
+		t.Errorf("state after clean finish = %q, want idle", got)
 	}
 }
