@@ -383,3 +383,9 @@ func newPromptID() string {
 	}
 	return "p-" + hex.EncodeToString(b[:])
 }
+
+// Compile-time pin (#65): losing this capability silently re-enables
+// the protocol layer's fallback audit append, which stales the
+// interrupted turn's session handle — the write-lease violation #57
+// fixed.
+var _ attach.InterruptSelfAuditor = (*Adapter)(nil)

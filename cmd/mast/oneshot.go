@@ -31,16 +31,15 @@ import (
 	"time"
 
 	"google.golang.org/genai"
-	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
-	"google.golang.org/adk/v2/session/database"
 
 	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/taskclass"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 
@@ -107,6 +106,13 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	}
 
 	sessionID := oneShotSessionID(opts.Class)
+	// The CLI validates Class against the closed taskclass set, but
+	// in-process callers (the e2e test, future library surface) can
+	// pass anything — the reserved-suffix discipline applies to every
+	// session-minting path (#61).
+	if transcript.IsReservedSessionID(sessionID) {
+		return fmt.Errorf("task class %q derives reserved session ID %q; rejected", opts.Class, sessionID)
+	}
 	logger.Info("one-shot turn starting",
 		"task", opts.Class, "model", opts.Model, "session", sessionID)
 
@@ -181,13 +187,13 @@ func buildOneShotSessionService(driver, dsn string, logger *slog.Logger) (sessio
 	if err != nil {
 		return nil, err
 	}
-	svc, err := database.NewSessionService(dial,
-		&gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	// Shared hardening (#64): a one-shot pointed at a daemon's live DB
+	// is a concurrent cross-process writer — without busy_timeout it
+	// hits immediate SQLITE_BUSY. OpenSessionService also keeps GORM's
+	// trace logger silent, which this path needs for clean stdout.
+	svc, err := eventlog.OpenSessionService(context.Background(), dial)
 	if err != nil {
 		return nil, fmt.Errorf("open session db (driver %s): %w", driver, err)
-	}
-	if err := database.AutoMigrate(svc); err != nil {
-		return nil, fmt.Errorf("migrate session db (driver %s): %w", driver, err)
 	}
 	return svc, nil
 }

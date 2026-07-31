@@ -320,6 +320,12 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// the pre-mark/clear ordering for their interruption markers.
 	tracker := newTurnTracker(store, logger)
 
+	// One turn per session at a time (#62): a second runner turn on
+	// the same session row dies on ADK's stale-session check, so
+	// same-session injects/resumes queue behind the in-flight turn
+	// (bounded by the workload wallclock budget) instead of losing it.
+	turnLocks := newSessionTurnLocks()
+
 	// Fixed metric registry (pkg/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,
 	// so the workload label is resolved once.
@@ -361,7 +367,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 						defer cancel()
 					}
 					msg := genai.NewContentFromText(message, genai.RoleUser)
-					err := runTurn(turnCtx, r, logger, meters, wds, obs, tracker, workloadName, sid, msg, "attach:inject")
+					err := runTurn(turnCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, sid, msg, "attach:inject")
 					// Token split is unknown at this layer (the meter
 					// folds totals only); cost rides the usage snapshot.
 					return attachadapter.TurnResult{}, err
@@ -385,27 +391,33 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// Drain gate (#58): a request that made it past accept before
 		// the listener closed must not start a fresh turn mid-drain.
 		if tracker.isDraining() {
-			return errors.New("daemon is shutting down; not accepting new work")
+			return inject.ErrUnavailable
+		}
+		if err := reservedPayloadErr(p); err != nil {
+			return err
 		}
 		att.ensure(sessionIDFor(p))
-		return dispatch(reqCtx, r, logger, meters, wds, obs, tracker, workloadName, bundle, p)
+		return dispatch(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, p)
 	}
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
 		if tracker.isDraining() {
-			return errors.New("daemon is shutting down; not accepting new work")
+			return inject.ErrUnavailable
 		}
 		// Companion ops rows are marker storage, not sessions (#56):
 		// resuming one would drive a runner turn into the marker row.
 		if transcript.IsReservedSessionID(req.SessionID) {
-			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a resumable session", req.SessionID)
+			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a resumable session: %w", req.SessionID, inject.ErrBadPayload)
 		}
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
 		}
 		att.ensure(req.SessionID)
-		return resume(reqCtx, r, logger, meters, wds, obs, tracker, workloadName, bundle, req)
+		return resume(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req)
 	}
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
+		if transcript.IsReservedSessionID(req.SessionID) {
+			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not an abortable session: %w", req.SessionID, inject.ErrBadPayload)
+		}
 		return store.Abort(reqCtx, "", req.SessionID, req.Reason)
 	}
 
@@ -449,7 +461,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		go func() { shutdownErr <- srv.Shutdown(drainCtx) }()
 		// Pre-mark BEFORE waiting: a SIGKILL mid-drain must find the
 		// interruption markers already on disk.
-		tracker.beginDrain()
+		tracker.beginDrain(drainCtx)
 		// Shutdown waits for inject handlers; tracker.wait additionally
 		// covers attach-driven turns, which run outside HTTP handlers.
 		// Both share the one deadline.
@@ -476,11 +488,14 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		graceCtx, graceCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer graceCancel()
 		tracker.wait(graceCtx)
-		// Report only sessions that are truly both mid-turn and durably
-		// marked — a turn that finished in the wait-to-freeze window
-		// cleared its marker and must not be named here (#58).
-		logger.Warn("drain window elapsed; interrupted sessions carry durable markers",
-			"sessions", tracker.markedActiveSessions(), "drain_bound", drain.String())
+		// Honest split (#58/#63): marked survivors truly carry durable
+		// markers; unmarked survivors are turns whose mark write failed
+		// or never ran — the log must not assert durability for them.
+		markedSurvivors, unmarkedSurvivors := tracker.survivors()
+		logger.Warn("drain window elapsed; sessions cut short",
+			"sessions_with_durable_marker", markedSurvivors,
+			"sessions_without_marker", unmarkedSurvivors,
+			"drain_bound", drain.String())
 	}()
 
 	if att != nil {
@@ -658,6 +673,19 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 	return a, &bundle, nil
 }
 
+// reservedPayloadErr rejects payloads whose derived session ID uses
+// the reserved ops-row suffix (#61): the UID is untrusted and mints
+// the session ID, so it is a session-ID surface like any other — a
+// reserved ID would create a session the marker machinery corrupts
+// and the operator surface hides. Wraps inject.ErrBadPayload so the
+// server answers 400, not 500 (emitters must not retry it).
+func reservedPayloadErr(p envelope.InjectPayload) error {
+	if sid := sessionIDFor(p); transcript.IsReservedSessionID(sid) {
+		return fmt.Errorf("payload uid %q derives reserved session ID %q: %w", p.UID, sid, inject.ErrBadPayload)
+	}
+	return nil
+}
+
 // sessionIDFor derives a per-incident session ID from the payload so
 // each incident's history, pauses, and resumes are isolated (spike-2
 // change; spike 1 funneled every inject into one shared session).
@@ -725,7 +753,7 @@ func (wp *watchdogPool) watchdog(sessionID string) *watchdog.DefaultWatchdog {
 	return w
 }
 
-func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
+func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal inject payload: %w", err)
@@ -737,14 +765,14 @@ func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters
 		defer cancel()
 	}
 	msg := genai.NewContentFromText(fmt.Sprintf("INJECT %s", string(body)), genai.RoleUser)
-	return runTurn(ctx, r, logger, meters, wds, obs, tracker, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
+	return runTurn(ctx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
 }
 
 // resume feeds an operator's approval verdict back into a paused
 // session. The runner treats a user turn carrying a FunctionResponse
 // whose ID matches a pending InterruptID as a resume (see adk/v2
 // runner buildResumeResponses).
-func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, workloadName string, bundle *workload.Bundle, req inject.ResumeRequest) error {
+func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, req inject.ResumeRequest) error {
 	// Same wallclock ceiling as the inject and attach paths — resume
 	// turns are not budget-exempt either (#47).
 	if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
@@ -760,10 +788,27 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *
 	}
 	msg.Parts[0].FunctionResponse.ID = req.InterruptID
 	obs.HITLResume(workloadName)
-	return runTurn(ctx, r, logger, meters, wds, obs, tracker, workloadName, req.SessionID, msg, "resume:"+req.InterruptID)
+	return runTurn(ctx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID)
 }
 
-func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, workloadName, sessionID string, msg *genai.Content, label string) error {
+func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string) error {
+	// One turn per session (#62): ADK's stale-session check makes a
+	// second concurrent runner turn on the same row fatal to one of
+	// them, so same-session turns queue here. The wait genuinely
+	// honors ctx (channel semaphore) — bounded by the wallclock
+	// budget, the request lifetime, and drain-expiry cancellation.
+	unlock, err := turnLocks.lock(ctx, sessionID)
+	if err != nil {
+		if tracker.isDraining() {
+			// The wait was cut by drain-expiry cancellation: this is
+			// the daemon refusing work, not a dispatch failure — 503,
+			// same contract as the drain gate (#65).
+			return fmt.Errorf("%w (queued turn cancelled: %v)", inject.ErrUnavailable, err)
+		}
+		return err
+	}
+	defer unlock()
+
 	// Shutdown bookkeeping brackets the whole turn (see turnTracker).
 	tracker.begin(sessionID)
 	defer tracker.end(sessionID)

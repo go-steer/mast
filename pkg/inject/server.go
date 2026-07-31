@@ -37,9 +37,22 @@ import (
 	"github.com/go-steer/mast/pkg/envelope"
 )
 
+// ErrUnavailable, returned (or wrapped) by a Handler or ResumeHandler,
+// tells the server the daemon is refusing new work — a shutdown drain
+// is underway. The server maps it to 503 + Retry-After instead of the
+// generic 500, so emitters retry against the replacement pod rather
+// than treating a rolling restart as a crash.
+var ErrUnavailable = errors.New("daemon is shutting down; not accepting new work")
+
+// ErrBadPayload, returned (or wrapped) by a Handler, marks a request
+// the daemon refuses on its content (e.g. a payload UID deriving a
+// reserved session ID). Mapped to 400 instead of the generic 500 so
+// emitters don't retry a request that can never succeed.
+var ErrBadPayload = errors.New("invalid inject payload")
+
 // Handler receives a validated inject payload and drives the mast
 // runtime. It returns an error if dispatch fails; the server maps that
-// to a 5xx response.
+// to a 5xx response (503 + Retry-After for ErrUnavailable).
 type Handler func(ctx context.Context, payload envelope.InjectPayload) error
 
 // ResumeRequest is the operator's answer to a pending HITL interrupt.
@@ -196,6 +209,18 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err := s.cfg.Handler(r.Context(), payload); err != nil {
+		if errors.Is(err, ErrUnavailable) {
+			// Generic body on purpose: the 500 path below hides error
+			// detail, and this path must not become a leak if a later
+			// caller wraps context into the drain error.
+			w.Header().Set("Retry-After", "10")
+			http.Error(w, "shutting down; retry against the replacement instance", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, ErrBadPayload) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		s.logger.Error("inject dispatch failed", "error", err.Error())
 		http.Error(w, "dispatch failed", http.StatusInternalServerError)
 		return
@@ -228,6 +253,15 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("resume received", "session", req.SessionID, "interrupt_id", req.InterruptID)
 
 	if err := s.cfg.ResumeHandler(r.Context(), req); err != nil {
+		if errors.Is(err, ErrUnavailable) {
+			w.Header().Set("Retry-After", "10")
+			http.Error(w, "shutting down; retry against the replacement instance", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, ErrBadPayload) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		s.logger.Error("resume dispatch failed", "error", err.Error())
 		http.Error(w, "resume failed", http.StatusInternalServerError)
 		return
@@ -260,6 +294,10 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("abort received", "session", req.SessionID, "reason", req.Reason)
 
 	if err := s.cfg.AbortHandler(r.Context(), req); err != nil {
+		if errors.Is(err, ErrBadPayload) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		s.logger.Error("abort failed", "error", err.Error())
 		http.Error(w, "abort failed", http.StatusInternalServerError)
 		return

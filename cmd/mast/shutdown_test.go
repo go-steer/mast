@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -29,6 +30,8 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/session/database"
 
+	"github.com/go-steer/mast/pkg/envelope"
+	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -82,7 +85,7 @@ func TestTrackerPreMarksAndClearsOnCleanFinish(t *testing.T) {
 	tr.begin("s1")
 
 	// Drain start pre-marks the in-flight session durably — and only it.
-	tr.beginDrain()
+	tr.beginDrain(context.Background())
 	if got := stateOf(t, store, "s1"); got != transcript.StateInterrupted {
 		t.Errorf("s1 after beginDrain = %q, want interrupted", got)
 	}
@@ -106,7 +109,7 @@ func TestTrackerPreMarksAndClearsOnCleanFinish(t *testing.T) {
 func TestTrackerFreezeKeepsMarkerOnCancelledTurn(t *testing.T) {
 	tr, store := trackerFixture(t, "s1")
 	tr.begin("s1")
-	tr.beginDrain()
+	tr.beginDrain(context.Background())
 
 	// The drain window elapsed: freeze, then the daemon cancels the
 	// turn, whose unwinding calls end. The marker must survive.
@@ -119,7 +122,7 @@ func TestTrackerFreezeKeepsMarkerOnCancelledTurn(t *testing.T) {
 
 func TestTrackerMarksTurnStartedMidDrain(t *testing.T) {
 	tr, store := trackerFixture(t, "s1")
-	tr.beginDrain()
+	tr.beginDrain(context.Background())
 
 	// A turn that starts while draining is marked immediately...
 	tr.begin("s1")
@@ -139,7 +142,7 @@ func TestTrackerWaitTimesOutWithSurvivors(t *testing.T) {
 	tr.begin("s2")
 	tr.begin("s2") // two concurrent turns on s2 count once
 
-	tr.beginDrain()
+	tr.beginDrain(context.Background())
 	waitCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	remaining := tr.wait(waitCtx)
@@ -192,7 +195,7 @@ func TestTrackerMarkingDoesNotKillLiveTurn(t *testing.T) {
 	store := transcript.NewStore(svc, appName)
 	tr := newTurnTracker(store, slog.Default())
 	tr.begin("s-live")
-	tr.beginDrain()
+	tr.beginDrain(context.Background())
 
 	// The marked turn keeps streaming — this append failed with
 	// "stale session error" when markers wrote to the primary row.
@@ -275,7 +278,7 @@ func TestDefaultSessionPathConcurrentWrites(t *testing.T) {
 	for _, sid := range sids {
 		tr.begin(sid)
 	}
-	tr.beginDrain()
+	tr.beginDrain(context.Background())
 	for _, sid := range sids {
 		if got := stateOf(t, store, sid); got != transcript.StateInterrupted {
 			t.Errorf("%s after beginDrain = %q, want interrupted (marker lost)", sid, got)
@@ -321,8 +324,198 @@ func TestTrackerMarkSkipsFinishedSession(t *testing.T) {
 	tr.begin("s1")
 	tr.end("s1") // finished cleanly before the queued mark runs
 
-	tr.mark("s1") // the stale queued mark
+	tr.mark(context.Background(), "s1") // the stale queued mark
 	if got := stateOf(t, store, "s1"); got != transcript.StateIdle {
 		t.Errorf("state after stale mark = %q, want idle (finished session must not be marked)", got)
 	}
+}
+
+// TestTrackerNoFalseInterruptedOnConcurrentFinish is #60's reproducer,
+// promoted per the standing lesson: race fixes are validated by
+// re-running the discovering reproducer, not by unit tests of the new
+// API. N sessions each finish their only turn concurrently with
+// beginDrain; afterwards NO session may report interrupted. On the
+// pre-#60 code (end() gating its clear on marked[] outside writeMu)
+// this failed ~1/40 sessions per run with no fault injection.
+func TestTrackerNoFalseInterruptedOnConcurrentFinish(t *testing.T) {
+	ctx := context.Background()
+	svc, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
+	if err != nil {
+		t.Fatalf("buildSessionService: %v", err)
+	}
+	store := transcript.NewStore(svc, appName)
+
+	const sessions = 40
+	sids := make([]string, sessions)
+	for i := range sids {
+		sids[i] = fmt.Sprintf("s-finish-%d", i)
+		if _, err := svc.Create(ctx, &adksession.CreateRequest{
+			AppName: appName, UserID: defaultUserID, SessionID: sids[i],
+		}); err != nil {
+			t.Fatalf("create %s: %v", sids[i], err)
+		}
+	}
+
+	tr := newTurnTracker(store, discardLogger())
+	for _, sid := range sids {
+		tr.begin(sid)
+	}
+
+	// All turns finish concurrently with the pre-mark pass.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tr.beginDrain(ctx)
+	}()
+	for _, sid := range sids {
+		wg.Add(1)
+		go func(sid string) {
+			defer wg.Done()
+			tr.end(sid)
+		}(sid)
+	}
+	wg.Wait()
+
+	for _, sid := range sids {
+		if got := stateOf(t, store, sid); got == transcript.StateInterrupted {
+			t.Errorf("%s finished cleanly but reports interrupted (mark/clear ordering regression, #60)", sid)
+		}
+	}
+	if marked, unmarked := tr.survivors(); len(marked)+len(unmarked) != 0 {
+		t.Errorf("survivors after all turns ended = %v + %v, want none", marked, unmarked)
+	}
+}
+
+// TestSessionTurnLocksPreventSameSessionCollision pins #62. The first
+// subtest documents WHY the lock exists: two interleaved handles on
+// one session row collide deterministically on ADK's stale-session
+// check. The second proves serialized same-session turns all land.
+func TestSessionTurnLocksPreventSameSessionCollision(t *testing.T) {
+	ctx := context.Background()
+	svc, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
+	if err != nil {
+		t.Fatalf("buildSessionService: %v", err)
+	}
+	if _, err := svc.Create(ctx, &adksession.CreateRequest{
+		AppName: appName, UserID: defaultUserID, SessionID: "s-same",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	appendOne := func(h adksession.Session, text string) error {
+		ev := adksession.NewEvent(ctx, "inv-same")
+		ev.Author = "triager"
+		ev.Content = genai.NewContentFromText(text, genai.RoleModel)
+		return svc.AppendEvent(ctx, h, ev)
+	}
+	get := func() adksession.Session {
+		resp, err := svc.Get(ctx, &adksession.GetRequest{
+			AppName: appName, UserID: defaultUserID, SessionID: "s-same",
+		})
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return resp.Session
+	}
+
+	t.Run("unserialized handles collide", func(t *testing.T) {
+		a, b := get(), get()
+		time.Sleep(2 * time.Millisecond)
+		if err := appendOne(a, "turn A event"); err != nil {
+			t.Fatalf("append via A: %v", err)
+		}
+		time.Sleep(2 * time.Millisecond)
+		if err := appendOne(b, "turn B event"); err == nil {
+			t.Fatal("append via stale handle B succeeded — ADK dropped its OCC check? the turn lock may be removable")
+		}
+	})
+
+	t.Run("serialized turns all land", func(t *testing.T) {
+		locks := newSessionTurnLocks()
+		var wg sync.WaitGroup
+		errs := make(chan error, 2*10)
+		for turn := 0; turn < 2; turn++ {
+			wg.Add(1)
+			go func(turn int) {
+				defer wg.Done()
+				unlock, err := locks.lock(ctx, "s-same") // the runTurn discipline
+				if err != nil {
+					errs <- err
+					return
+				}
+				defer unlock()
+				h := get() // fresh handle per turn, like the runner
+				for j := 0; j < 10; j++ {
+					time.Sleep(time.Millisecond)
+					if err := appendOne(h, fmt.Sprintf("turn %d event %d", turn, j)); err != nil {
+						errs <- err
+						return
+					}
+				}
+			}(turn)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("serialized same-session append failed: %v", err)
+		}
+	})
+}
+
+// TestReservedPayloadErr pins the #61 inject-surface guard: a payload
+// UID deriving a reserved ops-row session ID is rejected with the
+// 400-mapped sentinel; ordinary UIDs pass.
+func TestReservedPayloadErr(t *testing.T) {
+	bad := envelope.InjectPayload{UID: "x:mast-ops"}
+	err := reservedPayloadErr(bad)
+	if err == nil {
+		t.Fatal("reserved UID accepted")
+	}
+	if !errors.Is(err, inject.ErrBadPayload) {
+		t.Errorf("reserved UID error = %v, want wrapped inject.ErrBadPayload (400, not 500)", err)
+	}
+	if err := reservedPayloadErr(envelope.InjectPayload{UID: "ordinary-uid"}); err != nil {
+		t.Errorf("ordinary UID rejected: %v", err)
+	}
+	// Empty UID falls back to defaultSessionID, which must never be
+	// reserved.
+	if err := reservedPayloadErr(envelope.InjectPayload{}); err != nil {
+		t.Errorf("empty UID rejected: %v", err)
+	}
+}
+
+// TestSessionTurnLockHonorsContext pins the semaphore contract the
+// pre-merge gate refuted for the sync.Mutex version: a queued waiter
+// must abandon the wait when its context ends, so drain-expiry
+// cancellation reclaims queued turns instead of leaving them pinned.
+func TestSessionTurnLockHonorsContext(t *testing.T) {
+	locks := newSessionTurnLocks()
+	unlock, err := locks.lock(context.Background(), "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waited := make(chan error, 1)
+	go func() {
+		_, err := locks.lock(ctx, "s1")
+		waited <- err
+	}()
+	cancel()
+	select {
+	case err := <-waited:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("queued waiter err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued waiter ignored context cancellation")
+	}
+
+	unlock()
+	// The slot is reusable after release.
+	unlock2, err := locks.lock(context.Background(), "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock2()
 }

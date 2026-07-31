@@ -51,16 +51,16 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/google/jsonschema-go/jsonschema"
 	"google.golang.org/genai"
-	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
 
 	adksession "google.golang.org/adk/v2/session"
-	"google.golang.org/adk/v2/session/database"
+
+	"github.com/go-steer/mast/pkg/eventlog"
 )
 
 // Session states derived from the event log. See the package doc for
@@ -179,6 +179,13 @@ type Detail struct {
 type Store struct {
 	svc     adksession.Service
 	appName string
+
+	// opsMu serializes ALL ops-row writes through this store (#64):
+	// appendOpsDelta is a Get-then-Append read-modify-write, and two
+	// concurrent writers (an operator Abort landing during the
+	// shutdown pre-mark pass) otherwise collide on the row's write
+	// lease. The daemon routes every marker writer through one Store.
+	opsMu sync.Mutex
 }
 
 // NewStore wraps an already-open session service (the path the daemon
@@ -196,16 +203,15 @@ func Open(path, appName string) (*Store, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("session db %q: %w", path, err)
 	}
-	// Silence GORM's default trace logger: ADK's service probes
-	// app/user state rows that legitimately may not exist, and the
-	// resulting "record not found" traces would pollute CLI output.
-	svc, err := database.NewSessionService(sqlite.Open(path),
-		&gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	// Same storage hardening as every other SQLite construction
+	// (busy_timeout + WAL + write serialization; GORM logger silent
+	// inside): the CLI is read-mostly but AutoMigrate writes, and a
+	// list/show racing a live daemon should wait on the lock, not
+	// fail (#64). eventlog.OpenSessionService is the shared one-call
+	// building block.
+	svc, err := eventlog.OpenSessionService(context.Background(), sqlite.Open(path))
 	if err != nil {
 		return nil, fmt.Errorf("open session db %q: %w", path, err)
-	}
-	if err := database.AutoMigrate(svc); err != nil {
-		return nil, fmt.Errorf("migrate session db %q: %w", path, err)
 	}
 	return NewStore(svc, appName), nil
 }
@@ -383,6 +389,8 @@ func (s *Store) ClearInterrupted(ctx context.Context, userID, sessionID string) 
 // abort and interruption markers. It never touches the primary row
 // (see opsSuffix for why that is load-bearing).
 func (s *Store) appendOpsDelta(ctx context.Context, userID, sessionID, invocation, author, text string, delta map[string]any) error {
+	s.opsMu.Lock()
+	defer s.opsMu.Unlock()
 	if userID == "" {
 		var err error
 		userID, err = s.findUserID(ctx, sessionID)
