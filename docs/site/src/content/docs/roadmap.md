@@ -79,6 +79,12 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   map-reduce, adversarial verifier, autonomous loop.
 - **Programmatic pause / resume tokens** — today's resume surface is
   HITL-interrupt-keyed.
+- **Recorded-effect outbox, then boot-time auto-resume** — mutating
+  tool calls are at-least-once under mast's reconstruct-and-re-execute
+  resume model; the outbox (design settled 2026-08-01: the session
+  event log is the outbox, checked before every mutating call) makes
+  re-execution ambiguity visible and blocking instead of silent, and
+  auto-resuming interrupted sessions on boot unblocks behind it.
 - **Multi-session substrate** — `mode: multi_session` bundles honored.
 
 ## Further out (v0.3+)
