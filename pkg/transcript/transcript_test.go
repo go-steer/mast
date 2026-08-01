@@ -607,3 +607,62 @@ func TestLegacyAbortMarkerStillHonored(t *testing.T) {
 		})
 	}
 }
+
+func TestAckEffects(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewStore(svc, testApp)
+			seed(t, svc, "op", "s1", textEvent("agent", "working"))
+
+			// No marker yet: fail-closed direction is "not acked".
+			if _, ok := store.EffectsAckedAt(ctx, "", "s1"); ok {
+				t.Fatal("EffectsAckedAt reported an ack on an unmarked session")
+			}
+
+			before := time.Now().Add(-time.Second)
+			if err := store.AckEffects(ctx, "", "s1", "operator checked the cluster"); err != nil {
+				t.Fatalf("AckEffects: %v", err)
+			}
+			at, ok := store.EffectsAckedAt(ctx, "", "s1")
+			if !ok {
+				t.Fatal("EffectsAckedAt = false after AckEffects")
+			}
+			if at.Before(before) || at.After(time.Now().Add(time.Second)) {
+				t.Fatalf("ack watermark %v is not around now", at)
+			}
+
+			// Re-ack overwrites forward (last write wins).
+			time.Sleep(5 * time.Millisecond)
+			if err := store.AckEffects(ctx, "", "s1", "second check"); err != nil {
+				t.Fatalf("re-AckEffects: %v", err)
+			}
+			at2, ok := store.EffectsAckedAt(ctx, "", "s1")
+			if !ok || !at2.After(at) {
+				t.Fatalf("re-ack watermark %v (ok=%v) did not move forward from %v", at2, ok, at)
+			}
+
+			// The ack is a watermark, not a state: derivation unchanged.
+			d, err := store.Get(ctx, "", "s1")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if d.State != StateIdle {
+				t.Fatalf("state after ack = %q, want %q (ack must not perturb the state ladder)", d.State, StateIdle)
+			}
+
+			// Reserved IDs are refused like every other surface (#56).
+			if err := store.AckEffects(ctx, "", "s1:mast-ops", "x"); err == nil {
+				t.Fatal("AckEffects accepted a reserved ops-row ID")
+			}
+			if _, ok := store.EffectsAckedAt(ctx, "", "s1:mast-ops"); ok {
+				t.Fatal("EffectsAckedAt reported an ack for a reserved ops-row ID")
+			}
+
+			// Unknown session: no ack, no error surface to trip on.
+			if _, ok := store.EffectsAckedAt(ctx, "", "missing"); ok {
+				t.Fatal("EffectsAckedAt reported an ack for a nonexistent session")
+			}
+		})
+	}
+}

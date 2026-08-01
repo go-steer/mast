@@ -17,7 +17,7 @@
 //
 //	mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|interrupted|idle]
 //	mast sessions show   <session-id> --session-db=...
-//	mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--addr=...]
+//	mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--ack-effects] [--addr=...]
 //	mast sessions abort  <session-id> [--reason=...] [--addr=...]
 //
 // list/show read the SQLite session DB directly (works with or without
@@ -68,6 +68,7 @@ type sessionsCmd struct {
 	interruptID string
 	response    string // raw JSON
 	reason      string
+	ackEffects  bool
 }
 
 const sessionsUsage = `usage: mast sessions <command> [flags]
@@ -103,6 +104,7 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
 		fs.StringVar(&cmd.interruptID, "interrupt", "", "pending interrupt ID to resume (required; see `mast sessions show`)")
 		fs.StringVar(&cmd.response, "response", "", "JSON response payload for the interrupt (required)")
+		fs.BoolVar(&cmd.ackEffects, "ack-effects", false, "acknowledge ambiguous prior effects: assert you checked whether the interrupted turn's mutating tool calls took effect; lifts the recorded-effect outbox's refusal for calls recorded so far")
 	case "abort":
 		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
 		fs.StringVar(&cmd.reason, "reason", "operator abort", "reason recorded in the abort marker")
@@ -194,6 +196,7 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 			SessionID:   c.sessionID,
 			InterruptID: c.interruptID,
 			Response:    response,
+			AckEffects:  c.ackEffects,
 		})
 	case "abort":
 		return c.post(ctx, out, "/abort", inject.AbortRequest{

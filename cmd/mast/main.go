@@ -40,6 +40,7 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
@@ -51,6 +52,7 @@ import (
 	"github.com/go-steer/mast/pkg/attachadapter"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/config"
+	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/envelope"
 	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/inject"
@@ -296,11 +298,36 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			return err
 		}
 	}
+	// Operator surface over the same session service the runner writes
+	// through (docs/durable-execution-design.md, "Operator-facing
+	// surface"): /abort appends the durable abort marker, and /resume
+	// refuses sessions that carry one. Built before the runner because
+	// the outbox plugin reads the effects-ack watermark through it.
+	store := transcript.NewStore(sessionSvc, appName)
+
+	// Recorded-effect outbox (docs/durable-execution-design.md): the
+	// runner plugin that refuses mutating tool calls while a session
+	// carries unacknowledged dangling intents from an interrupted turn,
+	// and replays recorded completions instead of re-executing. Every
+	// runner construction path attaches it (#53's lesson).
+	outboxPlugin, err := effects.New(effects.Config{
+		Predicate: effects.NewPredicate(effects.Overrides(logger, toolPolicies(bundle))),
+		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
+			return store.EffectsAckedAt(ctx, "", sid)
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		logger.Error("failed to construct effects outbox", "error", err.Error())
+		return err
+	}
+
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
 		SessionService:    sessionSvc,
 		AutoCreateSession: true,
+		PluginConfig:      runner.PluginConfig{Plugins: []*plugin.Plugin{outboxPlugin}},
 	})
 	if err != nil {
 		logger.Error("failed to construct runner", "error", err.Error())
@@ -309,12 +336,6 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 
 	meters := newMeterPool(bundle, modelName)
 	wds := newWatchdogPool()
-
-	// Operator surface over the same session service the runner writes
-	// through (docs/durable-execution-design.md, "Operator-facing
-	// surface"): /abort appends the durable abort marker, and /resume
-	// refuses sessions that carry one.
-	store := transcript.NewStore(sessionSvc, appName)
 
 	// Shutdown bookkeeping: which sessions have a turn in flight, and
 	// the pre-mark/clear ordering for their interruption markers.
@@ -410,6 +431,15 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		}
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
+		}
+		// The ack watermark must be durable BEFORE the turn starts —
+		// the outbox reads it in its turn-start scan, and an ack that
+		// raced the turn would leave the resume refusing the very calls
+		// the operator just approved.
+		if req.AckEffects {
+			if err := store.AckEffects(reqCtx, "", req.SessionID, "operator resume --ack-effects"); err != nil {
+				return fmt.Errorf("record effects acknowledgement for session %q: %w", req.SessionID, err)
+			}
 		}
 		att.ensure(req.SessionID)
 		return resume(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req)
@@ -751,6 +781,19 @@ func (wp *watchdogPool) watchdog(sessionID string) *watchdog.DefaultWatchdog {
 		wp.byID[sessionID] = w
 	}
 	return w
+}
+
+// toolPolicies converts the bundle's tool_catalog per-tool overrides
+// into the shape pkg/effects consumes (nil bundle = no overrides).
+func toolPolicies(bundle *workload.Bundle) []effects.ToolPolicy {
+	if bundle == nil {
+		return nil
+	}
+	out := make([]effects.ToolPolicy, 0, len(bundle.ToolCatalog.Tools))
+	for _, p := range bundle.ToolCatalog.Tools {
+		out = append(out, effects.ToolPolicy{Name: p.Name, Mutating: p.Mutating})
+	}
+	return out
 }
 
 func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {

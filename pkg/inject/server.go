@@ -66,6 +66,14 @@ type ResumeRequest struct {
 	// Response is the reply payload; validated against the interrupt's
 	// ResponseSchema by the workflow engine on resume.
 	Response any `json:"response"`
+
+	// AckEffects acknowledges ambiguous prior effects before the resume
+	// turn runs: dangling mutating tool calls from an interrupted turn
+	// stop tripping the recorded-effect outbox's fail-closed refusal
+	// (docs/durable-execution-design.md, "Recorded-effect outbox"). The
+	// operator asserts they have checked whether those calls took
+	// effect externally.
+	AckEffects bool `json:"ack_effects,omitempty"`
 }
 
 // ResumeHandler feeds a resume payload into the runtime. Optional; when

@@ -51,6 +51,26 @@ type MCPServerRef struct {
 // time — see docs/specialists-design.md "Allowlist semantics".
 type ToolCatalog struct {
 	MCP []MCPServerRef `yaml:"mcp,omitempty"`
+
+	// Tools carries per-tool policy overrides. v0.2 subset: the
+	// mutation-class override consumed by the recorded-effect outbox
+	// (docs/orchestration-design.md's mutation predicate — MCP
+	// annotations are advisory AND dropped by ADK's mcptoolset, so
+	// unknown tools default to mutating; this is the audited un-gate
+	// for known-safe tools).
+	Tools []ToolPolicy `yaml:"tools,omitempty"`
+}
+
+// ToolPolicy is a per-tool policy override in the workload's
+// tool_catalog, keyed by the tool's registered name.
+type ToolPolicy struct {
+	Name string `yaml:"name"`
+
+	// Mutating overrides the tool's mutation classification: false
+	// un-gates a known-read-only tool from the recorded-effect outbox,
+	// true forces the check for a tool the defaults would miss. Nil
+	// (omitted) means no override. Applications are audit-logged.
+	Mutating *bool `yaml:"mutating,omitempty"`
 }
 
 // Budget is the workload-level runtime budget ceiling. Composes over

@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- **Recorded-effect outbox (`pkg/effects`) — the v0.2 durable-execution
+  guard for mutating tools under at-least-once re-execution**
+  (docs/durable-execution-design.md, resolves open question #8; closes
+  #69; unblocks #41). Every runner construction path (serve, one-shot,
+  library) now attaches an ADK runner plugin that: refuses mutating and
+  sub-run-spawning tool calls with a structured
+  `ambiguous_prior_effect` error while the session carries a dangling
+  mutating tool call from an interrupted turn (read-only work
+  proceeds); replays a call's recorded completion instead of
+  re-executing when the log already holds one for the exact
+  function-call ID; and treats unknown tools — MCP tools included — as
+  mutating (ADK drops MCP `readOnlyHint` annotations before mast can
+  read them). New surfaces: `tool_catalog.tools[].mutating` per-tool
+  overrides in the workload bundle (audit-logged at startup),
+  `mast sessions resume --ack-effects` + `mast.AckEffects` to record
+  the operator's acknowledgement watermark (companion ops row; not a
+  transcript state), and `ack_effects` on the `/resume` payload. HITL
+  interrupts, credential/confirmation requests, and long-running calls
+  never read as dangling effects. The suite pins the substrate
+  property the design rests on: a tool's own FunctionCall event is
+  durable before the tool runs.
+
 ## v0.1.2 (2026-07-31)
 
 Patch release: the v0.1.1 shutdown contract hardened through two

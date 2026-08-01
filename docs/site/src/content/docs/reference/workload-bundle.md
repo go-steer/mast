@@ -27,6 +27,9 @@ mode: single_session
 tool_catalog:
   mcp:
     - server: gke
+  tools:
+    - name: list_clusters
+      mutating: false
 
 specialists:
   - triage-classifier
@@ -59,6 +62,8 @@ edge_trigger:
 | `description` | string | Human-readable; used in operator UIs and logs. |
 | `mode` | string | `single_session` (default) or `multi_session`. Multi-session is vocabulary-only in v0.1 — declared intent, honored when the multi-session substrate lands (v0.2). |
 | `tool_catalog.mcp[].server` | string | MCP server references, by name from the deployment's `mcp.json`. Intersected against per-specialist tool allowlists at dispatch time. |
+| `tool_catalog.tools[].name` | string | Tool name a per-tool policy override applies to. Names must be unique. |
+| `tool_catalog.tools[].mutating` | bool | Overrides the tool's mutation classification for the recorded-effect outbox. Unknown tools — MCP tools included — default to **mutating** (annotations are advisory, and ADK drops MCP `readOnlyHint` before mast can see it); `mutating: false` un-gates a known-read-only tool. Omitted means no override. Every applied override is audit-logged at startup. |
 | `specialists[]` | list of strings | Specialist names; resolve against the config root's `specialists/*.tmpl`. A roster with a SingleTurn classifier plus a `_fallback` Task specialist enables graph dispatch. |
 | `budget` | block | See below. |
 | `hitl.require_approval` | bool | When true, every specialist result pauses on a durable RequestInput interrupt until an operator resumes with a verdict. |

@@ -62,5 +62,15 @@ func (b *Bundle) validate() error {
 		}
 		seen[name] = true
 	}
+	seenTools := make(map[string]bool, len(b.ToolCatalog.Tools))
+	for _, p := range b.ToolCatalog.Tools {
+		if p.Name == "" {
+			return fmt.Errorf("tool_catalog.tools contains an entry without a name")
+		}
+		if seenTools[p.Name] {
+			return fmt.Errorf("tool_catalog.tools contains duplicate %q", p.Name)
+		}
+		seenTools[p.Name] = true
+	}
 	return nil
 }
