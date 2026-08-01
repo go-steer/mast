@@ -88,6 +88,18 @@ const (
 	interruptTimeKey   = "mast_interrupted_time"
 )
 
+// Session-state keys written by Store.AckEffects: the operator's
+// acknowledgement watermark for ambiguous prior effects
+// (docs/durable-execution-design.md, "Recorded-effect outbox").
+// Dangling mutating tool calls at or before the watermark no longer
+// trip the outbox's ambiguous-effect mode. Deliberately NOT part of
+// the state ladder in project() — an ack changes what the next turn
+// may do, not what the session is.
+const (
+	effectsAckTimeKey   = "mast_effects_ack_time"
+	effectsAckReasonKey = "mast_effects_ack_reason"
+)
+
 // opsSuffix derives the companion ops row's session ID from the
 // primary's. All operator/daemon marker writes (abort, interruption)
 // go to the ops row, NEVER to the primary session row, because ADK's
@@ -384,6 +396,50 @@ func (s *Store) ClearInterrupted(ctx context.Context, userID, sessionID string) 
 		map[string]any{interruptReasonKey: "", interruptTimeKey: ""})
 }
 
+// AckEffects records the operator's acknowledgement of ambiguous prior
+// effects: dangling mutating tool calls persisted at or before now stop
+// tripping the recorded-effect outbox's ambiguous-effect mode
+// (pkg/effects). The marker is a watermark, not a state — List/Get
+// derivation ignores it. Re-acking overwrites (last write wins); the
+// new watermark also covers intents the first ack already covered.
+func (s *Store) AckEffects(ctx context.Context, userID, sessionID, reason string) error {
+	if IsReservedSessionID(sessionID) {
+		return errReserved(sessionID)
+	}
+	return s.appendOpsDelta(ctx, userID, sessionID, "effects-ack", "operator",
+		fmt.Sprintf("operator acknowledged ambiguous prior effects: %s", reason),
+		map[string]any{
+			effectsAckTimeKey:   time.Now().UTC().Format(time.RFC3339Nano),
+			effectsAckReasonKey: reason,
+		})
+}
+
+// EffectsAckedAt returns the session's effects-acknowledgement
+// watermark, if one was recorded. Read failures and missing markers
+// both report false — the outbox then treats every dangling intent as
+// unacknowledged, which is the fail-closed direction.
+func (s *Store) EffectsAckedAt(ctx context.Context, userID, sessionID string) (time.Time, bool) {
+	if IsReservedSessionID(sessionID) {
+		return time.Time{}, false
+	}
+	if userID == "" {
+		var err error
+		userID, err = s.findUserID(ctx, sessionID)
+		if err != nil {
+			return time.Time{}, false
+		}
+	}
+	v, ok := s.opsState(ctx, userID, sessionID)[effectsAckTimeKey]
+	if !ok || v == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
 // appendOpsDelta appends one marker event to the session's companion
 // ops row, creating the row on first use — the shared mechanics of the
 // abort and interruption markers. It never touches the primary row
@@ -444,8 +500,8 @@ func (s *Store) opsState(ctx context.Context, userID, sessionID string) map[stri
 	if err != nil {
 		return nil
 	}
-	out := make(map[string]string, 4)
-	for _, k := range []string{abortReasonKey, abortTimeKey, interruptReasonKey, interruptTimeKey} {
+	out := make(map[string]string, 6)
+	for _, k := range []string{abortReasonKey, abortTimeKey, interruptReasonKey, interruptTimeKey, effectsAckTimeKey, effectsAckReasonKey} {
 		if v, err := resp.Session.State().Get(k); err == nil {
 			out[k] = fmt.Sprintf("%v", v)
 		}

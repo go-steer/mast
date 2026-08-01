@@ -150,3 +150,51 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+func TestLoad_ToolPolicies(t *testing.T) {
+	path := writeBundle(t, "tools.yaml", `name: x
+specialists: [a]
+tool_catalog:
+  mcp:
+    - server: gke
+  tools:
+    - name: list_clusters
+      mutating: false
+    - name: rollout_undo
+      mutating: true
+    - name: no_override
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tools := b.ToolCatalog.Tools
+	if len(tools) != 3 {
+		t.Fatalf("parsed %d tool policies, want 3", len(tools))
+	}
+	if tools[0].Name != "list_clusters" || tools[0].Mutating == nil || *tools[0].Mutating {
+		t.Errorf("list_clusters policy = %+v, want mutating:false", tools[0])
+	}
+	if tools[1].Mutating == nil || !*tools[1].Mutating {
+		t.Errorf("rollout_undo policy = %+v, want mutating:true", tools[1])
+	}
+	if tools[2].Mutating != nil {
+		t.Errorf("no_override policy = %+v, want nil Mutating (omitted != false)", tools[2])
+	}
+}
+
+func TestLoad_ToolPolicyErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, wantErr string
+	}{
+		{"unnamed", "name: x\nspecialists: [a]\ntool_catalog:\n  tools:\n    - mutating: false\n", "without a name"},
+		{"duplicate", "name: x\nspecialists: [a]\ntool_catalog:\n  tools:\n    - name: t\n    - name: t\n", "duplicate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeBundle(t, "b.yaml", tc.body)
+			if _, err := workload.Load(path); err == nil || !contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}

@@ -65,12 +65,14 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/internal/compose"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
+	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
@@ -189,7 +191,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	}
 
 	msg := genai.NewContentFromText(input, genai.RoleUser)
-	return runTurn(ctx, cfg, root, limits(cfg, &bundle, modelName), newSessionID(), msg)
+	return runTurn(ctx, cfg, root, &bundle, limits(cfg, &bundle, modelName), newSessionID(), msg)
 }
 
 // Run is the single-agent convenience: one Chat-mode agent with the
@@ -210,7 +212,7 @@ func Run(ctx context.Context, cfg Config, instruction, input string) (*Result, e
 		return nil, fmt.Errorf("mast: build agent: %w", err)
 	}
 	msg := genai.NewContentFromText(input, genai.RoleUser)
-	return runTurn(ctx, cfg, root, limits(cfg, nil, modelName), newSessionID(), msg)
+	return runTurn(ctx, cfg, root, nil, limits(cfg, nil, modelName), newSessionID(), msg)
 }
 
 // ListSessions returns the operator projections (pkg/transcript) for
@@ -270,7 +272,21 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		})},
 	}
 	msg.Parts[0].FunctionResponse.ID = interruptID
-	return runTurn(ctx, cfg, root, limits(cfg, &bundle, modelName), sessionID, msg)
+	return runTurn(ctx, cfg, root, &bundle, limits(cfg, &bundle, modelName), sessionID, msg)
+}
+
+// AckEffects records the operator's acknowledgement of ambiguous prior
+// effects on a session: dangling mutating tool calls from an
+// interrupted turn — persisted up to now — stop tripping the
+// recorded-effect outbox's fail-closed refusal on subsequent turns
+// (docs/durable-execution-design.md, "Recorded-effect outbox"). The
+// caller asserts they checked whether those calls took effect
+// externally. The library twin of `mast sessions resume --ack-effects`.
+func AckEffects(ctx context.Context, cfg Config, sessionID, reason string) error {
+	if cfg.Sessions == nil {
+		return errors.New("mast: AckEffects requires Config.Sessions (acks on a nil service could never be read back)")
+	}
+	return transcript.NewStore(cfg.Sessions, appName).AckEffects(ctx, "", sessionID, reason)
 }
 
 // resolveModel returns the model to run with plus the name used for
@@ -321,16 +337,38 @@ func limits(cfg Config, bundle *workload.Bundle, modelName string) budget.Limits
 // metering usage against limits and collecting the final output (the
 // last node output or model text on the event stream — the same
 // projection examples/deploy/slim uses).
-func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, lim budget.Limits, sessionID string, msg *genai.Content) (*Result, error) {
+func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, lim budget.Limits, sessionID string, msg *genai.Content) (*Result, error) {
 	svc := cfg.Sessions
 	if svc == nil {
 		svc = adksession.InMemoryService()
+	}
+	// Recorded-effect outbox (docs/durable-execution-design.md): same
+	// guard as cmd/mast — every runner construction path attaches it.
+	// The ack watermark reads through the same store AckEffects writes.
+	ackStore := transcript.NewStore(svc, appName)
+	var policies []effects.ToolPolicy
+	if bundle != nil {
+		for _, p := range bundle.ToolCatalog.Tools {
+			policies = append(policies, effects.ToolPolicy{Name: p.Name, Mutating: p.Mutating})
+		}
+	}
+	outboxPlugin, err := effects.New(effects.Config{
+		Predicate:     effects.NewPredicate(effects.Overrides(cfg.Logger, policies)),
+		SubAgentNames: effects.SubAgentNames(root),
+		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
+			return ackStore.EffectsAckedAt(ctx, "", sid)
+		},
+		Logger: cfg.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mast: construct effects outbox: %w", err)
 	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
 		SessionService:    svc,
 		AutoCreateSession: true,
+		PluginConfig:      runner.PluginConfig{Plugins: []*plugin.Plugin{outboxPlugin}},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: construct runner: %w", err)

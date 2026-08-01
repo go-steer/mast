@@ -192,6 +192,13 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 				"available":  roster,
 			}, nil
 		}
+		// TODO(v0.2 sub-runner debt): this inner runner carries neither
+		// the outer budget meter nor the recorded-effect outbox plugin
+		// (pkg/effects). The outbox's containment still holds one level
+		// up — invoke_specialist is ClassSpawning, refused outright in
+		// ambiguous-effect mode — but tool calls made in here leave no
+		// durable intent records (in-memory session). Fold into the
+		// planner-budget-bypass fix.
 		r, err := runner.New(runner.Config{
 			AppName:           "planner_dispatch",
 			Agent:             d,

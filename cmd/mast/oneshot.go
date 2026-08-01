@@ -33,10 +33,12 @@ import (
 	"google.golang.org/genai"
 
 	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/taskclass"
 	"github.com/go-steer/mast/pkg/transcript"
@@ -95,11 +97,32 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	if err != nil {
 		return err
 	}
+	// Recorded-effect outbox on the one-shot path too — one-shot
+	// sessions are durable and continuable when --session-db is set, so
+	// a class session interrupted mid-mutation must get the same
+	// fail-closed treatment on its next invocation (#53's every-path
+	// lesson). No workload bundle here, so no per-tool overrides; the
+	// ack surface for a wedged task session is offline —
+	// `mast sessions ack-effects <id> --session-db=<this DB>` — since
+	// no daemon serves task-class DBs.
+	oneShotStore := transcript.NewStore(sessionSvc, appName)
+	outboxPlugin, err := effects.New(effects.Config{
+		Predicate:     effects.NewPredicate(nil),
+		SubAgentNames: effects.SubAgentNames(root),
+		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
+			return oneShotStore.EffectsAckedAt(ctx, "", sid)
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return fmt.Errorf("construct effects outbox: %w", err)
+	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
 		SessionService:    sessionSvc,
 		AutoCreateSession: true,
+		PluginConfig:      runner.PluginConfig{Plugins: []*plugin.Plugin{outboxPlugin}},
 	})
 	if err != nil {
 		return fmt.Errorf("construct runner: %w", err)

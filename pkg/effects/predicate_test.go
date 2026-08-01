@@ -1,0 +1,100 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package effects
+
+import (
+	"testing"
+
+	"github.com/go-steer/mast/pkg/planner"
+)
+
+func TestPredicateDefaults(t *testing.T) {
+	pred := NewPredicate(nil)
+	cases := []struct {
+		name string
+		want Class
+	}{
+		{"adk_request_input", ClassReadOnly},
+		{"adk_request_credential", ClassReadOnly},
+		{"adk_request_confirmation", ClassReadOnly},
+		{"finish_task", ClassReadOnly},
+		{"request_operator_input", ClassReadOnly},
+		{"invoke_specialist", ClassSpawning},
+		{"run_shape_llm_router", ClassSpawning},
+		{"run_shape_fan_out_fan_in", ClassSpawning},
+		{"invoke_remote_agent", ClassMutating},
+		{"gke_scale_deployment", ClassMutating}, // unknown MCP tool: default-deny
+		{"list_clusters", ClassMutating},        // "obviously read-only" names get no free pass
+	}
+	for _, c := range cases {
+		if got := pred(c.name); got != c.want {
+			t.Errorf("pred(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestPredicateOverrides(t *testing.T) {
+	f, tr := false, true
+	pred := NewPredicate(Overrides(nil, []ToolPolicy{
+		{Name: "list_clusters", Mutating: &f},
+		{Name: "request_operator_input", Mutating: &tr},
+		{Name: "unnamed", Mutating: nil}, // no override value: ignored
+		{Name: "", Mutating: &f},         // no name: ignored
+	}))
+	if got := pred("list_clusters"); got != ClassReadOnly {
+		t.Errorf("override mutating:false → %v, want ClassReadOnly", got)
+	}
+	if got := pred("request_operator_input"); got != ClassMutating {
+		t.Errorf("override mutating:true on a builtin → %v, want ClassMutating (override outranks builtin table)", got)
+	}
+	if got := pred("unnamed"); got != ClassMutating {
+		t.Errorf("nil-valued override must not change the default: got %v", got)
+	}
+	// Control calls outrank overrides: un-gating the HITL surface (or
+	// gating it) would corrupt pause/resume semantics.
+	predCtl := NewPredicate(map[string]bool{"adk_request_input": true})
+	if got := predCtl("adk_request_input"); got != ClassReadOnly {
+		t.Errorf("control call with override → %v, want ClassReadOnly (control outranks)", got)
+	}
+}
+
+// TestBuiltinNamesMatchRegistrations pins the string literals in
+// builtinClasses to the constants the owning packages export — drift
+// between the outbox's table and an actual tool registration must fail
+// CI, not silently reclassify a tool to the default.
+func TestBuiltinNamesMatchRegistrations(t *testing.T) {
+	pins := map[string]string{
+		planner.ToolInvokeSpecialist:     "invoke_specialist",
+		planner.ToolRunShapeLLMRouter:    "run_shape_llm_router",
+		planner.ToolRunShapeFanOutFanIn:  "run_shape_fan_out_fan_in",
+		planner.ToolRequestOperatorInput: "request_operator_input",
+	}
+	for constant, literal := range pins {
+		if constant != literal {
+			t.Errorf("planner constant %q != outbox table literal %q", constant, literal)
+		}
+		if _, ok := builtinClasses[literal]; !ok {
+			t.Errorf("builtinClasses is missing an entry for %q", literal)
+		}
+	}
+	// pkg/federation exports no name constant; the literal is pinned in
+	// its registration (pkg/federation/tool.go). If this entry ever
+	// goes stale the federation tool silently falls to the default
+	// class — which is ClassMutating, the same value, so the failure
+	// mode is benign; the entry documents intent.
+	if builtinClasses["invoke_remote_agent"] != ClassMutating {
+		t.Error("invoke_remote_agent must classify mutating (remote effects are invisible to this process)")
+	}
+}
