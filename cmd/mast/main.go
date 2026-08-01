@@ -311,7 +311,8 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// and replays recorded completions instead of re-executing. Every
 	// runner construction path attaches it (#53's lesson).
 	outboxPlugin, err := effects.New(effects.Config{
-		Predicate: effects.NewPredicate(effects.Overrides(logger, toolPolicies(bundle))),
+		Predicate:     effects.NewPredicate(effects.Overrides(logger, toolPolicies(bundle))),
+		SubAgentNames: effects.SubAgentNames(root),
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return store.EffectsAckedAt(ctx, "", sid)
 		},
@@ -432,17 +433,26 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
 		}
-		// The ack watermark must be durable BEFORE the turn starts —
-		// the outbox reads it in its turn-start scan, and an ack that
-		// raced the turn would leave the resume refusing the very calls
-		// the operator just approved.
+		// The ack watermark is written under the session's turn lock
+		// (runTurn's preTurn hook), AFTER any in-flight turn on the
+		// session has finished: a watermark stamped while a turn is
+		// still persisting mutating intents would silently cover
+		// intents the operator never saw. It is still durable before
+		// the resume turn's outbox scan runs. If the ack lands and the
+		// turn itself then fails, the watermark stays — it acknowledges
+		// the PRIOR intents, not the new turn; a retried resume does
+		// not need (and is not harmed by) re-acking.
+		var preTurn func(context.Context) error
 		if req.AckEffects {
-			if err := store.AckEffects(reqCtx, "", req.SessionID, "operator resume --ack-effects"); err != nil {
-				return fmt.Errorf("record effects acknowledgement for session %q: %w", req.SessionID, err)
+			preTurn = func(ctx context.Context) error {
+				if err := store.AckEffects(ctx, "", req.SessionID, "operator resume --ack-effects"); err != nil {
+					return fmt.Errorf("record effects acknowledgement for session %q: %w", req.SessionID, err)
+				}
+				return nil
 			}
 		}
 		att.ensure(req.SessionID)
-		return resume(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req)
+		return resume(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req, preTurn)
 	}
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
 		if transcript.IsReservedSessionID(req.SessionID) {
@@ -450,15 +460,33 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		}
 		return store.Abort(reqCtx, "", req.SessionID, req.Reason)
 	}
+	// Standalone ack surface: the outbox's primary scenario — a process
+	// killed mid-mutating-tool — leaves a dangling intent and NO
+	// pending interrupt, so resume --ack-effects (which requires one)
+	// cannot reach it. Same daemon-routed shape as abort (single
+	// writer). Serialized against in-flight turns via the turn lock so
+	// the watermark cannot cover intents still being persisted.
+	ackHandler := func(reqCtx context.Context, req inject.AckEffectsRequest) error {
+		if transcript.IsReservedSessionID(req.SessionID) {
+			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a session: %w", req.SessionID, inject.ErrBadPayload)
+		}
+		unlock, err := turnLocks.lock(reqCtx, req.SessionID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		return store.AckEffects(reqCtx, "", req.SessionID, req.Reason)
+	}
 
 	srv, err := inject.New(inject.Config{
-		Listen:        listen,
-		BearerToken:   bearer,
-		Handler:       handler,
-		ResumeHandler: resumeHandler,
-		AbortHandler:  abortHandler,
-		Logger:        logger,
-		Metrics:       obs.Handler(),
+		Listen:            listen,
+		BearerToken:       bearer,
+		Handler:           handler,
+		ResumeHandler:     resumeHandler,
+		AbortHandler:      abortHandler,
+		AckEffectsHandler: ackHandler,
+		Logger:            logger,
+		Metrics:           obs.Handler(),
 		// Request contexts derive from the turn lifetime, so when the
 		// drain window elapses the surviving handler turns are
 		// cancelled (and unwind) rather than dying at process exit.
@@ -815,7 +843,7 @@ func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters
 // session. The runner treats a user turn carrying a FunctionResponse
 // whose ID matches a pending InterruptID as a resume (see adk/v2
 // runner buildResumeResponses).
-func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, req inject.ResumeRequest) error {
+func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, req inject.ResumeRequest, preTurn func(context.Context) error) error {
 	// Same wallclock ceiling as the inject and attach paths — resume
 	// turns are not budget-exempt either (#47).
 	if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
@@ -831,10 +859,20 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *
 	}
 	msg.Parts[0].FunctionResponse.ID = req.InterruptID
 	obs.HITLResume(workloadName)
-	return runTurn(ctx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID)
+	return runTurnPre(ctx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID, preTurn)
 }
 
 func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string) error {
+	return runTurnPre(ctx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, sessionID, msg, label, nil)
+}
+
+// runTurnPre is runTurn with an optional hook that runs under the
+// session's turn lock, before the turn starts. The resume path uses it
+// to write the effects-ack watermark: under the lock, no in-flight
+// turn can still be persisting mutating intents the watermark would
+// silently cover; before the turn, the outbox's turn-start scan sees
+// the watermark durably.
+func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error) error {
 	// One turn per session (#62): ADK's stale-session check makes a
 	// second concurrent runner turn on the same row fatal to one of
 	// them, so same-session turns queue here. The wait genuinely
@@ -851,6 +889,12 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters 
 		return err
 	}
 	defer unlock()
+
+	if preTurn != nil {
+		if err := preTurn(ctx); err != nil {
+			return err
+		}
+	}
 
 	// Shutdown bookkeeping brackets the whole turn (see turnTracker).
 	tracker.begin(sessionID)

@@ -37,6 +37,7 @@ mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|inter
 mast sessions show   <session-id> --session-db=...
 mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--ack-effects] [--addr=...]
 mast sessions abort  <session-id> [--reason=...] [--addr=...]
+mast sessions ack-effects <session-id> [--reason=...] [--addr=... | --session-db=...]
 ```
 
 The split is deliberate:
@@ -81,13 +82,19 @@ call whose outcome the log cannot prove. The recorded-effect outbox
 then runs the session's next turn in *ambiguous-effect mode*:
 mutating and sub-run-spawning tool calls are refused with a structured
 `ambiguous_prior_effect` error (read-only work proceeds) until an
-operator either aborts the session or resumes with **`--ack-effects`**,
-asserting they checked whether the dangling calls took effect
-externally. Unknown tools — MCP tools included — count as mutating
-unless the workload's `tool_catalog.tools` overrides them (see the
+operator acknowledges — asserting they checked whether the dangling
+calls took effect externally — or aborts the session. The
+acknowledgement surface is **`mast sessions ack-effects <id>`**
+(through the daemon by default, which serializes it against in-flight
+turns; `--session-db` writes directly when no daemon serves that DB,
+e.g. a one-shot task session), or **`resume --ack-effects`** when the
+session is also paused on an interrupt. Unknown tools — MCP tools
+included — count as mutating unless the workload's
+`tool_catalog.tools` overrides them (see the
 [workload bundle reference](/mast/reference/workload-bundle/)); the
 acknowledgement is recorded durably beside the session and covers
-only calls persisted up to that moment.
+only calls persisted up to that moment. Task delegations, HITL
+interrupts, and long-running calls never count as dangling effects.
 
 Two related contracts: the daemon runs **one turn per session at a
 time** — a second inject or resume for the same session queues behind

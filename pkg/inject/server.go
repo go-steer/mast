@@ -100,6 +100,25 @@ type AbortRequest struct {
 // route responds 404.
 type AbortHandler func(ctx context.Context, req AbortRequest) error
 
+// AckEffectsRequest records the operator's acknowledgement of
+// ambiguous prior effects on a session — the standalone twin of
+// ResumeRequest.AckEffects, for the outbox's primary scenario: an
+// interrupted turn leaves a dangling mutating tool call but NO pending
+// interrupt, so there is nothing to resume. Semantics are those of
+// pkg/transcript's Store.AckEffects (a durable watermark on the
+// companion ops row; covers only intents persisted at or before it).
+type AckEffectsRequest struct {
+	// SessionID identifies the session being acknowledged.
+	SessionID string `json:"session_id"`
+
+	// Reason is the operator-supplied note, recorded in the marker.
+	Reason string `json:"reason,omitempty"`
+}
+
+// AckEffectsHandler applies an effects acknowledgement. Optional; when
+// nil the /ack-effects route responds 404.
+type AckEffectsHandler func(ctx context.Context, req AckEffectsRequest) error
+
 // Config configures the inject server.
 type Config struct {
 	// Listen is the bind address, e.g. ":7777".
@@ -118,6 +137,10 @@ type Config struct {
 
 	// AbortHandler is called for each valid abort POST. Optional.
 	AbortHandler AbortHandler
+
+	// AckEffectsHandler is called for each valid ack-effects POST.
+	// Optional.
+	AckEffectsHandler AckEffectsHandler
 
 	// Logger is the structured logger. Defaults to slog.Default().
 	Logger *slog.Logger
@@ -160,6 +183,7 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("POST /inject", s.handleInject)
 	mux.HandleFunc("POST /resume", s.handleResume)
 	mux.HandleFunc("POST /abort", s.handleAbort)
+	mux.HandleFunc("POST /ack-effects", s.handleAckEffects)
 	if cfg.Metrics != nil {
 		mux.Handle("GET /metrics", cfg.Metrics)
 	}
@@ -312,6 +336,42 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = fmt.Fprintln(w, "aborted")
+}
+
+func (s *Server) handleAckEffects(w http.ResponseWriter, r *http.Request) {
+	if !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.cfg.AckEffectsHandler == nil {
+		http.Error(w, "ack-effects not enabled", http.StatusNotFound)
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+
+	var req AckEffectsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		http.Error(w, "bad request: session_id is required", http.StatusBadRequest)
+		return
+	}
+
+	s.logger.Info("effects acknowledgement received", "session", req.SessionID, "reason", req.Reason)
+
+	if err := s.cfg.AckEffectsHandler(r.Context(), req); err != nil {
+		if errors.Is(err, ErrBadPayload) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.logger.Error("ack-effects failed", "error", err.Error())
+		http.Error(w, "ack-effects failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = fmt.Fprintln(w, "acknowledged")
 }
 
 func (s *Server) authOK(r *http.Request) bool {

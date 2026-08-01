@@ -35,6 +35,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
+	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 
@@ -399,16 +400,21 @@ func TestScanDangling(t *testing.T) {
 		mk("inv2", call("adk_request_input", "i1")), // control: excluded
 		mk("inv2", call("invoke_specialist", "c3")), // dangling spawning
 	}
-	got := scanDangling(events, pred)
+	st := scanHistory(events, pred, nil)
+	got := st.dangling
 	if len(got) != 2 {
-		t.Fatalf("scanDangling found %d intents (%v), want 2", len(got), got)
+		t.Fatalf("scanHistory found %d intents (%v), want 2", len(got), got)
 	}
 	if got[0].CallID != "c2" || got[1].CallID != "c3" {
-		t.Fatalf("scanDangling order = %s,%s want c2,c3", got[0].CallID, got[1].CallID)
+		t.Fatalf("scanHistory order = %s,%s want c2,c3", got[0].CallID, got[1].CallID)
+	}
+	// The paired mutating call's completion is recorded for replay.
+	if resp, ok := st.completions["c1"]; !ok || resp["ok"] != true {
+		t.Fatalf("completions[c1] = %v,%v want the recorded payload", resp, ok)
 	}
 }
 
-func TestRecordedCompletion(t *testing.T) {
+func TestScanHistoryCompletions(t *testing.T) {
 	mk := func(parts ...*genai.Part) *adksession.Event {
 		ev := adksession.NewEvent(context.Background(), "inv")
 		ev.Content = &genai.Content{Role: genai.RoleModel, Parts: parts}
@@ -416,17 +422,16 @@ func TestRecordedCompletion(t *testing.T) {
 	}
 	p := genai.NewPartFromFunctionResponse("scale_up", map[string]any{"scaled": 7})
 	p.FunctionResponse.ID = "c9"
-	events := eventList{mk(p)}
+	empty := genai.NewPartFromFunctionResponse("scale_up", map[string]any{"x": 1})
+	empty.FunctionResponse.ID = ""
+	st := scanHistory(eventList{mk(p, empty)}, NewPredicate(nil), nil)
 
-	resp, ok := recordedCompletion(events, "c9")
+	resp, ok := st.completions["c9"]
 	if !ok || resp["scaled"] != float64(7) && resp["scaled"] != 7 {
-		t.Fatalf("recordedCompletion = %v,%v want the recorded payload", resp, ok)
+		t.Fatalf("completions[c9] = %v,%v want the recorded payload", resp, ok)
 	}
-	if _, ok := recordedCompletion(events, "missing"); ok {
-		t.Fatal("recordedCompletion found a completion for an unknown call ID")
-	}
-	if _, ok := recordedCompletion(events, ""); ok {
-		t.Fatal("recordedCompletion must not match an empty call ID")
+	if _, ok := st.completions[""]; ok {
+		t.Fatal("an empty-ID FunctionResponse must not be recorded as a completion")
 	}
 }
 
@@ -444,3 +449,274 @@ func (e eventList) All() iter.Seq[*adksession.Event] {
 }
 func (e eventList) Len() int                   { return len(e) }
 func (e eventList) At(i int) *adksession.Event { return e[i] }
+
+// fixedIDCallResponse scripts a FunctionCall with a PRESET ID —
+// ADK's PopulateClientFunctionCallID fills only empty IDs, so the
+// preset survives to callTool. This is how a re-fire of a recorded
+// call is simulated end-to-end.
+func fixedIDCallResponse(name, id string, args map[string]any) *model.LLMResponse {
+	r := callResponse(name, args)
+	r.Content.Parts[0].FunctionCall.ID = id
+	return r
+}
+
+// seedPair appends a completed FunctionCall+FunctionResponse pair for
+// callID to an existing or new session.
+func seedPair(t *testing.T, svc adksession.Service, sessionID, toolName, callID string, response map[string]any) {
+	t.Helper()
+	ctx := context.Background()
+	created, err := svc.Create(ctx, &adksession.CreateRequest{
+		AppName: testApp, UserID: testUser, SessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("Create(%q): %v", sessionID, err)
+	}
+	callEv := adksession.NewEvent(ctx, "prior-inv")
+	callEv.Author = "effects_agent"
+	cp := genai.NewPartFromFunctionCall(toolName, map[string]any{"delta": 1})
+	cp.FunctionCall.ID = callID
+	callEv.Content = &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{cp}}
+	if err := svc.AppendEvent(ctx, created.Session, callEv); err != nil {
+		t.Fatalf("AppendEvent(call): %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	respEv := adksession.NewEvent(ctx, "prior-inv")
+	respEv.Author = "effects_agent"
+	rp := genai.NewPartFromFunctionResponse(toolName, response)
+	rp.FunctionResponse.ID = callID
+	respEv.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{rp}}
+	if err := svc.AppendEvent(ctx, created.Session, respEv); err != nil {
+		t.Fatalf("AppendEvent(response): %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+}
+
+// TestExactKeyReplayEndToEnd drives a re-fire of an already-completed
+// call THROUGH THE RUNNER (the prior test suite only unit-tested the
+// helper — which left the replay branch dead code when the tool
+// context turned out to have no session access; adversarial finding 1).
+func TestExactKeyReplayEndToEnd(t *testing.T) {
+	h := newHarness(t, roundScript(
+		fixedIDCallResponse("scale_up", "call-done-1", map[string]any{"delta": 9}),
+	))
+	seedPair(t, h.svc, "replayed", "scale_up", "call-done-1", map[string]any{"scaled": 42})
+
+	events := h.run(t, "replayed", "do it again")
+
+	h.mu.Lock()
+	scale := h.scale
+	h.mu.Unlock()
+	if scale != 0 {
+		t.Fatalf("scale_up executed %d times, want 0 (recorded completion must replay, not re-execute)", scale)
+	}
+	resps := toolResponses(events)
+	got := resps["scale_up"]
+	if len(got) != 1 {
+		t.Fatalf("scale_up responses = %v, want exactly the replayed one", got)
+	}
+	if v, ok := got[0]["scaled"]; !ok || (v != float64(42) && v != 42) {
+		t.Fatalf("replayed response = %v, want the recorded payload {scaled: 42}", got[0])
+	}
+}
+
+// TestExactKeyReplayNilResponse: a recorded completion whose payload is
+// nil must still count as a hit — returning nil from the callback
+// means "proceed and execute", the exact double-mutation the record
+// exists to prevent (adversarial finding 4).
+func TestExactKeyReplayNilResponse(t *testing.T) {
+	h := newHarness(t, roundScript(
+		fixedIDCallResponse("scale_up", "call-done-2", map[string]any{"delta": 1}),
+	))
+	seedPair(t, h.svc, "nilresp", "scale_up", "call-done-2", nil)
+
+	events := h.run(t, "nilresp", "again")
+
+	h.mu.Lock()
+	scale := h.scale
+	h.mu.Unlock()
+	if scale != 0 {
+		t.Fatalf("scale_up executed %d times, want 0 (nil recorded payload is still a completion)", scale)
+	}
+	resps := toolResponses(events)
+	if got := resps["scale_up"]; len(got) != 1 || got[0]["mast_replayed_effect"] != true {
+		t.Fatalf("scale_up response = %v, want the explicit nil-payload replay marker", got)
+	}
+}
+
+// TestPostAckIntentStillRefused: the watermark covers only intents
+// persisted at or before it — an intent recorded AFTER the ack must
+// still trip ambiguous-effect mode.
+func TestPostAckIntentStillRefused(t *testing.T) {
+	h := newHarness(t, roundScript(callResponse("scale_up", map[string]any{"delta": 1})))
+	// Ack first (creates the session's ops row with the watermark),
+	// then the intent lands after it.
+	ctx := context.Background()
+	if _, err := h.svc.Create(ctx, &adksession.CreateRequest{
+		AppName: testApp, UserID: testUser, SessionID: "postack",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := h.store.AckEffects(ctx, testUser, "postack", "premature ack"); err != nil {
+		t.Fatalf("AckEffects: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	resp, err := h.svc.Get(ctx, &adksession.GetRequest{AppName: testApp, UserID: testUser, SessionID: "postack"})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	ev := adksession.NewEvent(ctx, "later-inv")
+	ev.Author = "effects_agent"
+	part := genai.NewPartFromFunctionCall("scale_up", map[string]any{"delta": 2})
+	part.FunctionCall.ID = "call-after-ack"
+	ev.Content = &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{part}}
+	if err := h.svc.AppendEvent(ctx, resp.Session, ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	h.run(t, "postack", "continue")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.scale != 0 {
+		t.Fatalf("scale_up executed %d times, want 0 (post-ack intents are NOT covered by the watermark)", h.scale)
+	}
+}
+
+func TestScanHistorySkipsEmptyIDsAndDelegations(t *testing.T) {
+	pred := NewPredicate(nil)
+	mk := func(inv string, parts ...*genai.Part) *adksession.Event {
+		ev := adksession.NewEvent(context.Background(), inv)
+		ev.Content = &genai.Content{Role: genai.RoleModel, Parts: parts}
+		return ev
+	}
+	call := func(name, id string) *genai.Part {
+		p := genai.NewPartFromFunctionCall(name, map[string]any{})
+		p.FunctionCall.ID = id
+		return p
+	}
+	events := eventList{
+		mk("inv1", call("scale_up", "")),            // empty ID: unkeyable, skipped
+		mk("inv1", call("triage_bot", "d1")),        // delegation (sub-agent name): skipped
+		mk("inv1", call("transfer_to_agent", "t1")), // control: skipped
+		mk("inv1", call("exit_loop", "t2")),         // control: skipped
+		mk("inv1", call("scale_up", "c1")),          // genuinely dangling
+	}
+	st := scanHistory(events, pred, map[string]bool{"triage_bot": true})
+	if len(st.dangling) != 1 || st.dangling[0].CallID != "c1" {
+		t.Fatalf("scanHistory dangling = %+v, want exactly c1", st.dangling)
+	}
+}
+
+// TestCoordinatorDelegationDoesNotTripMode reproduces adversarial
+// finding 2 on the REAL default-composition wire shape: ADK's
+// coordinator emits task delegations as FunctionCalls named after the
+// sub-agent and deliberately leaves them unresolved across user turns
+// when the specialist replies without finishing (a clarifying
+// question — the most ordinary thing a HITL workload does). That
+// dangling delegation must not put the next turn in ambiguous-effect
+// mode; without the SubAgentNames exclusion this test fails with the
+// mutating call refused.
+func TestCoordinatorDelegationDoesNotTripMode(t *testing.T) {
+	svc := sqliteService(t)
+	store := transcript.NewStore(svc, testApp)
+
+	var mu sync.Mutex
+	scale := 0
+	scaleTool, err := functiontool.New(functiontool.Config{
+		Name:        "scale_up",
+		Description: "mutating test tool",
+	}, func(ctx adkagent.Context, args scaleArgs) (map[string]any, error) {
+		mu.Lock()
+		scale++
+		mu.Unlock()
+		return map[string]any{"scaled": args.Delta}, nil
+	})
+	if err != nil {
+		t.Fatalf("functiontool.New: %v", err)
+	}
+
+	// Specialist: first invocation asks a question (plain text, no
+	// finish_task — the delegation stays unresolved); the turn-2
+	// re-dispatch finishes.
+	specialistRound := 0
+	specialistModel := &scriptedModel{name: "specialist", script: func(*model.LLMRequest) *model.LLMResponse {
+		specialistRound++
+		if specialistRound == 1 {
+			return textResponse("which namespace did you mean?")
+		}
+		return callResponse("finish_task", map[string]any{"result": "triage done"})
+	}}
+	specialist, err := mastagent.NewTaskAgent(mastagent.TaskAgentConfig{
+		Name:        "triage_bot",
+		Description: "test specialist",
+		Instruction: "triage",
+		Model:       specialistModel,
+	})
+	if err != nil {
+		t.Fatalf("NewTaskAgent: %v", err)
+	}
+
+	coordRound := 0
+	coordModel := &scriptedModel{name: "coord", script: func(*model.LLMRequest) *model.LLMResponse {
+		coordRound++
+		switch coordRound {
+		case 1:
+			return callResponse("triage_bot", map[string]any{"request": "triage the incident"})
+		case 2:
+			return callResponse("scale_up", map[string]any{"delta": 1})
+		default:
+			return textResponse("done")
+		}
+	}}
+	root, err := mastagent.NewCoordinator(mastagent.CoordinatorConfig{
+		Name:        "coord",
+		Description: "test coordinator",
+		Instruction: "coordinate",
+		Model:       coordModel,
+		SubAgents:   []adkagent.Agent{specialist},
+		Tools:       []tool.Tool{scaleTool},
+	})
+	if err != nil {
+		t.Fatalf("NewCoordinator: %v", err)
+	}
+
+	p, err := New(Config{
+		Predicate:     NewPredicate(nil),
+		SubAgentNames: SubAgentNames(root),
+		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
+			return store.EffectsAckedAt(ctx, "", sid)
+		},
+	})
+	if err != nil {
+		t.Fatalf("effects.New: %v", err)
+	}
+	r, err := runner.New(runner.Config{
+		AppName:           testApp,
+		Agent:             root,
+		SessionService:    svc,
+		AutoCreateSession: true,
+		PluginConfig:      runner.PluginConfig{Plugins: []*plugin.Plugin{p}},
+	})
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+
+	runOne := func(text string) {
+		t.Helper()
+		msg := genai.NewContentFromText(text, genai.RoleUser)
+		for _, err := range r.Run(context.Background(), testUser, "coord-session", msg, adkagent.RunConfig{}) {
+			if err != nil {
+				t.Fatalf("runner.Run: %v", err)
+			}
+		}
+	}
+	runOne("triage this incident")   // delegation dangles (specialist asked a question)
+	runOne("I meant namespace prod") // must NOT be in ambiguous-effect mode
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scale != 1 {
+		t.Fatalf("scale_up executed %d times, want 1 — a dangling task delegation wedged the session in ambiguous-effect mode", scale)
+	}
+}

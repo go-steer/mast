@@ -25,12 +25,13 @@
 //
 // The guard ships as an ADK runner plugin so it sits at the one seam
 // every tool execution crosses (Flow.callTool wraps MCP, builtin, and
-// federation tools alike) and cannot be missed by a new construction
-// path — the same lesson as the SQLite write hardening (#53). Both
-// runner construction sites (the daemon and the library root) attach
-// the same plugin; the permission gate's runtime wiring will share this
-// layer, with the outbox check running first (a replayed result
-// performs no new effect and needs no fresh approval).
+// federation tools alike). All history reads happen once per turn in
+// BeforeRun, off the invocation context's session — the per-call tool
+// context structurally has no session access (its Session() is
+// unconditionally nil in ADK v2.1.0), so the per-call checks consult
+// the turn-start snapshot instead. The permission gate's runtime
+// wiring will share this layer, with the outbox check running first (a
+// replayed result performs no new effect and needs no fresh approval).
 package effects
 
 import (
@@ -68,24 +69,30 @@ const (
 	ClassMutating
 
 	// ClassSpawning tools start sub-runs whose inner tool calls this
-	// process cannot individually guard (the planner dispatch runner is
-	// a separate in-memory-session runner; run_shape_* likewise when
-	// implemented). They carry no records of their own but are refused
-	// in ambiguous-effect mode — fail-closed: an interrupted session
-	// must not smuggle mutations through a sub-run while its prior
-	// effects are unaccounted for.
+	// process cannot individually guard from the spawn site (the
+	// planner dispatch runner is a separate in-memory-session runner;
+	// run_shape_* likewise when implemented). They carry no records of
+	// their own but are refused in ambiguous-effect mode when they
+	// arrive through the tool-execution seam. Note the containment
+	// boundary: ADK's coordinator re-dispatch of an already-recorded
+	// task delegation bypasses that seam — there, containment holds at
+	// the inner-call level instead (the sub-run inherits the invocation
+	// ID, so its own mutating tool calls are refused individually).
 	ClassSpawning
 )
 
 // controlCalls are engine control-flow function calls, never tool
-// effects: dangling ones are the normal wire shape of a paused session
-// (a pending RequestInput IS an unpaired FunctionCall) and must not
-// trip ambiguous-effect mode.
+// effects: dangling ones are the normal wire shape of a paused or
+// mid-flow session (a pending RequestInput IS an unpaired
+// FunctionCall) and must not trip ambiguous-effect mode.
 var controlCalls = map[string]bool{
 	"adk_request_input":               true,
 	"adk_request_credential":          true,
 	toolconfirmation.FunctionCallName: true, // "adk_request_confirmation"
 	"finish_task":                     true, // Task-mode completion signal
+	"transfer_to_agent":               true, // coordinator routing
+	"task_completed":                  true, // sequential-agent plumbing
+	"exit_loop":                       true, // loop-agent termination
 }
 
 // builtinClasses classifies mast's own registered tools. Names are
@@ -107,8 +114,6 @@ type Predicate func(toolName string) Class
 // read-only, mast builtins use their registered class, per-tool
 // overrides from the workload bundle apply next, and everything else —
 // MCP tools included — defaults to mutating (default-deny-unknown).
-// Overrides are audit-logged at construction by the caller (pkg/effects
-// has no logger of its own at predicate-build time).
 func NewPredicate(overrides map[string]bool) Predicate {
 	return func(name string) Class {
 		if controlCalls[name] {
@@ -144,6 +149,15 @@ type Config struct {
 	// Predicate classifies tools; required.
 	Predicate Predicate
 
+	// SubAgentNames is the set of agent names composed under the
+	// runner's root (see SubAgentNames). ADK's coordinator emits task
+	// delegations as FunctionCalls NAMED AFTER THE SUB-AGENT, and
+	// deliberately leaves them unresolved across user turns (a
+	// specialist asking a clarifying question, a HITL pause inside a
+	// node) — engine control flow, not effects. Without this exclusion
+	// the scan wedges mast's default composition on its happy path.
+	SubAgentNames map[string]bool
+
 	// AckedAt returns the operator's effects-acknowledgement watermark
 	// for a session, if one exists (pkg/transcript reads it from the
 	// companion ops row). Dangling intents at or before the watermark
@@ -155,6 +169,26 @@ type Config struct {
 	Logger *slog.Logger
 }
 
+// SubAgentNames walks the agent tree from root and returns every
+// composed agent's name — the delegation-call exclusion set for
+// Config.SubAgentNames. The root's own name is included (harmless: a
+// FunctionCall can never be named after the agent issuing it).
+func SubAgentNames(root agent.Agent) map[string]bool {
+	out := map[string]bool{}
+	var walk func(a agent.Agent)
+	walk = func(a agent.Agent) {
+		if a == nil || out[a.Name()] {
+			return
+		}
+		out[a.Name()] = true
+		for _, sub := range a.SubAgents() {
+			walk(sub)
+		}
+	}
+	walk(root)
+	return out
+}
+
 // New builds the outbox as an ADK runner plugin. Attach it via
 // runner.Config.PluginConfig at every runner construction site.
 func New(cfg Config) (*plugin.Plugin, error) {
@@ -163,7 +197,7 @@ func New(cfg Config) (*plugin.Plugin, error) {
 	}
 	o := &outbox{
 		cfg:   cfg,
-		modes: make(map[string][]DanglingIntent),
+		turns: make(map[string]*turnState),
 	}
 	if o.cfg.Logger == nil {
 		o.cfg.Logger = slog.Default()
@@ -176,83 +210,105 @@ func New(cfg Config) (*plugin.Plugin, error) {
 	})
 }
 
-// outbox holds the per-invocation ambiguous-effect mode state. Keyed by
-// invocation ID: resume turns reuse the paused run's invocation ID, and
-// the daemon serializes turns per session (#62), so one entry maps to
-// one live turn. Entries are removed by afterRun (deferred by the
-// runner on every path).
+// turnState is the per-invocation snapshot taken at turn start.
+// Keyed by invocation ID: resume turns reuse the paused run's
+// invocation ID, the daemon serializes turns per session (#62), and
+// ADK generates collision-free invocation IDs. Entries are removed by
+// afterRun (deferred by the runner on every path).
+type turnState struct {
+	// dangling mutating/spawning intents from prior attempts,
+	// unacknowledged — non-empty means ambiguous-effect mode.
+	dangling []DanglingIntent
+	// completions maps function-call ID → recorded FunctionResponse
+	// payload for mutating-class calls already completed in the log at
+	// turn start. Consulted for exact-key replay; nil payloads are
+	// recorded too (hasCompletion distinguishes "recorded nil" from
+	// "absent" so a nil recorded result can neither re-execute nor
+	// bypass the refusal).
+	completions map[string]map[string]any
+}
+
 type outbox struct {
 	cfg   Config
 	mu    sync.Mutex
-	modes map[string][]DanglingIntent
+	turns map[string]*turnState
 }
 
-// beforeRun scans the session history for dangling mutating intents
-// from prior attempts. At this point the current turn has made no
-// calls, so every unpaired non-control FunctionCall in the log is a
-// prior attempt's. Never early-exits the run: non-mutating work in the
-// turn proceeds even in ambiguous-effect mode.
+// beforeRun snapshots the session history once per turn: dangling
+// mutating intents from prior attempts (at this point the current turn
+// has made no calls, so every unpaired non-control, non-delegation
+// FunctionCall in the log is a prior attempt's) and recorded
+// completions for exact-key replay. Never early-exits the run:
+// non-mutating work proceeds even in ambiguous-effect mode.
 func (o *outbox) beforeRun(ictx agent.InvocationContext) (*genai.Content, error) {
 	sess := ictx.Session()
 	if sess == nil {
 		return nil, nil
 	}
-	dangling := scanDangling(sess.Events(), o.cfg.Predicate)
-	if len(dangling) == 0 {
-		return nil, nil
-	}
-	if o.cfg.AckedAt != nil {
+	st := scanHistory(sess.Events(), o.cfg.Predicate, o.cfg.SubAgentNames)
+	if len(st.dangling) > 0 && o.cfg.AckedAt != nil {
 		if ack, ok := o.cfg.AckedAt(ictx, sess.ID()); ok {
-			kept := dangling[:0]
-			for _, d := range dangling {
+			kept := st.dangling[:0]
+			for _, d := range st.dangling {
 				if d.Timestamp.After(ack) {
 					kept = append(kept, d)
 				}
 			}
-			dangling = kept
+			st.dangling = kept
 		}
 	}
-	if len(dangling) == 0 {
+	if len(st.dangling) == 0 && len(st.completions) == 0 {
 		return nil, nil
 	}
 	o.mu.Lock()
-	o.modes[ictx.InvocationID()] = dangling
+	o.turns[ictx.InvocationID()] = st
 	o.mu.Unlock()
-	o.cfg.Logger.Warn("ambiguous prior effect: session has unresolved mutating tool calls from an interrupted turn; refusing mutating calls this turn",
-		"session", sess.ID(), "invocation", ictx.InvocationID(),
-		"dangling", describe(dangling))
+	if len(st.dangling) > 0 {
+		o.cfg.Logger.Warn("ambiguous prior effect: session has unresolved mutating tool calls from an interrupted turn; refusing mutating calls this turn",
+			"session", sess.ID(), "invocation", ictx.InvocationID(),
+			"dangling", describe(st.dangling))
+	}
 	return nil, nil
 }
 
-// beforeTool is the per-call check: replay an already-completed call's
-// recorded result, refuse mutating/spawning calls in ambiguous-effect
-// mode, and let everything else through. Returning a non-nil map makes
-// the runner skip the tool and use the map as its result.
+// beforeTool is the per-call check, working entirely from the
+// turn-start snapshot (the tool context has no session access):
+// replay an already-completed call's recorded result, refuse
+// mutating/spawning calls in ambiguous-effect mode, and let everything
+// else through. Returning a non-nil map makes the runner skip the tool
+// and use the map as its result.
 func (o *outbox) beforeTool(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 	class := o.cfg.Predicate(t.Name())
 	if class == ClassReadOnly {
 		return nil, nil
 	}
 
+	o.mu.Lock()
+	st := o.turns[ctx.InvocationID()]
+	o.mu.Unlock()
+	if st == nil {
+		return nil, nil
+	}
+
 	// Call-level exact-key replay: a durable completion for this exact
 	// function-call ID means the effect already happened — return the
-	// recorded result instead of re-executing. Belt-and-suspenders: no
-	// known ADK path re-fires a recorded call through callTool, but the
-	// check is cheap and guards any future path that does.
+	// recorded result instead of re-executing. A recorded-but-nil
+	// payload substitutes an explicit marker: returning nil here would
+	// mean "proceed and execute", the exact double-mutation the record
+	// exists to prevent.
 	if class == ClassMutating {
-		if sess := ctx.Session(); sess != nil {
-			if resp, ok := recordedCompletion(sess.Events(), ctx.FunctionCallID()); ok {
-				o.cfg.Logger.Info("replaying recorded effect instead of re-executing",
-					"session", sess.ID(), "tool", t.Name(), "function_call_id", ctx.FunctionCallID())
-				return resp, nil
+		if resp, ok := st.completions[ctx.FunctionCallID()]; ok {
+			if resp == nil {
+				resp = map[string]any{"mast_replayed_effect": true, "note": "effect already recorded as completed; original response was empty"}
 			}
+			o.cfg.Logger.Info("replaying recorded effect instead of re-executing",
+				"tool", t.Name(), "function_call_id", ctx.FunctionCallID(),
+				"invocation", ctx.InvocationID())
+			return resp, nil
 		}
 	}
 
-	o.mu.Lock()
-	dangling := o.modes[ctx.InvocationID()]
-	o.mu.Unlock()
-	if len(dangling) == 0 {
+	if len(st.dangling) == 0 {
 		return nil, nil
 	}
 	o.cfg.Logger.Warn("refusing tool call in ambiguous-effect mode",
@@ -262,25 +318,35 @@ func (o *outbox) beforeTool(ctx agent.Context, t tool.Tool, args map[string]any)
 		"error": "ambiguous_prior_effect",
 		"detail": "this session has mutating tool calls from an interrupted prior turn whose outcome is unknown; " +
 			"mutating and sub-run-spawning calls are refused until an operator acknowledges " +
-			"(mast sessions resume --ack-effects, or abort the session)",
-		"dangling_calls": describe(dangling),
+			"(mast sessions ack-effects, or resume --ack-effects, or abort the session). " +
+			"Do not retry this call; finish any read-only work and report the situation.",
+		"dangling_calls": describe(st.dangling),
 	}, nil
 }
 
-// afterRun drops the invocation's mode entry; the runner defers this on
+// afterRun drops the invocation's snapshot; the runner defers this on
 // every Run path.
 func (o *outbox) afterRun(ictx agent.InvocationContext) {
 	o.mu.Lock()
-	delete(o.modes, ictx.InvocationID())
+	delete(o.turns, ictx.InvocationID())
 	o.mu.Unlock()
 }
 
-// scanDangling pairs FunctionCall parts with FunctionResponse parts
-// across the whole event sequence and returns the unpaired calls that
-// classify as mutating or spawning. Long-running calls (pending by
-// design — the event marks their IDs) and control calls are excluded.
-func scanDangling(events session.Events, pred Predicate) []DanglingIntent {
+// scanHistory pairs FunctionCall parts with FunctionResponse parts
+// across the whole event sequence, producing the turn-start snapshot:
+// unpaired mutating/spawning calls (dangling intents) and recorded
+// completions for mutating calls (replay candidates). Excluded from
+// the dangling set: long-running calls (pending by design — the event
+// marks their IDs), control calls, task-delegation calls (named after
+// a composed sub-agent), and calls with an empty ID (ADK's
+// PopulateClientFunctionCallID guarantees IDs on runner-written
+// events; blank IDs only occur in hand-built logs and cannot be keyed,
+// paired, or acknowledged, so they are skipped rather than allowed to
+// dangle forever).
+func scanHistory(events session.Events, pred Predicate, subAgents map[string]bool) *turnState {
+	st := &turnState{completions: map[string]map[string]any{}}
 	open := map[string]DanglingIntent{}
+	callName := map[string]string{} // call ID → tool name, for completion classification
 	var order []string
 	for ev := range events.All() {
 		if ev == nil || ev.Content == nil {
@@ -295,12 +361,14 @@ func scanDangling(events session.Events, pred Predicate) []DanglingIntent {
 				continue
 			}
 			if fc := part.FunctionCall; fc != nil {
-				if longRunning[fc.ID] || controlCalls[fc.Name] {
+				if fc.ID == "" || longRunning[fc.ID] || controlCalls[fc.Name] || subAgents[fc.Name] {
 					continue
 				}
-				if c := pred(fc.Name); c != ClassMutating && c != ClassSpawning {
+				c := pred(fc.Name)
+				if c != ClassMutating && c != ClassSpawning {
 					continue
 				}
+				callName[fc.ID] = fc.Name
 				if _, seen := open[fc.ID]; !seen {
 					order = append(order, fc.ID)
 				}
@@ -312,40 +380,27 @@ func scanDangling(events session.Events, pred Predicate) []DanglingIntent {
 				}
 			}
 			if fr := part.FunctionResponse; fr != nil {
+				if fr.ID == "" {
+					continue
+				}
 				delete(open, fr.ID)
+				name := fr.Name
+				if name == "" {
+					name = callName[fr.ID]
+				}
+				if pred(name) == ClassMutating {
+					st.completions[fr.ID] = fr.Response
+				}
 			}
 		}
 	}
-	var out []DanglingIntent
 	for _, id := range order {
 		if d, ok := open[id]; ok {
-			out = append(out, d)
+			st.dangling = append(st.dangling, d)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.Before(out[j].Timestamp) })
-	return out
-}
-
-// recordedCompletion returns the recorded FunctionResponse payload for
-// the given function-call ID, if the log already holds one.
-func recordedCompletion(events session.Events, callID string) (map[string]any, bool) {
-	if callID == "" {
-		return nil, false
-	}
-	for ev := range events.All() {
-		if ev == nil || ev.Content == nil {
-			continue
-		}
-		for _, part := range ev.Content.Parts {
-			if part == nil || part.FunctionResponse == nil {
-				continue
-			}
-			if part.FunctionResponse.ID == callID {
-				return part.FunctionResponse.Response, true
-			}
-		}
-	}
-	return nil, false
+	sort.Slice(st.dangling, func(i, j int) bool { return st.dangling[i].Timestamp.Before(st.dangling[j].Timestamp) })
+	return st
 }
 
 // describe renders dangling intents for logs and refusal payloads.

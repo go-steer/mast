@@ -353,7 +353,8 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 		}
 	}
 	outboxPlugin, err := effects.New(effects.Config{
-		Predicate: effects.NewPredicate(effects.Overrides(cfg.Logger, policies)),
+		Predicate:     effects.NewPredicate(effects.Overrides(cfg.Logger, policies)),
+		SubAgentNames: effects.SubAgentNames(root),
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return ackStore.EffectsAckedAt(ctx, "", sid)
 		},

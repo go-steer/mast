@@ -102,11 +102,13 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// a class session interrupted mid-mutation must get the same
 	// fail-closed treatment on its next invocation (#53's every-path
 	// lesson). No workload bundle here, so no per-tool overrides; the
-	// ack surface is `mast sessions resume --ack-effects` against a
-	// serving daemon, or abort.
+	// ack surface for a wedged task session is offline —
+	// `mast sessions ack-effects <id> --session-db=<this DB>` — since
+	// no daemon serves task-class DBs.
 	oneShotStore := transcript.NewStore(sessionSvc, appName)
 	outboxPlugin, err := effects.New(effects.Config{
-		Predicate: effects.NewPredicate(nil),
+		Predicate:     effects.NewPredicate(nil),
+		SubAgentNames: effects.SubAgentNames(root),
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return oneShotStore.EffectsAckedAt(ctx, "", sid)
 		},

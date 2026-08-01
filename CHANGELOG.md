@@ -5,24 +5,36 @@
 - **Recorded-effect outbox (`pkg/effects`) — the v0.2 durable-execution
   guard for mutating tools under at-least-once re-execution**
   (docs/durable-execution-design.md, resolves open question #8; closes
-  #69; unblocks #41). Every runner construction path (serve, one-shot,
-  library) now attaches an ADK runner plugin that: refuses mutating and
-  sub-run-spawning tool calls with a structured
+  #69; unblocks #41). The three runner construction paths mast owns
+  (serve, one-shot, library) attach an ADK runner plugin that: refuses
+  mutating and sub-run-spawning tool calls with a structured
   `ambiguous_prior_effect` error while the session carries a dangling
   mutating tool call from an interrupted turn (read-only work
   proceeds); replays a call's recorded completion instead of
   re-executing when the log already holds one for the exact
-  function-call ID; and treats unknown tools — MCP tools included — as
-  mutating (ADK drops MCP `readOnlyHint` annotations before mast can
-  read them). New surfaces: `tool_catalog.tools[].mutating` per-tool
-  overrides in the workload bundle (audit-logged at startup),
-  `mast sessions resume --ack-effects` + `mast.AckEffects` to record
-  the operator's acknowledgement watermark (companion ops row; not a
-  transcript state), and `ack_effects` on the `/resume` payload. HITL
-  interrupts, credential/confirmation requests, and long-running calls
-  never read as dangling effects. The suite pins the substrate
-  property the design rests on: a tool's own FunctionCall event is
-  durable before the tool runs.
+  function-call ID (a nil recorded payload replays an explicit marker
+  result rather than re-executing); and treats unknown tools — MCP
+  tools included — as mutating (ADK drops MCP `readOnlyHint`
+  annotations before mast can read them). All history reads happen
+  once per turn at turn start; task delegations (sub-agent-named
+  calls the coordinator deliberately leaves unresolved across HITL
+  turns), engine control calls, long-running calls, and empty-ID
+  calls never read as dangling effects — the pre-merge adversarial
+  gate caught both an unreachable replay branch and a false-positive
+  wedge on the default coordinator composition in the first
+  implementation, and the suite now pins both on the real wire
+  shapes. New surfaces: `tool_catalog.tools[].mutating` per-tool
+  overrides in the workload bundle (audit-logged at startup);
+  `mast sessions ack-effects <id>` (daemon `/ack-effects`, serialized
+  against in-flight turns; `--session-db` direct mode for DBs no
+  daemon serves — the interrupted turn usually leaves NO pending
+  interrupt, so resume alone cannot reach it);
+  `mast sessions resume --ack-effects` + `ack_effects` on `/resume`
+  for the paused case; and `mast.AckEffects` for library embeds. The
+  watermark covers only intents persisted at or before it and is not
+  a transcript state. The suite also pins the substrate property the
+  design rests on: a tool's own FunctionCall event is durable before
+  the tool runs.
 
 ## v0.1.2 (2026-07-31)
 

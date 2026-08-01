@@ -19,6 +19,7 @@
 //	mast sessions show   <session-id> --session-db=...
 //	mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--ack-effects] [--addr=...]
 //	mast sessions abort  <session-id> [--reason=...] [--addr=...]
+//	mast sessions ack-effects <session-id> [--reason=...] [--addr=... | --session-db=...]
 //
 // list/show read the SQLite session DB directly (works with or without
 // a running daemon). resume/abort go through a running daemon's
@@ -78,6 +79,10 @@ commands:
   show   <session-id>     session detail incl. pending interrupts
   resume <session-id>     resume a paused session via a running daemon
   abort  <session-id>     mark a session aborted via a running daemon
+  ack-effects <session-id> acknowledge ambiguous prior effects (lifts the
+                          recorded-effect outbox's refusal); via a running
+                          daemon by default, or --session-db when none serves
+                          this DB (one-shot sessions, stopped daemon)
 
 run 'mast sessions <command> -h' for the command's flags`
 
@@ -108,6 +113,11 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 	case "abort":
 		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
 		fs.StringVar(&cmd.reason, "reason", "operator abort", "reason recorded in the abort marker")
+	case "ack-effects":
+		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
+		fs.StringVar(&cmd.db, "session-db", "", "write the acknowledgement directly to this SQLite session DB instead of going through a daemon — ONLY when no daemon is serving this DB (the daemon path serializes against in-flight turns; the direct path cannot)")
+		fs.StringVar(&cmd.app, "app", appName, "app name the sessions were stored under (direct --session-db path only)")
+		fs.StringVar(&cmd.reason, "reason", "operator ack", "note recorded in the acknowledgement marker")
 	default:
 		return nil, fmt.Errorf("unknown sessions command %q\n%s", cmd.verb, sessionsUsage)
 	}
@@ -159,6 +169,10 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 		if cmd.sessionID == "" {
 			return nil, errors.New("mast sessions abort: <session-id> is required")
 		}
+	case "ack-effects":
+		if cmd.sessionID == "" {
+			return nil, errors.New("mast sessions ack-effects: <session-id> is required")
+		}
 	}
 	return cmd, nil
 }
@@ -200,6 +214,26 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 		})
 	case "abort":
 		return c.post(ctx, out, "/abort", inject.AbortRequest{
+			SessionID: c.sessionID,
+			Reason:    c.reason,
+		})
+	case "ack-effects":
+		if c.db != "" {
+			// Direct path for DBs no daemon is serving (one-shot task
+			// sessions, a stopped daemon). Against a LIVE daemon's DB,
+			// use the default daemon path instead — it serializes the
+			// watermark against in-flight turns; this one cannot.
+			store, err := transcript.Open(c.db, c.app)
+			if err != nil {
+				return err
+			}
+			if err := store.AckEffects(ctx, c.user, c.sessionID, c.reason); err != nil {
+				return err
+			}
+			fmt.Fprintln(out, "acknowledged")
+			return nil
+		}
+		return c.post(ctx, out, "/ack-effects", inject.AckEffectsRequest{
 			SessionID: c.sessionID,
 			Reason:    c.reason,
 		})
