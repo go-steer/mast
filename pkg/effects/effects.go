@@ -361,6 +361,15 @@ func scanHistory(events session.Events, pred Predicate, subAgents map[string]boo
 				continue
 			}
 			if fc := part.FunctionCall; fc != nil {
+				if fc.Name == toolconfirmation.FunctionCallName {
+					// Belt-and-braces for the placeholder guard below:
+					// the confirmation request names the original call
+					// it gates; that call's pre-pause placeholder
+					// response is NOT a completion.
+					if id := confirmationGatedCallID(fc.Args); id != "" {
+						delete(st.completions, id)
+					}
+				}
 				if fc.ID == "" || longRunning[fc.ID] || controlCalls[fc.Name] || subAgents[fc.Name] {
 					continue
 				}
@@ -384,6 +393,17 @@ func scanHistory(events session.Events, pred Predicate, subAgents map[string]boo
 					continue
 				}
 				delete(open, fr.ID)
+				// A confirmation-gated call persists a PLACEHOLDER
+				// response before the flow pauses for the operator
+				// ("awaiting confirmation" — ADK yields it durably by
+				// design). It closes the pair (the call is not
+				// dangling: it's a control-flow pause) but it is NOT a
+				// completion — replaying it would silently swallow the
+				// operator-approved re-execution, which re-fires under
+				// the ORIGINAL function-call ID.
+				if _, pendingConfirmation := ev.Actions.RequestedToolConfirmations[fr.ID]; pendingConfirmation {
+					continue
+				}
 				name := fr.Name
 				if name == "" {
 					name = callName[fr.ID]
@@ -401,6 +421,28 @@ func scanHistory(events session.Events, pred Predicate, subAgents map[string]boo
 	}
 	sort.Slice(st.dangling, func(i, j int) bool { return st.dangling[i].Timestamp.Before(st.dangling[j].Timestamp) })
 	return st
+}
+
+// confirmationGatedCallID extracts the original function-call ID an
+// adk_request_confirmation call gates, from its args. In-memory the
+// value is a *genai.FunctionCall; after the DB JSON round-trip it is a
+// map with an "id" key. Empty string when neither shape matches.
+func confirmationGatedCallID(args map[string]any) string {
+	orig, ok := args["originalFunctionCall"]
+	if !ok {
+		return ""
+	}
+	switch v := orig.(type) {
+	case *genai.FunctionCall:
+		if v != nil {
+			return v.ID
+		}
+	case map[string]any:
+		if id, ok := v["id"].(string); ok {
+			return id
+		}
+	}
+	return ""
 }
 
 // describe renders dangling intents for logs and refusal payloads.

@@ -467,15 +467,31 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// writer). Serialized against in-flight turns via the turn lock so
 	// the watermark cannot cover intents still being persisted.
 	ackHandler := func(reqCtx context.Context, req inject.AckEffectsRequest) error {
+		// Same drain contract as inject/resume (#58/#65): refuse new
+		// work while shutting down, and map a drain-cancelled lock wait
+		// to 503 rather than a bare 500.
+		if tracker.isDraining() {
+			return inject.ErrUnavailable
+		}
 		if transcript.IsReservedSessionID(req.SessionID) {
 			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a session: %w", req.SessionID, inject.ErrBadPayload)
 		}
 		unlock, err := turnLocks.lock(reqCtx, req.SessionID)
 		if err != nil {
+			if tracker.isDraining() {
+				return fmt.Errorf("%w (queued ack cancelled: %v)", inject.ErrUnavailable, err)
+			}
 			return err
 		}
 		defer unlock()
-		return store.AckEffects(reqCtx, "", req.SessionID, req.Reason)
+		if err := store.AckEffects(reqCtx, "", req.SessionID, req.Reason); err != nil {
+			// An operator typo is a client error, not a daemon fault.
+			if errors.Is(err, transcript.ErrNotFound) {
+				return fmt.Errorf("%v: %w", err, inject.ErrBadPayload)
+			}
+			return err
+		}
+		return nil
 	}
 
 	srv, err := inject.New(inject.Config{
