@@ -204,6 +204,11 @@ func run() {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
+		// Exit 3 = drain expired with interrupted survivors (issue
+		// #42's contract); everything else is exit 1.
+		if errors.Is(err, errDrainExpired) {
+			os.Exit(3)
+		}
 		os.Exit(1)
 	}
 }
@@ -389,7 +394,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 						defer cancel()
 					}
 					msg := genai.NewContentFromText(message, genai.RoleUser)
-					err := runTurn(turnCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, sid, msg, "attach:inject")
+					err := runTurn(turnCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sid, msg, "attach:inject")
 					// Token split is unknown at this layer (the meter
 					// folds totals only); cost rides the usage snapshot.
 					return attachadapter.TurnResult{}, err
@@ -409,6 +414,10 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		defer func() { _ = att.srv.Close() }()
 	}
 
+	// Drain bound, needed by the stop handler's response before the
+	// shutdown goroutine exists.
+	drain := drainBound(bundle)
+
 	handler := func(reqCtx context.Context, p envelope.InjectPayload) error {
 		// Drain gate (#58): a request that made it past accept before
 		// the listener closed must not start a fresh turn mid-drain.
@@ -419,19 +428,21 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			return err
 		}
 		att.ensure(sessionIDFor(p))
-		return dispatch(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, p)
+		return dispatch(reqCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, p)
 	}
-	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
-		if tracker.isDraining() {
-			return inject.ErrUnavailable
-		}
+	// resumeByInterrupt is the shared inner resume path (operator
+	// interrupt keying, token keying, and the timed-pause scheduler all
+	// land here).
+	resumeByInterrupt := func(reqCtx context.Context, req inject.ResumeRequest) error {
 		// Companion ops rows are marker storage, not sessions (#56):
 		// resuming one would drive a runner turn into the marker row.
 		if transcript.IsReservedSessionID(req.SessionID) {
 			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a resumable session: %w", req.SessionID, inject.ErrBadPayload)
 		}
+		// Fast-path refusal for a clearer message; the runTurnPre
+		// chokepoint is the authoritative check (under the turn lock).
 		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
-			return fmt.Errorf("session %q is aborted (%s); refusing resume", req.SessionID, d.AbortReason)
+			return fmt.Errorf("session %q is aborted (%s); refusing resume: %w", req.SessionID, d.AbortReason, inject.ErrConflict)
 		}
 		// The ack watermark is written under the session's turn lock
 		// (runTurn's preTurn hook), AFTER any in-flight turn on the
@@ -452,13 +463,80 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			}
 		}
 		att.ensure(req.SessionID)
-		return resume(reqCtx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req, preTurn)
+		return resume(reqCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req, preTurn)
+	}
+	// resumeByToken resolves a resume token to its pause and resumes it
+	// (v0.2 pause/abort design, "Resume tokens"): gate pause → consume
+	// IS the resume (no turn runs — nothing was parked); interrupt
+	// pause → the normal resume path, with consumption keyed on the
+	// durable append of the resume FunctionResponse.
+	resumeByToken := func(reqCtx context.Context, req inject.ResumeRequest) error {
+		rec, err := store.FindToken(reqCtx, req.Token)
+		if err != nil {
+			return fmt.Errorf("%v: %w", err, inject.ErrBadPayload)
+		}
+		if !rec.ConsumedAt.IsZero() {
+			// already_resumed is a structured no-op, not an error: the
+			// resume the token asked for has happened.
+			logger.Info("resume token already consumed; no-op",
+				"session", rec.SessionID, "consumed_at", rec.ConsumedAt.Format(time.RFC3339), "consumed_by", rec.ConsumedBy)
+			return nil
+		}
+		if rec.Expired(time.Now().UTC()) {
+			return fmt.Errorf("resume token expired %s (the pause remains; `mast sessions extend-token` is the recovery): %w",
+				rec.ExpiresAt.Format(time.RFC3339), inject.ErrConflict)
+		}
+		if rec.Plane == transcript.PlaneGate {
+			_, err := store.ConsumeToken(reqCtx, req.Token, "operator resume --token")
+			if errors.Is(err, transcript.ErrAlreadyResumed) {
+				return nil
+			}
+			return err
+		}
+		response := req.Response
+		if response == nil {
+			response = map[string]any{"resumed_by": "operator"}
+		}
+		inner := inject.ResumeRequest{
+			SessionID:   rec.SessionID,
+			InterruptID: rec.InterruptID,
+			Response:    response,
+			AckEffects:  req.AckEffects,
+		}
+		rerr := resumeByInterrupt(reqCtx, inner)
+		// Consumption keys on the durable append, not turn success: use
+		// a fresh short-lived context so a request-scope cancellation
+		// cannot strand an answered interrupt with a live token.
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), storeWriteTimeout)
+		defer cancel()
+		consumeIfAnswered(cctx, store, logger, rec, "operator resume --token")
+		return rerr
+	}
+	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
+		if tracker.isDraining() {
+			return inject.ErrUnavailable
+		}
+		if req.Token != "" {
+			return resumeByToken(reqCtx, req)
+		}
+		return resumeByInterrupt(reqCtx, req)
 	}
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
 		if transcript.IsReservedSessionID(req.SessionID) {
 			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not an abortable session: %w", req.SessionID, inject.ErrBadPayload)
 		}
-		return store.Abort(reqCtx, "", req.SessionID, req.Reason)
+		// Terminal abort (v0.2): marker first — the durable truth —
+		// then sweep the in-flight turn's cancel handle. Deliberately
+		// no turn lock here: abort must not queue behind the very turn
+		// it cancels (the register-before-check handshake in runTurnPre
+		// closes the ordering window instead).
+		if err := store.Abort(reqCtx, "", req.SessionID, req.Reason); err != nil {
+			return err
+		}
+		if tracker.cancelSession(req.SessionID) {
+			logger.Info("abort cancelled in-flight turn", "session", req.SessionID)
+		}
+		return nil
 	}
 	// Standalone ack surface: the outbox's primary scenario — a process
 	// killed mid-mutating-tool — leaves a dangling intent and NO
@@ -494,15 +572,139 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		return nil
 	}
 
+	// Timed-pause scheduler (v0.2 pause/abort design): fires through
+	// the same doors an operator would use — no privileged side path.
+	var sched *pauseScheduler
+	sched = newPauseScheduler(store, logger, func(fireCtx context.Context, rec *transcript.PauseRecord) error {
+		if tracker.isDraining() {
+			return errors.New("daemon draining")
+		}
+		if rec.Plane == transcript.PlaneGate {
+			_, err := store.ConsumeToken(fireCtx, rec.Token, "timer")
+			if errors.Is(err, transcript.ErrAlreadyResumed) {
+				return nil // an operator resumed earlier and won benignly
+			}
+			return err
+		}
+		req := inject.ResumeRequest{
+			SessionID:   rec.SessionID,
+			InterruptID: rec.InterruptID,
+			Response:    map[string]any{"resumed_by": "timer", "resume_at": rec.ResumeAt.Format(time.RFC3339)},
+		}
+		rerr := resumeByInterrupt(fireCtx, req)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(fireCtx), storeWriteTimeout)
+		defer cancel()
+		consumeIfAnswered(cctx, store, logger, rec, "timer")
+		return rerr
+	})
+	go sched.run(turnCtx)
+	go func() {
+		// Boot scan: seeds timers minted before this process started —
+		// including ones that expired while the daemon was down.
+		if err := sched.seed(turnCtx); err != nil {
+			logger.Error("timed-pause boot scan failed; pre-existing timers will not fire until restart", "error", err.Error())
+		}
+	}()
+
+	pauseHandler := func(reqCtx context.Context, req inject.PauseRequest) (inject.PauseResult, error) {
+		// No drain gate, like abort: a gate pause is a marker write,
+		// and pausing during a drain is a legitimate operator move.
+		if transcript.IsReservedSessionID(req.SessionID) {
+			return inject.PauseResult{}, fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a session: %w", req.SessionID, inject.ErrBadPayload)
+		}
+		spec := transcript.PauseSpec{
+			Reason:   transcript.Reason(req.Reason),
+			Message:  req.Message,
+			Metadata: req.Metadata,
+		}
+		if req.ResumeAt != "" {
+			at, err := time.Parse(time.RFC3339, req.ResumeAt)
+			if err != nil {
+				return inject.PauseResult{}, fmt.Errorf("resume_at %q is not RFC3339: %w", req.ResumeAt, inject.ErrBadPayload)
+			}
+			spec.ResumeAt = at.UTC()
+		}
+		if req.TTL != "" {
+			ttl, err := time.ParseDuration(req.TTL)
+			if err != nil {
+				return inject.PauseResult{}, fmt.Errorf("ttl %q is not a duration: %w", req.TTL, inject.ErrBadPayload)
+			}
+			spec.TokenTTL = ttl
+		}
+		h, err := store.PauseGate(reqCtx, "", req.SessionID, spec)
+		if err != nil {
+			switch {
+			case errors.Is(err, transcript.ErrAlreadyAborted):
+				return inject.PauseResult{}, fmt.Errorf("%v: %w", err, inject.ErrConflict)
+			case errors.Is(err, transcript.ErrNotFound):
+				return inject.PauseResult{}, fmt.Errorf("%v: %w", err, inject.ErrBadPayload)
+			default:
+				// Spec validation (unknown reason, over-long TTL) is an
+				// operator error too.
+				return inject.PauseResult{}, fmt.Errorf("%v: %w", err, inject.ErrBadPayload)
+			}
+		}
+		if req.Interrupt {
+			// Hard pause: marker durably landed (PauseGate returned), now
+			// sweep — the same mark-then-sweep handshake abort uses.
+			if tracker.cancelSession(req.SessionID) {
+				logger.Info("hard pause cancelled in-flight turn", "session", req.SessionID)
+			}
+		}
+		if !spec.ResumeAt.IsZero() {
+			sched.push(h.Token, spec.ResumeAt)
+		}
+		return inject.PauseResult{
+			Token:     h.Token,
+			SessionID: h.SessionID,
+			ExpiresAt: h.ExpiresAt.Format(time.RFC3339),
+		}, nil
+	}
+	extendHandler := func(reqCtx context.Context, req inject.ExtendTokenRequest) (inject.ExtendTokenResult, error) {
+		ttl, err := time.ParseDuration(req.TTL)
+		if err != nil {
+			return inject.ExtendTokenResult{}, fmt.Errorf("ttl %q is not a duration: %w", req.TTL, inject.ErrBadPayload)
+		}
+		rec, err := store.ExtendToken(reqCtx, req.Token, ttl)
+		if err != nil {
+			switch {
+			case errors.Is(err, transcript.ErrAlreadyResumed):
+				return inject.ExtendTokenResult{}, fmt.Errorf("%v: %w", err, inject.ErrConflict)
+			case errors.Is(err, transcript.ErrTokenNotFound):
+				return inject.ExtendTokenResult{}, fmt.Errorf("%v: %w", err, inject.ErrBadPayload)
+			default:
+				return inject.ExtendTokenResult{}, err
+			}
+		}
+		return inject.ExtendTokenResult{Token: rec.Token, ExpiresAt: rec.ExpiresAt.Format(time.RFC3339)}, nil
+	}
+	stopHandler := func(reqCtx context.Context, req inject.StopRequest) (inject.StopResult, error) {
+		// Planned stop (issue #42): classify, then run EXACTLY the
+		// SIGTERM drain path. Exit codes encode work-cut-short, not
+		// initiator (0 clean drain / 3 drain expired with survivors).
+		reason := "operator stop"
+		if req.Reason != "" {
+			reason += ": " + req.Reason
+		}
+		tracker.planStop(reason, req.PauseSessions)
+		logger.Info("planned stop initiated",
+			"reason", reason, "pause_sessions", req.PauseSessions, "drain_bound", drain.String())
+		stop() // cancels the signal context; the shutdown goroutine drains
+		return inject.StopResult{DrainBound: drain.String()}, nil
+	}
+
 	srv, err := inject.New(inject.Config{
-		Listen:            listen,
-		BearerToken:       bearer,
-		Handler:           handler,
-		ResumeHandler:     resumeHandler,
-		AbortHandler:      abortHandler,
-		AckEffectsHandler: ackHandler,
-		Logger:            logger,
-		Metrics:           obs.Handler(),
+		Listen:             listen,
+		BearerToken:        bearer,
+		Handler:            handler,
+		ResumeHandler:      resumeHandler,
+		AbortHandler:       abortHandler,
+		AckEffectsHandler:  ackHandler,
+		PauseHandler:       pauseHandler,
+		ExtendTokenHandler: extendHandler,
+		StopHandler:        stopHandler,
+		Logger:             logger,
+		Metrics:            obs.Handler(),
 		// Request contexts derive from the turn lifetime, so when the
 		// drain window elapses the surviving handler turns are
 		// cancelled (and unwind) rather than dying at process exit.
@@ -517,8 +719,9 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// then drain up to the bound, then cancel survivors. The attach
 	// surface deliberately stays up through the drain — operators
 	// live-tailing a finishing turn see its final events; the deferred
-	// att.srv.Close() runs after serve returns.
-	drain := drainBound(bundle)
+	// att.srv.Close() runs after serve returns. drainExpired feeds the
+	// exit-code contract (issue #42): work cut short exits 3.
+	var drainExpired bool
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
@@ -566,6 +769,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// markers; unmarked survivors are turns whose mark write failed
 		// or never ran — the log must not assert durability for them.
 		markedSurvivors, unmarkedSurvivors := tracker.survivors()
+		drainExpired = true
 		logger.Warn("drain window elapsed; sessions cut short",
 			"sessions_with_durable_marker", markedSurvivors,
 			"sessions_without_marker", unmarkedSurvivors,
@@ -595,9 +799,23 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// the drain (and its marker bookkeeping) completes in the shutdown
 	// goroutine. Returning before it finishes was #38.
 	<-shutdownDone
+	if drainExpired {
+		// Exit-code contract (issue #42): 3 = the drain window expired
+		// with interrupted survivors — work was cut short, whoever
+		// initiated the stop. Restart=on-failure supervision revives
+		// the daemon exactly when the boot pass has repair work (#41);
+		// a clean drain exits 0 and such a unit stays down.
+		logger.Warn("shutdown complete; drain expired with interrupted sessions (exit 3)")
+		return errDrainExpired
+	}
 	logger.Info("shutdown complete")
 	return nil
 }
+
+// errDrainExpired maps to exit code 3 in run(): the shutdown drain
+// window expired with turns still in flight (their sessions carry
+// interruption markers where the write landed).
+var errDrainExpired = errors.New("drain window expired with interrupted sessions")
 
 // misplacedFlag returns the first positional argument that names a
 // defined flag (leading dashes stripped, =value ignored), or "" when
@@ -840,7 +1058,7 @@ func toolPolicies(bundle *workload.Bundle) []effects.ToolPolicy {
 	return out
 }
 
-func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
+func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal inject payload: %w", err)
@@ -852,14 +1070,14 @@ func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters
 		defer cancel()
 	}
 	msg := genai.NewContentFromText(fmt.Sprintf("INJECT %s", string(body)), genai.RoleUser)
-	return runTurn(ctx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
+	return runTurn(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
 }
 
 // resume feeds an operator's approval verdict back into a paused
 // session. The runner treats a user turn carrying a FunctionResponse
 // whose ID matches a pending InterruptID as a resume (see adk/v2
 // runner buildResumeResponses).
-func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, req inject.ResumeRequest, preTurn func(context.Context) error) error {
+func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, req inject.ResumeRequest, preTurn func(context.Context) error) error {
 	// Same wallclock ceiling as the inject and attach paths — resume
 	// turns are not budget-exempt either (#47).
 	if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
@@ -867,6 +1085,11 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
 		defer cancel()
 	}
+	// The FunctionResponse name stays adk_request_input REGARDLESS of
+	// the parked call's own name: workflowagent roots (planner, graph)
+	// filter resume responses by that name before matching the ID —
+	// any other name silently forks a fresh turn instead of resuming
+	// (v0.2 pause/abort design, fact 4).
 	msg := &genai.Content{
 		Role: genai.RoleUser,
 		Parts: []*genai.Part{genai.NewPartFromFunctionResponse("adk_request_input", map[string]any{
@@ -875,11 +1098,34 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *
 	}
 	msg.Parts[0].FunctionResponse.ID = req.InterruptID
 	obs.HITLResume(workloadName)
-	return runTurnPre(ctx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID, preTurn)
+	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID, preTurn)
 }
 
-func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string) error {
-	return runTurnPre(ctx, r, logger, meters, wds, obs, tracker, turnLocks, workloadName, sessionID, msg, label, nil)
+// consumeIfAnswered consumes a plane-A pause token iff the resume
+// FunctionResponse durably landed — pinned by the design (gate finding
+// M5): consumption keys on the append, not on turn completion. A
+// resume turn that failed BEFORE the append leaves the interrupt
+// pending and the token live (retry works); one that failed after has
+// still legitimately ended the pause.
+func consumeIfAnswered(ctx context.Context, store *transcript.Store, logger *slog.Logger, rec *transcript.PauseRecord, by string) {
+	d, err := store.Get(ctx, "", rec.SessionID)
+	if err != nil {
+		return
+	}
+	for _, id := range d.PendingInterruptIDs {
+		if id == rec.InterruptID {
+			return // still pending: the resume never appended
+		}
+	}
+	if _, err := store.ConsumeToken(ctx, rec.Token, by); err != nil &&
+		!errors.Is(err, transcript.ErrAlreadyResumed) && !errors.Is(err, transcript.ErrTokenNotFound) {
+		logger.Error("failed to consume resume token after answered interrupt",
+			"session", rec.SessionID, "error", err.Error())
+	}
+}
+
+func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string) error {
+	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sessionID, msg, label, nil)
 }
 
 // runTurnPre is runTurn with an optional hook that runs under the
@@ -888,7 +1134,15 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters 
 // turn can still be persisting mutating intents the watermark would
 // silently cover; before the turn, the outbox's turn-start scan sees
 // the watermark durably.
-func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error) error {
+//
+// It is also the v0.2 pause/abort CHOKEPOINT: every turn kind — inject,
+// attach, resume, timer — passes here, so aborted sessions (terminal;
+// ADK has no engine state to delegate to) and gate-paused sessions
+// refuse here, under the turn lock. The cancel handle registers BEFORE
+// the marker check (the register-before-check half of the abort/hard-
+// pause handshake): a sweep after a marker write either finds this
+// turn registered and cancels it, or this check sees the marker first.
+func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error) error {
 	// One turn per session (#62): ADK's stale-session check makes a
 	// second concurrent runner turn on the same row fatal to one of
 	// them, so same-session turns queue here. The wait genuinely
@@ -906,6 +1160,28 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, mete
 	}
 	defer unlock()
 
+	// The cancel handle doubles as the budget-trip cancel below and the
+	// abort / hard-pause sweep target.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	tracker.registerCancel(sessionID, cancel)
+	defer tracker.unregisterCancel(sessionID)
+
+	// Chokepoint check, after registration. A read failure skips the
+	// check (fail-open): the refusals are availability guards, and an
+	// unreadable ops overlay must not wedge every session — the
+	// fail-closed safety guard is the effects outbox. ErrNotFound is
+	// the normal fresh-session case (the runner auto-creates).
+	if d, derr := store.Get(ctx, "", sessionID); derr == nil {
+		if d.State == transcript.StateAborted {
+			return fmt.Errorf("session %q is aborted (%s); session_aborted: %w", sessionID, d.AbortReason, inject.ErrConflict)
+		}
+		if d.GatePause.Active() {
+			return fmt.Errorf("session %q is gate-paused (%s: %s); session_paused — resume with the pause token: %w",
+				sessionID, d.PauseReason, d.PauseMessage, inject.ErrConflict)
+		}
+	}
+
 	if preTurn != nil {
 		if err := preTurn(ctx); err != nil {
 			return err
@@ -919,8 +1195,6 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, mete
 	// Budget enforcement point: the meter folds UsageMetadata from
 	// each streamed event; crossing a ceiling cancels the run context,
 	// aborting any in-flight model/tool work.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	meter := meters.meter(sessionID)
 
 	// Export the turn's cost delta whichever way the turn ends. The
