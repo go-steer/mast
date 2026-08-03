@@ -374,7 +374,13 @@ func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 			}
 		}
 		if !pending {
-			if _, cerr := store.ConsumeToken(ctx, rec.Token, "library ResumeByToken"); cerr != nil &&
+			// ConsumeScheduled, not ConsumeToken: this runs after the
+			// resume has durably appended, so the pause has legitimately
+			// ended (M5); the operator-facing token TTL must not veto the
+			// bookkeeping consume and strand an answered interrupt with a
+			// live-looking record — the daemon twin (consumeIfAnswered)
+			// does the same.
+			if _, cerr := store.ConsumeScheduled(ctx, rec.Token, "library ResumeByToken"); cerr != nil &&
 				!errors.Is(cerr, transcript.ErrAlreadyResumed) && !errors.Is(cerr, transcript.ErrTokenNotFound) && cfg.Logger != nil {
 				cfg.Logger.Error("mast: failed to consume resume token after answered interrupt",
 					"session", rec.SessionID, "error", cerr.Error())
