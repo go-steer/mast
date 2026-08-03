@@ -58,6 +58,7 @@ import (
 	"github.com/go-steer/mast/pkg/inject"
 	mastmcp "github.com/go-steer/mast/pkg/mcp"
 	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/taskclass"
 	"github.com/go-steer/mast/pkg/transcript"
@@ -86,6 +87,9 @@ func main() {
 	// working exactly as before — scripts/demo-spike2.sh depends on it.
 	if len(os.Args) > 1 && os.Args[1] == "sessions" {
 		os.Exit(runSessions(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "stop" {
+		os.Exit(runStop(os.Args[2:]))
 	}
 	run()
 }
@@ -258,21 +262,13 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}
 	logger.Info("model constructed", "name", llm.Name())
 
-	root, bundle, err := buildRoot(turnCtx, logger, llm, modelName, workloadArg, dispatchMode)
-	if err != nil {
-		logger.Error("failed to construct root agent", "error", err.Error())
-		return err
-	}
-	logger.Info("root agent constructed",
-		"name", root.Name(),
-		"sub_agents", len(root.SubAgents()),
-	)
-
-	// Session backend. With --attach-listen the store opens through
-	// pkg/eventlog instead of raw session/database: same ADK tables,
-	// plus the seq-overlay the attach broadcaster live-tails. Without
-	// attach the plain service keeps the pre-P1.3c shape (including
-	// in-memory sessions when --session-db is empty).
+	// Session backend, built BEFORE the root agent: the planner's
+	// pause_session tool needs the transcript store at construction
+	// time (v0.2 pause/abort). With --attach-listen the store opens
+	// through pkg/eventlog instead of raw session/database: same ADK
+	// tables, plus the seq-overlay the attach broadcaster live-tails.
+	// Without attach the plain service keeps the pre-P1.3c shape
+	// (including in-memory sessions when --session-db is empty).
 	var (
 		sessionSvc session.Service
 		elHandle   *eventlog.Handle
@@ -309,6 +305,21 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// refuses sessions that carry one. Built before the runner because
 	// the outbox plugin reads the effects-ack watermark through it.
 	store := transcript.NewStore(sessionSvc, appName)
+
+	// pause_session's record sink: the store, plus a timer push into
+	// the scheduler once it exists (attached below — the scheduler
+	// needs the runner, which needs the root).
+	pauseRec := &daemonPauseRecorder{store: store}
+
+	root, bundle, err := buildRoot(turnCtx, logger, llm, modelName, workloadArg, dispatchMode, pauseRec)
+	if err != nil {
+		logger.Error("failed to construct root agent", "error", err.Error())
+		return err
+	}
+	logger.Info("root agent constructed",
+		"name", root.Name(),
+		"sub_agents", len(root.SubAgents()),
+	)
 
 	// Recorded-effect outbox (docs/durable-execution-design.md): the
 	// runner plugin that refuses mutating tool calls while a session
@@ -574,8 +585,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 
 	// Timed-pause scheduler (v0.2 pause/abort design): fires through
 	// the same doors an operator would use — no privileged side path.
-	var sched *pauseScheduler
-	sched = newPauseScheduler(store, logger, func(fireCtx context.Context, rec *transcript.PauseRecord) error {
+	sched := newPauseScheduler(store, logger, func(fireCtx context.Context, rec *transcript.PauseRecord) error {
 		if tracker.isDraining() {
 			return errors.New("daemon draining")
 		}
@@ -605,6 +615,8 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			logger.Error("timed-pause boot scan failed; pre-existing timers will not fire until restart", "error", err.Error())
 		}
 	}()
+	// pause_session records minted mid-serve now push their timers too.
+	pauseRec.attach(sched)
 
 	pauseHandler := func(reqCtx context.Context, req inject.PauseRequest) (inject.PauseResult, error) {
 		// No drain gate, like abort: a gate pause is a marker write,
@@ -903,7 +915,7 @@ func workloadNames(cfg *config.Config) []string {
 // coordinator (pkg/router) or the spike-2 workflow graph (pkg/graph).
 // Without --workload it constructs a trivial single-agent coordinator
 // (useful for pure inject-endpoint smoke).
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelName, workloadArg, dispatch string) (adkagent.Agent, *workload.Bundle, error) {
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (adkagent.Agent, *workload.Bundle, error) {
 	if dispatch != "coordinator" && dispatch != "graph" {
 		return nil, nil, fmt.Errorf("unknown --dispatch %q (want `coordinator` or `graph`)", dispatch)
 	}
@@ -952,12 +964,13 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 	}
 
 	a, err := compose.BuildRoot(compose.RootConfig{
-		Bundle:   bundle,
-		Specs:    loaded,
-		Model:    llm,
-		Toolsets: toolsets,
-		Dispatch: compose.Dispatch(dispatch),
-		Logger:   logger,
+		Bundle:        bundle,
+		Specs:         loaded,
+		Model:         llm,
+		Toolsets:      toolsets,
+		Dispatch:      compose.Dispatch(dispatch),
+		Logger:        logger,
+		PauseRecorder: pauseRec,
 	})
 	if err != nil {
 		return nil, nil, err

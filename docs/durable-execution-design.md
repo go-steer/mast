@@ -208,6 +208,8 @@ The transcript state *set* is untouched, but the `paused` **derivation gains two
 
 Snapshot replay (same phasing row, separate work); multi-replica scheduler + token index (v0.3); un-abort; AG-UI interrupt-lifecycle mapping ([`./ag-ui-design.md`](./ag-ui-design.md) owns it).
 
+*(Shipped 2026-08-02 — `pkg/transcript` pause records + tokens + the `paused`-derivation extension, the `runTurnPre` chokepoint + cancel registry + `/pause` `/extend-token` `/stop` + token-keyed `/resume`, the timed-pause scheduler, `pause_session` in the planner vocabulary (registered only when a durable store exists), `mast.Pause`/`mast.ResumeByToken`, the `sessions pause`/`extend-token`/`resume --token` verbs and `mast stop`. Three implementation deviations recorded honestly: (1) the daemon resolves tokens by an ops-row scan per request rather than the boot-built in-memory index this section sketched — the boot scan seeds only the timer heap; at v0.2's single-instance scale the scan IS the index, and the in-memory copy would have been one more thing to keep coherent with direct-mode writes — fleet-scale indexing stays with P1.3 as stated. (2) `extend-token` is daemon-only — no `--session-db` direct mode; a daemonless expired token's recovery is the interrupt-keyed resume, which never needed the token. (3) `already_resumed` is a 202 no-op on `/resume` but an `ErrAlreadyResumed` error from `mast.ResumeByToken` — an HTTP replay is idempotent success; a library caller holding a consumed token almost certainly has a logic bug and should hear about it.)*
+
 ## Session storage requirements
 
 For durability to be real, session storage has hard requirements:

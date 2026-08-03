@@ -67,8 +67,59 @@ func TestParseSessionsArgs(t *testing.T) {
 			want: sessionsCmd{
 				verb: "resume", sessionID: "incident-123",
 				interruptID: "approve-x", response: `{"approved":true}`,
+				addr: "http://127.0.0.1:7777", app: appName,
+			},
+		},
+		{
+			name: "resume by token",
+			args: []string{"resume", "--token=mrt_abc"},
+			want: sessionsCmd{
+				verb: "resume", token: "mrt_abc",
+				addr: "http://127.0.0.1:7777", app: appName,
+			},
+		},
+		{
+			name:    "resume token excludes interrupt keying",
+			args:    []string{"resume", "incident-123", "--token=mrt_abc"},
+			wantErr: "drop <session-id>",
+		},
+		{
+			name:    "resume direct mode is token only",
+			args:    []string{"resume", "incident-123", "--interrupt=approve-x", `--response={}`, "--session-db=/tmp/x.db"},
+			wantErr: "--token only",
+		},
+		{
+			name: "pause",
+			args: []string{"pause", "incident-123", "--reason=maintenance_window", "--message=deploy", "--interrupt", "--ttl=48h"},
+			want: sessionsCmd{
+				verb: "pause", sessionID: "incident-123",
+				reason: "maintenance_window", message: "deploy",
+				hardPause: true, ttl: "48h",
 				addr: "http://127.0.0.1:7777",
 			},
+		},
+		{
+			name:    "pause requires reason",
+			args:    []string{"pause", "incident-123"},
+			wantErr: "--reason is required",
+		},
+		{
+			name:    "pause rejects both resume-at and resume-after",
+			args:    []string{"pause", "incident-123", "--reason=operator", "--resume-at=2026-08-03T00:00:00Z", "--resume-after=15m"},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "extend-token",
+			args: []string{"extend-token", "mrt_abc", "--ttl=168h"},
+			want: sessionsCmd{
+				verb: "extend-token", token: "mrt_abc", ttl: "168h",
+				addr: "http://127.0.0.1:7777",
+			},
+		},
+		{
+			name:    "extend-token requires ttl",
+			args:    []string{"extend-token", "mrt_abc"},
+			wantErr: "--ttl is required",
 		},
 		{
 			name:    "resume requires interrupt",

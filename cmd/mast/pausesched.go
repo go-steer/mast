@@ -23,6 +23,39 @@ import (
 	"github.com/go-steer/mast/pkg/transcript"
 )
 
+// daemonPauseRecorder is the pause_session record sink for serve mode:
+// the transcript store, plus a timer push into the scheduler for
+// records minted with resume_at mid-serve (the boot scan only covers
+// records that predate the process). The scheduler attaches after
+// construction because it needs the runner, which needs the root,
+// which needs this recorder.
+type daemonPauseRecorder struct {
+	store *transcript.Store
+
+	mu    sync.Mutex
+	sched *pauseScheduler
+}
+
+func (r *daemonPauseRecorder) attach(s *pauseScheduler) {
+	r.mu.Lock()
+	r.sched = s
+	r.mu.Unlock()
+}
+
+func (r *daemonPauseRecorder) PauseInterrupt(ctx context.Context, userID, sessionID, interruptID string, spec transcript.PauseSpec) (transcript.PauseHandle, error) {
+	h, err := r.store.PauseInterrupt(ctx, userID, sessionID, interruptID, spec)
+	if err != nil || spec.ResumeAt.IsZero() {
+		return h, err
+	}
+	r.mu.Lock()
+	sched := r.sched
+	r.mu.Unlock()
+	if sched != nil {
+		sched.push(h.Token, spec.ResumeAt)
+	}
+	return h, err
+}
+
 // schedRequeueDelay is the backoff for a timer fire the chokepoint (or
 // a transient failure) refused — requeued, not lost (v0.2 pause/abort
 // design, timed-pause section).

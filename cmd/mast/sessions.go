@@ -12,26 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// mast sessions — the v0.1 operator-facing session surface
-// (docs/durable-execution-design.md, "Operator-facing surface").
+// mast sessions — the operator-facing session surface
+// (docs/durable-execution-design.md, "Operator-facing surface" + "The
+// v0.2 pause/abort mechanics").
 //
 //	mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|interrupted|idle]
 //	mast sessions show   <session-id> --session-db=...
 //	mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--ack-effects] [--addr=...]
+//	mast sessions resume --token=<mrt_...> [--response='<json>'] [--ack-effects] [--addr=... | --session-db=...]
+//	mast sessions pause  <session-id> --reason=<enum> [--message=...] [--resume-at=RFC3339 | --resume-after=15m]
+//	                     [--interrupt] [--ttl=48h] [--addr=...]
+//	mast sessions extend-token <mrt_...> --ttl=<duration> [--addr=...]
 //	mast sessions abort  <session-id> [--reason=...] [--addr=...]
 //	mast sessions ack-effects <session-id> [--reason=...] [--addr=... | --session-db=...]
 //
 // list/show read the SQLite session DB directly (works with or without
-// a running daemon). resume/abort go through a running daemon's
-// /resume and /abort endpoints — resume must be executed by the runner
-// that owns the workflow, and routing abort through the daemon keeps a
-// single SQLite writer.
+// a running daemon). resume/pause/extend-token/abort go through a
+// running daemon — resume must be executed by the runner that owns the
+// workflow, hard pause must reach the daemon's cancel registry, and a
+// single-writer store stays single-writer. Exception: `resume --token
+// --session-db=...` clears a GATE pause directly, ONLY on a DB no
+// daemon is serving (an interrupt pause always needs the daemon).
 //
-// Design deviation, recorded: durable-execution-design sketches
-// `resume --token=<token>`. Resume tokens are the v0.2 programmatic-
-// pause surface; the v0.1 pause is a HITL RequestInput, whose verified
-// resume contract (docs/spike-findings.md, Q2) is keyed by interrupt
-// ID. Hence `--interrupt` + `--response` here.
+// The v0.1 deviation note (resume keyed by interrupt ID, not token) is
+// resolved: both keyings now exist, and tokens are the v0.2
+// programmatic-pause surface as originally sketched.
 package main
 
 import (
@@ -64,21 +69,36 @@ type sessionsCmd struct {
 	user  string
 	state string // list filter; empty = all
 
-	// resume/abort (POST to a running daemon)
+	// resume/pause/extend-token/abort (POST to a running daemon)
 	addr        string
 	interruptID string
 	response    string // raw JSON
 	reason      string
 	ackEffects  bool
+
+	// v0.2 pause/abort surface
+	token       string
+	message     string
+	resumeAt    string // RFC3339
+	resumeAfter string // Go duration, converted client-side
+	hardPause   bool   // --interrupt on pause: cancel the in-flight turn
+	ttl         string // Go duration
 }
 
 const sessionsUsage = `usage: mast sessions <command> [flags]
 
 commands:
   list                    list sessions (reads --session-db directly)
-  show   <session-id>     session detail incl. pending interrupts
+  show   <session-id>     session detail incl. pending interrupts + pauses
   resume <session-id>     resume a paused session via a running daemon
+                          (--interrupt keying, or --token for v0.2 pauses)
+  pause  <session-id>     gate-pause a session: every turn refuses until the
+                          returned token resumes it (--interrupt also cancels
+                          the in-flight turn)
+  extend-token <token>    lengthen a resume token's lifetime (audited)
   abort  <session-id>     mark a session aborted via a running daemon
+                          (terminal: cancels the in-flight turn, refuses all
+                          further turns)
   ack-effects <session-id> acknowledge ambiguous prior effects (lifts the
                           recorded-effect outbox's refusal); via a running
                           daemon by default, or --session-db when none serves
@@ -107,9 +127,23 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 		fs.StringVar(&cmd.user, "user", "", "user ID owning the session (empty = auto-discover)")
 	case "resume":
 		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
-		fs.StringVar(&cmd.interruptID, "interrupt", "", "pending interrupt ID to resume (required; see `mast sessions show`)")
-		fs.StringVar(&cmd.response, "response", "", "JSON response payload for the interrupt (required)")
+		fs.StringVar(&cmd.interruptID, "interrupt", "", "pending interrupt ID to resume (see `mast sessions show`); mutually exclusive with --token")
+		fs.StringVar(&cmd.token, "token", "", "resume token (mrt_...) minted at pause time — resolves the session and pause itself; mutually exclusive with <session-id>/--interrupt")
+		fs.StringVar(&cmd.response, "response", "", "JSON response payload for the interrupt (required with --interrupt; optional with --token)")
+		fs.StringVar(&cmd.db, "session-db", "", "with --token only: clear a GATE pause directly in this SQLite session DB instead of going through a daemon — ONLY when no daemon is serving this DB (interrupt pauses always need the daemon that owns the runner)")
+		fs.StringVar(&cmd.app, "app", appName, "app name the sessions were stored under (direct --session-db path only)")
 		fs.BoolVar(&cmd.ackEffects, "ack-effects", false, "acknowledge ambiguous prior effects: assert you checked whether the interrupted turn's mutating tool calls took effect; lifts the recorded-effect outbox's refusal for calls recorded so far")
+	case "pause":
+		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
+		fs.StringVar(&cmd.reason, "reason", "", "pause reason (required): "+strings.Join(transcript.ValidReasons(), "|"))
+		fs.StringVar(&cmd.message, "message", "", "human-readable context, surfaced by list/show")
+		fs.StringVar(&cmd.resumeAt, "resume-at", "", "RFC3339 time to auto-resume (arms the timed-pause scheduler)")
+		fs.StringVar(&cmd.resumeAfter, "resume-after", "", "duration until auto-resume (e.g. 15m) — convenience for --resume-at")
+		fs.BoolVar(&cmd.hardPause, "interrupt", false, "hard pause: also cancel the session's in-flight turn (the pause record is the durable truth; the cancelled turn may leave dangling intents for the effects outbox to guard)")
+		fs.StringVar(&cmd.ttl, "ttl", "", "shorten the resume token's default 7-day lifetime (e.g. 48h); lengthening is extend-token's job")
+	case "extend-token":
+		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
+		fs.StringVar(&cmd.ttl, "ttl", "", "new token lifetime from now (required, e.g. 168h)")
 	case "abort":
 		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
 		fs.StringVar(&cmd.reason, "reason", "operator abort", "reason recorded in the abort marker")
@@ -153,17 +187,53 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 			return nil, errors.New("mast sessions show: --session-db is required")
 		}
 	case "resume":
-		if cmd.sessionID == "" {
-			return nil, errors.New("mast sessions resume: <session-id> is required")
+		if cmd.token != "" {
+			if cmd.sessionID != "" || cmd.interruptID != "" {
+				return nil, errors.New("mast sessions resume: --token resolves the session itself; drop <session-id>/--interrupt")
+			}
+		} else {
+			if cmd.db != "" {
+				return nil, errors.New("mast sessions resume: --session-db direct mode is --token only (gate pauses); interrupt resumes need the daemon that owns the runner")
+			}
+			if cmd.sessionID == "" {
+				return nil, errors.New("mast sessions resume: <session-id> is required (or use --token)")
+			}
+			if cmd.interruptID == "" {
+				return nil, errors.New("mast sessions resume: --interrupt is required (or use --token)")
+			}
+			if cmd.response == "" {
+				return nil, errors.New("mast sessions resume: --response is required with --interrupt")
+			}
 		}
-		if cmd.interruptID == "" {
-			return nil, errors.New("mast sessions resume: --interrupt is required")
-		}
-		if cmd.response == "" {
-			return nil, errors.New("mast sessions resume: --response is required")
-		}
-		if !json.Valid([]byte(cmd.response)) {
+		if cmd.response != "" && !json.Valid([]byte(cmd.response)) {
 			return nil, fmt.Errorf("mast sessions resume: --response is not valid JSON: %q", cmd.response)
+		}
+	case "pause":
+		if cmd.sessionID == "" {
+			return nil, errors.New("mast sessions pause: <session-id> is required")
+		}
+		if cmd.reason == "" {
+			return nil, fmt.Errorf("mast sessions pause: --reason is required (one of %s)", strings.Join(transcript.ValidReasons(), "|"))
+		}
+		if cmd.resumeAt != "" && cmd.resumeAfter != "" {
+			return nil, errors.New("mast sessions pause: --resume-at and --resume-after are mutually exclusive")
+		}
+		if cmd.resumeAfter != "" {
+			d, err := time.ParseDuration(cmd.resumeAfter)
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("mast sessions pause: --resume-after %q is not a positive duration", cmd.resumeAfter)
+			}
+			cmd.resumeAt = time.Now().UTC().Add(d).Format(time.RFC3339)
+			cmd.resumeAfter = ""
+		}
+	case "extend-token":
+		// The positional slot carries the token for this verb.
+		cmd.token, cmd.sessionID = cmd.sessionID, ""
+		if cmd.token == "" {
+			return nil, errors.New("mast sessions extend-token: <token> is required")
+		}
+		if cmd.ttl == "" {
+			return nil, errors.New("mast sessions extend-token: --ttl is required")
 		}
 	case "abort":
 		if cmd.sessionID == "" {
@@ -203,14 +273,56 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 		return c.runShow(ctx, out)
 	case "resume":
 		var response any
-		if err := json.Unmarshal([]byte(c.response), &response); err != nil {
-			return fmt.Errorf("parse --response: %w", err)
+		if c.response != "" {
+			if err := json.Unmarshal([]byte(c.response), &response); err != nil {
+				return fmt.Errorf("parse --response: %w", err)
+			}
+		}
+		if c.token != "" && c.db != "" {
+			// Direct plane-B path for DBs no daemon is serving. A live
+			// daemon's in-memory state (turn gating happens on its next
+			// chokepoint read, so the CLEAR is safe — but interrupt
+			// pauses need the owning runner, refused at parse time).
+			store, err := transcript.Open(c.db, c.app)
+			if err != nil {
+				return err
+			}
+			// Plane check BEFORE consuming: consuming an interrupt-plane
+			// token here would destroy the pause record without ever
+			// resuming the parked turn.
+			rec, err := store.FindToken(ctx, c.token)
+			if err != nil {
+				return err
+			}
+			if rec.Plane != transcript.PlaneGate {
+				return fmt.Errorf("token belongs to an interrupt pause on session %q; interrupt resumes must go through the daemon that owns the runner (drop --session-db)", rec.SessionID)
+			}
+			if _, err := store.ConsumeToken(ctx, c.token, "operator resume --token --session-db"); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "gate pause on %s resumed\n", rec.SessionID)
+			return nil
 		}
 		return c.post(ctx, out, "/resume", inject.ResumeRequest{
 			SessionID:   c.sessionID,
 			InterruptID: c.interruptID,
+			Token:       c.token,
 			Response:    response,
 			AckEffects:  c.ackEffects,
+		})
+	case "pause":
+		return c.post(ctx, out, "/pause", inject.PauseRequest{
+			SessionID: c.sessionID,
+			Reason:    c.reason,
+			Message:   c.message,
+			ResumeAt:  c.resumeAt,
+			Interrupt: c.hardPause,
+			TTL:       c.ttl,
+		})
+	case "extend-token":
+		return c.post(ctx, out, "/extend-token", inject.ExtendTokenRequest{
+			Token: c.token,
+			TTL:   c.ttl,
 		})
 	case "abort":
 		return c.post(ctx, out, "/abort", inject.AbortRequest{
@@ -265,6 +377,14 @@ func (c *sessionsCmd) runList(ctx context.Context, out io.Writer) error {
 		if s.State == transcript.StateInterrupted {
 			pending = "(interrupted: " + s.InterruptReason + ")"
 		}
+		if s.PauseReason != "" {
+			gate := "(gate-paused: " + s.PauseReason + ")"
+			if pending != "" {
+				pending += " " + gate
+			} else {
+				pending = gate
+			}
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.ID, s.UserID, s.AppName,
 			s.LastEventTime.UTC().Format(time.RFC3339), s.State, pending)
@@ -300,18 +420,52 @@ func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
 	if d.State == transcript.StateInterrupted {
 		fmt.Fprintf(out, "Interrupted: %s\n", d.InterruptReason)
 	}
+	if g := d.GatePause; g.Active() {
+		fmt.Fprintf(out, "\nGate pause:\n")
+		fmt.Fprintf(out, "  Reason:  %s\n", g.Reason)
+		fmt.Fprintf(out, "  Message: %s\n", g.Message)
+		fmt.Fprintf(out, "  Token:   %s (expires %s)\n", g.Token, g.ExpiresAt.UTC().Format(time.RFC3339))
+		if !g.ResumeAt.IsZero() {
+			fmt.Fprintf(out, "  Timer:   auto-resumes %s\n", g.ResumeAt.UTC().Format(time.RFC3339))
+		}
+		fmt.Fprintf(out, "\nResume with:\n  mast sessions resume --token=%s\n", g.Token)
+	}
+	// Token records for interrupt pauses, keyed by interrupt ID, so the
+	// pending blocks below can print the token-keyed resume command.
+	intrTokens := map[string]*transcript.PauseRecord{}
+	if records, err := store.PauseRecords(ctx, c.user, c.sessionID); err == nil {
+		for _, rec := range records {
+			if rec.Plane == transcript.PlaneInterrupt && rec.Active() {
+				intrTokens[rec.InterruptID] = rec
+			}
+		}
+	}
 	for _, p := range d.Pending {
 		fmt.Fprintf(out, "\nPending input:\n")
 		fmt.Fprintf(out, "  Interrupt: %s\n", p.InterruptID)
 		fmt.Fprintf(out, "  Author:    %s\n", p.Author)
 		fmt.Fprintf(out, "  Raised:    %s\n", p.RaisedAt.UTC().Format(time.RFC3339))
 		fmt.Fprintf(out, "  Message:   %s\n", p.Message)
+		if p.LongRunning {
+			fmt.Fprintf(out, "  Kind:      long-running park (%s)\n", p.ToolName)
+		}
 		if p.ResponseSchema != nil {
 			schema, err := json.Marshal(p.ResponseSchema)
 			if err != nil {
 				return fmt.Errorf("marshal response schema: %w", err)
 			}
 			fmt.Fprintf(out, "  Schema:    %s\n", schema)
+		}
+		if rec, ok := intrTokens[p.InterruptID]; ok {
+			fmt.Fprintf(out, "  Token:     %s (expires %s)\n", rec.Token, rec.ExpiresAt.UTC().Format(time.RFC3339))
+			fmt.Fprintf(out, "\nResume with:\n  mast sessions resume --token=%s\n", rec.Token)
+			continue
+		}
+		if p.LongRunning {
+			// A park with no token record: the crash window between the
+			// park's persist and the record write (or a pre-v0.2 park).
+			// Interrupt-keyed resume is the documented recovery.
+			fmt.Fprintf(out, "  Token:     (none recorded — resume by interrupt ID)\n")
 		}
 		fmt.Fprintf(out, "\nResume with:\n  mast sessions resume %s --interrupt=%s --response='<json>'\n",
 			d.ID, p.InterruptID)

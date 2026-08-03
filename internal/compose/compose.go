@@ -104,6 +104,12 @@ type RootConfig struct {
 	// Logger, when non-nil, receives the same construction-time notes
 	// cmd/mast has always logged (e.g. planner overriding dispatch).
 	Logger *slog.Logger
+
+	// PauseRecorder enables the planner's pause_session tool (v0.2
+	// plane-A self-pause) by giving it a durable record sink —
+	// *transcript.Store, or the daemon's scheduler-aware wrapper. Nil
+	// (no durable store) leaves the tool unregistered.
+	PauseRecorder planner.PauseRecorder
 }
 
 // BuildRoot builds the roster and assembles the dispatch shape:
@@ -165,11 +171,12 @@ func BuildRoot(cfg RootConfig) (adkagent.Agent, error) {
 			cfg.Logger.Info("planner enabled; --dispatch ignored", "dispatch_flag", string(cfg.Dispatch))
 		}
 		return planner.NewRoot(planner.Config{
-			Name:        cfg.Bundle.Name,
-			Description: cfg.Bundle.Description,
-			Model:       cfg.Model,
-			Specialists: byName,
-			Order:       cfg.Bundle.Specialists,
+			Name:          cfg.Bundle.Name,
+			Description:   cfg.Bundle.Description,
+			Model:         cfg.Model,
+			Specialists:   byName,
+			Order:         cfg.Bundle.Specialists,
+			PauseRecorder: cfg.PauseRecorder,
 		})
 	}
 

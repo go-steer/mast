@@ -50,7 +50,10 @@ import (
 // per-mode fallback; classes without per-class text (chat) fall
 // through to pkg/agent's mode default via the constructor's own
 // empty-Instruction rule.
-func BuildClassRoot(class string, llm model.LLM) (adkagent.Agent, error) {
+// pauseRecorder enables the planner classes' pause_session tool when
+// the caller has a durable store (nil otherwise — an in-memory pause
+// would die with the process).
+func BuildClassRoot(class string, llm model.LLM, pauseRecorder planner.PauseRecorder) (adkagent.Agent, error) {
 	if llm == nil {
 		return nil, fmt.Errorf("compose: BuildClassRoot requires a model")
 	}
@@ -62,9 +65,10 @@ func BuildClassRoot(class string, llm model.LLM) (adkagent.Agent, error) {
 
 	if taskclass.PlannerEnabled(class) {
 		return planner.NewRoot(planner.Config{
-			Name:        "mast_" + class,
-			Description: "One-shot planner root for --task=" + class + ".",
-			Model:       llm,
+			Name:          "mast_" + class,
+			Description:   "One-shot planner root for --task=" + class + ".",
+			Model:         llm,
+			PauseRecorder: pauseRecorder,
 		})
 	}
 

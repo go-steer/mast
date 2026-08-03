@@ -93,6 +93,7 @@ var controlCalls = map[string]bool{
 	"transfer_to_agent":               true, // coordinator routing
 	"task_completed":                  true, // sequential-agent plumbing
 	"exit_loop":                       true, // loop-agent termination
+	"pause_session":                   true, // v0.2 plane-A self-pause: a park, not an effect (long-running exclusion also covers it)
 }
 
 // builtinClasses classifies mast's own registered tools. Names are

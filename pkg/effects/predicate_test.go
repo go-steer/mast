@@ -31,6 +31,7 @@ func TestPredicateDefaults(t *testing.T) {
 		{"adk_request_confirmation", ClassReadOnly},
 		{"finish_task", ClassReadOnly},
 		{"request_operator_input", ClassReadOnly},
+		{"pause_session", ClassReadOnly}, // v0.2 plane-A self-pause: a park, not an effect
 		{"invoke_specialist", ClassSpawning},
 		{"run_shape_llm_router", ClassSpawning},
 		{"run_shape_fan_out_fan_in", ClassSpawning},
@@ -88,6 +89,14 @@ func TestBuiltinNamesMatchRegistrations(t *testing.T) {
 		if _, ok := builtinClasses[literal]; !ok {
 			t.Errorf("builtinClasses is missing an entry for %q", literal)
 		}
+	}
+	// pause_session is a CONTROL call (a park, not an effect), so its
+	// pin checks the control table rather than builtinClasses.
+	if planner.ToolPauseSession != "pause_session" {
+		t.Errorf("planner.ToolPauseSession = %q, want the control-table literal \"pause_session\"", planner.ToolPauseSession)
+	}
+	if !controlCalls[planner.ToolPauseSession] {
+		t.Errorf("controlCalls is missing %q", planner.ToolPauseSession)
 	}
 	// pkg/federation exports no name constant; the literal is pinned in
 	// its registration (pkg/federation/tool.go). If this entry ever

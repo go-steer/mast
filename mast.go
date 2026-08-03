@@ -73,6 +73,7 @@ import (
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
@@ -174,11 +175,12 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 		return nil, err
 	}
 	root, err := compose.BuildRoot(compose.RootConfig{
-		Bundle:   bundle,
-		Specs:    specs,
-		Model:    llm,
-		Dispatch: compose.DispatchAuto,
-		Logger:   cfg.Logger,
+		Bundle:        bundle,
+		Specs:         specs,
+		Model:         llm,
+		Dispatch:      compose.DispatchAuto,
+		Logger:        cfg.Logger,
+		PauseRecorder: pauseRecorder(cfg),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: build workload %q: %w", bundle.Name, err)
@@ -248,6 +250,9 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		return nil, fmt.Errorf("mast: resume session %q: %w", sessionID, err)
 	} else if d.State == transcript.StateAborted {
 		return nil, fmt.Errorf("mast: session %q is aborted (%s); refusing resume", sessionID, d.AbortReason)
+	} else if d.GatePause.Active() {
+		return nil, fmt.Errorf("mast: session %q is gate-paused (%s: %s); resume it with ResumeByToken first",
+			sessionID, d.PauseReason, d.PauseMessage)
 	}
 
 	llm, modelName, err := resolveModel(ctx, cfg)
@@ -255,11 +260,12 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		return nil, err
 	}
 	root, err := compose.BuildRoot(compose.RootConfig{
-		Bundle:   bundle,
-		Specs:    specs,
-		Model:    llm,
-		Dispatch: compose.DispatchAuto,
-		Logger:   cfg.Logger,
+		Bundle:        bundle,
+		Specs:         specs,
+		Model:         llm,
+		Dispatch:      compose.DispatchAuto,
+		Logger:        cfg.Logger,
+		PauseRecorder: pauseRecorder(cfg),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: build workload %q: %w", bundle.Name, err)
@@ -287,6 +293,95 @@ func AckEffects(ctx context.Context, cfg Config, sessionID, reason string) error
 		return errors.New("mast: AckEffects requires Config.Sessions (acks on a nil service could never be read back)")
 	}
 	return transcript.NewStore(cfg.Sessions, appName).AckEffects(ctx, "", sessionID, reason)
+}
+
+// pauseRecorder returns the pause_session record sink for library
+// roots: the transcript store when sessions are durable, nil (tool
+// unregistered) otherwise — an in-memory pause record would die with
+// the process.
+func pauseRecorder(cfg Config) planner.PauseRecorder {
+	if cfg.Sessions == nil {
+		return nil
+	}
+	return transcript.NewStore(cfg.Sessions, appName)
+}
+
+// Pause gate-pauses a session (plane B of the v0.2 pause/abort
+// surface, docs/durable-execution-design.md "The v0.2 pause/abort
+// mechanics"): every subsequent turn on the session — Run, RunWorkload
+// continuations, ResumeSession — refuses until the pause is resumed
+// with the returned handle's token via ResumeByToken. The pause takes
+// effect at the turn boundary; a turn this process has in flight
+// completes (library embedders own their turn contexts — cancel yours
+// for a hard pause; PauseSpec.Interrupt is daemon machinery and is
+// ignored here). The library twin of `mast sessions pause` /
+// POST /pause.
+func Pause(ctx context.Context, cfg Config, sessionID string, spec transcript.PauseSpec) (transcript.PauseHandle, error) {
+	if cfg.Sessions == nil {
+		return transcript.PauseHandle{}, errors.New("mast: Pause requires Config.Sessions (a pause on a nil service could never be resumed)")
+	}
+	return transcript.NewStore(cfg.Sessions, appName).PauseGate(ctx, "", sessionID, spec)
+}
+
+// ResumeByToken resumes a pause by its resume token (minted by Pause,
+// by the planner's pause_session tool, or by a graph RequestInput
+// helper). A gate-pause resume clears the gate and runs no turn —
+// nothing was parked; the returned Result carries only the session ID.
+// An interrupt-pause resume drives the normal resume turn (response
+// nil defaults to {"resumed_by": "operator"}), and the token is
+// consumed once the resume FunctionResponse is durably appended — a
+// turn that fails before the append leaves the token live for retry.
+// Expired tokens refuse with transcript.ErrTokenExpired (the pause
+// remains); replays refuse with transcript.ErrAlreadyResumed. The
+// library twin of `mast sessions resume --token`.
+func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, specs []specialists.Spec, token string, response any) (*Result, error) {
+	if cfg.Sessions == nil {
+		return nil, errors.New("mast: ResumeByToken requires Config.Sessions (the service holding the paused session)")
+	}
+	store := transcript.NewStore(cfg.Sessions, appName)
+	rec, err := store.FindToken(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("mast: %w", err)
+	}
+	if !rec.ConsumedAt.IsZero() {
+		return nil, fmt.Errorf("mast: token consumed %s by %s: %w",
+			rec.ConsumedAt.Format(time.RFC3339), rec.ConsumedBy, transcript.ErrAlreadyResumed)
+	}
+	if rec.Expired(time.Now().UTC()) {
+		return nil, fmt.Errorf("mast: token expired %s (the pause remains; ExtendToken via the transcript store is the recovery): %w",
+			rec.ExpiresAt.Format(time.RFC3339), transcript.ErrTokenExpired)
+	}
+	if rec.Plane == transcript.PlaneGate {
+		if _, err := store.ConsumeToken(ctx, token, "library ResumeByToken"); err != nil {
+			return nil, fmt.Errorf("mast: %w", err)
+		}
+		return &Result{SessionID: rec.SessionID}, nil
+	}
+	if response == nil {
+		response = map[string]any{"resumed_by": "operator"}
+	}
+	res, rerr := ResumeSession(ctx, cfg, bundle, specs, rec.SessionID, rec.InterruptID, response)
+	// Consumption keys on the durable append of the resume
+	// FunctionResponse, not on turn success (the effects-ack
+	// precedent): if the interrupt is no longer pending, the pause is
+	// over regardless of how the turn ended.
+	if d, gerr := store.Get(ctx, "", rec.SessionID); gerr == nil {
+		pending := false
+		for _, id := range d.PendingInterruptIDs {
+			if id == rec.InterruptID {
+				pending = true
+				break
+			}
+		}
+		if !pending {
+			if _, cerr := store.ConsumeToken(ctx, rec.Token, "library ResumeByToken"); cerr != nil &&
+				!errors.Is(cerr, transcript.ErrAlreadyResumed) && !errors.Is(cerr, transcript.ErrTokenNotFound) && cfg.Logger != nil {
+				cfg.Logger.Error("mast: failed to consume resume token after answered interrupt",
+					"session", rec.SessionID, "error", cerr.Error())
+			}
+		}
+	}
+	return res, rerr
 }
 
 // resolveModel returns the model to run with plus the name used for
