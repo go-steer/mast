@@ -297,7 +297,17 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 			if rec.Plane != transcript.PlaneGate {
 				return fmt.Errorf("token belongs to an interrupt pause on session %q; interrupt resumes must go through the daemon that owns the runner (drop --session-db)", rec.SessionID)
 			}
+			if c.ackEffects {
+				// A gate resume runs no turn, so there is nothing to ack
+				// against; don't let --ack-effects imply it took effect.
+				fmt.Fprintln(out, "note: --ack-effects is ignored on a gate resume (no turn runs); use `mast sessions ack-effects` if a dangling effect needs acknowledging")
+			}
 			if _, err := store.ConsumeToken(ctx, c.token, "operator resume --token --session-db"); err != nil {
+				if errors.Is(err, transcript.ErrAlreadyResumed) {
+					// Idempotent, like the daemon's already_resumed no-op.
+					fmt.Fprintf(out, "gate pause on %s already resumed\n", rec.SessionID)
+					return nil
+				}
 				return err
 			}
 			fmt.Fprintf(out, "gate pause on %s resumed\n", rec.SessionID)

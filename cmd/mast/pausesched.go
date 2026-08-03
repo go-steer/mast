@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -179,8 +180,10 @@ func (ps *pauseScheduler) earliest() (string, time.Time, bool) {
 
 // fireDue pops the entry, re-fetches the record for freshness, and
 // dispatches. Outcomes:
-//   - token consumed or gone (operator resumed early, abort purged):
-//     drop silently — the design's benign race.
+//   - token vanished (abort purge, never existed) or consumed (operator
+//     resumed early): drop silently — the design's benign race.
+//   - record fetch hit a transient store fault: requeue with backoff —
+//     the entry was already popped, so a blip must not lose the timer.
 //   - resume_at moved into the future (a re-pause updated it): re-arm.
 //   - fire failed (chokepoint refusal — gate-paused or draining — or a
 //     transient error): requeue with backoff and an audit log line,
@@ -191,8 +194,20 @@ func (ps *pauseScheduler) fireDue(ctx context.Context, token string) {
 	ps.mu.Unlock()
 
 	rec, err := ps.store.FindToken(ctx, token)
-	if err != nil || !rec.Active() {
+	if errors.Is(err, transcript.ErrTokenNotFound) {
+		return // genuinely gone (abort purge, never existed): benign drop.
+	}
+	if err != nil {
+		// A transient store fault (a List blip, a lock timeout) is not a
+		// vanished token — the entry is already popped, so requeue it
+		// rather than losing the timer until the next boot scan.
+		ps.logger.Warn("timed-pause record fetch failed; requeued",
+			"retry_in", schedRequeueDelay.String(), "error", err.Error())
+		ps.push(token, time.Now().Add(schedRequeueDelay))
 		return
+	}
+	if !rec.Active() {
+		return // consumed (operator resumed early): benign drop.
 	}
 	if now := time.Now().UTC(); rec.ResumeAt.After(now) {
 		ps.push(token, rec.ResumeAt)

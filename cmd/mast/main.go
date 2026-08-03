@@ -590,7 +590,11 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			return errors.New("daemon draining")
 		}
 		if rec.Plane == transcript.PlaneGate {
-			_, err := store.ConsumeToken(fireCtx, rec.Token, "timer")
+			// ConsumeScheduled, not ConsumeToken: the timer is the daemon's
+			// own commitment and is not vetoed by the operator-facing token
+			// TTL — a resume_at beyond the token's life would otherwise
+			// livelock this fire against an expired token forever.
+			_, err := store.ConsumeScheduled(fireCtx, rec.Token, "timer")
 			if errors.Is(err, transcript.ErrAlreadyResumed) {
 				return nil // an operator resumed earlier and won benignly
 			}
@@ -1130,7 +1134,12 @@ func consumeIfAnswered(ctx context.Context, store *transcript.Store, logger *slo
 			return // still pending: the resume never appended
 		}
 	}
-	if _, err := store.ConsumeToken(ctx, rec.Token, by); err != nil &&
+	// ConsumeScheduled, not ConsumeToken: this runs AFTER the resume has
+	// durably appended (M5 — consumption keys on the append, not on
+	// gating). The pause has legitimately ended; the operator-facing
+	// token TTL must not veto the bookkeeping consume and strand an
+	// answered interrupt with a live-looking record.
+	if _, err := store.ConsumeScheduled(ctx, rec.Token, by); err != nil &&
 		!errors.Is(err, transcript.ErrAlreadyResumed) && !errors.Is(err, transcript.ErrTokenNotFound) {
 		logger.Error("failed to consume resume token after answered interrupt",
 			"session", rec.SessionID, "error", err.Error())

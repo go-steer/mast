@@ -379,10 +379,29 @@ func (s *Store) FindToken(ctx context.Context, token string) (*PauseRecord, erro
 // (adversarial-gate finding M5: consumption keys on the append, not
 // on turn completion — a resume turn that fails later has still
 // legitimately ended the pause). Scope is checked before anything
-// else (OQ #9): the record must have been minted under this store's
-// app and its own session's user. Expired tokens refuse with
-// ErrTokenExpired and leave the pause intact.
+// else (OQ #9): under v0.2's single-tenant reality the store's app is
+// the scope, and FindToken already lists within s.appName so a
+// cross-app token reads as not-found; the belt-and-suspenders App
+// check below is where a per-tenant/per-user check slots in when
+// multi-tenancy lands. Expired tokens refuse with ErrTokenExpired and
+// leave the pause intact — this is the operator-facing resume path.
 func (s *Store) ConsumeToken(ctx context.Context, token, by string) (*PauseRecord, error) {
+	return s.consumeToken(ctx, token, by, true)
+}
+
+// ConsumeScheduled consumes for the timed-pause scheduler. Unlike the
+// operator path it does NOT enforce the token's TTL: a resume_at is the
+// daemon's own scheduled commitment, and the operator-facing token
+// expiry (a guard against stale possession) must not veto it. A
+// resume_at legitimately set beyond the token's life — the only way to
+// schedule a pause longer than the TTL cap, which mint can only shorten
+// — would otherwise livelock the scheduler, firing forever against an
+// expired token. The already-consumed no-op and scope check still hold.
+func (s *Store) ConsumeScheduled(ctx context.Context, token, by string) (*PauseRecord, error) {
+	return s.consumeToken(ctx, token, by, false)
+}
+
+func (s *Store) consumeToken(ctx context.Context, token, by string, enforceExpiry bool) (*PauseRecord, error) {
 	rec, err := s.FindToken(ctx, token)
 	if err != nil {
 		return nil, err
@@ -396,7 +415,7 @@ func (s *Store) ConsumeToken(ctx context.Context, token, by string) (*PauseRecor
 		return rec, fmt.Errorf("token %s (session %q, consumed %s by %s): %w",
 			token, rec.SessionID, rec.ConsumedAt.Format(time.RFC3339), rec.ConsumedBy, ErrAlreadyResumed)
 	}
-	if rec.Expired(time.Now().UTC()) {
+	if enforceExpiry && rec.Expired(time.Now().UTC()) {
 		return rec, fmt.Errorf("token %s (session %q, expired %s): %w",
 			token, rec.SessionID, rec.ExpiresAt.Format(time.RFC3339), ErrTokenExpired)
 	}

@@ -355,6 +355,55 @@ func TestSchedulerFireConsumeRequeue(t *testing.T) {
 	}
 }
 
+// TestSchedulerExpiredTimedPauseFiresOnce is the adversarial-gate
+// regression: a timed gate pause whose resume_at outlives its token TTL
+// must fire ONCE and end — not requeue forever against an expired token.
+// The fire callback mirrors the daemon's gate path (ConsumeScheduled).
+func TestSchedulerExpiredTimedPauseFiresOnce(t *testing.T) {
+	svc := adksession.InMemoryService()
+	seedSession(t, svc, "s-exp-timer")
+	store := transcript.NewStore(svc, appName)
+	ctx := context.Background()
+
+	// resume_at already due, token already expired (TTL can only shorten,
+	// so a long resume_at is the only way to outlive the token).
+	handle, err := store.PauseGate(ctx, "", "s-exp-timer", transcript.PauseSpec{
+		Reason:   transcript.ReasonMaintenanceWindow,
+		ResumeAt: time.Now().UTC().Add(-time.Second),
+		TokenTTL: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("PauseGate: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+
+	var fires atomic.Int32
+	sched := newPauseScheduler(store, discardLogger(), func(fireCtx context.Context, rec *transcript.PauseRecord) error {
+		fires.Add(1)
+		_, cerr := store.ConsumeScheduled(fireCtx, rec.Token, "timer")
+		if errors.Is(cerr, transcript.ErrAlreadyResumed) {
+			return nil
+		}
+		return cerr
+	})
+
+	sched.fireDue(ctx, handle.Token)
+
+	if fires.Load() != 1 {
+		t.Fatalf("fires = %d, want exactly 1", fires.Load())
+	}
+	if g := store.GatePause(ctx, "", "s-exp-timer"); g != nil {
+		t.Errorf("gate still active after expired timed resume: %+v", g)
+	}
+	// The entry must NOT be requeued — the pause ended, no livelock.
+	sched.mu.Lock()
+	_, requeued := sched.entries[handle.Token]
+	sched.mu.Unlock()
+	if requeued {
+		t.Error("expired timed pause was requeued — the livelock the fix removes")
+	}
+}
+
 // seedSession creates a primary session with one event so store.Get
 // and the pause machinery have a real row to work with.
 func seedSession(t *testing.T, svc adksession.Service, sid string) {

@@ -224,6 +224,53 @@ func TestTokenExpiryLeavesPauseIntact(t *testing.T) {
 	}
 }
 
+// TestConsumeScheduledIgnoresExpiry pins the adversarial-gate fix: the
+// timed-pause scheduler's consume honors a scheduled resume even when
+// the operator-facing token has expired. Without it, a resume_at set
+// beyond the token's TTL (the only way to schedule a pause longer than
+// the cap, which mint can only shorten) livelocks the scheduler firing
+// forever against an expired token. ConsumeToken (operator) still
+// refuses; ConsumeScheduled (timer) consumes and ends the pause.
+func TestConsumeScheduledIgnoresExpiry(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewStore(svc, testApp)
+			seed(t, svc, "u1", "s-sched", textEvent("user", "hi"))
+
+			h, err := store.PauseGate(ctx, "", "s-sched", PauseSpec{
+				Reason:   ReasonMaintenanceWindow,
+				Message:  "resume_at outlives the token",
+				TokenTTL: time.Nanosecond, // expired essentially at once
+			})
+			if err != nil {
+				t.Fatalf("PauseGate: %v", err)
+			}
+			time.Sleep(2 * time.Millisecond)
+
+			// The operator path refuses (expiry guards stale possession)...
+			if _, err := store.ConsumeToken(ctx, h.Token, "operator"); !errors.Is(err, ErrTokenExpired) {
+				t.Fatalf("operator consume err = %v, want ErrTokenExpired", err)
+			}
+			if d, _ := store.Get(ctx, "", "s-sched"); d.State != StatePaused {
+				t.Fatalf("pause did not survive operator refusal: state = %q", d.State)
+			}
+
+			// ...but the scheduler's own commitment fires through.
+			if _, err := store.ConsumeScheduled(ctx, h.Token, "timer"); err != nil {
+				t.Fatalf("ConsumeScheduled on expired token: %v", err)
+			}
+			if d, _ := store.Get(ctx, "", "s-sched"); d.State != StateIdle {
+				t.Errorf("after scheduled consume: state = %q, want idle", d.State)
+			}
+			// Replay is still a benign no-op, not a second resume.
+			if _, err := store.ConsumeScheduled(ctx, h.Token, "timer"); !errors.Is(err, ErrAlreadyResumed) {
+				t.Errorf("scheduled replay err = %v, want ErrAlreadyResumed", err)
+			}
+		})
+	}
+}
+
 func TestTokenTTLCannotLengthenAtMint(t *testing.T) {
 	svc := adksession.InMemoryService()
 	store := NewStore(svc, testApp)
