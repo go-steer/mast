@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- **Programmatic pause/abort — the v0.2 durable-execution surface**
+  (docs/durable-execution-design.md "The v0.2 pause/abort mechanics",
+  designed in #72; closes #42). Two pause planes: an **interrupt
+  pause** (`pause_session`, a long-running builtin in the planner
+  vocabulary when a durable store exists — the body writes a token
+  record keyed by its own function-call ID to the companion ops row,
+  then parks; a record-write failure returns an error result, never a
+  tokenless park) and a **gate pause** (`mast sessions pause` /
+  `POST /pause` / `mast.Pause`) enforced at the daemon's turn
+  chokepoint: every turn kind — inject, attach, resume, timer —
+  refuses gate-paused sessions with `session_paused` (HTTP 409), and
+  `--interrupt` additionally cancels the in-flight turn. **Resume
+  tokens** (`mrt_` + 128-bit random) are minted, never caller-chosen;
+  scope-checked before execution; 7-day default TTL that `PauseSpec`
+  may only shorten; consumed on the durable append of the resume
+  FunctionResponse (a resume turn that fails before the append leaves
+  the token live for retry); expired tokens refuse with the pause
+  intact — `mast sessions extend-token` / `POST /extend-token` is the
+  audited recovery. `mast sessions resume --token=...` resolves the
+  session itself (`--session-db` direct mode clears gate pauses only,
+  on DBs no daemon serves); `mast.ResumeByToken` is the library twin.
+  A **timed-pause scheduler** (min-heap, boot ops-scan seeded) fires
+  `resume_at` timers through the normal budget-wrapped resume paths;
+  refused fires requeue with backoff; abort purges a session's timers
+  and tokens. **Terminal abort**: aborted sessions now refuse ALL turn
+  kinds at the chokepoint (v0.1 only refused resume — inject/attach
+  turns ran on aborted sessions) and abort cancels the in-flight turn
+  (marker first, then sweep). **Planned stop** (`mast stop` /
+  `POST /stop`): the SIGTERM drain path with interruption markers
+  classified `operator stop`; `--pause-sessions` gate-pauses the
+  marked set so boot-time auto-resume (#41) hands them back to the
+  operator; new exit code **3** = drain window expired with
+  interrupted survivors (0 = clean drain — exit codes encode work cut
+  short, not initiator). The `paused` state derivation gains two
+  sources: unanswered long-running parks — **fixing a shipped v0.1 gap
+  where `request_operator_input` parks projected `idle` or
+  `interrupted`** (and were boot-repair candidates) — and the gate
+  marker; `show` prints pause records, tokens, and ready-to-paste
+  token resume commands.
+
 - **Recorded-effect outbox (`pkg/effects`) — the v0.2 durable-execution
   guard for mutating tools under at-least-once re-execution**
   (docs/durable-execution-design.md, resolves open question #8; closes

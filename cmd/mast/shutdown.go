@@ -87,16 +87,80 @@ type turnTracker struct {
 	draining bool
 	frozen   bool
 
+	// cancels holds each in-flight turn's cancel handle (one turn per
+	// session, #62). The v0.2 pause/abort handshake: the turn REGISTERS
+	// under the session turn lock, before the chokepoint's marker
+	// check; abort / hard pause writes its marker, then SWEEPS via
+	// cancelSession. A turn is therefore always either registered (the
+	// sweep cancels it) or not yet past the chokepoint check (which
+	// sees the marker and refuses) — no unseen window.
+	cancels map[string]context.CancelFunc
+
+	// stopReason classifies the drain's interruption markers: the
+	// signal path's "daemon shutdown", or "operator stop[: reason]"
+	// when a planned stop (POST /stop) initiated it (issue #42).
+	stopReason string
+
+	// pauseOnDrain gate-pauses every session as it is marked (the
+	// planned stop's --pause-sessions): sited inside mark(), under
+	// writeMu, so turns that start mid-drain and get marked late are
+	// paused too — a one-shot sweep before draining would miss them.
+	pauseOnDrain bool
+
 	writeMu sync.Mutex // serializes mark/clear decision + store write
 }
 
 func newTurnTracker(store *transcript.Store, logger *slog.Logger) *turnTracker {
 	return &turnTracker{
-		store:  store,
-		logger: logger,
-		active: map[string]int{},
-		marked: map[string]bool{},
+		store:      store,
+		logger:     logger,
+		active:     map[string]int{},
+		marked:     map[string]bool{},
+		cancels:    map[string]context.CancelFunc{},
+		stopReason: "daemon shutdown",
 	}
+}
+
+// registerCancel records the in-flight turn's cancel handle. Called
+// under the session turn lock, BEFORE the chokepoint's marker check
+// (the register-before-check half of the abort/pause handshake).
+func (t *turnTracker) registerCancel(sessionID string, cancel context.CancelFunc) {
+	t.mu.Lock()
+	t.cancels[sessionID] = cancel
+	t.mu.Unlock()
+}
+
+// unregisterCancel drops the handle when the turn ends.
+func (t *turnTracker) unregisterCancel(sessionID string) {
+	t.mu.Lock()
+	delete(t.cancels, sessionID)
+	t.mu.Unlock()
+}
+
+// cancelSession cancels the session's in-flight turn, if any — the
+// mark-then-sweep half of the handshake (terminal abort, and gate
+// pause with Interrupt: true). Callers write their durable marker
+// FIRST: the cancellation itself leaves no engine record (verified —
+// ADK maps context.Canceled node completions to a silent drain), so
+// the marker is the only durable truth.
+func (t *turnTracker) cancelSession(sessionID string) bool {
+	t.mu.Lock()
+	cancel, ok := t.cancels[sessionID]
+	t.mu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
+}
+
+// planStop classifies the coming drain as operator-initiated (issue
+// #42): interruption markers carry reason instead of "daemon
+// shutdown", and pauseSessions arms the pause-and-mark pass.
+func (t *turnTracker) planStop(reason string, pauseSessions bool) {
+	t.mu.Lock()
+	t.stopReason = reason
+	t.pauseOnDrain = pauseSessions
+	t.mu.Unlock()
 }
 
 // begin records a turn starting on sessionID. A turn that starts while
@@ -148,6 +212,8 @@ func (t *turnTracker) mark(ctx context.Context, sessionID string) {
 	defer t.writeMu.Unlock()
 	t.mu.Lock()
 	skip := t.frozen || t.marked[sessionID] || t.active[sessionID] == 0
+	reason := t.stopReason
+	pause := t.pauseOnDrain
 	t.mu.Unlock()
 	if skip {
 		// Already marked, frozen, or the turn finished while we
@@ -159,12 +225,25 @@ func (t *turnTracker) mark(ctx context.Context, sessionID string) {
 	// drain window and eat the SIGKILL headroom (#63).
 	ctx, cancel := context.WithTimeout(ctx, storeWriteTimeout)
 	defer cancel()
-	if err := t.store.MarkInterrupted(ctx, defaultUserID, sessionID, "daemon shutdown"); err != nil {
+	if err := t.store.MarkInterrupted(ctx, defaultUserID, sessionID, reason); err != nil {
 		// Error, not Warn (#53): a lost marker means an interrupted
 		// turn a restart will never surface. A counter belongs here
 		// too — that is the v0.2 fixed-registry work (#50).
 		t.logger.Error("failed to write interruption marker", "session", sessionID, "error", err.Error())
 		return
+	}
+	if pause {
+		// Planned stop with --pause-sessions: gate-pause under the same
+		// writeMu hold, so the pause travels with the mark (adversarial
+		// gate finding L1 — late-starting turns get both or neither).
+		// Paused outranks interrupted in the state ladder, so boot-time
+		// auto-resume (#41, candidates = interrupted) skips the session.
+		if _, err := t.store.PauseGate(ctx, defaultUserID, sessionID, transcript.PauseSpec{
+			Reason:  transcript.ReasonOperator,
+			Message: "planned stop: " + reason,
+		}); err != nil {
+			t.logger.Error("failed to gate-pause session for planned stop", "session", sessionID, "error", err.Error())
+		}
 	}
 	t.mu.Lock()
 	t.marked[sessionID] = true

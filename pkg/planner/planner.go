@@ -63,6 +63,10 @@ const (
 	ToolRunShapeLLMRouter    = "run_shape_llm_router"
 	ToolRunShapeFanOutFanIn  = "run_shape_fan_out_fan_in"
 	ToolRequestOperatorInput = "request_operator_input"
+	// ToolPauseSession is the v0.2 plane-A self-pause
+	// (docs/durable-execution-design.md, "The v0.2 pause/abort
+	// mechanics"). Registered only when Config.PauseRecorder is set.
+	ToolPauseSession = "pause_session"
 )
 
 // Config describes how to construct a planner for one workload bundle.
@@ -97,6 +101,13 @@ type Config struct {
 	// Names absent from Specialists are ignored; specialists absent
 	// from Order are appended in map-iteration-stable sorted order.
 	Order []string
+
+	// PauseRecorder mints the durable pause record + resume token for
+	// pause_session (the v0.2 plane-A self-pause). Nil leaves
+	// pause_session out of the vocabulary — callers without a durable
+	// store (one-shot in-memory sessions) get a coherent tool set
+	// rather than a pause that would die with the process.
+	PauseRecorder PauseRecorder
 }
 
 // New constructs the planner as a Task-mode LlmAgent via
@@ -157,6 +168,14 @@ func New(cfg Config) (adkagent.Agent, error) {
 		return nil, fmt.Errorf("planner: build %s: %w", ToolRequestOperatorInput, err)
 	}
 	tools = append(tools, operator)
+
+	if cfg.PauseRecorder != nil {
+		pauseTool, err := newPauseSessionTool(cfg.PauseRecorder)
+		if err != nil {
+			return nil, fmt.Errorf("planner: build %s: %w", ToolPauseSession, err)
+		}
+		tools = append(tools, pauseTool)
+	}
 
 	instruction := cfg.Instruction
 	if instruction == "" {

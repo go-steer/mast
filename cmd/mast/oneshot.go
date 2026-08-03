@@ -40,6 +40,7 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/eventlog"
+	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/taskclass"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"
@@ -89,10 +90,6 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	if err != nil {
 		return fmt.Errorf("construct model %q: %w", opts.Model, err)
 	}
-	root, err := compose.BuildClassRoot(opts.Class, llm)
-	if err != nil {
-		return err
-	}
 	sessionSvc, err := buildOneShotSessionService(opts.SessionDrv, opts.SessionDB, logger)
 	if err != nil {
 		return err
@@ -106,6 +103,19 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// `mast sessions ack-effects <id> --session-db=<this DB>` — since
 	// no daemon serves task-class DBs.
 	oneShotStore := transcript.NewStore(sessionSvc, appName)
+	// pause_session (plane A) is offered only with a durable store: an
+	// in-memory pause record would die with the process. Daemonless
+	// semantics (v0.2 pause/abort design): the park and token are
+	// durable; recovery is `mast sessions show/resume --session-db` —
+	// no token index, no timers, no extend-token without a daemon.
+	var pauseRec planner.PauseRecorder
+	if opts.SessionDB != "" {
+		pauseRec = oneShotStore
+	}
+	root, err := compose.BuildClassRoot(opts.Class, llm, pauseRec)
+	if err != nil {
+		return err
+	}
 	outboxPlugin, err := effects.New(effects.Config{
 		Predicate:     effects.NewPredicate(nil),
 		SubAgentNames: effects.SubAgentNames(root),

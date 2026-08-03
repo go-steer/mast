@@ -36,6 +36,10 @@ trust boundary from the inject webhook.
 mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|interrupted|idle]
 mast sessions show   <session-id> --session-db=...
 mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--ack-effects] [--addr=...]
+mast sessions resume --token=<mrt_...> [--response='<json>'] [--ack-effects] [--addr=... | --session-db=...]
+mast sessions pause  <session-id> --reason=<enum> [--message=...] [--resume-at=RFC3339 | --resume-after=15m]
+                     [--interrupt] [--ttl=48h] [--addr=...]
+mast sessions extend-token <mrt_...> --ttl=<duration> [--addr=...]
 mast sessions abort  <session-id> [--reason=...] [--addr=...]
 mast sessions ack-effects <session-id> [--reason=...] [--addr=... | --session-db=...]
 ```
@@ -53,15 +57,42 @@ The split is deliberate:
   owns the workflow, and routing abort through the daemon keeps a single
   SQLite writer. Both send `MAST_INJECT_TOKEN` as a bearer when set.
 
-`abort` writes a durable abort marker with a reason; the daemon then
-refuses resumes for that session. It's a marker plus resume-refusal, not
-engine preemption (engine-level terminal state is v0.2 work). Markers
+### Pause and resume tokens (v0.2)
+
+`pause` **gate-pauses** a session: the daemon refuses every subsequent
+turn on it — inject, attach, resume, timer — until the pause is
+resumed, and prints a **resume token** (`mrt_...`). Token possession is
+the resume capability: `resume --token=...` needs nothing else (the
+daemon resolves the session), works for gate pauses and for the
+planner's own `pause_session` parks alike, and consumes the token —
+a replay is a no-op. Add `--interrupt` to a pause to also cancel the
+session's in-flight turn (hard pause).
+
+`--resume-at` / `--resume-after` arm the daemon's timed-pause
+scheduler: the session auto-resumes at that time through the same
+budget-metered paths an operator resume takes. Tokens expire after 7
+days by default (`--ttl` can only shorten that); an expired token
+refuses to resume but **the pause stays** — `extend-token` is the
+audited recovery, then resume again.
+
+`resume --token --session-db=...` (no daemon) clears **gate pauses
+only**, and only on a DB no daemon is serving; an interrupt-pause
+resume always needs the daemon that owns the runner.
+
+### Abort (terminal since v0.2)
+
+`abort` writes a durable abort marker with a reason, **cancels the
+session's in-flight turn**, and the daemon refuses every further turn
+kind on the session — inject and attach included, not just resume
+(that narrower contract was v0.1's). Aborting also voids the session's
+pause tokens and timers. Markers
 live in a companion row beside the session, not in its transcript — an
 in-flight turn is never disturbed by an abort (or by a shutdown
 marker), and the model never sees marker events.
 
-Resume is keyed by **interrupt ID** (`--interrupt` + `--response`), not by
-token — resume tokens are the v0.2 programmatic-pause surface.
+Resume takes either keying: **interrupt ID** (`--interrupt` +
+`--response`, printed by `show`) or a **resume token** (`--token`, the
+v0.2 programmatic-pause surface above).
 
 `interrupted` marks a session whose turn was cut short by a daemon
 shutdown: on SIGTERM the daemon stops accepting new work (`/inject`
@@ -76,6 +107,27 @@ session proceeds normally, and a session that reached a HITL pause
 reports `paused`, not `interrupted`. Boot-time auto-resume of
 interrupted sessions is deliberately later v0.2 work (it gates on the
 recorded-effect outbox below).
+
+## `mast stop` (planned stop)
+
+```
+mast stop [--addr=...] [--reason=...] [--pause-sessions]
+```
+
+Asks a running daemon to drain and exit — exactly the SIGTERM path,
+with the interruption markers classified **`operator stop`** (plus
+`--reason`) instead of `daemon shutdown`, so transcripts distinguish a
+planned stop from a crash forever. `--pause-sessions` additionally
+gate-pauses every session the drain marks, so boot-time auto-resume
+hands them back to the operator instead of continuing them.
+
+**Daemon exit codes** encode whether work was cut short, not who
+initiated: `0` = clean drain (all in-flight turns finished), `3` =
+drain window expired with interrupted survivors, `1` = error, `2` =
+usage. `Restart=always` remains the default systemd guidance;
+`Restart=on-failure` now composes too — exit 3 revives the daemon
+exactly when boot-time repair has work to do, and a cleanly-drained
+stop stays down.
 
 An interrupted turn can leave a **dangling mutating tool call** — a
 call whose outcome the log cannot prove. The recorded-effect outbox

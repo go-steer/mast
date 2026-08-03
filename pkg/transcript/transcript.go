@@ -19,15 +19,23 @@
 // interrupt, and with what response schema.
 //
 // The pause model it inspects is the one verified in spike 2
-// (docs/spike-findings.md): a paused session carries an event with a
-// non-nil RequestedInput; the matching resume is a later user turn
-// whose FunctionResponse.ID equals that RequestedInput's InterruptID.
-// A RequestedInput with no such later FunctionResponse is therefore a
-// *pending* interrupt, and a session with pending interrupts is paused.
+// (docs/spike-findings.md) and extended by the v0.2 pause/abort design
+// (docs/durable-execution-design.md, "The v0.2 pause/abort mechanics"):
+// a paused session carries a pending interrupt — an event with a
+// non-nil RequestedInput, OR an unanswered LongRunningToolIDs entry (a
+// long-running tool park: request_operator_input, pause_session; both
+// spellings of ADK's one pause primitive) — or an active gate-pause
+// record on its ops row. The matching resume for an interrupt is a
+// later user turn whose FunctionResponse.ID equals the interrupt ID.
+// The LongRunningToolIDs source was added by the v0.2 design's
+// adversarial gate (finding H1): without it, v0.1 planner parks
+// projected idle/interrupted — invisible to operators and, worse,
+// auto-resume candidates.
 //
 // State labels are derived strictly from what the store can prove:
 //
-//   - StatePaused:  at least one pending (unresolved) RequestedInput.
+//   - StatePaused:  at least one pending (unresolved) interrupt, or an
+//     active gate pause (Store.PauseGate).
 //   - StateAborted: an operator abort marker is present (written by
 //     Store.Abort to the session's companion ops row — see opsSuffix;
 //     v0.1.0 markers in the primary row's state are still honored).
@@ -140,15 +148,23 @@ var ErrNotFound = errors.New("session not found")
 // ErrAlreadyAborted reports that an abort marker is already present.
 var ErrAlreadyAborted = errors.New("session already aborted")
 
-// PendingInput is a RequestedInput interrupt that has not been resolved
-// by a later matching FunctionResponse. It carries everything an
-// operator needs to script a resume.
+// PendingInput is a pending interrupt — a RequestedInput, or a
+// long-running tool park — that has not been resolved by a later
+// matching FunctionResponse. It carries everything an operator needs
+// to script a resume.
 type PendingInput struct {
 	// InterruptID is the resume correlation key: the resume turn's
 	// FunctionResponse.ID must equal it (spike-2 verified contract).
 	InterruptID string `json:"interrupt_id"`
-	// Message is the human-readable prompt from the pausing node.
+	// Message is the human-readable prompt from the pausing node (for
+	// long-running parks: the tool call's "message" argument, if any).
 	Message string `json:"message,omitempty"`
+	// LongRunning marks a long-running tool park (pause_session,
+	// request_operator_input) rather than a RequestedInput. The resume
+	// wire shape is identical either way.
+	LongRunning bool `json:"long_running,omitempty"`
+	// ToolName is the parked tool's name (long-running parks only).
+	ToolName string `json:"tool_name,omitempty"`
 	// Author is the agent that raised the interrupt.
 	Author string `json:"author,omitempty"`
 	// RaisedAt is the timestamp of the pausing event.
@@ -175,14 +191,19 @@ type Summary struct {
 	// InterruptReason is set when State is StateInterrupted: the reason
 	// recorded by the daemon whose shutdown cut the session's turn short.
 	InterruptReason string `json:"interrupt_reason,omitempty"`
+	// PauseReason / PauseMessage are set when an active gate pause
+	// contributes to StatePaused (Store.PauseGate).
+	PauseReason  string `json:"pause_reason,omitempty"`
+	PauseMessage string `json:"pause_message,omitempty"`
 }
 
-// Detail is the show-view projection: Summary plus event count and the
-// full pending-interrupt records.
+// Detail is the show-view projection: Summary plus event count, the
+// full pending-interrupt records, and the active gate pause if any.
 type Detail struct {
 	Summary
 	EventCount int            `json:"event_count"`
 	Pending    []PendingInput `json:"pending,omitempty"`
+	GatePause  *PauseRecord   `json:"gate_pause,omitempty"`
 }
 
 // Store wraps an ADK session.Service with the operator-facing
@@ -286,7 +307,8 @@ func (s *Store) Get(ctx context.Context, userID, sessionID string) (*Detail, err
 	if err != nil {
 		return nil, fmt.Errorf("get session %q: %w", sessionID, err)
 	}
-	return project(resp.Session, s.opsState(ctx, userID, sessionID)), nil
+	markers, pauses := s.opsSnapshot(ctx, userID, sessionID)
+	return project(resp.Session, markers, pauses[pauseGateKey]), nil
 }
 
 // Abort appends a durable operator-abort marker for the session.
@@ -337,16 +359,27 @@ func (s *Store) Abort(ctx context.Context, userID, sessionID, reason string) err
 	if _, err := resp.Session.State().Get(abortReasonKey); err == nil {
 		return fmt.Errorf("session %q: %w", sessionID, ErrAlreadyAborted)
 	}
-	if v, ok := s.opsState(ctx, userID, sessionID)[abortReasonKey]; ok && v != "" {
+	markers, pauses := s.opsSnapshot(ctx, userID, sessionID)
+	if v, ok := markers[abortReasonKey]; ok && v != "" {
 		return fmt.Errorf("session %q: %w", sessionID, ErrAlreadyAborted)
 	}
 
+	// Abort purges pause records (v0.2 pause/abort design, timed-pause
+	// section): an aborted session holds no resumable tokens and no
+	// live timers. Purged = blanked, so a purged token reads as
+	// not-found rather than already-resumed.
+	delta := map[string]any{
+		abortReasonKey: reason,
+		abortTimeKey:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	for key, rec := range pauses {
+		if rec.Active() {
+			delta[key] = ""
+		}
+	}
 	return s.appendOpsDelta(ctx, userID, sessionID, "operator-abort", "operator",
 		fmt.Sprintf("session aborted by operator: %s", reason),
-		map[string]any{
-			abortReasonKey: reason,
-			abortTimeKey:   time.Now().UTC().Format(time.RFC3339Nano),
-		})
+		delta)
 }
 
 // MarkInterrupted appends a durable interrupted-by-shutdown marker for
@@ -490,23 +523,33 @@ func (s *Store) appendOpsDelta(ctx context.Context, userID, sessionID, invocatio
 	return nil
 }
 
-// opsState reads the companion ops row's marker keys. A missing row —
-// or any read failure — means "no markers": the ops row is an overlay,
-// and a session without one is simply unmarked.
+// opsState reads the companion ops row's scalar marker keys. A missing
+// row — or any read failure — means "no markers": the ops row is an
+// overlay, and a session without one is simply unmarked.
 func (s *Store) opsState(ctx context.Context, userID, sessionID string) map[string]string {
+	markers, _ := s.opsSnapshot(ctx, userID, sessionID)
+	return markers
+}
+
+// opsSnapshot reads the ops row once and splits its state into scalar
+// markers (every "mast_"-prefixed key that is not a pause record —
+// enumeration, not a whitelist, so a new marker key can never be
+// silently dropped again) and parsed pause records.
+func (s *Store) opsSnapshot(ctx context.Context, userID, sessionID string) (map[string]string, map[string]*PauseRecord) {
 	resp, err := s.svc.Get(ctx, &adksession.GetRequest{
 		AppName: s.appName, UserID: userID, SessionID: opsSessionID(sessionID),
 	})
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	out := make(map[string]string, 6)
-	for _, k := range []string{abortReasonKey, abortTimeKey, interruptReasonKey, interruptTimeKey, effectsAckTimeKey, effectsAckReasonKey} {
-		if v, err := resp.Session.State().Get(k); err == nil {
-			out[k] = fmt.Sprintf("%v", v)
+	markers := make(map[string]string)
+	for k, v := range resp.Session.State().All() {
+		if !strings.HasPrefix(k, "mast_") || k == pauseGateKey || strings.HasPrefix(k, pauseIntrKeyPrefix) {
+			continue
 		}
+		markers[k] = fmt.Sprintf("%v", v)
 	}
-	return out
+	return markers, parsePauseRecords(resp.Session, sessionID)
 }
 
 // findUserID resolves the user ID owning sessionID by scanning the
@@ -530,11 +573,12 @@ func (s *Store) findUserID(ctx context.Context, sessionID string) (string, error
 }
 
 // project computes the Detail view from a fully-loaded primary session
-// plus its companion ops-row marker state (nil = no ops row). Marker
-// keys are also read from the primary's own state for back-compat:
-// v0.1.0 wrote abort markers there, before the write-lease constraint
-// moved marker writes to the ops row (issues #45/#46).
-func project(sess adksession.Session, ops map[string]string) *Detail {
+// plus its companion ops-row marker state (nil = no ops row) and the
+// active gate-pause record, if any. Marker keys are also read from the
+// primary's own state for back-compat: v0.1.0 wrote abort markers
+// there, before the write-lease constraint moved marker writes to the
+// ops row (issues #45/#46).
+func project(sess adksession.Session, ops map[string]string, gate *PauseRecord) *Detail {
 	d := &Detail{
 		Summary: Summary{
 			ID:            sess.ID(),
@@ -566,13 +610,25 @@ func project(sess adksession.Session, ops map[string]string) *Detail {
 		return d
 	}
 
+	if gate.Active() {
+		// Gate pause (plane B) is the second paused source: the
+		// chokepoint refuses every turn kind until it is resumed.
+		d.State = StatePaused
+		d.PauseReason = string(gate.Reason)
+		d.PauseMessage = gate.Message
+		d.GatePause = gate
+	}
+
 	if len(d.Pending) > 0 {
-		// Paused trumps interrupted: a session that reached a HITL pause
-		// is resumable and should say so, whatever a shutdown marker says.
+		// Paused trumps interrupted: a session that reached a pause —
+		// HITL RequestedInput or a long-running park — is resumable and
+		// should say so, whatever a shutdown marker says.
 		d.State = StatePaused
 		for _, p := range d.Pending {
 			d.PendingInterruptIDs = append(d.PendingInterruptIDs, p.InterruptID)
 		}
+	}
+	if d.State == StatePaused {
 		return d
 	}
 
@@ -584,11 +640,19 @@ func project(sess adksession.Session, ops map[string]string) *Detail {
 	return d
 }
 
-// scanPending walks the event log in order and returns the
-// RequestedInput interrupts with no later matching resolution. A
-// resolution is any later event carrying a FunctionResponse part whose
-// ID equals the pending InterruptID — exactly the resume wire shape
-// verified in spike 2 (docs/spike-findings.md, Q2).
+// scanPending walks the event log in order and returns the pending
+// interrupts with no later matching resolution, from both spellings of
+// ADK's pause primitive: RequestedInput events, and long-running tool
+// parks (unanswered LongRunningToolIDs — request_operator_input,
+// pause_session). A resolution is any later event carrying a
+// FunctionResponse part whose ID equals the pending interrupt ID —
+// exactly the resume wire shape verified in spike 2
+// (docs/spike-findings.md, Q2).
+//
+// The LongRunningToolIDs source cannot false-positive on coordinator
+// task delegations: ADK's TaskAgentTool and TransferToAgentTool are
+// not long-running, so delegations never enter LongRunningToolIDs
+// (verified against v2.1.0 in the v0.2 pause/abort design's gate).
 func scanPending(events adksession.Events) []PendingInput {
 	var order []string
 	byID := make(map[string]PendingInput)
@@ -605,6 +669,38 @@ func scanPending(events adksession.Events) []PendingInput {
 				ResponseSchema: ri.ResponseSchema,
 				Payload:        ri.Payload,
 			}
+		}
+		for _, id := range ev.LongRunningToolIDs {
+			if id == "" {
+				continue
+			}
+			if _, seen := byID[id]; seen {
+				// A RequestedInput event carries its interrupt ID in
+				// LongRunningToolIDs too (one primitive, two spellings) —
+				// keep the richer RequestedInput record.
+				continue
+			}
+			order = append(order, id)
+			p := PendingInput{
+				InterruptID: id,
+				Author:      ev.Author,
+				RaisedAt:    ev.Timestamp,
+				LongRunning: true,
+			}
+			// The parked FunctionCall rides the same event; its name and
+			// "message" argument are the best operator-facing context.
+			if ev.Content != nil {
+				for _, part := range ev.Content.Parts {
+					if part == nil || part.FunctionCall == nil || part.FunctionCall.ID != id {
+						continue
+					}
+					p.ToolName = part.FunctionCall.Name
+					if m, ok := part.FunctionCall.Args["message"].(string); ok {
+						p.Message = m
+					}
+				}
+			}
+			byID[id] = p
 		}
 		if ev.Content == nil {
 			continue
