@@ -143,6 +143,13 @@ type DanglingIntent struct {
 	CallID       string
 	InvocationID string
 	Timestamp    time.Time
+	// EventIndex is the 0-based position of the carrying event among log
+	// events with non-nil Content, in log order. It lets a consumer group
+	// dangling calls by the event that raised them — the auto-resume
+	// repair path (cmd/mast, #41) answers only the calls of a single
+	// (the last) function-call event, ADK's single-call-event validation
+	// constraint. The outbox itself ignores it.
+	EventIndex int
 }
 
 // Config configures the outbox plugin.
@@ -333,26 +340,52 @@ func (o *outbox) afterRun(ictx agent.InvocationContext) {
 	o.mu.Unlock()
 }
 
-// scanHistory pairs FunctionCall parts with FunctionResponse parts
-// across the whole event sequence, producing the turn-start snapshot:
-// unpaired mutating/spawning calls (dangling intents) and recorded
-// completions for mutating calls (replay candidates). Excluded from
-// the dangling set: long-running calls (pending by design — the event
-// marks their IDs), control calls, task-delegation calls (named after
-// a composed sub-agent), and calls with an empty ID (ADK's
-// PopulateClientFunctionCallID guarantees IDs on runner-written
-// events; blank IDs only occur in hand-built logs and cannot be keyed,
-// paired, or acknowledged, so they are skipped rather than allowed to
-// dangle forever).
-func scanHistory(events session.Events, pred Predicate, subAgents map[string]bool) *turnState {
-	st := &turnState{completions: map[string]map[string]any{}}
-	open := map[string]DanglingIntent{}
+// scannedCall is one unpaired FunctionCall from pairScan, tagged with
+// its effect class and whether it is excluded from the dangling set
+// (long-running park, engine control call, or task delegation named
+// after a composed sub-agent).
+type scannedCall struct {
+	intent   DanglingIntent
+	class    Class
+	excluded bool
+}
+
+// pairedScan is the shared result of walking the event log once, pairing
+// FunctionCall parts with their FunctionResponse parts. Both the outbox
+// turn snapshot (scanHistory) and the auto-resume eligibility/repair
+// scan (ScanDangling) derive their outputs from it, so the pairing and
+// exclusion rules live in exactly one place (#41 M3).
+type pairedScan struct {
+	// unpaired lists every non-empty-ID FunctionCall with no later
+	// matching FunctionResponse, in first-seen order.
+	unpaired []scannedCall
+	// completions maps a MUTATING call's ID to its recorded response
+	// payload (replay candidates for the outbox); read-only completions
+	// are not tracked.
+	completions map[string]map[string]any
+	// lastCallEventIndex is the EventIndex of the last event carrying any
+	// FunctionCall with a non-empty ID (paired or unpaired), or -1.
+	lastCallEventIndex int
+}
+
+// pairScan walks the event sequence once and pairs FunctionCall parts
+// with FunctionResponse parts. Excluded-but-unpaired calls are retained
+// in the result (tagged excluded) so a consumer can distinguish them
+// from ordinary dangling calls; calls with an empty ID are skipped
+// entirely (ADK's PopulateClientFunctionCallID guarantees IDs on
+// runner-written events; blank IDs only occur in hand-built logs and
+// cannot be keyed, paired, or acknowledged).
+func pairScan(events session.Events, pred Predicate, subAgents map[string]bool) *pairedScan {
+	ps := &pairedScan{completions: map[string]map[string]any{}, lastCallEventIndex: -1}
+	open := map[string]scannedCall{}
 	callName := map[string]string{} // call ID → tool name, for completion classification
 	var order []string
+	evIdx := -1
 	for ev := range events.All() {
 		if ev == nil || ev.Content == nil {
 			continue
 		}
+		evIdx++
 		longRunning := map[string]bool{}
 		for _, id := range ev.LongRunningToolIDs {
 			longRunning[id] = true
@@ -368,25 +401,27 @@ func scanHistory(events session.Events, pred Predicate, subAgents map[string]boo
 					// it gates; that call's pre-pause placeholder
 					// response is NOT a completion.
 					if id := confirmationGatedCallID(fc.Args); id != "" {
-						delete(st.completions, id)
+						delete(ps.completions, id)
 					}
 				}
-				if fc.ID == "" || longRunning[fc.ID] || controlCalls[fc.Name] || subAgents[fc.Name] {
+				if fc.ID == "" {
 					continue
 				}
-				c := pred(fc.Name)
-				if c != ClassMutating && c != ClassSpawning {
-					continue
-				}
+				ps.lastCallEventIndex = evIdx
 				callName[fc.ID] = fc.Name
 				if _, seen := open[fc.ID]; !seen {
 					order = append(order, fc.ID)
 				}
-				open[fc.ID] = DanglingIntent{
-					ToolName:     fc.Name,
-					CallID:       fc.ID,
-					InvocationID: ev.InvocationID,
-					Timestamp:    ev.Timestamp,
+				open[fc.ID] = scannedCall{
+					intent: DanglingIntent{
+						ToolName:     fc.Name,
+						CallID:       fc.ID,
+						InvocationID: ev.InvocationID,
+						Timestamp:    ev.Timestamp,
+						EventIndex:   evIdx,
+					},
+					class:    pred(fc.Name),
+					excluded: longRunning[fc.ID] || controlCalls[fc.Name] || subAgents[fc.Name],
 				}
 			}
 			if fr := part.FunctionResponse; fr != nil {
@@ -410,18 +445,89 @@ func scanHistory(events session.Events, pred Predicate, subAgents map[string]boo
 					name = callName[fr.ID]
 				}
 				if pred(name) == ClassMutating {
-					st.completions[fr.ID] = fr.Response
+					ps.completions[fr.ID] = fr.Response
 				}
 			}
 		}
 	}
 	for _, id := range order {
-		if d, ok := open[id]; ok {
-			st.dangling = append(st.dangling, d)
+		if c, ok := open[id]; ok {
+			ps.unpaired = append(ps.unpaired, c)
+		}
+	}
+	return ps
+}
+
+// scanHistory produces the outbox turn-start snapshot: unpaired
+// mutating/spawning calls (dangling intents) and recorded completions
+// for mutating calls (replay candidates). Excluded calls (long-running
+// parks, control calls, sub-agent delegations) never dangle.
+func scanHistory(events session.Events, pred Predicate, subAgents map[string]bool) *turnState {
+	ps := pairScan(events, pred, subAgents)
+	st := &turnState{completions: ps.completions}
+	for _, c := range ps.unpaired {
+		if c.excluded {
+			continue
+		}
+		if c.class == ClassMutating || c.class == ClassSpawning {
+			st.dangling = append(st.dangling, c.intent)
 		}
 	}
 	sort.Slice(st.dangling, func(i, j int) bool { return st.dangling[i].Timestamp.Before(st.dangling[j].Timestamp) })
 	return st
+}
+
+// DanglingScan splits a session's unpaired FunctionCalls into the three
+// buckets the boot-time auto-resume pass acts on (cmd/mast, #41). It is
+// the once-and-only-once eligibility gate's single source of truth.
+type DanglingScan struct {
+	// Mutating are unpaired mutating- or spawning-class calls: their
+	// effect may or may not have committed, so a session with ANY of them
+	// is ineligible for auto-resume and is left for an operator ack
+	// (regardless of the effects ack watermark — an ack suppresses the
+	// outbox refusal but does not pair the call, and synthesizing a
+	// response would falsely assert the effect did not happen).
+	Mutating []DanglingIntent
+	// Repairable are unpaired ordinary read-only calls (a read-only tool
+	// cut off mid-execution). They carry no external effect, so the
+	// daemon may answer them with a synthetic error FunctionResponse to
+	// make the history provider-valid before re-running.
+	Repairable []DanglingIntent
+	// Deferred are unpaired excluded calls (sub-agent task delegations,
+	// and defensively any control/long-running call): engine-reconstruct
+	// or operator territory. The daemon must not synthesize responses for
+	// these; a candidate carrying any is skipped in slice-1.
+	Deferred []DanglingIntent
+	// LastCallEventIndex is the EventIndex of the last event carrying any
+	// FunctionCall (paired or not), or -1 if none. Repair is only clean
+	// when every Repairable call sits in this event (ADK validates a
+	// repair message against the latest function-call event).
+	LastCallEventIndex int
+}
+
+// ScanDangling classifies a session's unpaired FunctionCalls for the
+// auto-resume eligibility and repair decisions. It shares pairScan with
+// the outbox, so the two can never drift on what "dangling" means.
+func ScanDangling(events session.Events, pred Predicate, subAgents map[string]bool) DanglingScan {
+	ps := pairScan(events, pred, subAgents)
+	out := DanglingScan{LastCallEventIndex: ps.lastCallEventIndex}
+	for _, c := range ps.unpaired {
+		switch {
+		case c.excluded:
+			out.Deferred = append(out.Deferred, c.intent)
+		case c.class == ClassMutating || c.class == ClassSpawning:
+			out.Mutating = append(out.Mutating, c.intent)
+		default:
+			out.Repairable = append(out.Repairable, c.intent)
+		}
+	}
+	byTS := func(ds []DanglingIntent) {
+		sort.Slice(ds, func(i, j int) bool { return ds[i].Timestamp.Before(ds[j].Timestamp) })
+	}
+	byTS(out.Mutating)
+	byTS(out.Repairable)
+	byTS(out.Deferred)
+	return out
 }
 
 // confirmationGatedCallID extracts the original function-call ID an

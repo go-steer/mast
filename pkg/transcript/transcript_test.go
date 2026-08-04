@@ -608,6 +608,140 @@ func TestLegacyAbortMarkerStillHonored(t *testing.T) {
 	}
 }
 
+func TestScanInterrupted(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewStore(svc, testApp)
+
+			// One interrupted, one idle, one paused, one aborted, plus a
+			// resolved (cleared) marker — only the interrupted one is a
+			// candidate.
+			seed(t, svc, "op", "s-int", textEvent("triager", "working..."))
+			seed(t, svc, "op", "s-idle", textEvent("triager", "done"))
+			seed(t, svc, "op", "s-paused", interruptEvent("triager", "i-1", "approve?"))
+			seed(t, svc, "op", "s-aborted", textEvent("triager", "mid"))
+			seed(t, svc, "op", "s-cleared", textEvent("triager", "mid"))
+
+			if err := store.MarkInterrupted(ctx, "op", "s-int", "daemon shutdown (SIGTERM)"); err != nil {
+				t.Fatalf("MarkInterrupted(s-int): %v", err)
+			}
+			// A paused session that ALSO carries an interrupt marker must
+			// still project paused (precedence), so it is not a candidate.
+			if err := store.MarkInterrupted(ctx, "op", "s-paused", "daemon shutdown"); err != nil {
+				t.Fatalf("MarkInterrupted(s-paused): %v", err)
+			}
+			if err := store.MarkInterrupted(ctx, "op", "s-aborted", "daemon shutdown"); err != nil {
+				t.Fatalf("MarkInterrupted(s-aborted): %v", err)
+			}
+			if err := store.Abort(ctx, "op", "s-aborted", "operator"); err != nil {
+				t.Fatalf("Abort(s-aborted): %v", err)
+			}
+			if err := store.MarkInterrupted(ctx, "op", "s-cleared", "daemon shutdown"); err != nil {
+				t.Fatalf("MarkInterrupted(s-cleared): %v", err)
+			}
+			if err := store.ClearInterrupted(ctx, "op", "s-cleared"); err != nil {
+				t.Fatalf("ClearInterrupted(s-cleared): %v", err)
+			}
+
+			got, err := store.ScanInterrupted(ctx)
+			if err != nil {
+				t.Fatalf("ScanInterrupted: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("ScanInterrupted found %d candidates, want 1: %+v", len(got), got)
+			}
+			c := got[0]
+			if c.SessionID != "s-int" || c.UserID != "op" {
+				t.Fatalf("candidate = %q/%q, want s-int/op", c.UserID, c.SessionID)
+			}
+			if c.InterruptReason != "daemon shutdown (SIGTERM)" {
+				t.Errorf("InterruptReason = %q", c.InterruptReason)
+			}
+			if c.InterruptedAt.IsZero() {
+				t.Error("InterruptedAt is zero; freshness window would treat it as ancient")
+			}
+			if c.EventCount == 0 || c.Events == nil {
+				t.Errorf("candidate carries no events (count=%d), the effects scan needs them", c.EventCount)
+			}
+			// The loaded events must be the PRIMARY transcript, not the
+			// ops row.
+			if !hasText(c.Events, "working...") {
+				t.Error("candidate.Events is not the primary transcript")
+			}
+		})
+	}
+}
+
+func hasText(events adksession.Events, want string) bool {
+	for ev := range events.All() {
+		if ev == nil || ev.Content == nil {
+			continue
+		}
+		for _, p := range ev.Content.Parts {
+			if p != nil && p.Text == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestAutoResumeAttemptCounter(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewStore(svc, testApp)
+			seed(t, svc, "op", "s-loop", textEvent("triager", "working"))
+
+			// Unmarked reads as zero (fail-open direction for the breaker).
+			if n, last := store.AutoResumeAttempts(ctx, "op", "s-loop"); n != 0 || !last.IsZero() {
+				t.Fatalf("fresh attempts = %d,%v want 0,zero", n, last)
+			}
+
+			before := time.Now().Add(-time.Second)
+			n, err := store.RecordAutoResumeAttempt(ctx, "op", "s-loop")
+			if err != nil {
+				t.Fatalf("RecordAutoResumeAttempt: %v", err)
+			}
+			if n != 1 {
+				t.Fatalf("first attempt count = %d, want 1", n)
+			}
+			n, err = store.RecordAutoResumeAttempt(ctx, "op", "s-loop")
+			if err != nil {
+				t.Fatalf("RecordAutoResumeAttempt #2: %v", err)
+			}
+			if n != 2 {
+				t.Fatalf("second attempt count = %d, want 2", n)
+			}
+			got, last := store.AutoResumeAttempts(ctx, "op", "s-loop")
+			if got != 2 {
+				t.Fatalf("read-back attempts = %d, want 2", got)
+			}
+			if last.Before(before) {
+				t.Fatalf("last-attempt stamp %v predates the test", last)
+			}
+
+			// A successful resume clears the counter.
+			if err := store.ClearAutoResumeAttempts(ctx, "op", "s-loop"); err != nil {
+				t.Fatalf("ClearAutoResumeAttempts: %v", err)
+			}
+			if n, _ := store.AutoResumeAttempts(ctx, "op", "s-loop"); n != 0 {
+				t.Fatalf("attempts after clear = %d, want 0", n)
+			}
+
+			// The counter is a marker, not a state: derivation unchanged.
+			d, err := store.Get(ctx, "", "s-loop")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if d.State != StateIdle {
+				t.Fatalf("state with attempt counter = %q, want %q", d.State, StateIdle)
+			}
+		})
+	}
+}
+
 func TestAckEffects(t *testing.T) {
 	for name, svc := range services(t) {
 		t.Run(name, func(t *testing.T) {
