@@ -55,6 +55,36 @@ const (
 	TokenKindCandidates = "candidates"
 )
 
+// Marker-write operations for MarkerWriteFailure
+// (mast_marker_write_failures_total{operation}). One per durable
+// interruption-marker store write the shutdown drain performs; a
+// non-zero count means an interrupted turn a restart may never
+// surface (the Error log at the failure site names the session).
+const (
+	MarkerOpMark  = "mark"  // MarkInterrupted (beginDrain / late-start mark)
+	MarkerOpClear = "clear" // ClearInterrupted (clean finish during drain)
+	MarkerOpPause = "pause" // PauseGate on a planned stop with --pause-sessions
+)
+
+// Gate-pause sources for GatePause (mast_gate_pauses_total{source}).
+const (
+	GatePauseOperator    = "operator"     // POST /pause (incl. hard pause)
+	GatePausePlannedStop = "planned_stop" // drain mark with --pause-sessions
+)
+
+// Timed-pause fire outcomes (mast_timed_pause_fires_total{outcome}).
+// A fixed vocabulary mirroring the scheduler fire callback's branches.
+const (
+	// TimedPauseResumed: the timer drove a resume/consume to completion.
+	TimedPauseResumed = "resumed"
+	// TimedPauseSkipped: the fire was a benign no-op — an operator
+	// resumed first, or the daemon was draining when the timer fired.
+	TimedPauseSkipped = "skipped"
+	// TimedPauseError: the resume/consume the timer attempted failed;
+	// the timer is rescheduled and will retry.
+	TimedPauseError = "error"
+)
+
 // Auto-resume outcomes for AutoResume (mast_autoresume_total{outcome}).
 // A fixed vocabulary, mirroring cmd/mast's boot-time auto-resume
 // decision tree (#41): every interrupted candidate the boot pass
@@ -93,14 +123,18 @@ const (
 type Registry struct {
 	reg *prometheus.Registry
 
-	turns       *prometheus.CounterVec
-	modelCalls  *prometheus.CounterVec
-	tokens      *prometheus.CounterVec
-	costUSD     *prometheus.CounterVec
-	hitlPauses  *prometheus.CounterVec
-	hitlResumes *prometheus.CounterVec
-	budgetTrips *prometheus.CounterVec
-	autoResume  *prometheus.CounterVec
+	turns           *prometheus.CounterVec
+	modelCalls      *prometheus.CounterVec
+	tokens          *prometheus.CounterVec
+	costUSD         *prometheus.CounterVec
+	hitlPauses      *prometheus.CounterVec
+	hitlResumes     *prometheus.CounterVec
+	budgetTrips     *prometheus.CounterVec
+	autoResume      *prometheus.CounterVec
+	markerFailures  *prometheus.CounterVec
+	aborts          *prometheus.CounterVec
+	gatePauses      *prometheus.CounterVec
+	timedPauseFires *prometheus.CounterVec
 }
 
 // autoResumeOutcomes is the fixed label set primed for
@@ -150,11 +184,25 @@ func New() *Registry {
 	r.budgetTrips = counter("mast_budget_trips_total",
 		"Turns aborted because a budget ceiling was crossed.",
 		"workload")
-	// #50's fixed-registry pass will canonicalize all v0.2 durable-
-	// execution families (pause/resume/abort/stop/auto-resume) together;
-	// this family is registered here now so #41 has its export surface.
 	r.autoResume = counter("mast_autoresume_total",
 		"Boot-time auto-resume decisions, by workload and outcome.",
+		"workload", "outcome")
+
+	// v0.2 durable-execution families (#50). These count the operator
+	// and shutdown chokepoints the pause/abort/stop spine drives —
+	// deliberately low-cardinality (bounded label vocabularies, no
+	// session ID) so the whole family set stays a fixed view.
+	r.markerFailures = counter("mast_marker_write_failures_total",
+		"Durable marker writes that failed during the shutdown drain (mark/clear = interruption marker, pause = planned-stop gate-pause write), by operation.",
+		"workload", "operation")
+	r.aborts = counter("mast_aborts_total",
+		"Terminal aborts durably recorded through the operator surface.",
+		"workload")
+	r.gatePauses = counter("mast_gate_pauses_total",
+		"Gate pauses durably recorded, by source (operator request or planned stop).",
+		"workload", "source")
+	r.timedPauseFires = counter("mast_timed_pause_fires_total",
+		"Timed-pause scheduler fires, by outcome.",
 		"workload", "outcome")
 
 	return r
@@ -181,6 +229,16 @@ func (r *Registry) Prime(workload string) {
 	r.budgetTrips.WithLabelValues(workload)
 	for _, outcome := range autoResumeOutcomes {
 		r.autoResume.WithLabelValues(workload, outcome)
+	}
+	for _, op := range []string{MarkerOpMark, MarkerOpClear, MarkerOpPause} {
+		r.markerFailures.WithLabelValues(workload, op)
+	}
+	r.aborts.WithLabelValues(workload)
+	for _, src := range []string{GatePauseOperator, GatePausePlannedStop} {
+		r.gatePauses.WithLabelValues(workload, src)
+	}
+	for _, outcome := range []string{TimedPauseResumed, TimedPauseSkipped, TimedPauseError} {
+		r.timedPauseFires.WithLabelValues(workload, outcome)
 	}
 }
 
@@ -258,6 +316,45 @@ func (r *Registry) AutoResume(workload, outcome string) {
 		return
 	}
 	r.autoResume.WithLabelValues(workload, outcome).Inc()
+}
+
+// MarkerWriteFailure records a failed interruption-marker store write
+// during the shutdown drain, by operation (one of the MarkerOp*
+// constants). A non-zero count is an alert condition: a marker that
+// did not land means a restart may never surface the interrupted turn.
+func (r *Registry) MarkerWriteFailure(workload, operation string) {
+	if r == nil {
+		return
+	}
+	r.markerFailures.WithLabelValues(workload, operation).Inc()
+}
+
+// Abort records a terminal abort durably recorded through the operator
+// surface (the marker write succeeded; the in-flight turn is swept
+// separately).
+func (r *Registry) Abort(workload string) {
+	if r == nil {
+		return
+	}
+	r.aborts.WithLabelValues(workload).Inc()
+}
+
+// GatePause records a gate pause durably recorded, by source (one of
+// the GatePause* constants: an operator request or a planned stop).
+func (r *Registry) GatePause(workload, source string) {
+	if r == nil {
+		return
+	}
+	r.gatePauses.WithLabelValues(workload, source).Inc()
+}
+
+// TimedPauseFire records one timed-pause scheduler fire with the given
+// outcome (one of the TimedPause* constants).
+func (r *Registry) TimedPauseFire(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.timedPauseFires.WithLabelValues(workload, outcome).Inc()
 }
 
 // AddCost accumulates spend (in USD) attributed to a workload. The

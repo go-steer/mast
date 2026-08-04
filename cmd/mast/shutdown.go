@@ -17,11 +17,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"runtime/pprof"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -36,6 +40,50 @@ const defaultDrainBound = 30 * time.Second
 // storeWriteTimeout bounds the tracker's marker writes so a wedged
 // session store cannot stall turn completion or the drain itself.
 const storeWriteTimeout = 10 * time.Second
+
+// teardownWatchdogTimeout bounds serve()'s post-drain teardown — the
+// deferred OTel flush, eventlog Close, attach-server Close, and context
+// cancellations that run while serve() unwinds. The drain itself has
+// already completed by the time the watchdog arms (it is armed after
+// <-shutdownDone), so this covers only the Close/flush path, which is
+// sub-second in the healthy case. 15s is generous headroom; overrunning
+// it means a Close deadlocked or a goroutine will not die, which is a
+// bug we want surfaced, not a hang the supervisor eventually SIGKILLs
+// with no diagnostic.
+const teardownWatchdogTimeout = 15 * time.Second
+
+// teardownHangExitCode is the process exit status when the teardown
+// watchdog fires. It is distinct from the drain-expired code (3): a
+// drain that expires with survivors is an expected, recoverable outcome
+// (the boot pass revives the work), whereas a teardown that overruns is
+// a latent bug — an unkillable goroutine or a wedged Close — and an
+// operator's response differs. 0/1/2/3 are taken (clean/error/flag/
+// drain-expired); this is the next free code.
+const teardownHangExitCode = 4
+
+// armTeardownWatchdog starts a detached goroutine that, if serve()'s
+// teardown has not finished within d, dumps every goroutine's stack (so
+// the wedged Close or leaked goroutine is named in the logs) and forces
+// the process to exit. No disarm is needed: a healthy teardown returns
+// from serve(), run() calls os.Exit with the real status, and that kills
+// this sleeping goroutine before its timer elapses. The dump/exit
+// functions are injected so the fire path is unit-testable without
+// actually terminating the test process.
+func armTeardownWatchdog(d time.Duration, dump func(io.Writer), exit func(int), logger *slog.Logger) {
+	go func() {
+		time.Sleep(d)
+		logger.Error("teardown exceeded deadline; dumping goroutine stacks and force-exiting",
+			"deadline", d.String(), "exit_code", teardownHangExitCode)
+		dump(os.Stderr)
+		exit(teardownHangExitCode)
+	}()
+}
+
+// dumpGoroutines writes every goroutine's stack (debug level 2) to w.
+// It is the default dump function for armTeardownWatchdog.
+func dumpGoroutines(w io.Writer) {
+	_ = pprof.Lookup("goroutine").WriteTo(w, 2)
+}
 
 // drainBound returns how long a shutdown waits for in-flight turns.
 // When the workload sets budget.max_wallclock_seconds, every turn
@@ -78,8 +126,10 @@ func drainBound(bundle *workload.Bundle) time.Duration {
 // The tracker always operates as defaultUserID — the daemon's only
 // writer identity; a per-tracker user would be dead configurability.
 type turnTracker struct {
-	store  *transcript.Store
-	logger *slog.Logger
+	store    *transcript.Store
+	logger   *slog.Logger
+	obs      *observability.Registry
+	workload string // metric label; resolved once at construction
 
 	mu       sync.Mutex
 	active   map[string]int  // sessionID → in-flight turn count
@@ -110,10 +160,12 @@ type turnTracker struct {
 	writeMu sync.Mutex // serializes mark/clear decision + store write
 }
 
-func newTurnTracker(store *transcript.Store, logger *slog.Logger) *turnTracker {
+func newTurnTracker(store *transcript.Store, logger *slog.Logger, obs *observability.Registry, workload string) *turnTracker {
 	return &turnTracker{
 		store:      store,
 		logger:     logger,
+		obs:        obs,
+		workload:   workload,
 		active:     map[string]int{},
 		marked:     map[string]bool{},
 		cancels:    map[string]context.CancelFunc{},
@@ -227,8 +279,9 @@ func (t *turnTracker) mark(ctx context.Context, sessionID string) {
 	defer cancel()
 	if err := t.store.MarkInterrupted(ctx, defaultUserID, sessionID, reason); err != nil {
 		// Error, not Warn (#53): a lost marker means an interrupted
-		// turn a restart will never surface. A counter belongs here
-		// too — that is the v0.2 fixed-registry work (#50).
+		// turn a restart will never surface. The counter (#50) makes
+		// that alertable — a lost marker is silent otherwise.
+		t.obs.MarkerWriteFailure(t.workload, observability.MarkerOpMark)
 		t.logger.Error("failed to write interruption marker", "session", sessionID, "error", err.Error())
 		return
 	}
@@ -238,11 +291,19 @@ func (t *turnTracker) mark(ctx context.Context, sessionID string) {
 		// gate finding L1 — late-starting turns get both or neither).
 		// Paused outranks interrupted in the state ladder, so boot-time
 		// auto-resume (#41, candidates = interrupted) skips the session.
-		if _, err := t.store.PauseGate(ctx, defaultUserID, sessionID, transcript.PauseSpec{
+		_, created, err := t.store.PauseGate(ctx, defaultUserID, sessionID, transcript.PauseSpec{
 			Reason:  transcript.ReasonOperator,
 			Message: "planned stop: " + reason,
-		}); err != nil {
+		})
+		switch {
+		case err != nil:
+			t.obs.MarkerWriteFailure(t.workload, observability.MarkerOpPause)
 			t.logger.Error("failed to gate-pause session for planned stop", "session", sessionID, "error", err.Error())
+		case created:
+			// Count only a newly-opened pause; a session already
+			// gate-paused before the stop is refreshed in place, not
+			// newly gated (#50 — mirrors openGatePause's operator count).
+			t.obs.GatePause(t.workload, observability.GatePausePlannedStop)
 		}
 	}
 	t.mu.Lock()
@@ -271,6 +332,7 @@ func (t *turnTracker) clear(sessionID string) {
 		// Keep marked set (#64): the marker is still on disk, and
 		// forgetting it here would hide it from survivors()
 		// with nothing left to retry the clear.
+		t.obs.MarkerWriteFailure(t.workload, observability.MarkerOpClear)
 		t.logger.Error("failed to clear interruption marker", "session", sessionID, "error", err.Error())
 		return
 	}

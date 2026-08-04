@@ -107,6 +107,16 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 *Metric names live in `pkg/observability` and only there — the registry is fixed, callers increment pre-declared families through typed methods and cannot mint names or labels (that implements open Q #5's cardinality control). All families are primed to zero per served workload at startup so `rate()`/`increase()` have a defined origin. The fuller catalog below — sessions gauges, duration histograms, tool/MCP/specialist families, and everything beyond — is **re-phased to v0.2**; it remains the design target, not the shipped set.)*
 
+*(Shipped v0.2, 2026-08-04 — the fixed-registry pass (#50) canonicalized the durable-execution surface built over the sprint into five counter families total: the `mast_autoresume_total` family shipped earlier with boot-time auto-resume (#41), and #50 added the four below it. All are low-cardinality, primed to zero per workload, and incremented through typed methods at the write site, so a counter advances only when the durable operation it names actually happened — with one deliberate inversion, `mast_marker_write_failures_total`, which advances only when a marker write failed:*
+
+- *`mast_autoresume_total{workload, outcome}` — boot-pass dispositions (shipped with #41); outcome ∈ `resumed` / `cleared` / `skipped_stale` / `skipped_ambiguous` / `skipped_loopbreak` / `skipped_superseded` / `skipped_unsupported` / `error`*
+- *`mast_marker_write_failures_total{workload, operation}` — a marker write that failed (previously silent); operation ∈ `mark` / `clear` (interruption marker) / `pause` (planned-stop gate-pause write)*
+- *`mast_aborts_total{workload}` — terminal aborts that landed durably*
+- *`mast_gate_pauses_total{workload, source}` — out-of-turn gate pauses; source ∈ `operator` / `planned_stop`*
+- *`mast_timed_pause_fires_total{workload, outcome}` — timed-pause scheduler fires; outcome ∈ `resumed` / `skipped` / `error`*
+
+*These are the shipped names for the durable-execution surface; the design-target `mast_pauses_total` / `mast_pause_duration_seconds` / `mast_resumes_total` families listed under "Pause / resume" below were the pre-implementation sketch and were superseded — the shipped families split by the mechanism that emits them (gate vs timed, operator vs planned-stop) rather than by a single `reason` label, and pause-duration histograms remain deferred. The plane-A `pause_session` builtin's own metric lives with the planner surface and is a documented follow-on.)*
+
 **Session lifecycle:**
 - `mast_sessions_started_total{workload, task_class, tenant}` — counter
 - `mast_sessions_completed_total{workload, task_class, tenant, outcome}` — counter; outcome ∈ `finish_task` / `error` / `budget_exhausted` / `hitl_abandoned` / `aborted` *(Corrected 2026-07-26: the shipped outcome vocabulary is **`budget_exceeded`**, not `budget_exhausted` — aligned to `pkg/observability`'s constants; the `hitl_policy.on_budget_exhaustion` config key in [`./orchestration-design.md`](./orchestration-design.md) is unaffected)*
@@ -143,7 +153,7 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 - `mast_hitl_wait_seconds{workload, reason}` — histogram (time from emit to resume)
 - `mast_hitl_abandoned_total{workload, reason}` — counter (never resumed within TTL)
 
-**Pause / resume:**
+**Pause / resume:** *(design-target sketch — superseded by the shipped v0.2 durable-execution families noted under "Metric families" above: `mast_gate_pauses_total`, `mast_timed_pause_fires_total`, `mast_autoresume_total`, `mast_aborts_total`. The names below are retained as the historical design target; duration histograms remain deferred.)*
 - `mast_pauses_total{reason}` — counter
 - `mast_pause_duration_seconds{reason}` — histogram
 - `mast_resumes_total{reason, outcome}` — counter; outcome ∈ `resumed` / `aborted` / `expired`

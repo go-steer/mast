@@ -124,6 +124,55 @@ func TestExplicitHelpers(t *testing.T) {
 	}
 }
 
+// TestV02DurableExecutionCounters exercises the #50 families: each
+// typed method increments its own family, and the bounded label
+// vocabularies (operation / source / outcome) stay separated.
+func TestV02DurableExecutionCounters(t *testing.T) {
+	r := New()
+	const wl = "gke-triage"
+
+	r.MarkerWriteFailure(wl, MarkerOpMark)
+	r.MarkerWriteFailure(wl, MarkerOpMark)
+	r.MarkerWriteFailure(wl, MarkerOpClear)
+	r.MarkerWriteFailure(wl, MarkerOpPause)
+	r.Abort(wl)
+	r.Abort(wl)
+	r.GatePause(wl, GatePauseOperator)
+	r.GatePause(wl, GatePausePlannedStop)
+	r.GatePause(wl, GatePausePlannedStop)
+	r.TimedPauseFire(wl, TimedPauseResumed)
+	r.TimedPauseFire(wl, TimedPauseSkipped)
+	r.TimedPauseFire(wl, TimedPauseError)
+
+	if got := testutil.ToFloat64(r.markerFailures.WithLabelValues(wl, MarkerOpMark)); got != 2 {
+		t.Errorf("mast_marker_write_failures_total{operation=mark} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.markerFailures.WithLabelValues(wl, MarkerOpClear)); got != 1 {
+		t.Errorf("mast_marker_write_failures_total{operation=clear} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.markerFailures.WithLabelValues(wl, MarkerOpPause)); got != 1 {
+		t.Errorf("mast_marker_write_failures_total{operation=pause} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.aborts.WithLabelValues(wl)); got != 2 {
+		t.Errorf("mast_aborts_total = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.gatePauses.WithLabelValues(wl, GatePauseOperator)); got != 1 {
+		t.Errorf("mast_gate_pauses_total{source=operator} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.gatePauses.WithLabelValues(wl, GatePausePlannedStop)); got != 2 {
+		t.Errorf("mast_gate_pauses_total{source=planned_stop} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.timedPauseFires.WithLabelValues(wl, TimedPauseResumed)); got != 1 {
+		t.Errorf("mast_timed_pause_fires_total{outcome=resumed} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.timedPauseFires.WithLabelValues(wl, TimedPauseSkipped)); got != 1 {
+		t.Errorf("mast_timed_pause_fires_total{outcome=skipped} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(r.timedPauseFires.WithLabelValues(wl, TimedPauseError)); got != 1 {
+		t.Errorf("mast_timed_pause_fires_total{outcome=error} = %v, want 1", got)
+	}
+}
+
 func TestNilRegistryIsSafe(t *testing.T) {
 	var r *Registry
 	r.Observe(usageEvent(1, 1), "wl")
@@ -132,6 +181,11 @@ func TestNilRegistryIsSafe(t *testing.T) {
 	r.HITLResume("wl")
 	r.BudgetTrip("wl")
 	r.AddCost("wl", 1)
+	r.AutoResume("wl", AutoResumeResumed)
+	r.MarkerWriteFailure("wl", MarkerOpMark)
+	r.Abort("wl")
+	r.GatePause("wl", GatePauseOperator)
+	r.TimedPauseFire("wl", TimedPauseResumed)
 }
 
 func TestPrimeMaterializesAllFamiliesAtZero(t *testing.T) {
@@ -152,6 +206,15 @@ func TestPrimeMaterializesAllFamiliesAtZero(t *testing.T) {
 		`mast_hitl_pauses_total{workload="gke-triage"} 0`,
 		`mast_hitl_resumes_total{workload="gke-triage"} 0`,
 		`mast_budget_trips_total{workload="gke-triage"} 0`,
+		`mast_marker_write_failures_total{operation="mark",workload="gke-triage"} 0`,
+		`mast_marker_write_failures_total{operation="clear",workload="gke-triage"} 0`,
+		`mast_marker_write_failures_total{operation="pause",workload="gke-triage"} 0`,
+		`mast_aborts_total{workload="gke-triage"} 0`,
+		`mast_gate_pauses_total{source="operator",workload="gke-triage"} 0`,
+		`mast_gate_pauses_total{source="planned_stop",workload="gke-triage"} 0`,
+		`mast_timed_pause_fires_total{outcome="resumed",workload="gke-triage"} 0`,
+		`mast_timed_pause_fires_total{outcome="skipped",workload="gke-triage"} 0`,
+		`mast_timed_pause_fires_total{outcome="error",workload="gke-triage"} 0`,
 	} {
 		if !strings.Contains(out, sample) {
 			t.Errorf("primed scrape missing %q", sample)
