@@ -55,6 +55,39 @@ const (
 	TokenKindCandidates = "candidates"
 )
 
+// Auto-resume outcomes for AutoResume (mast_autoresume_total{outcome}).
+// A fixed vocabulary, mirroring cmd/mast's boot-time auto-resume
+// decision tree (#41): every interrupted candidate the boot pass
+// inspects lands in exactly one of these.
+const (
+	// AutoResumeResumed: a continuation turn ran to completion and the
+	// interruption marker was cleared.
+	AutoResumeResumed = "resumed"
+	// AutoResumeCleared: the trailing event was already a clean model
+	// turn (stale marker / clear race); the marker was cleared without
+	// running a turn.
+	AutoResumeCleared = "cleared"
+	// AutoResumeSkippedStale: the interruption is older than the
+	// freshness window; the marker was left for an operator.
+	AutoResumeSkippedStale = "skipped_stale"
+	// AutoResumeSkippedAmbiguous: the session carries a dangling mutating
+	// intent (ambiguous effect); left for an operator ack.
+	AutoResumeSkippedAmbiguous = "skipped_ambiguous"
+	// AutoResumeSkippedLoopbreak: the per-session attempt breaker or the
+	// per-boot cap tripped.
+	AutoResumeSkippedLoopbreak = "skipped_loopbreak"
+	// AutoResumeSkippedSuperseded: a concurrent turn advanced the session
+	// after the scan (M1 TOCTOU recheck).
+	AutoResumeSkippedSuperseded = "skipped_superseded"
+	// AutoResumeSkippedUnsupported: a shape slice-1 does not drive
+	// (non-coordinator dispatch, dangling sub-agent delegation, or a
+	// multi-event repair).
+	AutoResumeSkippedUnsupported = "skipped_unsupported"
+	// AutoResumeError: the continuation turn was attempted and failed;
+	// the marker was left in place.
+	AutoResumeError = "error"
+)
+
 // Registry is the fixed set of mast metric families. Construct one per
 // process with New and expose it via Handler on the inject listener.
 type Registry struct {
@@ -67,6 +100,21 @@ type Registry struct {
 	hitlPauses  *prometheus.CounterVec
 	hitlResumes *prometheus.CounterVec
 	budgetTrips *prometheus.CounterVec
+	autoResume  *prometheus.CounterVec
+}
+
+// autoResumeOutcomes is the fixed label set primed for
+// mast_autoresume_total{outcome}. Kept beside the counter so Prime and
+// the AutoResume vocabulary can never drift.
+var autoResumeOutcomes = []string{
+	AutoResumeResumed,
+	AutoResumeCleared,
+	AutoResumeSkippedStale,
+	AutoResumeSkippedAmbiguous,
+	AutoResumeSkippedLoopbreak,
+	AutoResumeSkippedSuperseded,
+	AutoResumeSkippedUnsupported,
+	AutoResumeError,
 }
 
 // New constructs the registry with every base family pre-registered.
@@ -102,6 +150,12 @@ func New() *Registry {
 	r.budgetTrips = counter("mast_budget_trips_total",
 		"Turns aborted because a budget ceiling was crossed.",
 		"workload")
+	// #50's fixed-registry pass will canonicalize all v0.2 durable-
+	// execution families (pause/resume/abort/stop/auto-resume) together;
+	// this family is registered here now so #41 has its export surface.
+	r.autoResume = counter("mast_autoresume_total",
+		"Boot-time auto-resume decisions, by workload and outcome.",
+		"workload", "outcome")
 
 	return r
 }
@@ -125,6 +179,9 @@ func (r *Registry) Prime(workload string) {
 	r.hitlPauses.WithLabelValues(workload)
 	r.hitlResumes.WithLabelValues(workload)
 	r.budgetTrips.WithLabelValues(workload)
+	for _, outcome := range autoResumeOutcomes {
+		r.autoResume.WithLabelValues(workload, outcome)
+	}
 }
 
 // Handler returns the Prometheus scrape handler for this registry,
@@ -192,6 +249,15 @@ func (r *Registry) BudgetTrip(workload string) {
 		return
 	}
 	r.budgetTrips.WithLabelValues(workload).Inc()
+}
+
+// AutoResume records one boot-time auto-resume decision with the given
+// outcome (one of the AutoResume* constants).
+func (r *Registry) AutoResume(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.autoResume.WithLabelValues(workload, outcome).Inc()
 }
 
 // AddCost accumulates spend (in USD) attributed to a workload. The

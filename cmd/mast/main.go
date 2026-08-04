@@ -101,18 +101,20 @@ func main() {
 // flag-only invocations pass unchanged.
 func run() {
 	var (
-		workloadFlag = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
-		dispatchMode = flag.String("dispatch", "coordinator", "dispatch shape: `coordinator` (spike-1 SubAgents pattern) or `graph` (workflow-graph LLM-as-router)")
-		modelName    = flag.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`")
-		providerFlag = flag.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. For claude-* models the alias also picks the backend (first-party vs Vertex)")
-		taskFlag     = flag.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)")
-		listen       = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
-		attachListen = flag.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Requires --session-db (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN")
-		sessionDB    = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
-		sessionDrv   = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
-		timeoutFlag  = flag.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets")
-		logLevel     = flag.String("log-level", "info", "log level: debug|info|warn|error")
-		showVersion  = flag.Bool("version", false, "print version and exit")
+		workloadFlag     = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
+		dispatchMode     = flag.String("dispatch", "coordinator", "dispatch shape: `coordinator` (spike-1 SubAgents pattern) or `graph` (workflow-graph LLM-as-router)")
+		modelName        = flag.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`")
+		providerFlag     = flag.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. For claude-* models the alias also picks the backend (first-party vs Vertex)")
+		taskFlag         = flag.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)")
+		listen           = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
+		attachListen     = flag.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Requires --session-db (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN")
+		sessionDB        = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
+		sessionDrv       = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
+		timeoutFlag      = flag.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets")
+		logLevel         = flag.String("log-level", "info", "log level: debug|info|warn|error")
+		autoResume       = flag.Bool("auto-resume", true, "serve mode: on boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (coordinator dispatch only in v0.2). --auto-resume=false disables")
+		autoResumeWindow = flag.Duration("auto-resume-window", time.Hour, "serve mode: only auto-resume sessions interrupted within this window; older interruptions are left for an operator (0 disables the freshness gate)")
+		showVersion      = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
 
@@ -178,6 +180,9 @@ func run() {
 		if explicit["dispatch"] {
 			logger.Warn("--dispatch is a serve-mode flag; ignored in one-shot mode")
 		}
+		if explicit["auto-resume"] || explicit["auto-resume-window"] {
+			logger.Warn("--auto-resume / --auto-resume-window are serve-mode flags; ignored in one-shot mode")
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		opts := oneShotOptions{
 			Class:      class,
@@ -204,7 +209,7 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
-	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *sessionDB, *sessionDrv); err != nil {
+	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
@@ -220,7 +225,7 @@ func run() {
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, sessionDB, sessionDrv string) error {
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -326,9 +331,13 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// carries unacknowledged dangling intents from an interrupted turn,
 	// and replays recorded completions instead of re-executing. Every
 	// runner construction path attaches it (#53's lesson).
+	// Built once and shared with the boot-time auto-resume pass so its
+	// eligibility gate classifies dangling calls exactly as the outbox does.
+	effPred := effects.NewPredicate(effects.Overrides(logger, toolPolicies(bundle)))
+	effSubAgents := effects.SubAgentNames(root)
 	outboxPlugin, err := effects.New(effects.Config{
-		Predicate:     effects.NewPredicate(effects.Overrides(logger, toolPolicies(bundle))),
-		SubAgentNames: effects.SubAgentNames(root),
+		Predicate:     effPred,
+		SubAgentNames: effSubAgents,
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return store.EffectsAckedAt(ctx, "", sid)
 		},
@@ -621,6 +630,32 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}()
 	// pause_session records minted mid-serve now push their timers too.
 	pauseRec.attach(sched)
+
+	// Boot-time auto-resume (#41): scan sessions a prior shutdown cut
+	// short and drive a continuation for each eligible one. On turnCtx
+	// (drain-cancellable) and only with a durable store — in-memory
+	// sessions never survive a restart, so there is nothing to resume.
+	if autoResume && sessionDB != "" {
+		ar := &autoResumer{
+			runner:       r,
+			logger:       logger,
+			store:        store,
+			meters:       meters,
+			wds:          wds,
+			obs:          obs,
+			tracker:      tracker,
+			turnLocks:    turnLocks,
+			workloadName: workloadName,
+			bundle:       bundle,
+			dispatchMode: dispatchMode,
+			pred:         effPred,
+			subAgents:    effSubAgents,
+			window:       autoResumeWindow,
+		}
+		go ar.run(turnCtx)
+	} else if autoResume {
+		logger.Info("auto-resume enabled but --session-db is empty (in-memory sessions); nothing to resume")
+	}
 
 	pauseHandler := func(reqCtx context.Context, req inject.PauseRequest) (inject.PauseResult, error) {
 		// No drain gate, like abort: a gate pause is a marker write,
