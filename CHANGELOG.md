@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **Boot-time auto-resume — the v0.2 durable-execution closer**
+  (docs/durable-execution-design.md "Boot-time auto-resume"; closes
+  #41). On boot the daemon scans for `interrupted` sessions (turns cut
+  short by a prior shutdown) and drives a continuation turn for each
+  eligible one through the same chokepoint every other turn kind uses,
+  so unattended work restarts on its own — on by default
+  (`--auto-resume`, `--auto-resume=false` disables), serve mode with a
+  durable `--session-db` only. **The guarantee is the operational form
+  of exactly-once: auto-resume never double-fires a mutation.** A
+  session carrying **any** dangling mutating tool call (an ambiguous
+  prior effect the recorded-effect outbox surfaces) is skipped
+  (`skipped_ambiguous`) and left for an operator `ack-effects`, never
+  resumed — an ack watermark does not pair the call, so re-running it
+  would either replay the raw `tool_use` to the provider or falsely
+  synthesize a did-not-happen response. A dangling **read-only** call
+  on the single last function-call event is repaired with a synthetic
+  `interrupted before completion` response (`.ID`/`.Name` set for
+  ID-pairing and Gemini) and the turn re-runs; a transcript already
+  ending on a completed model turn just has its stale marker cleared
+  (`cleared`, no spurious "Continue" turn); a genuine trailing user /
+  paired-tool turn re-invokes the model over history with a nil
+  message. Rails: `--auto-resume-window` (default `1h`) skips work
+  already stale at crash (`skipped_stale`); a per-session restart-loop
+  breaker (3 attempts / 10m, durably pre-incremented so a process that
+  SIGSEGVs mid-turn still counts) plus a per-boot turn cap bound a
+  poison session (`skipped_loopbreak`); a `preTurn` recheck under the
+  session turn lock skips a session a concurrent inject/resume advanced
+  between scan and turn (`skipped_superseded`). Slice-1 drives
+  `coordinator` dispatch only (`skipped_unsupported` otherwise, and for
+  foreign user IDs and deferred sub-run delegations). Every decision is
+  counted in `mast_autoresume_total{workload,outcome}`. `mast stop
+  --pause-sessions` opts a session out — a gate pause outranks
+  `interrupted`, handing those sessions back to the operator instead of
+  continuing them. New store seams: `ScanInterrupted`,
+  `Summary.InterruptedAt`, and `RecordAutoResumeAttempt` /
+  `ClearAutoResumeAttempts`; new effects seam: `ScanDangling` (mutating
+  vs repairable vs deferred, sharing `scanHistory`'s pairing core, which
+  keeps its exact shipped output).
+
 - **Programmatic pause/abort — the v0.2 durable-execution surface**
   (docs/durable-execution-design.md "The v0.2 pause/abort mechanics",
   designed in #72; closes #42). Two pause planes: an **interrupt

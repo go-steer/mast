@@ -21,6 +21,8 @@ runner, and the session store.
 | `--session-db` | (empty) | SQLite file path (default driver) or Postgres DSN/URL with `--session-db-driver=postgres`. Empty = in-memory sessions, **no durability**. |
 | `--session-db-driver` | `sqlite` | `sqlite` or `postgres`. `postgres` with an empty `--session-db` is a startup error, never a silent in-memory downgrade. |
 | `--timeout` | `5m` | One-shot turn deadline (`2m`, `90s`, …); `0` disables. One-shot only — serve-mode wallclock ceilings come from workload budgets. An unresponsive backend (or a provider SDK silently retrying on quota errors) fails loudly instead of hanging a script. |
+| `--auto-resume` | `true` | On boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (see [boot-time auto-resume](#boot-time-auto-resume)). `--auto-resume=false` disables. Serve mode only; needs `--session-db` (in-memory sessions never survive a restart). |
+| `--auto-resume-window` | `1h` | Only auto-resume sessions interrupted within this window; older interruptions are left for an operator. `0` disables the freshness gate. Serve mode only. |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` (JSON logs on stderr). |
 | `--version` | — | Print version and exit. |
 
@@ -104,9 +106,33 @@ marking their sessions *before* waiting, and clearing the marker for
 turns that finish inside the window. The marker survives even a
 SIGKILL mid-drain. It is state, not preemption — the next turn on the
 session proceeds normally, and a session that reached a HITL pause
-reports `paused`, not `interrupted`. Boot-time auto-resume of
-interrupted sessions is deliberately later v0.2 work (it gates on the
-recorded-effect outbox below).
+reports `paused`, not `interrupted`.
+
+### Boot-time auto-resume
+
+On boot (and on by default — `--auto-resume`), the daemon scans for
+`interrupted` sessions and drives a continuation turn for each eligible
+one through the same chokepoint every other turn kind uses, so
+unattended work cut short by a restart finishes on its own. It needs a
+durable `--session-db`; in-memory sessions never survive a restart, so
+there is nothing to resume.
+
+**The guarantee is the operational form of exactly-once: auto-resume
+never double-fires a mutation.** A session carrying **any** dangling
+mutating tool call (an ambiguous prior effect — see below) is skipped
+and left for an operator `ack-effects`, not resumed. A dangling
+read-only call is repaired with a synthetic
+`interrupted before completion` response and the turn re-runs; a
+transcript that already ended on a completed model turn just has its
+stale marker cleared (no spurious turn). Rails: `--auto-resume-window`
+(default `1h`) skips work already stale at crash; a per-session
+restart-loop breaker plus a per-boot cap bound a poison session; and a
+session advanced by a concurrent inject between the scan and the turn is
+skipped. Slice-1 drives `coordinator` dispatch only. Every decision is
+counted in `mast_autoresume_total{workload,outcome}`. `--pause-sessions`
+on `mast stop` (below) opts a session out — a gate pause outranks
+`interrupted`, so those sessions are handed back to the operator instead
+of continued.
 
 ## `mast stop` (planned stop)
 
