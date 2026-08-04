@@ -108,6 +108,17 @@ const (
 	effectsAckReasonKey = "mast_effects_ack_reason"
 )
 
+// Session-state keys written by Store.RecordAutoResumeAttempt (and
+// blanked by Store.ClearAutoResumeAttempts): the per-session restart-loop
+// breaker for boot-time auto-resume (cmd/mast, #41). Like the other
+// markers they live on the companion ops row and are NOT part of the
+// project() state ladder — an attempt count changes whether the daemon
+// will try again, not what the session is.
+const (
+	autoResumeAttemptsKey = "mast_autoresume_attempts"
+	autoResumeLastKey     = "mast_autoresume_last"
+)
+
 // opsSuffix derives the companion ops row's session ID from the
 // primary's. All operator/daemon marker writes (abort, interruption)
 // go to the ops row, NEVER to the primary session row, because ADK's
@@ -191,6 +202,10 @@ type Summary struct {
 	// InterruptReason is set when State is StateInterrupted: the reason
 	// recorded by the daemon whose shutdown cut the session's turn short.
 	InterruptReason string `json:"interrupt_reason,omitempty"`
+	// InterruptedAt is set when State is StateInterrupted: when the daemon
+	// recorded the interruption (from interruptTimeKey). Drives the
+	// auto-resume freshness window (cmd/mast, #41).
+	InterruptedAt time.Time `json:"interrupted_at,omitempty"`
 	// PauseReason / PauseMessage are set when an active gate pause
 	// contributes to StatePaused (Store.PauseGate).
 	PauseReason  string `json:"pause_reason,omitempty"`
@@ -473,6 +488,122 @@ func (s *Store) EffectsAckedAt(ctx context.Context, userID, sessionID string) (t
 	return t, true
 }
 
+// InterruptedCandidate is one session projected as StateInterrupted, with
+// the material the daemon's boot-time auto-resume pass needs (cmd/mast,
+// #41): the resume identity (SessionID/UserID), the freshness inputs
+// (InterruptedAt), the supersession-recheck inputs (LastEventTime/
+// EventCount), and the loaded Events for the effects dangling scan.
+type InterruptedCandidate struct {
+	SessionID       string
+	UserID          string
+	InterruptReason string
+	InterruptedAt   time.Time
+	LastEventTime   time.Time
+	EventCount      int
+	Events          adksession.Events
+}
+
+// ScanInterrupted returns every session under the store's app name that
+// currently projects as StateInterrupted, oldest interruption first. It
+// mirrors List (iterate primary rows, skip companion ops rows, Get+
+// project each) rather than the ops-row scans (ScanPauses): interrupted
+// state is a projection over the primary transcript plus the ops-row
+// marker, so a candidate must be found the way List finds sessions.
+//
+// Like List it issues one Get per session; fine at single-instance
+// operator scale (docs/fork-design.md P1.3 tracks an indexed path).
+func (s *Store) ScanInterrupted(ctx context.Context) ([]InterruptedCandidate, error) {
+	resp, err := s.svc.List(ctx, &adksession.ListRequest{AppName: s.appName})
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	var out []InterruptedCandidate
+	for _, sess := range resp.Sessions {
+		if strings.HasSuffix(sess.ID(), opsSuffix) {
+			continue
+		}
+		full, err := s.svc.Get(ctx, &adksession.GetRequest{
+			AppName:   s.appName,
+			UserID:    sess.UserID(),
+			SessionID: sess.ID(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("inspect session %q: %w", sess.ID(), err)
+		}
+		markers, pauses := s.opsSnapshot(ctx, sess.UserID(), sess.ID())
+		d := project(full.Session, markers, pauses[pauseGateKey])
+		if d.State != StateInterrupted {
+			continue
+		}
+		out = append(out, InterruptedCandidate{
+			SessionID:       sess.ID(),
+			UserID:          sess.UserID(),
+			InterruptReason: d.InterruptReason,
+			InterruptedAt:   d.InterruptedAt,
+			LastEventTime:   d.LastEventTime,
+			EventCount:      d.EventCount,
+			Events:          full.Session.Events(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].InterruptedAt.Equal(out[j].InterruptedAt) {
+			return out[i].InterruptedAt.Before(out[j].InterruptedAt)
+		}
+		return out[i].SessionID < out[j].SessionID
+	})
+	return out, nil
+}
+
+// AutoResumeAttempts reports how many boot-time auto-resume attempts have
+// been recorded for the session and when the last one was stamped (#41
+// restart-loop breaker). A missing or unparseable counter reads as zero —
+// the fail-open direction for the breaker is to allow the attempt.
+func (s *Store) AutoResumeAttempts(ctx context.Context, userID, sessionID string) (int, time.Time) {
+	m := s.opsState(ctx, userID, sessionID)
+	var n int
+	if v, ok := m[autoResumeAttemptsKey]; ok && v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
+			n = 0
+		}
+	}
+	var last time.Time
+	if v, ok := m[autoResumeLastKey]; ok && v != "" {
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			last = t
+		}
+	}
+	return n, last
+}
+
+// RecordAutoResumeAttempt durably increments the session's auto-resume
+// attempt counter and stamps the attempt time, returning the new count.
+// The daemon calls it BEFORE driving the continuation turn so an attempt
+// that crashes the process (the exact restart-loop threat) is still
+// counted (#41 M2). The boot pass is a single sequential goroutine, so
+// the read-then-write needs no cross-call locking beyond appendOpsDelta's
+// own ops-row serialization.
+func (s *Store) RecordAutoResumeAttempt(ctx context.Context, userID, sessionID string) (int, error) {
+	n, _ := s.AutoResumeAttempts(ctx, userID, sessionID)
+	n++
+	if err := s.appendOpsDelta(ctx, userID, sessionID, "autoresume-attempt", "daemon",
+		fmt.Sprintf("boot-time auto-resume attempt %d", n),
+		map[string]any{
+			autoResumeAttemptsKey: fmt.Sprintf("%d", n),
+			autoResumeLastKey:     time.Now().UTC().Format(time.RFC3339Nano),
+		}); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// ClearAutoResumeAttempts blanks the attempt counter after a successful
+// auto-resume, so a session that later interrupts again starts fresh.
+func (s *Store) ClearAutoResumeAttempts(ctx context.Context, userID, sessionID string) error {
+	return s.appendOpsDelta(ctx, userID, sessionID, "autoresume-clear", "daemon",
+		"boot-time auto-resume succeeded; attempt counter cleared",
+		map[string]any{autoResumeAttemptsKey: "", autoResumeLastKey: ""})
+}
+
 // appendOpsDelta appends one marker event to the session's companion
 // ops row, creating the row on first use — the shared mechanics of the
 // abort and interruption markers. It never touches the primary row
@@ -636,6 +767,11 @@ func project(sess adksession.Session, ops map[string]string, gate *PauseRecord) 
 	if reason := markerValue(interruptReasonKey); reason != "" {
 		d.State = StateInterrupted
 		d.InterruptReason = reason
+		if ts := markerValue(interruptTimeKey); ts != "" {
+			if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+				d.InterruptedAt = t
+			}
+		}
 	}
 	return d
 }

@@ -414,6 +414,95 @@ func TestScanDangling(t *testing.T) {
 	}
 }
 
+func TestScanDanglingBuckets(t *testing.T) {
+	// list_pods is an ordinary read-only tool via override; scale_up is
+	// mutating (default); triage_bot is a composed sub-agent delegation;
+	// adk_request_input and a long-running park are excluded.
+	pred := NewPredicate(map[string]bool{"list_pods": false})
+	subAgents := map[string]bool{"triage_bot": true}
+	mk := func(inv string, parts ...*genai.Part) *adksession.Event {
+		ev := adksession.NewEvent(context.Background(), inv)
+		ev.Content = &genai.Content{Role: genai.RoleModel, Parts: parts}
+		return ev
+	}
+	call := func(name, id string) *genai.Part {
+		p := genai.NewPartFromFunctionCall(name, map[string]any{})
+		p.FunctionCall.ID = id
+		return p
+	}
+	respPart := func(name, id string) *genai.Part {
+		p := genai.NewPartFromFunctionResponse(name, map[string]any{"ok": true})
+		p.FunctionResponse.ID = id
+		return p
+	}
+
+	t.Run("split", func(t *testing.T) {
+		lrEvent := mk("inv0", call("scale_up", "lr1")) // idx0
+		lrEvent.LongRunningToolIDs = []string{"lr1"}
+		events := eventList{
+			lrEvent,                                     // idx0 deferred (long-running)
+			mk("inv1", call("scale_up", "m1")),          // idx1 mutating dangling
+			mk("inv1", call("list_pods", "r1")),         // idx2 repairable dangling
+			mk("inv1", call("triage_bot", "d1")),        // idx3 deferred (sub-agent)
+			mk("inv1", call("adk_request_input", "x1")), // idx4 deferred (control)
+			mk("inv1", call("scale_up", "p1")),          // idx5 paired (last call event)
+			mk("inv1", respPart("scale_up", "p1")),      // idx6 response
+		}
+		ds := ScanDangling(events, pred, subAgents)
+		if len(ds.Mutating) != 1 || ds.Mutating[0].CallID != "m1" {
+			t.Fatalf("Mutating = %+v, want [m1]", ds.Mutating)
+		}
+		if len(ds.Repairable) != 1 || ds.Repairable[0].CallID != "r1" || ds.Repairable[0].EventIndex != 2 {
+			t.Fatalf("Repairable = %+v, want [r1@idx2]", ds.Repairable)
+		}
+		if len(ds.Deferred) != 3 {
+			t.Fatalf("Deferred = %+v, want 3 (long-running, sub-agent, control)", ds.Deferred)
+		}
+		// A later PAIRED call event (p1@idx5) is still the last function
+		// call event: repair of an earlier read-only call would span
+		// events and must be blocked.
+		if ds.LastCallEventIndex != 5 {
+			t.Fatalf("LastCallEventIndex = %d, want 5 (the paired p1 event)", ds.LastCallEventIndex)
+		}
+	})
+
+	t.Run("clean-single-event-repair", func(t *testing.T) {
+		// Two read-only calls in the SAME (and last) function-call event:
+		// answerable by a single repair message.
+		events := eventList{
+			mk("inv0", textPart("thinking")),                             // idx0, no calls
+			mk("inv1", call("list_pods", "r1"), call("list_pods", "r2")), // idx1
+		}
+		ds := ScanDangling(events, pred, subAgents)
+		if len(ds.Mutating) != 0 || len(ds.Deferred) != 0 {
+			t.Fatalf("unexpected mutating/deferred: %+v / %+v", ds.Mutating, ds.Deferred)
+		}
+		if len(ds.Repairable) != 2 {
+			t.Fatalf("Repairable = %+v, want 2", ds.Repairable)
+		}
+		if ds.LastCallEventIndex != 1 {
+			t.Fatalf("LastCallEventIndex = %d, want 1", ds.LastCallEventIndex)
+		}
+		for _, r := range ds.Repairable {
+			if r.EventIndex != ds.LastCallEventIndex {
+				t.Fatalf("repairable %s at event %d, not the last call event %d", r.CallID, r.EventIndex, ds.LastCallEventIndex)
+			}
+		}
+	})
+
+	t.Run("no-calls", func(t *testing.T) {
+		ds := ScanDangling(eventList{mk("inv0", textPart("done"))}, pred, subAgents)
+		if len(ds.Mutating)+len(ds.Repairable)+len(ds.Deferred) != 0 {
+			t.Fatalf("expected empty scan, got %+v", ds)
+		}
+		if ds.LastCallEventIndex != -1 {
+			t.Fatalf("LastCallEventIndex = %d, want -1 (no function-call events)", ds.LastCallEventIndex)
+		}
+	})
+}
+
+func textPart(s string) *genai.Part { return genai.NewPartFromText(s) }
+
 func TestScanHistoryCompletions(t *testing.T) {
 	mk := func(parts ...*genai.Part) *adksession.Event {
 		ev := adksession.NewEvent(context.Background(), "inv")
