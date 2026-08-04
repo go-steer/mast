@@ -326,13 +326,14 @@ func repairContent(repairable []effects.DanglingIntent) *genai.Content {
 
 // trailingEvent returns the last event that carries content ADK would
 // keep when it rebuilds prompt history, or nil if the session has none.
-// It skips nil-content and empty-role events — the cheap, always-correct
-// subset of ADK's buildContentsDefault filtering — so the caller reads
-// the true last visible role (model turn = the interrupted turn actually
-// finished; user turn / tool result = a genuine mid-turn interruption)
-// and the true last visible author (a sub-agent author = mid-delegation).
-// The richer exclusions (branch/isolation-scope/EUC) only bite in shapes
-// slice-1 does not drive and are a documented follow-on.
+// It skips nil-content and empty-role events — a cheap subset of ADK's
+// buildContentsDefault filtering — so the caller reads the true last
+// visible role (model turn = the interrupted turn actually finished; user
+// turn / tool result = a genuine mid-turn interruption) and the true last
+// visible author (a sub-agent author = mid-delegation). The richer
+// exclusions (empty-parts, branch/isolation-scope/EUC) only bite in
+// shapes slice-1 does not drive, and any divergence resolves in the safe
+// direction (clear/skip, never fabricate) — a documented follow-on.
 func trailingEvent(events session.Events) *session.Event {
 	var last *session.Event
 	for ev := range events.All() {
