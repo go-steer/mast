@@ -132,9 +132,12 @@ func TestGatePauseLifecycle(t *testing.T) {
 			store := NewStore(svc, testApp)
 			seed(t, svc, "u1", "s-gate", textEvent("user", "hi"))
 
-			h, err := store.PauseGate(ctx, "", "s-gate", PauseSpec{Reason: ReasonMaintenanceWindow, Message: "deploy at 2200"})
+			h, created, err := store.PauseGate(ctx, "", "s-gate", PauseSpec{Reason: ReasonMaintenanceWindow, Message: "deploy at 2200"})
 			if err != nil {
 				t.Fatalf("PauseGate: %v", err)
+			}
+			if !created {
+				t.Error("first PauseGate reported created=false, want true (a new pause was opened)")
 			}
 			if !strings.HasPrefix(h.Token, "mrt_") || h.SessionID != "s-gate" {
 				t.Fatalf("handle = %+v, want mrt_ token for s-gate", h)
@@ -155,9 +158,12 @@ func TestGatePauseLifecycle(t *testing.T) {
 			}
 
 			// Second pause updates in place — same token, new reason.
-			h2, err := store.PauseGate(ctx, "", "s-gate", PauseSpec{Reason: ReasonOperator, Message: "hold for review"})
+			h2, created2, err := store.PauseGate(ctx, "", "s-gate", PauseSpec{Reason: ReasonOperator, Message: "hold for review"})
 			if err != nil {
 				t.Fatalf("PauseGate update: %v", err)
+			}
+			if created2 {
+				t.Error("in-place refresh reported created=true, want false (#50: a refresh is not a new pause)")
 			}
 			if h2.Token != h.Token {
 				t.Errorf("update minted a new token (%s vs %s), want in-place update", h2.Token, h.Token)
@@ -196,7 +202,7 @@ func TestTokenExpiryLeavesPauseIntact(t *testing.T) {
 			store := NewStore(svc, testApp)
 			seed(t, svc, "u1", "s-exp", textEvent("user", "hi"))
 
-			h, err := store.PauseGate(ctx, "", "s-exp", PauseSpec{Reason: ReasonOther, Message: "x", TokenTTL: time.Nanosecond})
+			h, _, err := store.PauseGate(ctx, "", "s-exp", PauseSpec{Reason: ReasonOther, Message: "x", TokenTTL: time.Nanosecond})
 			if err != nil {
 				t.Fatalf("PauseGate: %v", err)
 			}
@@ -238,7 +244,7 @@ func TestConsumeScheduledIgnoresExpiry(t *testing.T) {
 			store := NewStore(svc, testApp)
 			seed(t, svc, "u1", "s-sched", textEvent("user", "hi"))
 
-			h, err := store.PauseGate(ctx, "", "s-sched", PauseSpec{
+			h, _, err := store.PauseGate(ctx, "", "s-sched", PauseSpec{
 				Reason:   ReasonMaintenanceWindow,
 				Message:  "resume_at outlives the token",
 				TokenTTL: time.Nanosecond, // expired essentially at once
@@ -275,7 +281,7 @@ func TestTokenTTLCannotLengthenAtMint(t *testing.T) {
 	svc := adksession.InMemoryService()
 	store := NewStore(svc, testApp)
 	seed(t, svc, "u1", "s-ttl", textEvent("user", "hi"))
-	_, err := store.PauseGate(context.Background(), "", "s-ttl",
+	_, _, err := store.PauseGate(context.Background(), "", "s-ttl",
 		PauseSpec{Reason: ReasonOperator, TokenTTL: DefaultTokenTTL + time.Hour})
 	if err == nil || !strings.Contains(err.Error(), "extend-token") {
 		t.Fatalf("mint with TTL > default: err = %v, want refusal pointing at extend-token", err)
@@ -288,13 +294,13 @@ func TestPauseGateRefusesAbortedAndUnknownReason(t *testing.T) {
 	store := NewStore(svc, testApp)
 	seed(t, svc, "u1", "s-ab", textEvent("user", "hi"))
 
-	if _, err := store.PauseGate(ctx, "", "s-ab", PauseSpec{Reason: "coffee_break"}); err == nil {
+	if _, _, err := store.PauseGate(ctx, "", "s-ab", PauseSpec{Reason: "coffee_break"}); err == nil {
 		t.Fatal("unknown reason accepted, want refusal")
 	}
 	if err := store.Abort(ctx, "", "s-ab", "done"); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
-	if _, err := store.PauseGate(ctx, "", "s-ab", PauseSpec{Reason: ReasonOperator}); !errors.Is(err, ErrAlreadyAborted) {
+	if _, _, err := store.PauseGate(ctx, "", "s-ab", PauseSpec{Reason: ReasonOperator}); !errors.Is(err, ErrAlreadyAborted) {
 		t.Fatalf("pause aborted session: err = %v, want ErrAlreadyAborted", err)
 	}
 }
@@ -360,7 +366,7 @@ func TestAbortPurgesPauses(t *testing.T) {
 			seed(t, svc, "u1", "s-purge",
 				parkEvent("planner", "pause_session", "call-p-1", "hold"),
 			)
-			gh, err := store.PauseGate(ctx, "", "s-purge", PauseSpec{Reason: ReasonOperator})
+			gh, _, err := store.PauseGate(ctx, "", "s-purge", PauseSpec{Reason: ReasonOperator})
 			if err != nil {
 				t.Fatalf("PauseGate: %v", err)
 			}

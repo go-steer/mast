@@ -197,32 +197,37 @@ func mintToken() (string, error) {
 // gate pause on an already-gated session updates reason, message,
 // metadata, and resume_at in place — the token and its expiry are kept
 // (open question #5: single-writer per session, no stacking). Pausing
-// an aborted session is refused: aborted is terminal.
-func (s *Store) PauseGate(ctx context.Context, userID, sessionID string, spec PauseSpec) (PauseHandle, error) {
+// an aborted session is refused: aborted is terminal. The returned
+// bool reports whether a NEW gate pause was opened (a fresh token
+// minted) as opposed to an in-place refresh of an already-active one —
+// so a caller counting distinct pauses does not double-count a refresh
+// (#50).
+func (s *Store) PauseGate(ctx context.Context, userID, sessionID string, spec PauseSpec) (PauseHandle, bool, error) {
 	if IsReservedSessionID(sessionID) {
-		return PauseHandle{}, errReserved(sessionID)
+		return PauseHandle{}, false, errReserved(sessionID)
 	}
 	if err := spec.validate(); err != nil {
-		return PauseHandle{}, err
+		return PauseHandle{}, false, err
 	}
 	if userID == "" {
 		var err error
 		userID, err = s.findUserID(ctx, sessionID)
 		if err != nil {
-			return PauseHandle{}, err
+			return PauseHandle{}, false, err
 		}
 	}
 	d, err := s.Get(ctx, userID, sessionID)
 	if err != nil {
-		return PauseHandle{}, err
+		return PauseHandle{}, false, err
 	}
 	if d.State == StateAborted {
-		return PauseHandle{}, fmt.Errorf("session %q: %w", sessionID, ErrAlreadyAborted)
+		return PauseHandle{}, false, fmt.Errorf("session %q: %w", sessionID, ErrAlreadyAborted)
 	}
 
 	now := time.Now().UTC()
 	rec := s.opsPauseRecords(ctx, userID, sessionID)[pauseGateKey]
 	action := "gate pause"
+	created := !rec.Active()
 	if rec.Active() {
 		// In-place update: reason/message/metadata/resume_at refresh,
 		// token + expiry stay.
@@ -231,7 +236,7 @@ func (s *Store) PauseGate(ctx context.Context, userID, sessionID string, spec Pa
 	} else {
 		token, err := mintToken()
 		if err != nil {
-			return PauseHandle{}, err
+			return PauseHandle{}, false, err
 		}
 		rec = &PauseRecord{
 			Token: token, Plane: PlaneGate,
@@ -242,9 +247,9 @@ func (s *Store) PauseGate(ctx context.Context, userID, sessionID string, spec Pa
 	}
 	if err := s.writePauseRecord(ctx, userID, sessionID, pauseGateKey, rec,
 		fmt.Sprintf("%s (%s): %s", action, rec.Reason, rec.Message)); err != nil {
-		return PauseHandle{}, err
+		return PauseHandle{}, false, err
 	}
-	return PauseHandle{Token: rec.Token, SessionID: sessionID, ExpiresAt: rec.ExpiresAt}, nil
+	return PauseHandle{Token: rec.Token, SessionID: sessionID, ExpiresAt: rec.ExpiresAt}, created, nil
 }
 
 // PauseInterrupt mints the plane-A pause record for a parked

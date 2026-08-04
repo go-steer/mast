@@ -150,10 +150,13 @@ hands them back to the operator instead of continuing them.
 **Daemon exit codes** encode whether work was cut short, not who
 initiated: `0` = clean drain (all in-flight turns finished), `3` =
 drain window expired with interrupted survivors, `1` = error, `2` =
-usage. `Restart=always` remains the default systemd guidance;
-`Restart=on-failure` now composes too — exit 3 revives the daemon
-exactly when boot-time repair has work to do, and a cleanly-drained
-stop stays down.
+usage, `4` = teardown watchdog fired (the post-drain unwind — an OTel
+flush or a `Close` — deadlocked past its 15s bound; the daemon dumps
+goroutine stacks to stderr and force-exits so a wedged shutdown
+surfaces a diagnostic instead of hanging until SIGKILL). `Restart=always`
+remains the default systemd guidance; `Restart=on-failure` now composes
+too — exit 3 revives the daemon exactly when boot-time repair has work
+to do, and a cleanly-drained stop stays down.
 
 An interrupted turn can leave a **dangling mutating tool call** — a
 call whose outcome the log cannot prove. The recorded-effect outbox

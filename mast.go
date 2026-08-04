@@ -320,7 +320,8 @@ func Pause(ctx context.Context, cfg Config, sessionID string, spec transcript.Pa
 	if cfg.Sessions == nil {
 		return transcript.PauseHandle{}, errors.New("mast: Pause requires Config.Sessions (a pause on a nil service could never be resumed)")
 	}
-	return transcript.NewStore(cfg.Sessions, appName).PauseGate(ctx, "", sessionID, spec)
+	h, _, err := transcript.NewStore(cfg.Sessions, appName).PauseGate(ctx, "", sessionID, spec)
+	return h, err
 }
 
 // ResumeByToken resumes a pause by its resume token (minted by Pause,

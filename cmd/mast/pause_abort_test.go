@@ -99,7 +99,7 @@ func newTurnHarness(t *testing.T, m model.LLM) *turnHarness {
 	}
 	h.obs.Prime("(test)")
 	h.store = transcript.NewStore(h.svc, appName)
-	h.tracker = newTurnTracker(h.store, discardLogger())
+	h.tracker = newTurnTracker(h.store, discardLogger(), h.obs, "(test)")
 	root, err := llmagent.New(llmagent.Config{
 		Name:        "pause_abort_agent",
 		Description: "chokepoint test agent",
@@ -168,7 +168,7 @@ func TestChokepointRefusesGatePausedSession(t *testing.T) {
 	if err := h.turn(ctx, "s-gate"); err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
-	handle, err := h.store.PauseGate(ctx, "", "s-gate", transcript.PauseSpec{
+	handle, _, err := h.store.PauseGate(ctx, "", "s-gate", transcript.PauseSpec{
 		Reason: transcript.ReasonMaintenanceWindow, Message: "deploy window",
 	})
 	if err != nil {
@@ -238,7 +238,9 @@ func TestPlannedStopPauseAndMark(t *testing.T) {
 	svc := adksession.InMemoryService()
 	seedSession(t, svc, "s-stop")
 	store := transcript.NewStore(svc, appName)
-	tr := newTurnTracker(store, discardLogger())
+	obs := observability.New()
+	obs.Prime("(test)")
+	tr := newTurnTracker(store, discardLogger(), obs, "(test)")
 
 	tr.begin("s-stop")
 	tr.planStop("operator stop: deploy freeze", true)
@@ -251,6 +253,10 @@ func TestPlannedStopPauseAndMark(t *testing.T) {
 	if d.State != transcript.StatePaused {
 		t.Fatalf("state after planned-stop mark = %q, want paused (outranks interrupted)", d.State)
 	}
+	// The pause that traveled with the mark is counted with the
+	// planned-stop source (#50), not the operator-request source.
+	assertMetric(t, obs, `mast_gate_pauses_total{source="planned_stop",workload="(test)"} 1`)
+	assertMetric(t, obs, `mast_gate_pauses_total{source="operator",workload="(test)"} 0`)
 	if d.PauseReason != string(transcript.ReasonOperator) {
 		t.Errorf("pause reason = %q, want operator", d.PauseReason)
 	}
@@ -277,7 +283,7 @@ func TestPlannedStopClassifiesMarker(t *testing.T) {
 	svc := adksession.InMemoryService()
 	seedSession(t, svc, "s-classify")
 	store := transcript.NewStore(svc, appName)
-	tr := newTurnTracker(store, discardLogger())
+	tr := newTurnTracker(store, discardLogger(), observability.New(), "(test)")
 
 	tr.begin("s-classify")
 	tr.planStop("operator stop", false)
@@ -305,7 +311,7 @@ func TestSchedulerFireConsumeRequeue(t *testing.T) {
 	store := transcript.NewStore(svc, appName)
 	ctx := context.Background()
 
-	handle, err := store.PauseGate(ctx, "", "s-timer", transcript.PauseSpec{
+	handle, _, err := store.PauseGate(ctx, "", "s-timer", transcript.PauseSpec{
 		Reason:   transcript.ReasonRateLimitBackoff,
 		ResumeAt: time.Now().UTC().Add(-time.Second), // already due
 	})
@@ -367,7 +373,7 @@ func TestSchedulerExpiredTimedPauseFiresOnce(t *testing.T) {
 
 	// resume_at already due, token already expired (TTL can only shorten,
 	// so a long resume_at is the only way to outlive the token).
-	handle, err := store.PauseGate(ctx, "", "s-exp-timer", transcript.PauseSpec{
+	handle, _, err := store.PauseGate(ctx, "", "s-exp-timer", transcript.PauseSpec{
 		Reason:   transcript.ReasonMaintenanceWindow,
 		ResumeAt: time.Now().UTC().Add(-time.Second),
 		TokenTTL: time.Nanosecond,

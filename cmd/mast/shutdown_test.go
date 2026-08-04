@@ -15,11 +15,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +35,7 @@ import (
 
 	"github.com/go-steer/mast/pkg/envelope"
 	"github.com/go-steer/mast/pkg/inject"
+	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -66,7 +70,7 @@ func trackerFixture(t *testing.T, sessionIDs ...string) (*turnTracker, *transcri
 		}
 	}
 	store := transcript.NewStore(svc, appName)
-	return newTurnTracker(store, slog.Default()), store
+	return newTurnTracker(store, slog.Default(), observability.New(), "(test)"), store
 }
 
 func stateOf(t *testing.T, store *transcript.Store, sid string) string {
@@ -193,7 +197,7 @@ func TestTrackerMarkingDoesNotKillLiveTurn(t *testing.T) {
 	}
 
 	store := transcript.NewStore(svc, appName)
-	tr := newTurnTracker(store, slog.Default())
+	tr := newTurnTracker(store, slog.Default(), observability.New(), "(test)")
 	tr.begin("s-live")
 	tr.beginDrain(context.Background())
 
@@ -274,7 +278,7 @@ func TestDefaultSessionPathConcurrentWrites(t *testing.T) {
 	// Drain-time marking with every session mid-turn: all must be
 	// durably marked (the unhardened path left up to 5/6 unmarked).
 	store := transcript.NewStore(svc, appName)
-	tr := newTurnTracker(store, slog.Default())
+	tr := newTurnTracker(store, slog.Default(), observability.New(), "(test)")
 	for _, sid := range sids {
 		tr.begin(sid)
 	}
@@ -356,7 +360,7 @@ func TestTrackerNoFalseInterruptedOnConcurrentFinish(t *testing.T) {
 		}
 	}
 
-	tr := newTurnTracker(store, discardLogger())
+	tr := newTurnTracker(store, discardLogger(), observability.New(), "(test)")
 	for _, sid := range sids {
 		tr.begin(sid)
 	}
@@ -518,4 +522,52 @@ func TestSessionTurnLockHonorsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock2()
+}
+
+// TestTeardownWatchdogFiresOnOverrun: when teardown outlives the
+// deadline, the watchdog dumps goroutine stacks and exits with the
+// dedicated hang code. Both effects are injected so the test observes
+// them without terminating.
+func TestTeardownWatchdogFiresOnOverrun(t *testing.T) {
+	var dumped bytes.Buffer
+	dumpDone := make(chan struct{})
+	dump := func(w io.Writer) {
+		dumpGoroutines(&dumped) // exercise the real dump into our buffer
+		close(dumpDone)
+	}
+	gotExit := make(chan int, 1)
+	exit := func(code int) { gotExit <- code }
+
+	armTeardownWatchdog(time.Millisecond, dump, exit, discardLogger())
+
+	select {
+	case code := <-gotExit:
+		if code != teardownHangExitCode {
+			t.Fatalf("exit code = %d, want %d", code, teardownHangExitCode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchdog did not fire within 2s")
+	}
+	<-dumpDone
+	if !strings.Contains(dumped.String(), "goroutine") {
+		t.Errorf("goroutine dump missing stack content:\n%s", dumped.String())
+	}
+}
+
+// TestTeardownWatchdogQuietBeforeDeadline: a watchdog with a long
+// deadline must not fire (dump/exit) before it — a healthy teardown
+// reaches os.Exit first and kills the sleeping goroutine.
+func TestTeardownWatchdogQuietBeforeDeadline(t *testing.T) {
+	fired := make(chan struct{}, 1)
+	dump := func(io.Writer) { fired <- struct{}{} }
+	exit := func(int) { fired <- struct{}{} }
+
+	armTeardownWatchdog(time.Hour, dump, exit, discardLogger())
+
+	select {
+	case <-fired:
+		t.Fatal("watchdog fired before its deadline")
+	case <-time.After(50 * time.Millisecond):
+		// expected: still parked
+	}
 }

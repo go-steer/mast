@@ -1,6 +1,6 @@
 ---
 title: Metrics
-description: The seven fixed Prometheus counter families mast exports, and the env-gated OTel trace export.
+description: The fixed Prometheus counter families mast exports, and the env-gated OTel trace export.
 sidebar:
   order: 4
 ---
@@ -29,6 +29,26 @@ at zero on startup, so `rate()` / `increase()` have a defined origin.
 
 The session eventlog is the source of truth; these metrics are a real-time
 *view* folded from the same event stream the budget meter observes.
+
+### Durable-execution families (v0.2)
+
+The v0.2 durable-execution surface — pause/abort, planned stop, boot-time
+auto-resume — spans five counter families. The `mast_autoresume_total` family
+shipped with boot-time auto-resume (#41); the fixed-registry pass (#50) added
+the four below it and canonicalized the whole surface. Each advances only when
+the durable operation it names actually happened (the pause was recorded, the
+boot pass reached a disposition) — except `mast_marker_write_failures_total`,
+which is the inverse: it advances only when a marker write *failed*, surfacing
+an otherwise-silent loss. So a nonzero value is always evidence of the event
+the family names, not just an attempt.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_autoresume_total` | `workload`, `outcome` | Boot-pass dispositions per interrupted session. Outcomes: `resumed`, `cleared`, `skipped_stale`, `skipped_ambiguous`, `skipped_loopbreak`, `skipped_superseded`, `skipped_unsupported`, `error`. |
+| `mast_marker_write_failures_total` | `workload`, `operation` | Durable marker writes that failed (otherwise silent). Operations: `mark` and `clear` (interruption marker), `pause` (planned-stop gate-pause write). |
+| `mast_aborts_total` | `workload` | Terminal aborts whose durable marker landed. |
+| `mast_gate_pauses_total` | `workload`, `source` | Out-of-turn gate pauses recorded. Sources: `operator`, `planned_stop`. |
+| `mast_timed_pause_fires_total` | `workload`, `outcome` | Timed-pause scheduler fires. Outcomes: `resumed`, `skipped`, `error`. |
 
 ## Traces
 

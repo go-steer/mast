@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **Observability fixed-registry v0.2 pass + teardown watchdog**
+  (docs/observability-design.md "Metric families",
+  docs/durable-execution-design.md "Shutdown contract" item 6; closes
+  #50). The v0.2 durable-execution surface built over the sprint — the
+  interruption/abort markers, pause planes, timed-pause scheduler, and
+  boot-time auto-resume — was previously observable only through logs.
+  This pass canonicalizes it into **five fixed counter families** — the
+  `mast_autoresume_total` family shipped earlier with #41, and this pass
+  adds the four below it — all low-cardinality, all primed to zero per
+  workload, and each incremented at the write site so a counter advances
+  only when the durable operation it names actually happened (with one
+  deliberate inversion, `mast_marker_write_failures_total`, which
+  advances only when a marker write *failed*):
+  `mast_autoresume_total{workload,outcome}` (boot-pass dispositions;
+  #41), `mast_marker_write_failures_total{workload,operation}` (a marker
+  write that failed, previously silent; `operation` ∈ `mark`/`clear`
+  interruption marker, `pause` planned-stop gate-pause write),
+  `mast_aborts_total{workload}`,
+  `mast_gate_pauses_total{workload,source}` (`source` ∈
+  `operator`/`planned_stop`), and
+  `mast_timed_pause_fires_total{workload,outcome}` (`outcome` ∈
+  `resumed`/`skipped`/`error`). The registry stays fixed — callers
+  increment through typed methods and cannot mint names or labels — and
+  the shipped names supersede the pre-implementation
+  `mast_pauses_total`/`mast_resumes_total` sketch (they split by the
+  mechanism that emits them, not a single `reason` label). Also adds a
+  **teardown watchdog** on the shutdown unwind: after the (already
+  bounded) drain completes, `serve()` arms a 15s watchdog over the
+  deferred teardown (OTel flush, eventlog/attach `Close`, context
+  cancels); on overrun it dumps every goroutine's stack to stderr and
+  force-exits with a dedicated code `4` (distinct from the
+  drain-expiry `3`), so a wedged `Close` or leaked goroutine surfaces a
+  diagnostic instead of hanging silently until the supervisor's
+  SIGKILL. A healthy teardown exits first and the watchdog never fires.
+
 - **Boot-time auto-resume — the v0.2 durable-execution closer**
   (docs/durable-execution-design.md "Boot-time auto-resume"; closes
   #41). On boot the daemon scans for `interrupted` sessions (turns cut

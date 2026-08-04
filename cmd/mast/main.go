@@ -222,6 +222,90 @@ func run() {
 	}
 }
 
+// recordAbort performs a terminal abort's durable write and, on
+// success, its metric (#50). Extracted from the /abort handler so the
+// write-plus-count pairing is exercised directly by a test — the
+// counter must fire only when the marker actually landed.
+func recordAbort(ctx context.Context, store *transcript.Store, obs *observability.Registry, workload, sessionID, reason string) error {
+	if err := store.Abort(ctx, "", sessionID, reason); err != nil {
+		return err
+	}
+	obs.Abort(workload)
+	return nil
+}
+
+// openGatePause records an operator gate pause and, when it opened a NEW
+// pause, its operator-sourced metric (#50), returning the raw
+// handle/error for the caller to map to HTTP status. The metric counts a
+// distinct durable pause, so an in-place refresh of an already-active
+// pause (same token) does not advance it.
+func openGatePause(ctx context.Context, store *transcript.Store, obs *observability.Registry, workload, sessionID string, spec transcript.PauseSpec) (transcript.PauseHandle, error) {
+	h, created, err := store.PauseGate(ctx, "", sessionID, spec)
+	if err != nil {
+		return transcript.PauseHandle{}, err
+	}
+	if created {
+		// Only a newly-opened gate pause counts; a second /pause on an
+		// already-paused session refreshes it in place (same token) and
+		// is not a new pause (#50).
+		obs.GatePause(workload, observability.GatePauseOperator)
+	}
+	return h, nil
+}
+
+// newTimedFireCallback builds the timed-pause scheduler's fire callback:
+// it fires through the same operator doors (ConsumeScheduled for a gate
+// pause, a resume for an interrupt pause) and emits exactly one
+// mast_timed_pause_fires_total per fire, classified by disposition
+// (#50). The error it returns still drives the scheduler's
+// reschedule-on-error. Extracted so the real daemon callback — not a
+// test twin — is what the metric test exercises.
+func newTimedFireCallback(
+	store *transcript.Store,
+	tracker *turnTracker,
+	obs *observability.Registry,
+	workload string,
+	resumeByInterrupt func(context.Context, inject.ResumeRequest) error,
+	logger *slog.Logger,
+) func(context.Context, *transcript.PauseRecord) error {
+	return func(fireCtx context.Context, rec *transcript.PauseRecord) error {
+		outcome, err := func() (string, error) {
+			if tracker.isDraining() {
+				return observability.TimedPauseSkipped, errors.New("daemon draining")
+			}
+			if rec.Plane == transcript.PlaneGate {
+				// ConsumeScheduled, not ConsumeToken: the timer is the daemon's
+				// own commitment and is not vetoed by the operator-facing token
+				// TTL — a resume_at beyond the token's life would otherwise
+				// livelock this fire against an expired token forever.
+				_, err := store.ConsumeScheduled(fireCtx, rec.Token, "timer")
+				if errors.Is(err, transcript.ErrAlreadyResumed) {
+					return observability.TimedPauseSkipped, nil // an operator resumed earlier and won benignly
+				}
+				if err != nil {
+					return observability.TimedPauseError, err
+				}
+				return observability.TimedPauseResumed, nil
+			}
+			req := inject.ResumeRequest{
+				SessionID:   rec.SessionID,
+				InterruptID: rec.InterruptID,
+				Response:    map[string]any{"resumed_by": "timer", "resume_at": rec.ResumeAt.Format(time.RFC3339)},
+			}
+			rerr := resumeByInterrupt(fireCtx, req)
+			cctx, cancel := context.WithTimeout(context.WithoutCancel(fireCtx), storeWriteTimeout)
+			defer cancel()
+			consumeIfAnswered(cctx, store, logger, rec, "timer")
+			if rerr != nil {
+				return observability.TimedPauseError, rerr
+			}
+			return observability.TimedPauseResumed, nil
+		}()
+		obs.TimedPauseFire(workload, outcome)
+		return err
+	}
+}
+
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
@@ -363,25 +447,28 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	meters := newMeterPool(bundle, modelName)
 	wds := newWatchdogPool()
 
-	// Shutdown bookkeeping: which sessions have a turn in flight, and
-	// the pre-mark/clear ordering for their interruption markers.
-	tracker := newTurnTracker(store, logger)
-
-	// One turn per session at a time (#62): a second runner turn on
-	// the same session row dies on ADK's stale-session check, so
-	// same-session injects/resumes queue behind the in-flight turn
-	// (bounded by the workload wallclock budget) instead of losing it.
-	turnLocks := newSessionTurnLocks()
-
 	// Fixed metric registry (pkg/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,
-	// so the workload label is resolved once.
+	// so the workload label is resolved once. Built before the tracker
+	// so the shutdown-drain marker-failure counter can flow through it.
 	obs := observability.New()
 	workloadName := "(none)"
 	if bundle != nil {
 		workloadName = bundle.Name
 	}
 	obs.Prime(workloadName)
+
+	// Shutdown bookkeeping: which sessions have a turn in flight, and
+	// the pre-mark/clear ordering for their interruption markers. The
+	// tracker owns the drain-time marker writes, so it emits the
+	// marker-failure and planned-stop gate-pause counters (#50).
+	tracker := newTurnTracker(store, logger, obs, workloadName)
+
+	// One turn per session at a time (#62): a second runner turn on
+	// the same session row dies on ADK's stale-session check, so
+	// same-session injects/resumes queue behind the in-flight turn
+	// (bounded by the workload wallclock budget) instead of losing it.
+	turnLocks := newSessionTurnLocks()
 
 	// Operator attach surface (--attach-listen): registry + resumer +
 	// per-session adapters over the same runTurn path the inject
@@ -550,7 +637,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// no turn lock here: abort must not queue behind the very turn
 		// it cancels (the register-before-check handshake in runTurnPre
 		// closes the ordering window instead).
-		if err := store.Abort(reqCtx, "", req.SessionID, req.Reason); err != nil {
+		if err := recordAbort(reqCtx, store, obs, workloadName, req.SessionID, req.Reason); err != nil {
 			return err
 		}
 		if tracker.cancelSession(req.SessionID) {
@@ -594,32 +681,8 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 
 	// Timed-pause scheduler (v0.2 pause/abort design): fires through
 	// the same doors an operator would use — no privileged side path.
-	sched := newPauseScheduler(store, logger, func(fireCtx context.Context, rec *transcript.PauseRecord) error {
-		if tracker.isDraining() {
-			return errors.New("daemon draining")
-		}
-		if rec.Plane == transcript.PlaneGate {
-			// ConsumeScheduled, not ConsumeToken: the timer is the daemon's
-			// own commitment and is not vetoed by the operator-facing token
-			// TTL — a resume_at beyond the token's life would otherwise
-			// livelock this fire against an expired token forever.
-			_, err := store.ConsumeScheduled(fireCtx, rec.Token, "timer")
-			if errors.Is(err, transcript.ErrAlreadyResumed) {
-				return nil // an operator resumed earlier and won benignly
-			}
-			return err
-		}
-		req := inject.ResumeRequest{
-			SessionID:   rec.SessionID,
-			InterruptID: rec.InterruptID,
-			Response:    map[string]any{"resumed_by": "timer", "resume_at": rec.ResumeAt.Format(time.RFC3339)},
-		}
-		rerr := resumeByInterrupt(fireCtx, req)
-		cctx, cancel := context.WithTimeout(context.WithoutCancel(fireCtx), storeWriteTimeout)
-		defer cancel()
-		consumeIfAnswered(cctx, store, logger, rec, "timer")
-		return rerr
-	})
+	sched := newPauseScheduler(store, logger,
+		newTimedFireCallback(store, tracker, obs, workloadName, resumeByInterrupt, logger))
 	go sched.run(turnCtx)
 	go func() {
 		// Boot scan: seeds timers minted before this process started —
@@ -692,7 +755,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			}
 			spec.TokenTTL = ttl
 		}
-		h, err := store.PauseGate(reqCtx, "", req.SessionID, spec)
+		h, err := openGatePause(reqCtx, store, obs, workloadName, req.SessionID, spec)
 		if err != nil {
 			switch {
 			case errors.Is(err, transcript.ErrAlreadyAborted):
@@ -871,6 +934,13 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// the drain (and its marker bookkeeping) completes in the shutdown
 	// goroutine. Returning before it finishes was #38.
 	<-shutdownDone
+	// The drain is done; only the deferred teardown (OTel flush, eventlog
+	// and attach Close, context cancels) remains as serve() unwinds. Arm
+	// a watchdog so a wedged Close or an unkillable goroutine surfaces a
+	// stack dump and a distinct exit code instead of hanging until the
+	// supervisor SIGKILLs the process with no diagnostic. No disarm: a
+	// healthy teardown reaches run()'s os.Exit first and kills the timer.
+	armTeardownWatchdog(teardownWatchdogTimeout, dumpGoroutines, os.Exit, logger)
 	if drainExpired {
 		// Exit-code contract (issue #42): 3 = the drain window expired
 		// with interrupted survivors — work was cut short, whoever
