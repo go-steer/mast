@@ -635,6 +635,10 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// short and drive a continuation for each eligible one. On turnCtx
 	// (drain-cancellable) and only with a durable store — in-memory
 	// sessions never survive a restart, so there is nothing to resume.
+	// bootDone lets the drain path await this goroutine so it cannot
+	// start a fresh turn after the drain has sampled "all turns finished"
+	// (closed immediately when the pass never launches).
+	bootDone := make(chan struct{})
 	if autoResume && sessionDB != "" {
 		ar := &autoResumer{
 			runner:       r,
@@ -652,9 +656,15 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			subAgents:    effSubAgents,
 			window:       autoResumeWindow,
 		}
-		go ar.run(turnCtx)
-	} else if autoResume {
-		logger.Info("auto-resume enabled but --session-db is empty (in-memory sessions); nothing to resume")
+		go func() {
+			defer close(bootDone)
+			ar.run(turnCtx)
+		}()
+	} else {
+		close(bootDone)
+		if autoResume {
+			logger.Info("auto-resume enabled but --session-db is empty (in-memory sessions); nothing to resume")
+		}
 	}
 
 	pauseHandler := func(reqCtx context.Context, req inject.PauseRequest) (inject.PauseResult, error) {
@@ -794,6 +804,17 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// covers attach-driven turns, which run outside HTTP handlers.
 		// Both share the one deadline.
 		errShutdown := <-shutdownErr
+		// Await the boot-time auto-resume pass before sampling in-flight
+		// turns: it gates on isDraining() so it returns promptly, but a
+		// boot turn it already started is tracked and must be counted by
+		// wait() below — awaiting here guarantees the pass cannot begin a
+		// new turn after wait() has concluded the daemon is idle. Bounded
+		// by the shared drain deadline; a mid-flight boot turn past the
+		// deadline is handled as a survivor like any other.
+		select {
+		case <-bootDone:
+		case <-drainCtx.Done():
+		}
 		remaining := tracker.wait(drainCtx)
 		if len(remaining) == 0 {
 			if errShutdown != nil {

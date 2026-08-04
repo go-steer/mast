@@ -20,17 +20,41 @@ package main
 
 import (
 	"context"
+	"errors"
+	"iter"
 	"testing"
 	"time"
 
 	"google.golang.org/genai"
 
+	"google.golang.org/adk/v2/model"
 	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 )
+
+// erroringModel fails every generation — drives a turn to a non-conflict
+// error so the boot pass reports AutoResumeError.
+type erroringModel struct{}
+
+func (erroringModel) Name() string { return "erroring" }
+
+func (erroringModel) GenerateContent(context.Context, *model.LLMRequest, bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		yield(nil, errors.New("model boom"))
+	}
+}
+
+// subAgentText is a model-role reply authored by a sub-agent — the wire
+// shape of a turn cut short mid-delegation.
+func subAgentText(author, text string) *adksession.Event {
+	ev := adksession.NewEvent(context.Background(), "inv-sub")
+	ev.Author = author
+	ev.Content = genai.NewContentFromText(text, genai.RoleModel)
+	return ev
+}
 
 // --- seeding helpers ---------------------------------------------------
 
@@ -398,6 +422,115 @@ func TestAutoResumeRunClearsAll(t *testing.T) {
 	for _, sid := range []string{"s-run-b", "s-run-done"} {
 		if st := stateOf(t, h.store, sid); st != transcript.StateIdle {
 			t.Errorf("state of %q after run = %q, want idle", sid, st)
+		}
+	}
+}
+
+// TestAutoResumeForeignUserSkipped: runTurnPre drives under the daemon's
+// fixed user id, so a session owned by a different user is not ours to
+// resume — skipped before any turn, no attempt counted. (Guards against
+// driving a fresh empty row under the wrong user id.)
+func TestAutoResumeForeignUserSkipped(t *testing.T) {
+	h := newTurnHarness(t, &blockableModel{})
+	ctx := context.Background()
+	ar := h.autoResumerWith(defaultPred(), nil, time.Hour)
+	n := 0
+	c := transcript.InterruptedCandidate{SessionID: "s-foreign", UserID: "someone-else"}
+	got := ar.resumeOne(ctx, c, &n)
+	if got != observability.AutoResumeSkippedUnsupported {
+		t.Fatalf("outcome = %q, want %q", got, observability.AutoResumeSkippedUnsupported)
+	}
+	if n != 0 {
+		t.Errorf("turnsThisBoot = %d, want 0 (no turn driven for a foreign user)", n)
+	}
+}
+
+// TestAutoResumeSkipsSubAgentTrailing: a turn cut short mid-delegation
+// leaves a sub-agent-authored trailing event. At the coordinator level
+// ADK filters/converts foreign-branch events, so slice-1 does not drive
+// it — skipped as unsupported, marker left.
+func TestAutoResumeSkipsSubAgentTrailing(t *testing.T) {
+	h := newTurnHarness(t, &blockableModel{})
+	ctx := context.Background()
+	h.seed(t, "s-subtrail", userText("hi"), subAgentText("sub_worker", "partial sub result"))
+	if err := h.store.MarkInterrupted(ctx, "", "s-subtrail", "shutdown"); err != nil {
+		t.Fatalf("MarkInterrupted: %v", err)
+	}
+
+	ar := h.autoResumerWith(defaultPred(), map[string]bool{"sub_worker": true}, time.Hour)
+	before := h.eventCount(t, "s-subtrail")
+	n := 0
+	got := ar.resumeOne(ctx, candidateFor(t, h.store, "s-subtrail"), &n)
+	if got != observability.AutoResumeSkippedUnsupported {
+		t.Fatalf("outcome = %q, want %q", got, observability.AutoResumeSkippedUnsupported)
+	}
+	if got := h.eventCount(t, "s-subtrail"); got != before {
+		t.Errorf("event count %d -> %d: a turn ran on a mid-delegation session", before, got)
+	}
+	if st := stateOf(t, h.store, "s-subtrail"); st != transcript.StateInterrupted {
+		t.Errorf("state = %q, want interrupted (marker left)", st)
+	}
+}
+
+// TestAutoResumeCountsAttemptBeforeFailingTurn (M2): the attempt counter
+// is durably incremented BEFORE the turn runs, so a turn that crashes the
+// process is still counted. A failing turn leaves the marker and the
+// counter at 1 (not cleared), and reports AutoResumeError.
+func TestAutoResumeCountsAttemptBeforeFailingTurn(t *testing.T) {
+	h := newTurnHarness(t, erroringModel{})
+	ctx := context.Background()
+	h.seed(t, "s-fail", userText("hi"))
+	if err := h.store.MarkInterrupted(ctx, "", "s-fail", "shutdown"); err != nil {
+		t.Fatalf("MarkInterrupted: %v", err)
+	}
+
+	ar := h.autoResumerWith(defaultPred(), nil, time.Hour)
+	n := 0
+	got := ar.resumeOne(ctx, candidateFor(t, h.store, "s-fail"), &n)
+	if got != observability.AutoResumeError {
+		t.Fatalf("outcome = %q, want %q", got, observability.AutoResumeError)
+	}
+	if n != 1 {
+		t.Errorf("turnsThisBoot = %d, want 1 (attempt counted before the turn)", n)
+	}
+	if attempts, _ := h.store.AutoResumeAttempts(ctx, defaultUserID, "s-fail"); attempts != 1 {
+		t.Errorf("attempt counter = %d, want 1 (durably counted before the failing turn)", attempts)
+	}
+	if st := stateOf(t, h.store, "s-fail"); st != transcript.StateInterrupted {
+		t.Errorf("state = %q, want interrupted (marker left on failure)", st)
+	}
+}
+
+// TestRepairContentShape pins the H3 repair wire shape: a user-role
+// content with one FunctionResponse per dangling read-only call, each
+// carrying the tool name (Gemini matches on it) and the original call ID
+// (pairing is by ID). Neither is exercised by the in-memory fake model,
+// so this is the only guard against a silent wire-shape regression.
+func TestRepairContentShape(t *testing.T) {
+	in := []effects.DanglingIntent{
+		{ToolName: "read_tool", CallID: "call-1"},
+		{ToolName: "lookup_thing", CallID: "call-2"},
+	}
+	c := repairContent(in)
+	if c.Role != genai.RoleUser {
+		t.Errorf("repair content role = %q, want %q", c.Role, genai.RoleUser)
+	}
+	if len(c.Parts) != len(in) {
+		t.Fatalf("repair parts = %d, want %d", len(c.Parts), len(in))
+	}
+	for i, p := range c.Parts {
+		fr := p.FunctionResponse
+		if fr == nil {
+			t.Fatalf("part %d has no FunctionResponse", i)
+		}
+		if fr.Name != in[i].ToolName {
+			t.Errorf("part %d name = %q, want %q", i, fr.Name, in[i].ToolName)
+		}
+		if fr.ID != in[i].CallID {
+			t.Errorf("part %d id = %q, want %q", i, fr.ID, in[i].CallID)
+		}
+		if _, ok := fr.Response["error"]; !ok {
+			t.Errorf("part %d response missing the \"error\" key: %v", i, fr.Response)
 		}
 	}
 }

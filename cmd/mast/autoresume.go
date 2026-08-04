@@ -113,7 +113,13 @@ func (a *autoResumer) run(ctx context.Context) {
 	a.logger.Info("auto-resume boot scan", "candidates", len(candidates), "window", a.window.String())
 	turnsThisBoot := 0
 	for _, c := range candidates {
-		if ctx.Err() != nil {
+		// Stop launching new turns the moment a drain begins — the same
+		// contract every other turn-launcher honors (inject, resume,
+		// attach, the timed-pause scheduler). turnCtx is only cancelled at
+		// drain EXPIRY, so ctx.Err() alone would keep starting turns
+		// through the whole drain window; isDraining() is the early gate,
+		// and the drain path awaits this goroutine's completion.
+		if ctx.Err() != nil || a.tracker.isDraining() {
 			a.logger.Info("auto-resume pass cut short by shutdown")
 			return
 		}
@@ -177,6 +183,19 @@ func (a *autoResumer) resumeOne(ctx context.Context, c transcript.InterruptedCan
 	}
 
 	// 4. Classify the trailing event (H2) to choose how to drive.
+	//    A trailing event authored by a sub-agent means the turn was cut
+	//    short mid-delegation. At the coordinator level ADK filters and
+	//    converts foreign-branch events, so neither a synthetic repair
+	//    (its call event may not be visible in the coordinator's rebuilt
+	//    history — the turn would error) nor a raw-role classification is
+	//    reliable there; slice-1 drives coordinator-authored turns only.
+	trailing := trailingEvent(c.Events)
+	if trailing != nil && a.subAgents[trailing.Author] {
+		log.Info("auto-resume skipped: trailing event is sub-agent-authored (mid-delegation); not supported in slice-1",
+			"author", trailing.Author)
+		return observability.AutoResumeSkippedUnsupported
+	}
+
 	var msg *genai.Content // nil = re-invoke the model over history (Case B)
 	if len(scan.Repairable) > 0 {
 		// Case A: a read-only tool was cut off mid-flight. Answer it with
@@ -193,7 +212,7 @@ func (a *autoResumer) resumeOne(ctx context.Context, c transcript.InterruptedCan
 			}
 		}
 		msg = repairContent(scan.Repairable)
-	} else if trailingRole(c.Events) == genai.RoleModel {
+	} else if trailing != nil && trailing.Content != nil && trailing.Content.Role == genai.RoleModel {
 		// No dangling calls and the transcript already ends on a model
 		// turn: the interrupted turn actually finished (a stale marker /
 		// clear race). Re-invoking with a nil msg would inject ADK's
@@ -224,9 +243,12 @@ func (a *autoResumer) resumeOne(ctx context.Context, c transcript.InterruptedCan
 	// 6. Durably count the attempt BEFORE running (M2): a turn that
 	//    panics or SIGSEGVs the whole process — the exact restart-loop
 	//    threat — must still have been counted. A refusal that does not
-	//    run a turn (supersession, chokepoint conflict) over-counts, but
-	//    only on sessions that then leave the interrupted set (they
-	//    advanced or went terminal), so the over-count is never re-seen.
+	//    run a turn (supersession, chokepoint conflict) over-counts. When
+	//    a concurrent inject advances the session but leaves the marker,
+	//    the session still projects interrupted and the over-count IS
+	//    re-seen next boot — but only in the safe direction: it can at
+	//    worst trip the per-session breaker sooner (a skip, never a
+	//    resume), and it self-heals once the attempt window rolls over.
 	if _, err := a.store.RecordAutoResumeAttempt(ctx, c.UserID, c.SessionID); err != nil {
 		log.Error("auto-resume: recording the attempt failed; not running (the loop breaker would be blind)",
 			"error", err.Error())
@@ -302,17 +324,22 @@ func repairContent(repairable []effects.DanglingIntent) *genai.Content {
 	return &genai.Content{Role: genai.RoleUser, Parts: parts}
 }
 
-// trailingRole returns the Role of the last event carrying content, or
-// "" if the session has none. It distinguishes a transcript that ended on
-// a model turn (the interrupted turn actually finished) from one ending
-// on a user turn or tool result (genuine mid-turn interruption).
-func trailingRole(events session.Events) string {
-	role := ""
+// trailingEvent returns the last event that carries content ADK would
+// keep when it rebuilds prompt history, or nil if the session has none.
+// It skips nil-content and empty-role events — the cheap, always-correct
+// subset of ADK's buildContentsDefault filtering — so the caller reads
+// the true last visible role (model turn = the interrupted turn actually
+// finished; user turn / tool result = a genuine mid-turn interruption)
+// and the true last visible author (a sub-agent author = mid-delegation).
+// The richer exclusions (branch/isolation-scope/EUC) only bite in shapes
+// slice-1 does not drive and are a documented follow-on.
+func trailingEvent(events session.Events) *session.Event {
+	var last *session.Event
 	for ev := range events.All() {
-		if ev == nil || ev.Content == nil {
+		if ev == nil || ev.Content == nil || ev.Content.Role == "" {
 			continue
 		}
-		role = ev.Content.Role
+		last = ev
 	}
-	return role
+	return last
 }
