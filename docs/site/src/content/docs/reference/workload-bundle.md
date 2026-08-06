@@ -52,6 +52,13 @@ edge_trigger:
   http:
     path: /inject
     auth: bearer
+
+a2a:
+  expose: true
+  skill_name: incident-triage
+  skill_description: Investigate GKE pod-failure incidents.
+  auth:
+    scopes: [incident-triage.invoke]
 ```
 
 ## Fields
@@ -69,6 +76,10 @@ edge_trigger:
 | `hitl.require_approval` | bool | When true, every specialist result pauses on a durable RequestInput interrupt until an operator resumes with a verdict. |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
 | `edge_trigger.http.path`, `.auth` | strings | Informational in v0.1 — the inject server declares its routes globally; per-workload path prefixes come later. |
+| `a2a.expose` | bool | Opt this workload into the [A2A server](/mast/reference/cli/#a2a-server) surface (`--a2a-listen`). Default false — A2A exposure is an external contract, so it is never automatic. |
+| `a2a.skill_name`, `a2a.skill_description` | strings | The skill id/name and human-readable summary published on the agent card. `skill_name` defaults to the workload name; `skill_description` to the workload description. |
+| `a2a.input_schema`, `a2a.output_schema` | maps | A **mast-side** convention only: mast may validate inbound task inputs against them and fold them into the skill description. Spec `AgentSkill` has no schema fields, so they do **not** round-trip through the agent card as machine-readable schema. |
+| `a2a.auth.required`, `a2a.auth.scopes` | bool, list of strings | Per-skill auth policy. `scopes` are enforced per call when a token validator is configured (`MAST_A2A_TOKEN`): a caller whose token lacks a scope is refused `403`. |
 
 ## Budget fields
 

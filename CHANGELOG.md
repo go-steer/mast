@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **A2A server — Stage A: agent card, read/control surface, auth**
+  (docs/a2a-design.md "Mast as A2A server"; #78). mast can now expose its
+  workloads to the [A2A](https://a2a-protocol.org) ecosystem as a server,
+  on its own listener (`--a2a-listen`, e.g. `127.0.0.1:7780`), separate
+  from the inject and attach surfaces. A workload opts in via the bundle's
+  `a2a.expose` section (`skill_name`, `skill_description`, `auth.scopes`).
+  This stage ships the discovery + control surface and its auth so they
+  can be exercised end-to-end before turn execution lands: an **aggregated
+  agent card** at `/.well-known/agent-card.json` (all exposed workloads as
+  skills) plus **per-workload cards** at
+  `/.well-known/agent-card/<name>.json`, and a single JSON-RPC 2.0
+  endpoint `POST /a2a` serving `tasks/get` and `tasks/cancel`.
+  `tasks/cancel` routes to the same terminal-abort path the `/abort` door
+  uses (marker-first, then sweep the in-flight turn), idempotently.
+  `tasks/get` projects the session's log-proven state onto the A2A task
+  lifecycle and **never reports `completed`** from a transcript-only read
+  (the event log cannot prove a turn finished vs. is in flight).
+  `message/send` / `message/stream` are recognized but answer the A2A
+  "unsupported operation" error (`-32004`) until Stages B/C. **Auth** is
+  pluggable via the `a2a.TokenValidator` interface (built-in
+  `StaticBearerValidator`, keyed off `MAST_A2A_TOKEN`); card endpoints are
+  public, `/a2a` requires a valid bearer when a validator is configured
+  (401 otherwise), and each skill's `auth.scopes` are enforced per call
+  (403 on a missing scope). A new observability family
+  `mast_a2a_server_tasks_total{workload,outcome}` counts task-lifecycle
+  transitions. Build-vs-buy: hand-rolled over the wire types this repo
+  already owns so every A2A task runs through the same `runTurnPre`
+  chokepoint every other turn kind funnels through (budget, pause, abort,
+  turn-lock, effects outbox by construction), rather than adopting ADK's
+  `adka2a.Executor`, which drives the runner directly and bypasses it.
+
 - **Observability fixed-registry v0.2 pass + teardown watchdog**
   (docs/observability-design.md "Metric families",
   docs/durable-execution-design.md "Shutdown contract" item 6; closes

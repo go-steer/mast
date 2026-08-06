@@ -92,6 +92,14 @@ Transport choice: **JSON-RPC only at first**; the card's `preferredTransport` sa
 
 The agent card at `/.well-known/agent-card.json` aggregates all exposed workloads as skills — one card per mast instance, N skills within it. If operators need per-workload cards (some registries require distinct endpoints per agent), mast can also serve per-workload cards at `/.well-known/agent-card/<workload-name>.json` — configurable.
 
+#### Implementation status (v0.2, staged)
+
+The server lands in three stages so the read/control surface and its auth ship — and get exercised end-to-end — before turn execution:
+
+- **Stage A (shipped).** Agent-card publication (aggregated + per-workload), `tasks/get`, `tasks/cancel`, and pluggable bearer auth (`a2a.TokenValidator`, built-in `StaticBearerValidator`) with per-skill scope checks. `message/send` and `message/stream` are recognized but answer the A2A "unsupported operation" error (`-32004`) until their stages land. The server runs on its own listener (`--a2a-listen`), separate from the inject and attach surfaces; card endpoints are public, `/a2a` is authenticated when a validator is configured. `tasks/get` maps the session's log-proven state onto the A2A lifecycle and **never reports `completed`** from a transcript-only read (the event log cannot prove a turn finished vs. is in flight) — `completed` arrives with the in-process task registry in Stage B. Build-vs-buy: hand-rolled over the wire types this repo already owns, so every A2A task runs through the same `runTurnPre` chokepoint every other turn kind funnels through (budget, pause, abort, turn-lock, effects outbox by construction) — ADK's `adka2a.Executor` drives the runner directly and bypasses it.
+- **Stage B.** `message/send` through `runTurnPre` (task ID == session ID), the in-process task registry (for `submitted`/`working`/`completed`), tenant-claim → `WithIsolationScope`, and per-caller / per-workload rate limiting.
+- **Stage C.** `message/stream` (SSE) reusing the attach broadcaster.
+
 ### Task lifecycle mapping
 
 A2A task states map onto mast session states:
