@@ -278,7 +278,7 @@ func (a *autoResumer) resumeOne(ctx context.Context, c transcript.InterruptedCan
 	// 8. Drive through the shared chokepoint.
 	label := "autoresume:" + c.SessionID
 	err := runTurnPre(ctx, a.runner, a.logger, a.store, a.meters, a.wds, a.obs,
-		a.tracker, a.turnLocks, a.workloadName, c.SessionID, msg, label, preTurn)
+		a.tracker, a.turnLocks, a.workloadName, c.SessionID, msg, label, preTurn, nil)
 	switch {
 	case err == nil:
 		// The turn finished within (a fresh) boot: clear both markers so a

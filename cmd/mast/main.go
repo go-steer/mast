@@ -540,7 +540,10 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		a2aLn  net.Listener
 	)
 	if a2aListen != "" {
-		backend := &a2aBackend{store: store, obs: obs, tracker: tracker, logger: logger, workloadName: workloadName}
+		backend := &a2aBackend{
+			store: store, obs: obs, tracker: tracker, logger: logger, workloadName: workloadName,
+			r: r, meters: meters, wds: wds, turnLocks: turnLocks, bundle: bundle, reg: newTaskRegistry(),
+		}
 		a2aSrv, err = buildA2AServer(logger, a2aListen, bundle, backend, obs, turnCtx)
 		if err != nil {
 			logger.Error("failed to construct A2A server", "error", err.Error())
@@ -1289,7 +1292,7 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *t
 	}
 	msg.Parts[0].FunctionResponse.ID = req.InterruptID
 	obs.HITLResume(workloadName)
-	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID, preTurn)
+	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID, preTurn, nil)
 }
 
 // consumeIfAnswered consumes a plane-A pause token iff the resume
@@ -1321,7 +1324,7 @@ func consumeIfAnswered(ctx context.Context, store *transcript.Store, logger *slo
 }
 
 func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string) error {
-	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sessionID, msg, label, nil)
+	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sessionID, msg, label, nil, nil)
 }
 
 // runTurnPre is runTurn with an optional hook that runs under the
@@ -1338,7 +1341,10 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *
 // the marker check (the register-before-check half of the abort/hard-
 // pause handshake): a sweep after a marker write either finds this
 // turn registered and cancels it, or this check sees the marker first.
-func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error) error {
+// onEvent, when non-nil, is invoked for each runner event after it is
+// logged and metered — the A2A message/send path uses it to capture the
+// final assistant answer and any HITL-pause signal for its reply.
+func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error, onEvent func(*session.Event)) error {
 	// One turn per session (#62): ADK's stale-session check makes a
 	// second concurrent runner turn on the same row fatal to one of
 	// them, so same-session turns queue here. The wait genuinely
@@ -1423,6 +1429,9 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		}
 		events++
 		logEvent(logger, event, sessionID)
+		if onEvent != nil {
+			onEvent(event)
+		}
 		obs.Observe(event, workloadName)
 		if berr := meter.Observe(event); berr != nil {
 			tokens, cost, calls := meter.Snapshot()

@@ -17,11 +17,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
+	"google.golang.org/adk/v2/model"
 	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/pkg/a2a"
+	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
@@ -53,32 +57,362 @@ func newA2ABackend(t *testing.T, sessionIDs ...string) (*a2aBackend, *transcript
 	}, store
 }
 
-func TestA2ABackendGetTask(t *testing.T) {
-	b, store := newA2ABackend(t, "live", "gone-terminal")
+// newA2ABackendRunner builds an a2aBackend backed by a real turn stack
+// (runner + transcript store + tracker + locks + meters over an in-memory
+// session service), so SubmitMessage can drive turns end-to-end through
+// runTurnPre. workloadName is "(test)" to match the harness's primed obs.
+func newA2ABackendRunner(t *testing.T, m model.LLM) *a2aBackend {
+	t.Helper()
+	h := newTurnHarness(t, m)
+	return &a2aBackend{
+		store:        h.store,
+		obs:          h.obs,
+		tracker:      h.tracker,
+		logger:       discardLogger(),
+		workloadName: "(test)",
+		r:            h.runner,
+		meters:       h.meters,
+		wds:          h.wds,
+		turnLocks:    h.locks,
+		reg:          newTaskRegistry(),
+	}
+}
+
+// TestA2ABackendSubmitMessageCompleted drives a message/send turn end to
+// end: the model's answer is captured as the task Output, and the registry
+// makes GetTask report "completed" — which the transcript projection alone
+// (idle → working) never could. Neutralize check: drop the onEvent capture
+// in runTurnPre and Output goes empty; drop the registry-first read in
+// GetTask and the follow-up read reports working.
+func TestA2ABackendSubmitMessageCompleted(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
 	ctx := context.Background()
 
-	// A reserved ops-row id is never addressable as a task.
-	if _, err := b.GetTask(ctx, "live:mast-ops"); !errors.Is(err, a2a.ErrTaskNotFound) {
+	taskID, info, err := b.SubmitMessage(ctx, a2a.SubmitParams{Text: "investigate", ContextID: "c1"})
+	if err != nil {
+		t.Fatalf("SubmitMessage: %v", err)
+	}
+	if !strings.HasPrefix(taskID, "a2a-") {
+		t.Fatalf("task id = %q, want an a2a- prefix", taskID)
+	}
+	if info.State != a2a.TaskStateCompleted {
+		t.Fatalf("state = %q, want completed", info.State)
+	}
+	if info.Output != "done" {
+		t.Fatalf("output = %q, want %q (the model's answer)", info.Output, "done")
+	}
+	if info.ContextID != "c1" {
+		t.Fatalf("contextID = %q, want c1", info.ContextID)
+	}
+	got, err := b.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.State != a2a.TaskStateCompleted || got.Output != "done" {
+		t.Fatalf("GetTask after submit = %+v, want completed/done from the registry", got)
+	}
+}
+
+// TestA2ABackendSubmitMessageRefusesAborted: continuing an aborted task
+// hits the runTurnPre chokepoint (ErrConflict), and classifyTurn projects
+// the session's durable state (canceled) rather than "failed" — carrying
+// no fabricated output.
+func TestA2ABackendSubmitMessageRefusesAborted(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	ctx := context.Background()
+
+	taskID, _, err := b.SubmitMessage(ctx, a2a.SubmitParams{Text: "hi"})
+	if err != nil {
+		t.Fatalf("first SubmitMessage: %v", err)
+	}
+	if err := b.store.Abort(ctx, "", taskID, "operator abort"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	_, info, err := b.SubmitMessage(ctx, a2a.SubmitParams{TaskID: taskID, Text: "again"})
+	if err != nil {
+		t.Fatalf("SubmitMessage(aborted): %v", err)
+	}
+	if info.State != a2a.TaskStateCanceled {
+		t.Fatalf("state = %q, want canceled (chokepoint refusal projected from the store)", info.State)
+	}
+	if info.Output != "" {
+		t.Fatalf("refused task carried output %q, want empty", info.Output)
+	}
+}
+
+// TestA2ABackendSubmitMessageDraining: once shutdown drain begins, new
+// tasks are refused with ErrUnavailable (mirrors the inject door).
+func TestA2ABackendSubmitMessageDraining(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	b.tracker.beginDrain(context.Background())
+	if _, _, err := b.SubmitMessage(context.Background(), a2a.SubmitParams{Text: "hi"}); !errors.Is(err, a2a.ErrUnavailable) {
+		t.Fatalf("draining submit err = %v, want a2a.ErrUnavailable", err)
+	}
+}
+
+// TestA2ABackendGetTaskRegistryWins: the in-process registry is
+// authoritative over the transcript projection. A recorded "completed"
+// record must win, though the idle session it names would otherwise
+// project to "working". Neutralize check: remove the registry-first branch
+// in GetTask and this reports working.
+func TestA2ABackendGetTaskRegistryWins(t *testing.T) {
+	b, _ := newA2ABackend(t, "a2a-live")
+	b.reg = newTaskRegistry()
+	b.reg.set("a2a-live", taskRecord{workload: "triage", state: a2a.TaskStateCompleted, output: "answer"})
+
+	info, err := b.GetTask(context.Background(), "a2a-live")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if info.State != a2a.TaskStateCompleted || info.Output != "answer" {
+		t.Fatalf("GetTask = %+v, want completed/answer from the registry", info)
+	}
+}
+
+// TestA2ABackendCancelUpdatesRegistry: cancelling a task this process ran
+// must overwrite its registry record, otherwise a stale "completed" would
+// shadow the cancel on the next GetTask. Neutralize check: drop the
+// reg.set in CancelTask and the post-cancel read still reports completed.
+func TestA2ABackendCancelUpdatesRegistry(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	ctx := context.Background()
+
+	taskID, _, err := b.SubmitMessage(ctx, a2a.SubmitParams{Text: "hi"})
+	if err != nil {
+		t.Fatalf("SubmitMessage: %v", err)
+	}
+	if got, _ := b.GetTask(ctx, taskID); got.State != a2a.TaskStateCompleted {
+		t.Fatalf("pre-cancel state = %q, want completed", got.State)
+	}
+	if _, err := b.CancelTask(ctx, taskID, "a2a tasks/cancel"); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	got, err := b.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("GetTask after cancel: %v", err)
+	}
+	if got.State != a2a.TaskStateCanceled {
+		t.Fatalf("post-cancel GetTask = %q, want canceled (stale completed record shadowed the cancel)", got.State)
+	}
+}
+
+// TestTaskRegistryRecordCancelWins pins the cancel-wins invariant: once a
+// record is Canceled, a racing terminal write (a message/send turn that
+// completed exactly as tasks/cancel landed) must not resurrect it —
+// otherwise the model's answer leaks as a result artifact on a canceled
+// task. record() must make the cancel authoritative regardless of write
+// order. Neutralize check: make record an unconditional set and the
+// cancel-then-complete case reports completed/answer.
+func TestTaskRegistryRecordCancelWins(t *testing.T) {
+	// complete, then cancel → cancel wins, no leaked output.
+	r := newTaskRegistry()
+	r.record("t", taskRecord{state: a2a.TaskStateCompleted, output: "answer"})
+	r.record("t", taskRecord{state: a2a.TaskStateCanceled})
+	if rec, _ := r.get("t"); rec.state != a2a.TaskStateCanceled || rec.output != "" {
+		t.Fatalf("complete-then-cancel = %+v, want canceled/no-output", rec)
+	}
+	// cancel, then a racing completion → completion must NOT clobber it.
+	r2 := newTaskRegistry()
+	r2.record("t", taskRecord{state: a2a.TaskStateCanceled})
+	r2.record("t", taskRecord{state: a2a.TaskStateCompleted, output: "answer"})
+	if rec, _ := r2.get("t"); rec.state != a2a.TaskStateCanceled || rec.output != "" {
+		t.Fatalf("cancel-then-complete = %+v, want canceled/no-output (cancel wins regardless of order)", rec)
+	}
+}
+
+// TestTaskRegistryClearInFlight: a non-terminal in-flight record is dropped
+// so GetTask falls back to the transcript (authoritative for
+// working/input-required after a gate-paused refusal), but a terminal
+// record (a racing cancel) survives. Neutralize check: make clearInFlight
+// an unconditional delete and the terminal-survives case fails.
+func TestTaskRegistryClearInFlight(t *testing.T) {
+	r := newTaskRegistry()
+	r.record("t", taskRecord{state: a2a.TaskStateWorking})
+	r.clearInFlight("t")
+	if _, ok := r.get("t"); ok {
+		t.Fatal("clearInFlight left a working record; GetTask would shadow the transcript")
+	}
+	r.record("t", taskRecord{state: a2a.TaskStateCanceled})
+	r.clearInFlight("t")
+	if rec, ok := r.get("t"); !ok || rec.state != a2a.TaskStateCanceled {
+		t.Fatalf("clearInFlight dropped a terminal record: %+v ok=%v", rec, ok)
+	}
+}
+
+// TestA2ABackendRejectsForeignSession pins the ownership fence: the A2A
+// surface addresses only tasks it minted (the "a2a-" prefix). A
+// scope-holding caller must not read, cancel, or — the load-bearing case —
+// drive a message/send turn into a session owned by another surface
+// (inject "incident-*", attach, autoresume) by presenting its id as a task
+// id. Neutralize check: relax isA2ATaskID to the old reserved-only check
+// and SubmitMessage runs a turn into the foreign session (completed, nil
+// err) instead of refusing.
+func TestA2ABackendRejectsForeignSession(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	ctx := context.Background()
+	const foreign = "incident-op1" // an inject-owned session id
+
+	if _, err := b.GetTask(ctx, foreign); !errors.Is(err, a2a.ErrTaskNotFound) {
+		t.Fatalf("GetTask(foreign) err = %v, want ErrTaskNotFound", err)
+	}
+	if _, err := b.CancelTask(ctx, foreign, "x"); !errors.Is(err, a2a.ErrTaskNotFound) {
+		t.Fatalf("CancelTask(foreign) err = %v, want ErrTaskNotFound", err)
+	}
+	if _, _, err := b.SubmitMessage(ctx, a2a.SubmitParams{TaskID: foreign, Text: "hijack"}); !errors.Is(err, a2a.ErrTaskNotFound) {
+		t.Fatalf("SubmitMessage(foreign) err = %v, want ErrTaskNotFound (turn injection into a foreign session)", err)
+	}
+}
+
+// TestA2ABackendSubmitMintsContextID: when the caller omits contextId, the
+// server assigns one (A2A v0.3) so follow-up messages can be grouped.
+// Neutralize check: drop the mintContextID fallback and the returned
+// contextId is empty.
+func TestA2ABackendSubmitMintsContextID(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	_, info, err := b.SubmitMessage(context.Background(), a2a.SubmitParams{Text: "hi"})
+	if err != nil {
+		t.Fatalf("SubmitMessage: %v", err)
+	}
+	if !strings.HasPrefix(info.ContextID, "ctx-") {
+		t.Fatalf("contextID = %q, want a server-minted ctx- id", info.ContextID)
+	}
+}
+
+// TestA2ABackendSubmitFailed: a genuine runner error (not a chokepoint
+// ErrConflict) projects to "failed" with no fabricated output — the real
+// path behind classifyTurn's default branch, which the fake-backend server
+// test cannot reach. Neutralize check: change the default branch to
+// completed and this reports completed.
+func TestA2ABackendSubmitFailed(t *testing.T) {
+	b := newA2ABackendRunner(t, errModel{})
+	_, info, err := b.SubmitMessage(context.Background(), a2a.SubmitParams{Text: "hi"})
+	if err != nil {
+		t.Fatalf("SubmitMessage: %v", err)
+	}
+	if info.State != a2a.TaskStateFailed {
+		t.Fatalf("state = %q, want failed", info.State)
+	}
+	if info.Output != "" {
+		t.Fatalf("failed task carried output %q, want empty", info.Output)
+	}
+}
+
+// TestA2ABackendSubmitCancelRaceNoLeak pins the cancel-wins invariant on the
+// synchronous message/send *reply* (not just GetTask): a tasks/cancel that
+// recorded canceled while the turn was in flight must win the reply too. The
+// registry holds a canceled record but the store session is not aborted, so
+// the turn completes with the model's answer — exactly the window where
+// CancelTask's registry write landed between the turn passing the chokepoint
+// and its terminal record. record() drops the completed write (cancel sticky),
+// and SubmitMessage must return the registry's canceled view rather than leak
+// the answer as a result artifact. Neutralize check: return the local snapshot
+// instead of the registry view and this reports completed with output "done".
+func TestA2ABackendSubmitCancelRaceNoLeak(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	ctx := context.Background()
+	b.reg.record("a2a-race", taskRecord{workload: b.workloadName, state: a2a.TaskStateCanceled, message: "operator cancel"})
+
+	_, info, err := b.SubmitMessage(ctx, a2a.SubmitParams{TaskID: "a2a-race", Text: "hi"})
+	if err != nil {
+		t.Fatalf("SubmitMessage: %v", err)
+	}
+	if info.State != a2a.TaskStateCanceled {
+		t.Fatalf("reply state = %q, want canceled (raced cancel wins the reply)", info.State)
+	}
+	if info.Output != "" {
+		t.Fatalf("reply leaked output %q on a canceled task, want empty", info.Output)
+	}
+	got, err := b.GetTask(ctx, "a2a-race")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.State != a2a.TaskStateCanceled || got.Output != "" {
+		t.Fatalf("GetTask = %+v, want canceled/no-output (reply must agree)", got)
+	}
+}
+
+// TestDrainErrMapsUnavailable pins the drain-race mapping: if drain begins
+// after SubmitMessage's pre-check while the turn is blocked on the per-session
+// lock, runTurnPre returns inject.ErrUnavailable. SubmitMessage must surface
+// that as the retryable a2a.ErrUnavailable (-32000), not fold it into a failed
+// task; every other error falls through to classifyTurn. The branch itself is
+// only reachable in the true production race (it shares the pre-check's
+// isDraining predicate), so the mapping is factored into drainErr for a
+// deterministic test. Neutralize check: return nil for ErrUnavailable and a
+// drain-race task reports failed instead of retryable.
+func TestDrainErrMapsUnavailable(t *testing.T) {
+	if de := drainErr(fmt.Errorf("queued turn cancelled: %w", inject.ErrUnavailable)); !errors.Is(de, a2a.ErrUnavailable) {
+		t.Fatalf("drainErr(ErrUnavailable) = %v, want a2a.ErrUnavailable", de)
+	}
+	if de := drainErr(errors.New("boom")); de != nil {
+		t.Fatalf("drainErr(other) = %v, want nil (falls through to classifyTurn's failed)", de)
+	}
+	if de := drainErr(inject.ErrConflict); de != nil {
+		t.Fatalf("drainErr(ErrConflict) = %v, want nil (aborted/paused is classifyTurn's job)", de)
+	}
+}
+
+// TestTurnCaptureInputRequired: onEvent recognizes both HITL signals — a
+// RequestedInput event (carrying its prompt) and an unanswered
+// LongRunningToolIDs park. Neutralize check: drop either branch in onEvent
+// and the corresponding case leaves inputRequired false.
+func TestTurnCaptureInputRequired(t *testing.T) {
+	var c turnCapture
+	c.onEvent(&adksession.Event{RequestedInput: &adksession.RequestInput{Message: "approve?"}})
+	if !c.inputRequired || c.interruptMsg != "approve?" {
+		t.Fatalf("onEvent(RequestedInput): inputRequired=%v msg=%q", c.inputRequired, c.interruptMsg)
+	}
+	var c2 turnCapture
+	c2.onEvent(&adksession.Event{LongRunningToolIDs: []string{"lr1"}})
+	if !c2.inputRequired {
+		t.Fatal("onEvent(LongRunningToolIDs) did not set inputRequired")
+	}
+}
+
+// TestClassifyTurnInputRequired: a turn that completed with a HITL request
+// pending projects to input-required with the prompt and no output — the
+// classifyTurn branch the fake-backend server test cannot exercise.
+// Neutralize check: drop the inputRequired branch and this reports
+// completed with the (ignored) lastText leaking as output.
+func TestClassifyTurnInputRequired(t *testing.T) {
+	b, _ := newA2ABackend(t)
+	cap := &turnCapture{inputRequired: true, interruptMsg: "approve?", lastText: "should-not-surface"}
+	state, msg, out := b.classifyTurn(context.Background(), "a2a-x", cap, nil)
+	if state != a2a.TaskStateInputRequired || msg != "approve?" || out != "" {
+		t.Fatalf("classifyTurn(inputRequired) = %q/%q/%q, want input-required/approve?/empty", state, msg, out)
+	}
+}
+
+func TestA2ABackendGetTask(t *testing.T) {
+	b, store := newA2ABackend(t, "a2a-live", "a2a-gone")
+	ctx := context.Background()
+
+	// A reserved ops-row id on an owned task is never addressable.
+	if _, err := b.GetTask(ctx, "a2a-live:mast-ops"); !errors.Is(err, a2a.ErrTaskNotFound) {
 		t.Fatalf("GetTask(reserved) err = %v, want ErrTaskNotFound", err)
 	}
-	// An unknown session maps ErrNotFound → ErrTaskNotFound.
-	if _, err := b.GetTask(ctx, "nonexistent"); !errors.Is(err, a2a.ErrTaskNotFound) {
+	// A session owned by another surface (non-a2a- id) is not addressable.
+	if _, err := b.GetTask(ctx, "incident-op1"); !errors.Is(err, a2a.ErrTaskNotFound) {
+		t.Fatalf("GetTask(foreign) err = %v, want ErrTaskNotFound", err)
+	}
+	// An unknown but a2a-owned session maps ErrNotFound → ErrTaskNotFound.
+	if _, err := b.GetTask(ctx, "a2a-nonexistent"); !errors.Is(err, a2a.ErrTaskNotFound) {
 		t.Fatalf("GetTask(unknown) err = %v, want ErrTaskNotFound", err)
 	}
 	// An idle session is "working" (the log can't prove completion) and is
 	// stamped with the backend's workload.
-	info, err := b.GetTask(ctx, "live")
+	info, err := b.GetTask(ctx, "a2a-live")
 	if err != nil {
-		t.Fatalf("GetTask(live): %v", err)
+		t.Fatalf("GetTask(a2a-live): %v", err)
 	}
 	if info.State != a2a.TaskStateWorking || info.WorkloadName != "triage" {
-		t.Fatalf("GetTask(live) = %+v, want working/triage", info)
+		t.Fatalf("GetTask(a2a-live) = %+v, want working/triage", info)
 	}
 	// An aborted session projects to canceled with its reason.
-	if err := store.Abort(ctx, "", "gone-terminal", "operator abort"); err != nil {
+	if err := store.Abort(ctx, "", "a2a-gone", "operator abort"); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
-	info, err = b.GetTask(ctx, "gone-terminal")
+	info, err = b.GetTask(ctx, "a2a-gone")
 	if err != nil {
 		t.Fatalf("GetTask(aborted): %v", err)
 	}
@@ -88,21 +422,25 @@ func TestA2ABackendGetTask(t *testing.T) {
 }
 
 func TestA2ABackendCancelTask(t *testing.T) {
-	b, _ := newA2ABackend(t, "s1")
+	b, _ := newA2ABackend(t, "a2a-s1")
 	ctx := context.Background()
 
-	// Reserved id and unknown id both refuse as not-found.
-	if _, err := b.CancelTask(ctx, "s1:mast-ops", "x"); !errors.Is(err, a2a.ErrTaskNotFound) {
+	// Reserved id, foreign-surface id, and unknown id all refuse as
+	// not-found.
+	if _, err := b.CancelTask(ctx, "a2a-s1:mast-ops", "x"); !errors.Is(err, a2a.ErrTaskNotFound) {
 		t.Fatalf("CancelTask(reserved) err = %v, want ErrTaskNotFound", err)
 	}
-	if _, err := b.CancelTask(ctx, "ghost", "x"); !errors.Is(err, a2a.ErrTaskNotFound) {
+	if _, err := b.CancelTask(ctx, "incident-op1", "x"); !errors.Is(err, a2a.ErrTaskNotFound) {
+		t.Fatalf("CancelTask(foreign) err = %v, want ErrTaskNotFound", err)
+	}
+	if _, err := b.CancelTask(ctx, "a2a-ghost", "x"); !errors.Is(err, a2a.ErrTaskNotFound) {
 		t.Fatalf("CancelTask(unknown) err = %v, want ErrTaskNotFound", err)
 	}
 
 	// First cancel lands the terminal marker and reports canceled.
-	info, err := b.CancelTask(ctx, "s1", "a2a tasks/cancel")
+	info, err := b.CancelTask(ctx, "a2a-s1", "a2a tasks/cancel")
 	if err != nil {
-		t.Fatalf("CancelTask(s1): %v", err)
+		t.Fatalf("CancelTask(a2a-s1): %v", err)
 	}
 	if info.State != a2a.TaskStateCanceled {
 		t.Fatalf("first cancel state = %q, want canceled", info.State)
@@ -110,9 +448,9 @@ func TestA2ABackendCancelTask(t *testing.T) {
 
 	// Second cancel is idempotent: ErrAlreadyAborted maps to success and
 	// still reports canceled (no spurious error surfaces to the caller).
-	info, err = b.CancelTask(ctx, "s1", "a2a tasks/cancel")
+	info, err = b.CancelTask(ctx, "a2a-s1", "a2a tasks/cancel")
 	if err != nil {
-		t.Fatalf("second CancelTask(s1): %v", err)
+		t.Fatalf("second CancelTask(a2a-s1): %v", err)
 	}
 	if info.State != a2a.TaskStateCanceled {
 		t.Fatalf("idempotent cancel state = %q, want canceled", info.State)

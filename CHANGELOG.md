@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- **A2A server — Stage B1: `message/send` turn execution + trace
+  propagation** (docs/a2a-design.md "Mast as A2A server"; #78). The A2A
+  endpoint now runs turns: `POST /a2a` `message/send` drives a synchronous
+  turn through the same `runTurnPre` chokepoint every other turn kind
+  funnels through (budget, pause, abort, turn-lock, effects outbox by
+  construction). A task id **is** a mast session id; a message with a
+  `taskId` continues that task, and one without routes to the single
+  exposed skill and mints a fresh task. The agent's final answer is
+  captured off the turn's event stream and surfaces as a `result` text
+  artifact on the terminal task. An **in-process task registry** is the
+  authority for `completed`/`failed` (which a transcript read cannot
+  prove): `tasks/get` consults it first and falls back to the session's
+  log-proven state for tasks this process did not run (e.g. after a
+  restart) or that are non-terminal (the transcript is authoritative for
+  `working`/`input-required`, so only terminal outcomes are pinned). The
+  registry write is **cancel-wins**: a task canceled as its turn finishes
+  still reports `canceled` and never leaks the model's answer as a result
+  artifact, regardless of which write lands last. The A2A surface
+  addresses **only tasks it minted** (the `a2a-` id prefix) — `tasks/get`,
+  `tasks/cancel`, and `message/send` continuation all report `-32001` for
+  any other session id, so a caller cannot read, cancel, or drive a turn
+  into another surface's session (operator incidents, attach, autoresume)
+  by presenting its id. The server assigns a `contextId` when the caller
+  omits one (A2A v0.3), returned on the task so follow-ups can be grouped.
+  Stage B1 is text-only — a message with no text parts is rejected
+  (`-32602`), and an endpoint exposing more than one skill refuses a
+  selector-less fresh send (`-32004`); a HITL pause returns
+  `input-required`; a session that is aborted or gate-paused refuses the
+  call at the chokepoint and reports its durable state; and new tasks are
+  refused with the retryable `-32000` once shutdown drain begins.
+  **Distributed tracing** is wired both directions: the A2A client injects
+  the caller's W3C trace context (`traceparent`/`baggage`) on every
+  outbound JSON-RPC call, and the server extracts an inbound one so the
+  turn's spans parent under the caller's span (a no-op when tracing is
+  disabled). The mast A2A client sends structured inputs as a `data` part,
+  which this text-only server does not yet ingest — there is no mast↔mast
+  `message/send` round trip until a later stage. Rate limiting and tenant
+  → `WithIsolationScope` are deferred to Stage B2; SSE streaming
+  (`message/stream`) remains Stage C.
+
 - **A2A server — Stage A: agent card, read/control surface, auth**
   (docs/a2a-design.md "Mast as A2A server"; #78). mast can now expose its
   workloads to the [A2A](https://a2a-protocol.org) ecosystem as a server,
@@ -19,8 +59,9 @@
   `tasks/get` projects the session's log-proven state onto the A2A task
   lifecycle and **never reports `completed`** from a transcript-only read
   (the event log cannot prove a turn finished vs. is in flight).
-  `message/send` / `message/stream` are recognized but answer the A2A
-  "unsupported operation" error (`-32004`) until Stages B/C. **Auth** is
+  (`message/send` turn execution landed in Stage B1, above;
+  `message/stream` remains recognized-but-unsupported, `-32004`, until
+  Stage C.) **Auth** is
   pluggable via the `a2a.TokenValidator` interface (built-in
   `StaticBearerValidator`, keyed off `MAST_A2A_TOKEN`); card endpoints are
   public, `/a2a` requires a valid bearer when a validator is configured

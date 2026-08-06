@@ -41,6 +41,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Principal is the authenticated caller a TokenValidator resolves a
@@ -83,6 +86,13 @@ var ErrInvalidToken = errors.New("a2a: invalid or unknown bearer token")
 // ErrTaskNotFound marks an unknown task id; the server maps it to the
 // A2A TaskNotFound JSON-RPC error (-32001).
 var ErrTaskNotFound = errors.New("a2a: task not found")
+
+// ErrUnavailable marks a transiently-unavailable backend — e.g. a server
+// draining for shutdown that refuses new work. The server maps it to a
+// server-error JSON-RPC code (-32000) so a caller reads it as retryable,
+// not as an internal fault (-32603). A Backend returns it (wrapped) from
+// SubmitMessage.
+var ErrUnavailable = errors.New("a2a: backend temporarily unavailable")
 
 // StaticBearerValidator validates against a fixed token→Principal map —
 // the "static bearer tokens (for simple deployments)" validator from
@@ -172,6 +182,27 @@ type TaskInfo struct {
 	// StatusMessage is an optional human-readable status line surfaced in
 	// the task's status.message.
 	StatusMessage string
+
+	// Output is the agent's answer for a completed task; when non-empty
+	// it surfaces as a text artifact on the returned Task (Stage B
+	// message/send). Empty for read/cancel snapshots.
+	Output string
+}
+
+// SubmitParams is a message/send request projected onto the runtime
+// seam. The server extracts it from the A2A Message; the daemon converts
+// it into a mast turn (Text → user message) and runs it through the turn
+// chokepoint. Data/file parts are text-only for Stage B (docs/a2a-design.md).
+type SubmitParams struct {
+	// TaskID continues an existing task (== session id) when set; empty
+	// mints a fresh task.
+	TaskID string
+
+	// ContextID groups related messages; carried onto the task snapshot.
+	ContextID string
+
+	// Text is the joined text of the inbound message's parts.
+	Text string
 }
 
 // Backend drives task verbs against the mast runtime. The daemon
@@ -185,6 +216,14 @@ type Backend interface {
 	// CancelTask requests cancellation (idempotent), returning the
 	// resulting snapshot, or ErrTaskNotFound.
 	CancelTask(ctx context.Context, taskID, reason string) (TaskInfo, error)
+
+	// SubmitMessage runs a message/send turn through the mast turn
+	// chokepoint and returns the resolved task id and its terminal
+	// snapshot. Continuing a task whose id is unknown returns
+	// ErrTaskNotFound; a turn that runs but errors is reported through the
+	// snapshot's State (failed / canceled / input-required), not an error
+	// return. The ctx carries any propagated caller trace context.
+	SubmitMessage(ctx context.Context, p SubmitParams) (taskID string, info TaskInfo, err error)
 }
 
 // TaskMetric records A2A task lifecycle outcomes. The daemon backs it
@@ -348,6 +387,12 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return // authenticate wrote the 401/500
 	}
 
+	// Adopt any W3C trace context the caller propagated (traceparent /
+	// baggage) so the turn's span tree parents under the caller's span
+	// for end-to-end distributed tracing. No-op when tracing is disabled:
+	// the global propagator defaults to a no-op that returns ctx unchanged.
+	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
 	var req rpcServerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, nil, errCodeParse, "parse error: "+err.Error())
@@ -360,12 +405,13 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case methodTasksGet:
-		s.handleTasksGet(w, r.Context(), req, principal)
+		s.handleTasksGet(w, ctx, req, principal)
 	case methodTasksCancel:
-		s.handleTasksCancel(w, r.Context(), req, principal)
-	case methodMessageSend, methodMessageStream:
-		// Stage A recognizes but does not yet serve execution; Stages
-		// B/C replace this with runTurnPre-backed handling.
+		s.handleTasksCancel(w, ctx, req, principal)
+	case methodMessageSend:
+		s.handleMessageSend(w, ctx, req, principal)
+	case methodMessageStream:
+		// Streaming (SSE) is Stage C; recognized but not yet served.
 		s.writeError(w, req.ID, errCodeUnsupportedOp, "unsupported operation: "+req.Method+" is not yet served by this mast build")
 	default:
 		s.writeError(w, req.ID, errCodeMethodNotFound, "method not found: "+req.Method)
@@ -483,6 +529,77 @@ func (s *Server) handleTasksCancel(w http.ResponseWriter, ctx context.Context, r
 	s.writeResult(w, req.ID, taskFromInfo(params.ID, canceled))
 }
 
+// handleMessageSend serves message/send: run a turn through the mast
+// chokepoint and return the resulting task. Execution is synchronous
+// (the v0.2 client blocks; runTurnPre is synchronous), so the reply is a
+// terminal Task rather than a streamed one.
+func (s *Server) handleMessageSend(w http.ResponseWriter, ctx context.Context, req rpcServerRequest, principal *Principal) {
+	var params messageSendParams
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.Message == nil {
+		s.writeError(w, req.ID, errCodeInvalidParams, "invalid params: message is required")
+		return
+	}
+	text := textOf(params.Message.Parts)
+	if text == "" {
+		s.writeError(w, req.ID, errCodeInvalidParams, "invalid params: message has no text parts (Stage B is text-only)")
+		return
+	}
+
+	// Resolve the target workload for the scope check. A message that
+	// continues an existing task inherits its workload; a fresh message
+	// routes to the single exposed workload (routing multiple skills by
+	// message metadata is a later stage).
+	var workload string
+	if tid := params.Message.TaskID; tid != "" {
+		info, err := s.cfg.Backend.GetTask(ctx, tid)
+		if err != nil {
+			if errors.Is(err, ErrTaskNotFound) {
+				s.writeError(w, req.ID, errCodeTaskNotFound, "task not found: "+tid)
+				return
+			}
+			s.logger.Error("a2a message/send task lookup failed", "task", tid, "error", err.Error())
+			s.writeError(w, req.ID, errCodeInternal, "internal error")
+			return
+		}
+		workload = info.WorkloadName
+	} else {
+		if len(s.byWork) != 1 {
+			s.writeError(w, req.ID, errCodeUnsupportedOp,
+				"message/send requires exactly one exposed skill on this endpoint (multi-skill routing is not yet served)")
+			return
+		}
+		for wn := range s.byWork {
+			workload = wn
+		}
+	}
+	if !s.authorizeTask(w, principal, workload) {
+		return
+	}
+
+	taskID, info, err := s.cfg.Backend.SubmitMessage(ctx, SubmitParams{
+		TaskID:    params.Message.TaskID,
+		ContextID: params.Message.ContextID,
+		Text:      text,
+	})
+	if err != nil {
+		if errors.Is(err, ErrTaskNotFound) {
+			s.writeError(w, req.ID, errCodeTaskNotFound, "task not found: "+params.Message.TaskID)
+			return
+		}
+		if errors.Is(err, ErrUnavailable) {
+			// Draining or otherwise transiently unavailable: retryable, not
+			// an internal fault.
+			s.writeError(w, req.ID, errCodeUnavailable, "server temporarily unavailable")
+			return
+		}
+		s.logger.Error("a2a message/send failed", "task", taskID, "workload", workload, "error", err.Error())
+		s.writeError(w, req.ID, errCodeInternal, "internal error")
+		return
+	}
+	s.recordTask(workload, info.State)
+	s.writeResult(w, req.ID, taskFromInfo(taskID, info))
+}
+
 // isLoopbackAddr reports whether a TCP listen address binds only a
 // loopback interface. Conservative by design (mirrors attach's #376
 // helper): an empty host (":7780"), the wildcards "0.0.0.0"/"::", and any
@@ -524,6 +641,13 @@ func taskFromInfo(id string, info TaskInfo) *Task {
 			MessageID: id + "-status",
 			Parts:     []Part{{Kind: "text", Text: info.StatusMessage}},
 		}
+	}
+	if info.Output != "" {
+		t.Artifacts = append(t.Artifacts, Artifact{
+			ArtifactID: id + "-result",
+			Name:       "result",
+			Parts:      []Part{{Kind: "text", Text: info.Output}},
+		})
 	}
 	return t
 }

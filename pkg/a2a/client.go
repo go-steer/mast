@@ -58,6 +58,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/go-steer/mast/pkg/federation"
 )
 
@@ -401,6 +404,11 @@ func (c *Client) call(ctx context.Context, endpoint, method string, params any) 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set(VersionHeader, ProtocolVersion)
+	// Propagate the caller's trace context (W3C traceparent / baggage) so
+	// a mast→A2A call links into the caller's span for distributed
+	// tracing. No-op when tracing is disabled (global propagator defaults
+	// to no-op).
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 	if err := c.setAuth(req); err != nil {
 		return nil, err
 	}

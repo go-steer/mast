@@ -194,6 +194,7 @@ const (
 	errCodeInternal       = -32603 // server fault
 	errCodeTaskNotFound   = -32001 // A2A: no task for the given id
 	errCodeUnsupportedOp  = -32004 // A2A: method recognized but not yet served
+	errCodeUnavailable    = -32000 // A2A: backend transiently unavailable (retryable)
 )
 
 // rpcRequest is a JSON-RPC 2.0 request envelope.

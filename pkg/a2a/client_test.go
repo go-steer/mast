@@ -25,6 +25,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/go-steer/mast/pkg/federation"
 )
 
@@ -163,6 +167,44 @@ func directReplyHandler(text string, data map[string]any) func(json.RawMessage) 
 				{Kind: "data", Data: data},
 			},
 		}, nil
+	}
+}
+
+// TestClientInjectsTraceContext proves the outbound JSON-RPC call carries
+// the caller's W3C trace context (traceparent), so a mast→A2A hop links
+// into the caller's span for distributed tracing. Neutralize check:
+// remove the Inject in client.call and the outbound request carries no
+// traceparent.
+func TestClientInjectsTraceContext(t *testing.T) {
+	prev := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(prev) })
+
+	s := newStubA2AServer(t)
+	s.handlers[methodMessageSend] = directReplyHandler("ok", nil)
+
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	if _, err := newTestClient(t, s.config("sample-external")).Send(ctx, "triage", map[string]any{"pod": "p"}, 0); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	sends := s.calls(methodMessageSend)
+	if len(sends) != 1 {
+		t.Fatalf("message/send calls = %d, want 1", len(sends))
+	}
+	tp := sends[0].Headers.Get("traceparent")
+	if tp == "" {
+		t.Fatal("outbound message/send carried no traceparent (client did not inject the trace context)")
+	}
+	if !strings.Contains(tp, traceID.String()) {
+		t.Fatalf("traceparent %q does not carry the caller trace id %q", tp, traceID)
 	}
 }
 
