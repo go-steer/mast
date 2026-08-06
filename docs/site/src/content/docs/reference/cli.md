@@ -18,6 +18,7 @@ runner, and the session store.
 | `--provider` | — | Provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates `--model` when both are set; picks the provider's default model from the `--task` profile's tier when `--model` is unset. For `claude-*` models the alias also picks the backend — without it, `ANTHROPIC_API_KEY` selects the first-party API, then a Vertex project (`ANTHROPIC_VERTEX_PROJECT_ID` / `GOOGLE_CLOUD_PROJECT`) selects Vertex. |
 | `--listen` | `:7777` | HTTP bind address for `/inject`, `/resume`, `/abort`, `/metrics`. |
 | `--attach-listen` | (empty) | Operator attach surface (HTTP/SSE for [mast-web](https://github.com/go-steer/mast-web) and other attach clients): a TCP address like `127.0.0.1:8484`, or a Unix socket as `unix:/path/mast.sock`. Empty = disabled. Requires `--session-db` (live-tail pumps from the eventlog overlay). Non-loopback TCP binds are refused unless auth is configured — set `MAST_ATTACH_TOKEN`. Serve mode only. |
+| `--a2a-listen` | (empty) | [A2A](https://a2a-protocol.org) server surface: a TCP address like `127.0.0.1:7780`. Empty = disabled. Publishes an agent card and a JSON-RPC 2.0 endpoint (`POST /a2a`) for workloads that opt in via the bundle's `a2a.expose` section. Card endpoints (`/.well-known/agent-card.json`, `/.well-known/agent-card/<name>.json`) are public; `/a2a` is authenticated when `MAST_A2A_TOKEN` is set, with per-skill scope enforcement. Non-loopback binds are refused without a token (`tasks/cancel` is destructive). Serve mode only. See [A2A server](#a2a-server). |
 | `--session-db` | (empty) | SQLite file path (default driver) or Postgres DSN/URL with `--session-db-driver=postgres`. Empty = in-memory sessions, **no durability**. |
 | `--session-db-driver` | `sqlite` | `sqlite` or `postgres`. `postgres` with an empty `--session-db` is a startup error, never a silent in-memory downgrade. |
 | `--timeout` | `5m` | One-shot turn deadline (`2m`, `90s`, …); `0` disables. One-shot only — serve-mode wallclock ceilings come from workload budgets. An unresponsive backend (or a provider SDK silently retrying on quota errors) fails loudly instead of hanging a script. |
@@ -30,7 +31,9 @@ Set `MAST_INJECT_TOKEN` to require bearer auth on the HTTP endpoints;
 unset means unauthenticated (dev only, warned at startup). The attach
 surface has its own token, `MAST_ATTACH_TOKEN` — attach can read
 transcripts and inject operator messages, so treat it as a separate
-trust boundary from the inject webhook.
+trust boundary from the inject webhook. The A2A surface has its own
+token too, `MAST_A2A_TOKEN` — a different auth model (per-skill scopes
+for external agent callers), so treat it as a third trust boundary.
 
 ## `mast sessions` (operator surface)
 
@@ -183,3 +186,58 @@ the in-flight turn (bounded by the wallclock budget) rather than
 corrupting it; and every SQLite session store the tooling opens
 (serve, one-shot, the sessions CLI) carries the same write hardening,
 so concurrent access waits instead of failing.
+
+## A2A server
+
+With `--a2a-listen`, the daemon exposes its workloads to the
+[A2A](https://a2a-protocol.org) ecosystem — other agents can discover
+mast's skills from an agent card and drive them over a standard
+JSON-RPC endpoint. It runs on its own listener, separate from the
+inject webhook and the operator attach surface.
+
+A workload opts in per bundle (exposure has real ops implications —
+auth setup, an external contract, cross-org discoverability, so it is
+never automatic):
+
+```yaml
+# .agents/workloads/incident-triage.yaml
+a2a:
+  expose: true
+  skill_name: incident-triage
+  skill_description: Investigate GKE pod-failure incidents.
+  auth:
+    scopes: [incident-triage.invoke]
+```
+
+**Discovery** is public. An **aggregated agent card** at
+`/.well-known/agent-card.json` lists every exposed workload as a skill;
+**per-workload cards** at `/.well-known/agent-card/<name>.json` serve
+registries that require a distinct endpoint per agent. Cards advertise
+JSON-RPC as the preferred transport and the tested-against A2A spec
+line (`A2A-Version` header).
+
+**Invocation** is the single `POST /a2a` JSON-RPC 2.0 endpoint. This
+stage serves the read/control surface:
+
+- `tasks/get` — snapshot a task's state (a task id **is** a mast
+  session id). The state is projected from the session's log-proven
+  state onto the A2A lifecycle (`working`, `input-required` when a HITL
+  interrupt is pending, `canceled` when aborted). A transcript read
+  never reports `completed` — the event log cannot prove a turn
+  finished versus is still in flight.
+- `tasks/cancel` — cancel a task idempotently, routing to the same
+  terminal-abort path the operator `abort` uses.
+- `message/send` / `message/stream` — recognized but not yet served;
+  they answer the A2A "unsupported operation" error (`-32004`) until
+  turn execution and streaming land in later stages.
+
+**Auth.** Card endpoints are always public (a card is a descriptor, not
+a capability). The `/a2a` endpoint is authenticated when `MAST_A2A_TOKEN`
+is set — a request without a valid bearer is refused `401`, and a call
+whose token lacks a skill's declared `auth.scopes` is refused `403`.
+Unset means unauthenticated (dev only, warned at startup) — and because
+`tasks/cancel` is destructive, a **non-loopback** `--a2a-listen` bind
+(anything but `127.0.0.1`/`localhost`/`::1`) is *refused at startup*
+without a token; bind loopback or set `MAST_A2A_TOKEN`. The token
+model is deliberately separate from the inject and attach tokens: A2A
+callers are external agents scoped per skill, not operators.

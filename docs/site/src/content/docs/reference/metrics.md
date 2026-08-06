@@ -50,6 +50,16 @@ the family names, not just an attempt.
 | `mast_gate_pauses_total` | `workload`, `source` | Out-of-turn gate pauses recorded. Sources: `operator`, `planned_stop`. |
 | `mast_timed_pause_fires_total` | `workload`, `outcome` | Timed-pause scheduler fires. Outcomes: `resumed`, `skipped`, `error`. |
 
+### A2A server family (v0.2)
+
+The [A2A server](/mast/reference/cli/#a2a-server) counts task-lifecycle
+transitions it drives. The `outcome` label is an A2A task-state value, kept in
+lockstep with the wire vocabulary.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_a2a_server_tasks_total` | `workload`, `outcome` | A2A server task-lifecycle transitions. Outcomes: `submitted`, `working`, `input-required`, `completed`, `failed`, `canceled`, `rejected`. |
+
 ## Traces
 
 Trace export is env-gated OTel: a no-op unless `OTEL_EXPORTER_OTLP_*`

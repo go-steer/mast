@@ -55,6 +55,27 @@ type AgentCard struct {
 	DefaultInputModes    []string         `json:"defaultInputModes,omitempty"`
 	DefaultOutputModes   []string         `json:"defaultOutputModes,omitempty"`
 	Skills               []AgentSkill     `json:"skills,omitempty"`
+
+	// SecuritySchemes / Security advertise the auth the endpoint
+	// requires (mast as A2A server, docs/a2a-design.md "Auth model").
+	// The client tolerates both absent (unauthenticated remote); the
+	// server emits them when any exposed skill requires auth.
+	SecuritySchemes *SecuritySchemes      `json:"securitySchemes,omitempty"`
+	Security        []map[string][]string `json:"security,omitempty"`
+}
+
+// SecuritySchemes is the card's declared security-scheme set. mast
+// speaks bearer only (docs/a2a-design.md: JWT/JWKS/IAM/OAuth2 validators
+// are pluggable behind TokenValidator, but all present as HTTP Bearer on
+// the wire).
+type SecuritySchemes struct {
+	Bearer *SecurityScheme `json:"bearer,omitempty"`
+}
+
+// SecurityScheme is one A2A security scheme (HTTP Bearer).
+type SecurityScheme struct {
+	Type   string `json:"type"`   // const "http"
+	Scheme string `json:"scheme"` // const "Bearer"
 }
 
 // TransportJSONRPC is the card transport identifier for JSON-RPC 2.0
@@ -155,9 +176,24 @@ func (s TaskState) Terminal() bool {
 
 // JSON-RPC 2.0 methods on the single A2A endpoint.
 const (
-	methodMessageSend = "message/send"
-	methodTasksGet    = "tasks/get"
-	methodTasksCancel = "tasks/cancel"
+	methodMessageSend   = "message/send"
+	methodMessageStream = "message/stream"
+	methodTasksGet      = "tasks/get"
+	methodTasksCancel   = "tasks/cancel"
+)
+
+// JSON-RPC 2.0 + A2A error codes (docs/a2a-design.md endpoint layout).
+// The -32000 band is JSON-RPC's reserved server range; A2A assigns the
+// -32001..-32006 subset. The server maps handler outcomes to these; the
+// client already surfaces RPCError verbatim.
+const (
+	errCodeParse          = -32700 // malformed JSON
+	errCodeInvalidRequest = -32600 // not a valid JSON-RPC request object
+	errCodeMethodNotFound = -32601 // unknown method
+	errCodeInvalidParams  = -32602 // params failed validation
+	errCodeInternal       = -32603 // server fault
+	errCodeTaskNotFound   = -32001 // A2A: no task for the given id
+	errCodeUnsupportedOp  = -32004 // A2A: method recognized but not yet served
 )
 
 // rpcRequest is a JSON-RPC 2.0 request envelope.

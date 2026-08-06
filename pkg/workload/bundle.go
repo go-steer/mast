@@ -125,6 +125,46 @@ type EdgeTrigger struct {
 	HTTP *HTTPTrigger `yaml:"http,omitempty"`
 }
 
+// A2A is the workload's A2A-server exposure (docs/a2a-design.md, "Which
+// agents get exposed"). Absent or expose:false means the workload is not
+// reachable over A2A — exposure has real ops implications (auth setup,
+// external contract stability), so it is opt-in per workload.
+type A2A struct {
+	// Expose gates the whole section; false (the default) means no A2A
+	// skill is published for this workload.
+	Expose bool `yaml:"expose,omitempty"`
+
+	// SkillName is the A2A skill id published on the agent card and named
+	// by inbound message/send calls. Defaults to the workload name.
+	SkillName string `yaml:"skill_name,omitempty"`
+
+	// SkillDescription is the human-readable skill summary on the card.
+	SkillDescription string `yaml:"skill_description,omitempty"`
+
+	// InputSchema / OutputSchema are a MAST-SIDE convention only: mast
+	// validates inbound task inputs against them and may render them into
+	// the skill description. Spec AgentSkill has no schema fields, so
+	// these do NOT round-trip through the agent card as machine-readable
+	// schema (docs/a2a-design.md note).
+	InputSchema  map[string]any `yaml:"input_schema,omitempty"`
+	OutputSchema map[string]any `yaml:"output_schema,omitempty"`
+
+	// Auth is the per-skill auth policy.
+	Auth A2AAuth `yaml:"auth,omitempty"`
+}
+
+// A2AAuth is the per-skill auth policy within a workload's a2a: section.
+type A2AAuth struct {
+	// Required declares the skill needs authentication. Informational in
+	// v0.2 when a server-wide token validator is configured (all exposed
+	// skills sit behind it); Scopes are the enforced grain.
+	Required bool `yaml:"required,omitempty"`
+
+	// Scopes are the token scopes a caller must carry to invoke the
+	// skill; missing scope → 403 (docs/a2a-design.md "Auth model").
+	Scopes []string `yaml:"scopes,omitempty"`
+}
+
 // Bundle is the loaded workload bundle.
 type Bundle struct {
 	// Name is the workload identifier — unique per mast deployment.
@@ -157,6 +197,10 @@ type Bundle struct {
 
 	// EdgeTrigger declares how external signals reach this workload.
 	EdgeTrigger EdgeTrigger `yaml:"edge_trigger,omitempty"`
+
+	// A2A declares the workload's A2A-server exposure; zero value (or
+	// expose:false) means the workload is not reachable over A2A.
+	A2A A2A `yaml:"a2a,omitempty"`
 
 	// Filename is preserved for diagnostics; not part of the on-disk
 	// schema.

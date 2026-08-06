@@ -118,6 +118,34 @@ const (
 	AutoResumeError = "error"
 )
 
+// A2A server task outcomes for A2ATask (mast_a2a_server_tasks_total
+// {workload,outcome}). The vocabulary mirrors the A2A task-lifecycle
+// states mast reports (docs/a2a-design.md "Task lifecycle mapping"); the
+// string VALUES match pkg/a2a's TaskState constants — the server passes
+// string(state), so these two lists must not drift.
+const (
+	A2ATaskSubmitted     = "submitted"
+	A2ATaskWorking       = "working"
+	A2ATaskInputRequired = "input-required"
+	A2ATaskCompleted     = "completed"
+	A2ATaskFailed        = "failed"
+	A2ATaskCanceled      = "canceled"
+	A2ATaskRejected      = "rejected"
+)
+
+// a2aTaskOutcomes is the fixed label set primed for
+// mast_a2a_server_tasks_total{outcome}. Kept beside the counter so Prime
+// and the A2ATask vocabulary can never drift.
+var a2aTaskOutcomes = []string{
+	A2ATaskSubmitted,
+	A2ATaskWorking,
+	A2ATaskInputRequired,
+	A2ATaskCompleted,
+	A2ATaskFailed,
+	A2ATaskCanceled,
+	A2ATaskRejected,
+}
+
 // Registry is the fixed set of mast metric families. Construct one per
 // process with New and expose it via Handler on the inject listener.
 type Registry struct {
@@ -135,6 +163,7 @@ type Registry struct {
 	aborts          *prometheus.CounterVec
 	gatePauses      *prometheus.CounterVec
 	timedPauseFires *prometheus.CounterVec
+	a2aTasks        *prometheus.CounterVec
 }
 
 // autoResumeOutcomes is the fixed label set primed for
@@ -205,6 +234,14 @@ func New() *Registry {
 		"Timed-pause scheduler fires, by outcome.",
 		"workload", "outcome")
 
+	// A2A server (#78). Task lifecycle outcomes for inbound A2A tasks
+	// driven through the runTurnPre chokepoint (Stage B) plus cancels
+	// routed to the abort machinery (Stage A). Low-cardinality: bounded
+	// outcome vocabulary, no task/session ID.
+	r.a2aTasks = counter("mast_a2a_server_tasks_total",
+		"A2A server task lifecycle transitions, by workload and outcome.",
+		"workload", "outcome")
+
 	return r
 }
 
@@ -239,6 +276,9 @@ func (r *Registry) Prime(workload string) {
 	}
 	for _, outcome := range []string{TimedPauseResumed, TimedPauseSkipped, TimedPauseError} {
 		r.timedPauseFires.WithLabelValues(workload, outcome)
+	}
+	for _, outcome := range a2aTaskOutcomes {
+		r.a2aTasks.WithLabelValues(workload, outcome)
 	}
 }
 
@@ -355,6 +395,16 @@ func (r *Registry) TimedPauseFire(workload, outcome string) {
 		return
 	}
 	r.timedPauseFires.WithLabelValues(workload, outcome).Inc()
+}
+
+// A2ATask records one A2A server task lifecycle transition with the
+// given outcome (one of the A2ATask* constants; a pkg/a2a TaskState
+// value). Safe on a nil *Registry.
+func (r *Registry) A2ATask(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.a2aTasks.WithLabelValues(workload, outcome).Inc()
 }
 
 // AddCost accumulates spend (in USD) attributed to a workload. The
