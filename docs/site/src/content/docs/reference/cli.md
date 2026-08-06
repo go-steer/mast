@@ -18,7 +18,7 @@ runner, and the session store.
 | `--provider` | — | Provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates `--model` when both are set; picks the provider's default model from the `--task` profile's tier when `--model` is unset. For `claude-*` models the alias also picks the backend — without it, `ANTHROPIC_API_KEY` selects the first-party API, then a Vertex project (`ANTHROPIC_VERTEX_PROJECT_ID` / `GOOGLE_CLOUD_PROJECT`) selects Vertex. |
 | `--listen` | `:7777` | HTTP bind address for `/inject`, `/resume`, `/abort`, `/metrics`. |
 | `--attach-listen` | (empty) | Operator attach surface (HTTP/SSE for [mast-web](https://github.com/go-steer/mast-web) and other attach clients): a TCP address like `127.0.0.1:8484`, or a Unix socket as `unix:/path/mast.sock`. Empty = disabled. Requires `--session-db` (live-tail pumps from the eventlog overlay). Non-loopback TCP binds are refused unless auth is configured — set `MAST_ATTACH_TOKEN`. Serve mode only. |
-| `--a2a-listen` | (empty) | [A2A](https://a2a-protocol.org) server surface: a TCP address like `127.0.0.1:7780`. Empty = disabled. Publishes an agent card and a JSON-RPC 2.0 endpoint (`POST /a2a`) for workloads that opt in via the bundle's `a2a.expose` section. Card endpoints (`/.well-known/agent-card.json`, `/.well-known/agent-card/<name>.json`) are public; `/a2a` is authenticated when `MAST_A2A_TOKEN` is set (unauthenticated dev-only otherwise), with per-skill scope enforcement. Serve mode only. See [A2A server](#a2a-server). |
+| `--a2a-listen` | (empty) | [A2A](https://a2a-protocol.org) server surface: a TCP address like `127.0.0.1:7780`. Empty = disabled. Publishes an agent card and a JSON-RPC 2.0 endpoint (`POST /a2a`) for workloads that opt in via the bundle's `a2a.expose` section. Card endpoints (`/.well-known/agent-card.json`, `/.well-known/agent-card/<name>.json`) are public; `/a2a` is authenticated when `MAST_A2A_TOKEN` is set, with per-skill scope enforcement. Non-loopback binds are refused without a token (`tasks/cancel` is destructive). Serve mode only. See [A2A server](#a2a-server). |
 | `--session-db` | (empty) | SQLite file path (default driver) or Postgres DSN/URL with `--session-db-driver=postgres`. Empty = in-memory sessions, **no durability**. |
 | `--session-db-driver` | `sqlite` | `sqlite` or `postgres`. `postgres` with an empty `--session-db` is a startup error, never a silent in-memory downgrade. |
 | `--timeout` | `5m` | One-shot turn deadline (`2m`, `90s`, …); `0` disables. One-shot only — serve-mode wallclock ceilings come from workload budgets. An unresponsive backend (or a provider SDK silently retrying on quota errors) fails loudly instead of hanging a script. |
@@ -235,6 +235,9 @@ stage serves the read/control surface:
 a capability). The `/a2a` endpoint is authenticated when `MAST_A2A_TOKEN`
 is set — a request without a valid bearer is refused `401`, and a call
 whose token lacks a skill's declared `auth.scopes` is refused `403`.
-Unset means unauthenticated (dev only, warned at startup). The token
+Unset means unauthenticated (dev only, warned at startup) — and because
+`tasks/cancel` is destructive, a **non-loopback** `--a2a-listen` bind
+(anything but `127.0.0.1`/`localhost`/`::1`) is *refused at startup*
+without a token; bind loopback or set `MAST_A2A_TOKEN`. The token
 model is deliberately separate from the inject and attach tokens: A2A
 callers are external agents scoped per skill, not operators.

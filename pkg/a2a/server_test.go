@@ -147,6 +147,46 @@ func TestNewValidatesConfig(t *testing.T) {
 	}
 }
 
+// TestNewRefusesUnauthenticatedNonLoopback pins the #376-style guard: an
+// explicitly non-loopback Listen without a validator must refuse to
+// construct, because tasks/cancel is destructive. Loopback binds and any
+// authenticated bind are allowed; an empty Listen (embedded/test default)
+// is not gated.
+func TestNewRefusesUnauthenticatedNonLoopback(t *testing.T) {
+	v, _ := NewStaticBearerValidator(map[string]*Principal{"tok": {Subject: "s"}})
+	cases := []struct {
+		name      string
+		listen    string
+		validator TokenValidator
+		wantErr   bool
+	}{
+		{"wildcard port unauth", ":7780", nil, true},
+		{"all-interfaces unauth", "0.0.0.0:7780", nil, true},
+		{"ipv6 wildcard unauth", "[::]:7780", nil, true},
+		{"loopback unauth ok", "127.0.0.1:7780", nil, false},
+		{"localhost unauth ok", "localhost:7780", nil, false},
+		{"ipv6 loopback unauth ok", "[::1]:7780", nil, false},
+		{"non-loopback with auth ok", "0.0.0.0:7780", v, false},
+		{"empty listen ok (defaulted)", "", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(Config{
+				Backend:   newFakeBackend(),
+				Listen:    tc.listen,
+				Validator: tc.validator,
+				Skills:    []ExposedSkill{{WorkloadName: "triage", SkillName: "triage"}},
+			})
+			if tc.wantErr && err == nil {
+				t.Fatalf("New(listen=%q, auth=%v): want refusal, got nil", tc.listen, tc.validator != nil)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("New(listen=%q, auth=%v): want ok, got %v", tc.listen, tc.validator != nil, err)
+			}
+		})
+	}
+}
+
 func TestStaticBearerValidator(t *testing.T) {
 	p := &Principal{Subject: "svc", Scopes: []string{"triage:invoke"}}
 	v, err := NewStaticBearerValidator(map[string]*Principal{"secret": p})
@@ -319,6 +359,17 @@ func TestRPCEchoesID(t *testing.T) {
 	if resp.JSONRPC != "2.0" {
 		t.Fatalf("jsonrpc = %q, want 2.0", resp.JSONRPC)
 	}
+	// Numeric id echoed verbatim (not stringified).
+	_, resp = rpcCall(t, ts, "", `{"jsonrpc":"2.0","id":7,"method":"tasks/get","params":{"id":"t1"}}`)
+	if string(resp.ID) != `7` {
+		t.Fatalf("echoed numeric id = %s, want 7", resp.ID)
+	}
+	// A parse error can't recover the request id, so the response id is
+	// null — clients still get a well-formed envelope to correlate.
+	_, resp = rpcCall(t, ts, "", `{not json`)
+	if string(resp.ID) != `null` {
+		t.Fatalf("parse-error id = %s, want null", resp.ID)
+	}
 }
 
 func TestTasksGet(t *testing.T) {
@@ -435,6 +486,58 @@ func TestScopeForbidden(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("underscoped caller: status = %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestScopeForbiddenOnCancel proves the scope gate covers the destructive
+// verb too: an authenticated-but-underscoped caller cannot cancel a task,
+// and the backend's CancelTask is never reached.
+func TestScopeForbiddenOnCancel(t *testing.T) {
+	v, _ := NewStaticBearerValidator(map[string]*Principal{
+		"weak": {Subject: "svc", Scopes: []string{"other:scope"}},
+	})
+	ts, be := testServer(t, Config{
+		Validator: v,
+		Skills:    []ExposedSkill{{WorkloadName: "triage", SkillName: "triage", Scopes: []string{"triage:invoke"}}},
+	})
+	be.tasks["t1"] = TaskInfo{WorkloadName: "triage", State: TaskStateWorking}
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/a2a",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tasks/cancel","params":{"id":"t1"}}`))
+	req.Header.Set("Authorization", "Bearer weak")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("underscoped cancel: status = %d, want 403", resp.StatusCode)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.canceled) != 0 {
+		t.Fatalf("underscoped cancel reached the backend: canceled = %v", be.canceled)
+	}
+}
+
+// TestUnexposedWorkloadForbidden pins authorizeTask's defensive branch: a
+// task whose resolved workload is not exposed by this server is refused
+// (403) rather than leaked under some other skill's scopes — even for a
+// caller that would satisfy the exposed skill's scopes.
+func TestUnexposedWorkloadForbidden(t *testing.T) {
+	v, _ := NewStaticBearerValidator(map[string]*Principal{
+		"good": {Subject: "svc", Scopes: []string{"triage:invoke"}},
+	})
+	ts, be := testServer(t, Config{
+		Validator: v,
+		Skills:    []ExposedSkill{{WorkloadName: "triage", SkillName: "triage", Scopes: []string{"triage:invoke"}}},
+	})
+	// Backend resolves the task to a workload the server does not expose.
+	be.tasks["t1"] = TaskInfo{WorkloadName: "ghostwork", State: TaskStateWorking}
+
+	status, _ := rpcCall(t, ts, "good", `{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"id":"t1"}}`)
+	if status != http.StatusForbidden {
+		t.Fatalf("unexposed workload: status = %d, want 403", status)
 	}
 }
 

@@ -247,6 +247,19 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Backend == nil {
 		return nil, errors.New("a2a: Backend is required")
 	}
+	// Refuse to expose an unauthenticated A2A surface beyond loopback
+	// (mirrors the attach #376 policy). tasks/cancel is destructive — it
+	// drives the same terminal-abort path as the /abort door — so an
+	// unauthenticated non-loopback bind lets any host that can reach the
+	// port cancel sessions (and read task state) by id. A validator
+	// (MAST_A2A_TOKEN) is the credential gate; a loopback bind is the
+	// local-dev escape hatch. Only an explicitly set Listen is checked,
+	// so the embedded/test default stays constructible.
+	if cfg.Listen != "" && !isLoopbackAddr(cfg.Listen) && cfg.Validator == nil {
+		return nil, fmt.Errorf("a2a: refusing to bind non-loopback address %q without authentication: "+
+			"any host that can reach this port could cancel sessions (tasks/cancel) and read task state "+
+			"(tasks/get). Set an A2A token (MAST_A2A_TOKEN) or bind a loopback address (e.g. 127.0.0.1:7780)", cfg.Listen)
+	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":7780"
 	}
@@ -468,6 +481,25 @@ func (s *Server) handleTasksCancel(w http.ResponseWriter, ctx context.Context, r
 	}
 	s.recordTask(info.WorkloadName, canceled.State)
 	s.writeResult(w, req.ID, taskFromInfo(params.ID, canceled))
+}
+
+// isLoopbackAddr reports whether a TCP listen address binds only a
+// loopback interface. Conservative by design (mirrors attach's #376
+// helper): an empty host (":7780"), the wildcards "0.0.0.0"/"::", and any
+// hostname other than "localhost" all count as NON-loopback — when in
+// doubt, treat the bind as network-reachable so the policy errs toward
+// refusing. Duplicated rather than shared because pkg/a2a must stay
+// slim-safe (no pkg/attach import).
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // recordTask emits the task-outcome metric when one is wired.

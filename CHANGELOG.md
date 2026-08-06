@@ -24,8 +24,12 @@
   pluggable via the `a2a.TokenValidator` interface (built-in
   `StaticBearerValidator`, keyed off `MAST_A2A_TOKEN`); card endpoints are
   public, `/a2a` requires a valid bearer when a validator is configured
-  (401 otherwise), and each skill's `auth.scopes` are enforced per call
-  (403 on a missing scope). A new observability family
+  (401 otherwise), and each skill's `auth.scopes` are enforced per call on
+  reads *and* the destructive `tasks/cancel` (403 on a missing scope).
+  Because `tasks/cancel` is destructive, a non-loopback `--a2a-listen`
+  bind is refused at startup without a token (mirroring the attach
+  surface's #376 policy); bind loopback or set `MAST_A2A_TOKEN`. A new
+  observability family
   `mast_a2a_server_tasks_total{workload,outcome}` counts task-lifecycle
   transitions. Build-vs-buy: hand-rolled over the wire types this repo
   already owns so every A2A task runs through the same `runTurnPre`
