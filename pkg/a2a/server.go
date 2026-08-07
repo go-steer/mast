@@ -37,8 +37,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,8 +50,15 @@ import (
 
 // Principal is the authenticated caller a TokenValidator resolves a
 // bearer token to. Scopes gate per-skill access (docs/a2a-design.md
-// "Auth model"); Tenant, when set, propagates to WithIsolationScope on
-// the session (Stage B).
+// "Auth model"). Tenant, when set, is the caller identity the rate
+// limiter buckets on (RateLimitRequest.Tenant).
+//
+// Tenant does NOT yet drive session isolation: ADK v2.1.0's
+// IsolationScope is an event/task-level field (the workflow finish_task
+// machinery — runner.findActiveTaskIsolationScope), not a session-create
+// or tenant seam (session.CreateRequest carries no scope). Multi-tenant
+// session isolation is deferred pending an ADK session-scope seam or a
+// mast-side user-namespacing design (docs/a2a-design.md "Multi-tenancy").
 type Principal struct {
 	Subject string
 	Scopes  []string
@@ -250,6 +259,12 @@ type Config struct {
 
 	// Backend is required.
 	Backend Backend
+
+	// Limiter, when non-nil, admits or refuses each turn-driving request
+	// (message/send) before dispatch — see RateLimiter. Nil disables rate
+	// limiting. Control-plane verbs (tasks/get, tasks/cancel) are never
+	// gated.
+	Limiter RateLimiter
 
 	// CardName / CardDescription / CardVersion populate the aggregated
 	// agent card. CardName defaults to "mast".
@@ -468,6 +483,43 @@ func (s *Server) authorizeTask(w http.ResponseWriter, principal *Principal, work
 	return true
 }
 
+// rateLimit admits a turn-driving request through the configured limiter,
+// keyed by the caller (principal) and target workload. On a refusal it
+// records a "rejected" outcome, sets an advisory Retry-After header, and
+// writes the A2A retryable error (-32000); it returns false so the caller
+// stops. A nil limiter admits. A nil principal (unauthenticated endpoint)
+// is still rate limited — with empty Subject/Tenant, so all unauthenticated
+// callers share one bucket per workload. The method is threaded so a
+// limiter can key on verb, though v0.2 only gates message/send.
+func (s *Server) rateLimit(w http.ResponseWriter, ctx context.Context, id json.RawMessage, principal *Principal, workload, method string) bool {
+	if s.cfg.Limiter == nil {
+		return true
+	}
+	req := RateLimitRequest{Workload: workload, Method: method}
+	if principal != nil {
+		req.Subject = principal.Subject
+		req.Tenant = principal.Tenant
+	}
+	ok, retryAfter := s.cfg.Limiter.Allow(ctx, req)
+	if ok {
+		return true
+	}
+	s.recordTask(workload, TaskStateRejected)
+	msg := "rate limit exceeded; retry later"
+	if retryAfter > 0 {
+		// Round the advisory hint UP: flooring a 1.9s wait to "1" would tell
+		// a compliant client to retry before a token is available.
+		secs := int(math.Ceil(retryAfter.Seconds()))
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		msg = fmt.Sprintf("rate limit exceeded; retry after %ds", secs)
+	}
+	s.writeError(w, id, errCodeUnavailable, msg)
+	return false
+}
+
 // handleTasksGet serves tasks/get: snapshot a task's state.
 func (s *Server) handleTasksGet(w http.ResponseWriter, ctx context.Context, req rpcServerRequest, principal *Principal) {
 	var params taskQueryParams
@@ -573,6 +625,11 @@ func (s *Server) handleMessageSend(w http.ResponseWriter, ctx context.Context, r
 		}
 	}
 	if !s.authorizeTask(w, principal, workload) {
+		return
+	}
+	// Admission control: gate the turn-driving verb (message/send) only —
+	// it is what consumes model budget. A refusal is retryable (-32000).
+	if !s.rateLimit(w, ctx, req.ID, principal, workload, methodMessageSend) {
 		return
 	}
 

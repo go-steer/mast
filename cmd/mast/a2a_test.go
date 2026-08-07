@@ -625,6 +625,55 @@ func TestA2AValidator(t *testing.T) {
 	}
 }
 
+func TestA2ARateLimiter(t *testing.T) {
+	logger := newLogger("error")
+
+	// Unset rate → no limiter (limiting off, mirrors the auth seam).
+	t.Setenv("MAST_A2A_RATE", "")
+	t.Setenv("MAST_A2A_BURST", "")
+	lim, err := a2aRateLimiter(logger)
+	if err != nil {
+		t.Fatalf("a2aRateLimiter(unset): %v", err)
+	}
+	if lim != nil {
+		t.Fatal("unset rate: want nil limiter")
+	}
+
+	// Valid rate → limiter; burst defaults to ceil(rate).
+	t.Setenv("MAST_A2A_RATE", "2.5")
+	lim, err = a2aRateLimiter(logger)
+	if err != nil {
+		t.Fatalf("a2aRateLimiter(2.5): %v", err)
+	}
+	if lim == nil {
+		t.Fatal("valid rate: want limiter, got nil")
+	}
+
+	// Explicit burst overrides the derived default.
+	t.Setenv("MAST_A2A_BURST", "10")
+	if _, err := a2aRateLimiter(logger); err != nil {
+		t.Fatalf("a2aRateLimiter(burst=10): %v", err)
+	}
+
+	// Fail closed on every hostile input rather than silently disabling.
+	t.Setenv("MAST_A2A_BURST", "")
+	for _, bad := range []string{"abc", " 5 ", "Inf", "NaN", "0", "-1", "1e400"} {
+		t.Setenv("MAST_A2A_RATE", bad)
+		if _, err := a2aRateLimiter(logger); err == nil {
+			t.Errorf("MAST_A2A_RATE=%q: want error, got nil", bad)
+		}
+	}
+
+	// A malformed explicit burst also fails closed.
+	t.Setenv("MAST_A2A_RATE", "5")
+	for _, bad := range []string{"abc", "0", "-1"} {
+		t.Setenv("MAST_A2A_BURST", bad)
+		if _, err := a2aRateLimiter(logger); err == nil {
+			t.Errorf("MAST_A2A_BURST=%q: want error, got nil", bad)
+		}
+	}
+}
+
 func hasScopeTest(scopes []string, want string) bool {
 	return countTest(scopes, want) > 0
 }

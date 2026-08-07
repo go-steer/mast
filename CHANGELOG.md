@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **A2A server — Stage B2: pluggable rate-limiter seam** (docs/a2a-design.md
+  "Rate limiting"; #78). `message/send` — the only budget-consuming verb —
+  can now be rate limited through a pluggable `a2a.RateLimiter` seam on the
+  server config (the seam AG-UI is designed to reuse, #11); control-plane verbs
+  (`tasks/get`, `tasks/cancel`) are deliberately never gated, so an operator
+  can always read or cancel a task. The built-in `TokenBucketLimiter` keeps
+  an independent bucket per **(caller, workload)** — caller being the token's
+  tenant claim if set, else its subject — and the daemon builds it from
+  `MAST_A2A_RATE` (requests/second) + `MAST_A2A_BURST` (bucket depth;
+  defaults to `ceil(rate)`, min 1). `MAST_A2A_RATE` unset means no limiting;
+  a malformed value fails startup. A refused send returns the retryable
+  `-32000` with an advisory `Retry-After` header and records a `rejected`
+  task-outcome metric. The tenant-claim → session-isolation half of B2
+  stays **deferred**: ADK v2.1.0's `IsolationScope` is an event/task-level
+  field (the workflow `finish_task` machinery), not a session-create or
+  tenant seam, so multi-tenant session isolation waits on an upstream
+  session-scope seam or a mast-side user-namespacing design. `Principal.Tenant`
+  ships now as the rate limiter's caller identity. SSE streaming
+  (`message/stream`) remains Stage C.
+
 - **A2A server — Stage B1: `message/send` turn execution + trace
   propagation** (docs/a2a-design.md "Mast as A2A server"; #78). The A2A
   endpoint now runs turns: `POST /a2a` `message/send` drives a synchronous

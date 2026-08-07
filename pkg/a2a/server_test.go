@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -541,6 +542,122 @@ func TestMessageSendUnknownContinuation(t *testing.T) {
 	defer be.mu.Unlock()
 	if len(be.submitted) != 0 {
 		t.Fatalf("unknown continuation reached the backend: %v", be.submitted)
+	}
+}
+
+// stubLimiter is a table-driven RateLimiter for the server tests: it
+// records every Allow call and returns a fixed verdict.
+type stubLimiter struct {
+	mu         sync.Mutex
+	allow      bool
+	retryAfter time.Duration
+	calls      []RateLimitRequest
+}
+
+func (l *stubLimiter) Allow(_ context.Context, req RateLimitRequest) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, req)
+	return l.allow, l.retryAfter
+}
+
+// TestMessageSendRateLimited: a refusing limiter turns message/send into
+// the retryable -32000 error with an advisory Retry-After header, records
+// a "rejected" outcome, and never reaches the backend. The fractional
+// retryAfter (2.5s) also pins the ceil: Retry-After must round UP to 3, not
+// floor to 2 — a floored hint invites a retry that is still rate limited.
+func TestMessageSendRateLimited(t *testing.T) {
+	lim := &stubLimiter{allow: false, retryAfter: 2500 * time.Millisecond}
+	metric := &recordingMetric{}
+	be := newFakeBackend()
+	ts, _ := testServer(t, Config{Backend: be, Limiter: lim, Metric: metric})
+
+	// Raw request so we can read the Retry-After header (rpcCall drops it).
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/a2a", strings.NewReader(sendBody("1", "", "investigate pod")))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	httpResp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer httpResp.Body.Close()
+	if got := httpResp.Header.Get("Retry-After"); got != "3" {
+		t.Errorf("Retry-After = %q, want 3", got)
+	}
+	raw, _ := io.ReadAll(httpResp.Body)
+	var resp rpcResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("decode %q: %v", raw, err)
+	}
+	if resp.Error == nil || resp.Error.Code != errCodeUnavailable {
+		t.Fatalf("rate-limited send: error = %+v, want %d", resp.Error, errCodeUnavailable)
+	}
+	// Limiter was consulted for message/send against the resolved workload;
+	// the backend was never driven.
+	lim.mu.Lock()
+	if len(lim.calls) != 1 || lim.calls[0].Method != methodMessageSend || lim.calls[0].Workload != "triage" {
+		t.Fatalf("limiter calls = %+v, want one message/send for triage", lim.calls)
+	}
+	lim.mu.Unlock()
+	be.mu.Lock()
+	if len(be.submitted) != 0 {
+		t.Fatalf("rate-limited send reached the backend: %v", be.submitted)
+	}
+	be.mu.Unlock()
+	metric.mu.Lock()
+	defer metric.mu.Unlock()
+	if len(metric.seen) != 1 || metric.seen[0] != "triage/"+string(TaskStateRejected) {
+		t.Fatalf("metric = %v, want one triage/rejected", metric.seen)
+	}
+}
+
+// TestMessageSendRateLimiterAdmits: an admitting limiter lets the turn run
+// and is keyed by the authenticated caller.
+func TestMessageSendRateLimiterAdmits(t *testing.T) {
+	v, _ := NewStaticBearerValidator(map[string]*Principal{
+		"tok": {Subject: "alice", Tenant: "acme"},
+	})
+	lim := &stubLimiter{allow: true}
+	ts, be := testServer(t, Config{Validator: v, Limiter: lim})
+	_, resp := rpcCall(t, ts, "tok", sendBody("1", "", "investigate pod"))
+	if resp.Error != nil {
+		t.Fatalf("admitted send: error = %+v", resp.Error)
+	}
+	lim.mu.Lock()
+	defer lim.mu.Unlock()
+	if len(lim.calls) != 1 || lim.calls[0].Subject != "alice" || lim.calls[0].Tenant != "acme" {
+		t.Fatalf("limiter call = %+v, want subject alice / tenant acme", lim.calls)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 1 {
+		t.Fatalf("admitted send did not reach the backend: %v", be.submitted)
+	}
+}
+
+// TestControlVerbsNotRateLimited: tasks/get and tasks/cancel are never
+// gated, so an operator can always read or cancel a task even under a
+// limiter that refuses everything.
+func TestControlVerbsNotRateLimited(t *testing.T) {
+	lim := &stubLimiter{allow: false, retryAfter: time.Second}
+	be := newFakeBackend()
+	be.tasks["t1"] = TaskInfo{WorkloadName: "triage", State: TaskStateWorking}
+	ts, _ := testServer(t, Config{Backend: be, Limiter: lim})
+
+	_, get := rpcCall(t, ts, "", `{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"id":"t1"}}`)
+	if get.Error != nil {
+		t.Fatalf("tasks/get under refusing limiter: error = %+v", get.Error)
+	}
+	_, cancel := rpcCall(t, ts, "", `{"jsonrpc":"2.0","id":2,"method":"tasks/cancel","params":{"id":"t1"}}`)
+	if cancel.Error != nil {
+		t.Fatalf("tasks/cancel under refusing limiter: error = %+v", cancel.Error)
+	}
+	lim.mu.Lock()
+	defer lim.mu.Unlock()
+	if len(lim.calls) != 0 {
+		t.Fatalf("control verbs consulted the limiter: %+v", lim.calls)
 	}
 }
 

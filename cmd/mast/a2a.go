@@ -31,8 +31,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -519,6 +521,39 @@ func a2aValidator(logger *slog.Logger, skills []a2a.ExposedSkill) (a2a.TokenVali
 	})
 }
 
+// a2aRateLimiter builds the endpoint's rate limiter from MAST_A2A_RATE
+// (requests/second per caller×workload) and MAST_A2A_BURST (bucket depth;
+// defaults to ceil(rate), min 1). MAST_A2A_RATE unset means no rate
+// limiting (nil), mirroring the auth seam's unset-means-off default. A set
+// but malformed value fails startup (fail-fast) rather than silently
+// disabling the limit.
+func a2aRateLimiter(logger *slog.Logger) (a2a.RateLimiter, error) {
+	raw := os.Getenv("MAST_A2A_RATE")
+	if raw == "" {
+		return nil, nil
+	}
+	perSecond, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return nil, fmt.Errorf("a2a: invalid MAST_A2A_RATE %q: %w", raw, err)
+	}
+	burst := int(math.Ceil(perSecond))
+	if burst < 1 {
+		burst = 1
+	}
+	if b := os.Getenv("MAST_A2A_BURST"); b != "" {
+		burst, err = strconv.Atoi(b)
+		if err != nil {
+			return nil, fmt.Errorf("a2a: invalid MAST_A2A_BURST %q: %w", b, err)
+		}
+	}
+	lim, err := a2a.NewTokenBucketLimiter(perSecond, burst)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("A2A rate limiting enabled", "rate_per_sec", perSecond, "burst", burst)
+	return lim, nil
+}
+
 // buildA2AServer constructs the A2A server for the daemon, or (nil, nil)
 // when no workload opts into A2A exposure (the server is simply not
 // started). baseCtx is the daemon's turn lifetime.
@@ -539,6 +574,10 @@ func buildA2AServer(
 	if err != nil {
 		return nil, err
 	}
+	limiter, err := a2aRateLimiter(logger)
+	if err != nil {
+		return nil, err
+	}
 	desc := ""
 	if bundle != nil {
 		desc = bundle.Description
@@ -547,6 +586,7 @@ func buildA2AServer(
 		Listen:          listen,
 		Skills:          skills,
 		Validator:       validator,
+		Limiter:         limiter,
 		Backend:         backend,
 		CardName:        "mast",
 		CardDescription: desc,
