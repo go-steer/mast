@@ -267,3 +267,20 @@ Unset means unauthenticated (dev only, warned at startup) — and because
 without a token; bind loopback or set `MAST_A2A_TOKEN`. The token
 model is deliberately separate from the inject and attach tokens: A2A
 callers are external agents scoped per skill, not operators.
+
+**Rate limiting.** External callers can consume the agent's provider
+budget through `message/send`, so that verb (only) can be rate limited.
+Set `MAST_A2A_RATE` to the allowed requests/second **per caller and
+workload**, and optionally `MAST_A2A_BURST` for the bucket depth
+(defaults to `ceil(rate)`, minimum 1):
+
+```bash
+MAST_A2A_RATE=5 MAST_A2A_BURST=10 mast --a2a-listen=127.0.0.1:7780 ...
+```
+
+The caller is the token's tenant claim if present, else its subject; an
+unauthenticated endpoint buckets all callers together. A refused send
+returns the retryable `-32000` error with an advisory `Retry-After`
+header. `MAST_A2A_RATE` unset means no rate limiting; a set-but-malformed
+value fails startup. Control-plane verbs (`tasks/get`, `tasks/cancel`)
+are never rate limited — an operator can always read or cancel a task.
