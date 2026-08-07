@@ -17,21 +17,32 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // fakeBackend is a table-driven Backend for the server tests: GetTask and
 // CancelTask return canned snapshots (or errors) keyed by task id.
 type fakeBackend struct {
-	mu       sync.Mutex
-	tasks    map[string]TaskInfo // task id → snapshot GetTask returns
-	getErr   map[string]error    // task id → error GetTask returns instead
-	canceled []string            // task ids passed to CancelTask, in order
+	mu            sync.Mutex
+	tasks         map[string]TaskInfo // task id → snapshot GetTask returns
+	getErr        map[string]error    // task id → error GetTask returns instead
+	canceled      []string            // task ids passed to CancelTask, in order
+	submitted     []SubmitParams      // params passed to SubmitMessage, in order
+	submitErr     error               // when set, SubmitMessage returns it
+	submitResult  TaskInfo            // when State != "", the snapshot SubmitMessage returns
+	lastSubmitCtx context.Context     // ctx of the most recent SubmitMessage (trace assertions)
 }
 
 func newFakeBackend() *fakeBackend {
@@ -65,6 +76,26 @@ func (b *fakeBackend) CancelTask(_ context.Context, id, _ string) (TaskInfo, err
 	info.State = TaskStateCanceled
 	b.tasks[id] = info
 	return info, nil
+}
+
+func (b *fakeBackend) SubmitMessage(ctx context.Context, p SubmitParams) (string, TaskInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lastSubmitCtx = ctx
+	b.submitted = append(b.submitted, p)
+	if b.submitErr != nil {
+		return "", TaskInfo{}, b.submitErr
+	}
+	id := p.TaskID
+	if id == "" {
+		id = "task-" + strconv.Itoa(len(b.submitted))
+	}
+	info := b.submitResult
+	if info.State == "" {
+		info = TaskInfo{WorkloadName: "triage", State: TaskStateCompleted, Output: "echo:" + p.Text}
+	}
+	b.tasks[id] = info
+	return id, info, nil
 }
 
 // recordingMetric captures A2ATask calls.
@@ -332,7 +363,7 @@ func TestRPCFramingErrors(t *testing.T) {
 		{"wrong version", `{"jsonrpc":"1.0","id":1,"method":"tasks/get"}`, errCodeInvalidRequest},
 		{"missing method", `{"jsonrpc":"2.0","id":1}`, errCodeInvalidRequest},
 		{"unknown method", `{"jsonrpc":"2.0","id":1,"method":"frobnicate"}`, errCodeMethodNotFound},
-		{"message/send unsupported", `{"jsonrpc":"2.0","id":1,"method":"message/send","params":{}}`, errCodeUnsupportedOp},
+		{"message/send empty params", `{"jsonrpc":"2.0","id":1,"method":"message/send","params":{}}`, errCodeInvalidParams},
 		{"message/stream unsupported", `{"jsonrpc":"2.0","id":1,"method":"message/stream","params":{}}`, errCodeUnsupportedOp},
 	}
 	for _, tc := range cases {
@@ -434,6 +465,222 @@ func TestTasksCancelIdempotentAndMetered(t *testing.T) {
 	_, resp = rpcCall(t, ts, "", `{"jsonrpc":"2.0","id":3,"method":"tasks/cancel","params":{"id":"ghost"}}`)
 	if resp.Error == nil || resp.Error.Code != errCodeTaskNotFound {
 		t.Fatalf("cancel unknown: error = %+v", resp.Error)
+	}
+}
+
+// sendBody is a message/send JSON-RPC body with the given text parts (and
+// an optional continuation task id).
+func sendBody(id, taskID, text string) string {
+	tid := ""
+	if taskID != "" {
+		tid = `"taskId":"` + taskID + `",`
+	}
+	return `{"jsonrpc":"2.0","id":` + id + `,"method":"message/send","params":{"message":{` +
+		`"kind":"message","role":"user","messageId":"m1",` + tid +
+		`"parts":[{"kind":"text","text":"` + text + `"}]}}}`
+}
+
+// TestMessageSendCompleted is the happy path: a fresh message runs the
+// turn, and the backend's answer surfaces as a text artifact on the
+// terminal task.
+func TestMessageSendCompleted(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	_, resp := rpcCall(t, ts, "", sendBody("1", "", "investigate pod"))
+	if resp.Error != nil {
+		t.Fatalf("message/send error: %+v", resp.Error)
+	}
+	var task Task
+	if err := json.Unmarshal(resp.Result, &task); err != nil {
+		t.Fatalf("decode task: %v", err)
+	}
+	if task.Kind != "task" || task.Status.State != TaskStateCompleted {
+		t.Fatalf("task = %+v, want completed", task)
+	}
+	// The agent's answer surfaces as a text result artifact.
+	if len(task.Artifacts) != 1 || len(task.Artifacts[0].Parts) != 1 ||
+		task.Artifacts[0].Parts[0].Text != "echo:investigate pod" {
+		t.Fatalf("result artifact = %+v, want echo:investigate pod", task.Artifacts)
+	}
+	// The backend received the joined text and no continuation id.
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 1 || be.submitted[0].Text != "investigate pod" {
+		t.Fatalf("SubmitMessage params = %+v", be.submitted)
+	}
+	if be.submitted[0].TaskID != "" {
+		t.Fatalf("fresh send carried a task id: %q", be.submitted[0].TaskID)
+	}
+}
+
+// TestMessageSendContinuesExistingTask: a message carrying a task id
+// resolves the owning workload via GetTask and threads the id into
+// SubmitMessage (continuation, not a fresh task).
+func TestMessageSendContinuesExistingTask(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	be.tasks["task-x"] = TaskInfo{WorkloadName: "triage", State: TaskStateInputRequired}
+	_, resp := rpcCall(t, ts, "", sendBody("1", "task-x", "approved"))
+	if resp.Error != nil {
+		t.Fatalf("message/send error: %+v", resp.Error)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 1 || be.submitted[0].TaskID != "task-x" {
+		t.Fatalf("continuation SubmitMessage params = %+v, want TaskID task-x", be.submitted)
+	}
+}
+
+// TestMessageSendUnknownContinuation: continuing an unknown task id fails
+// the GetTask lookup with TaskNotFound and never reaches SubmitMessage.
+func TestMessageSendUnknownContinuation(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	_, resp := rpcCall(t, ts, "", sendBody("1", "ghost", "hi"))
+	if resp.Error == nil || resp.Error.Code != errCodeTaskNotFound {
+		t.Fatalf("unknown continuation: error = %+v, want %d", resp.Error, errCodeTaskNotFound)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 0 {
+		t.Fatalf("unknown continuation reached the backend: %v", be.submitted)
+	}
+}
+
+// TestMessageSendRequiresText: a data-only message (no text parts) is
+// rejected before the backend runs (Stage B is text-only).
+func TestMessageSendRequiresText(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	body := `{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{` +
+		`"kind":"message","role":"user","messageId":"m1",` +
+		`"parts":[{"kind":"data","data":{"pod":"web-1"}}]}}}`
+	_, resp := rpcCall(t, ts, "", body)
+	if resp.Error == nil || resp.Error.Code != errCodeInvalidParams {
+		t.Fatalf("data-only send: error = %+v, want %d", resp.Error, errCodeInvalidParams)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 0 {
+		t.Fatalf("data-only send reached the backend: %v", be.submitted)
+	}
+}
+
+// TestMessageSendScopeForbidden: an authenticated-but-underscoped caller
+// cannot invoke a fresh send, and the backend is never reached.
+func TestMessageSendScopeForbidden(t *testing.T) {
+	v, _ := NewStaticBearerValidator(map[string]*Principal{
+		"weak": {Subject: "svc", Scopes: []string{"other:scope"}},
+	})
+	ts, be := testServer(t, Config{
+		Validator: v,
+		Skills:    []ExposedSkill{{WorkloadName: "triage", SkillName: "triage", Scopes: []string{"triage:invoke"}}},
+	})
+	status, _ := rpcCall(t, ts, "weak", sendBody("1", "", "hi"))
+	if status != http.StatusForbidden {
+		t.Fatalf("underscoped send: status = %d, want 403", status)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 0 {
+		t.Fatalf("underscoped send reached the backend: %v", be.submitted)
+	}
+}
+
+// TestMessageSendBackendError: a backend fault (not TaskNotFound) maps to
+// the JSON-RPC internal error.
+func TestMessageSendBackendError(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	be.submitErr = errors.New("runner exploded")
+	_, resp := rpcCall(t, ts, "", sendBody("1", "", "hi"))
+	if resp.Error == nil || resp.Error.Code != errCodeInternal {
+		t.Fatalf("backend error: error = %+v, want %d", resp.Error, errCodeInternal)
+	}
+}
+
+// TestMessageSendMultiSkill: a fresh message/send on an endpoint exposing
+// more than one skill has no first-class skill selector to route on, so it
+// is refused as unsupported (-32004) rather than run against an arbitrary
+// workload. The backend is never reached.
+func TestMessageSendMultiSkill(t *testing.T) {
+	ts, be := testServer(t, Config{
+		Skills: []ExposedSkill{
+			{WorkloadName: "triage", SkillName: "triage"},
+			{WorkloadName: "deploy", SkillName: "deploy"},
+		},
+	})
+	_, resp := rpcCall(t, ts, "", sendBody("1", "", "hi"))
+	if resp.Error == nil || resp.Error.Code != errCodeUnsupportedOp {
+		t.Fatalf("multi-skill fresh send: error = %+v, want %d", resp.Error, errCodeUnsupportedOp)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 0 {
+		t.Fatalf("multi-skill send reached the backend: %v", be.submitted)
+	}
+}
+
+// TestMessageSendUnavailable: a draining/transiently-unavailable backend
+// maps to a retryable server-error code (-32000), not the internal-fault
+// code (-32603) that would mislead a caller into not retrying.
+func TestMessageSendUnavailable(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	be.submitErr = fmt.Errorf("draining: %w", ErrUnavailable)
+	_, resp := rpcCall(t, ts, "", sendBody("1", "", "hi"))
+	if resp.Error == nil || resp.Error.Code != errCodeUnavailable {
+		t.Fatalf("draining send: error = %+v, want %d", resp.Error, errCodeUnavailable)
+	}
+}
+
+// TestMessageSendProjectsContextID: the backend's contextId (server-minted
+// when the caller omits one) reaches the returned Task on the wire, so a
+// client can group follow-up messages under it.
+func TestMessageSendProjectsContextID(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	be.submitResult = TaskInfo{WorkloadName: "triage", State: TaskStateCompleted, ContextID: "ctx-abc123"}
+	_, resp := rpcCall(t, ts, "", sendBody("1", "", "hi"))
+	if resp.Error != nil {
+		t.Fatalf("message/send error: %+v", resp.Error)
+	}
+	var task Task
+	if err := json.Unmarshal(resp.Result, &task); err != nil {
+		t.Fatalf("decode task: %v", err)
+	}
+	if task.ContextID != "ctx-abc123" {
+		t.Fatalf("task.contextId = %q, want ctx-abc123 (server-assigned grouping id)", task.ContextID)
+	}
+}
+
+// TestServerExtractsTraceContext proves the endpoint adopts a caller's
+// W3C trace context (traceparent) into the ctx the backend runs under, so
+// the turn's spans parent under the caller's span. Neutralize check: have
+// handleRPC pass r.Context() (not the extracted ctx) to the handlers and
+// the propagated span context vanishes.
+func TestServerExtractsTraceContext(t *testing.T) {
+	prev := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(prev) })
+
+	ts, be := testServer(t, Config{})
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const spanID = "00f067aa0ba902b7"
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/a2a", strings.NewReader(sendBody("1", "", "hi")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("traceparent", "00-"+traceID+"-"+spanID+"-01")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if be.lastSubmitCtx == nil {
+		t.Fatal("SubmitMessage never ran")
+	}
+	sc := trace.SpanContextFromContext(be.lastSubmitCtx)
+	if !sc.IsValid() {
+		t.Fatal("no span context reached the backend ctx (traceparent not extracted)")
+	}
+	if got := sc.TraceID().String(); got != traceID {
+		t.Fatalf("propagated trace id = %q, want %q", got, traceID)
 	}
 }
 

@@ -216,20 +216,46 @@ registries that require a distinct endpoint per agent. Cards advertise
 JSON-RPC as the preferred transport and the tested-against A2A spec
 line (`A2A-Version` header).
 
-**Invocation** is the single `POST /a2a` JSON-RPC 2.0 endpoint. This
-stage serves the read/control surface:
+**Invocation** is the single `POST /a2a` JSON-RPC 2.0 endpoint. It serves:
 
-- `tasks/get` — snapshot a task's state (a task id **is** a mast
-  session id). The state is projected from the session's log-proven
-  state onto the A2A lifecycle (`working`, `input-required` when a HITL
-  interrupt is pending, `canceled` when aborted). A transcript read
-  never reports `completed` — the event log cannot prove a turn
-  finished versus is still in flight.
+- `message/send` — run a turn (a task id **is** a mast session id).
+  Execution is synchronous: the call blocks and the reply is a terminal
+  task. The agent's answer surfaces as a `result` text artifact; the
+  in-process task registry then reports `completed` (which a transcript
+  read cannot prove). A message with a `taskId` continues that task;
+  without one it routes to the single exposed skill and mints a fresh
+  task (an endpoint exposing more than one skill refuses a selector-less
+  fresh send with `-32004`). The server assigns a `contextId` when the
+  caller omits one, returned on the task so follow-ups can be grouped.
+  Text-only for now — a message with no text parts is rejected
+  (`-32602`). If the turn pauses for a HITL interrupt the task returns
+  `input-required`; if the session is aborted or gate-paused the call is
+  refused at the chokepoint and the task reports its durable state; while
+  draining for shutdown, new sends are refused with the retryable
+  `-32000`.
+- `tasks/get` — snapshot a task's state. The registry is consulted first
+  (it alone can prove `completed`/`failed`), falling back to the
+  session's log-proven state projected onto the A2A lifecycle (`working`,
+  `input-required` when a HITL interrupt is pending, `canceled` when
+  aborted). A transcript-only read never reports `completed` — the event
+  log cannot prove a turn finished versus is still in flight.
 - `tasks/cancel` — cancel a task idempotently, routing to the same
-  terminal-abort path the operator `abort` uses.
-- `message/send` / `message/stream` — recognized but not yet served;
-  they answer the A2A "unsupported operation" error (`-32004`) until
-  turn execution and streaming land in later stages.
+  terminal-abort path the operator `abort` uses. Cancel is authoritative:
+  a task canceled as its turn finishes still reports `canceled`, never a
+  leaked answer.
+
+All three verbs address **only tasks this server minted** (ids carrying
+the `a2a-` prefix); any other session id — an operator incident, an
+attach or autoresume session — is reported as not found (`-32001`), so a
+caller cannot reach another surface's session through the A2A endpoint.
+- `message/stream` — recognized but not yet served; it answers the A2A
+  "unsupported operation" error (`-32004`) until SSE streaming lands.
+
+**Distributed tracing.** A2A calls propagate W3C trace context: an
+inbound `traceparent`/`baggage` header is adopted so the turn's spans
+parent under the caller's span, and mast's own outbound A2A client calls
+inject the current trace context. This is a no-op when tracing is
+disabled.
 
 **Auth.** Card endpoints are always public (a card is a descriptor, not
 a capability). The `/a2a` endpoint is authenticated when `MAST_A2A_TOKEN`

@@ -75,6 +75,19 @@ func (m *blockableModel) GenerateContent(ctx context.Context, _ *model.LLMReques
 	}
 }
 
+// errModel fails generation outright, so a turn driven over it returns a
+// runner error (not an ErrConflict chokepoint refusal) — the real path
+// behind classifyTurn's default → "failed" projection.
+type errModel struct{}
+
+func (errModel) Name() string { return "errmodel" }
+
+func (errModel) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		yield(nil, errors.New("model exploded"))
+	}
+}
+
 // turnHarness wires the real runTurn stack — runner, transcript store,
 // tracker, turn locks, meters — over an in-memory session service.
 type turnHarness struct {
