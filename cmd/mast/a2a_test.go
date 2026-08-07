@@ -23,6 +23,7 @@ import (
 
 	"google.golang.org/adk/v2/model"
 	adksession "google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/mast/pkg/a2a"
 	"github.com/go-steer/mast/pkg/inject"
@@ -294,6 +295,13 @@ func TestA2ABackendSubmitFailed(t *testing.T) {
 	}
 	if info.Output != "" {
 		t.Fatalf("failed task carried output %q, want empty", info.Output)
+	}
+	// The internal runner error ("model exploded") must NOT reach the external
+	// caller: the status is a generic string, the detail goes to the log.
+	// Neutralize check: return err.Error() from classifyTurn's default branch
+	// and this leaks the runner error.
+	if info.StatusMessage != "task failed" {
+		t.Fatalf("failed status = %q, want generic %q (internal error must not leak to the caller)", info.StatusMessage, "task failed")
 	}
 }
 
@@ -671,6 +679,148 @@ func TestA2ARateLimiter(t *testing.T) {
 		if _, err := a2aRateLimiter(logger); err == nil {
 			t.Errorf("MAST_A2A_BURST=%q: want error, got nil", bad)
 		}
+	}
+}
+
+// TestA2ABackendStreamMessageEmitsProgress drives a message/stream turn
+// end to end over the real turn stack: the backend emits the initial Task
+// snapshot first, then a working status-update carrying the model's text as
+// progress, and returns the terminal snapshot (completed, output "done")
+// the server bookends the stream from. Neutralize checks: drop the initial
+// Task emit and the first frame is no longer a *a2a.Task; drop
+// emitStreamProgress and no status-update carries the model text.
+func TestA2ABackendStreamMessageEmitsProgress(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	ctx := context.Background()
+
+	var emitted []any
+	emit := func(ev any) { emitted = append(emitted, ev) }
+	taskID, info, err := b.StreamMessage(ctx, a2a.SubmitParams{Text: "investigate", ContextID: "c1"}, emit)
+	if err != nil {
+		t.Fatalf("StreamMessage: %v", err)
+	}
+	if !strings.HasPrefix(taskID, "a2a-") {
+		t.Fatalf("task id = %q, want an a2a- prefix", taskID)
+	}
+	if info.State != a2a.TaskStateCompleted || info.Output != "done" {
+		t.Fatalf("terminal snapshot = %+v, want completed/done", info)
+	}
+	if len(emitted) < 2 {
+		t.Fatalf("emitted %d events, want >= 2 (initial task + progress)", len(emitted))
+	}
+	// The first emit is the initial Task snapshot (state working), carrying
+	// the resolved task/context ids.
+	task, ok := emitted[0].(*a2a.Task)
+	if !ok {
+		t.Fatalf("first emit = %T, want *a2a.Task", emitted[0])
+	}
+	if task.ID != taskID || task.ContextID != "c1" || task.Status.State != a2a.TaskStateWorking {
+		t.Fatalf("initial task = %+v, want %s/c1/working", task, taskID)
+	}
+	// A working status-update surfaces the model's text as progress, keyed to
+	// the same task/context, marked non-final.
+	var gotProgress bool
+	for _, ev := range emitted[1:] {
+		su, ok := ev.(*a2a.TaskStatusUpdateEvent)
+		if !ok {
+			continue
+		}
+		if su.Final {
+			t.Fatalf("backend emitted a final=true status-update; the terminal frame is the server's job: %+v", su)
+		}
+		if su.TaskID != taskID || su.ContextID != "c1" || su.Status.State != a2a.TaskStateWorking {
+			t.Fatalf("progress update = %+v, want %s/c1/working", su, taskID)
+		}
+		if su.Status.Message != nil && len(su.Status.Message.Parts) > 0 && su.Status.Message.Parts[0].Text == "done" {
+			gotProgress = true
+		}
+	}
+	if !gotProgress {
+		t.Fatal("no working status-update carried the model text; emitStreamProgress did not fire")
+	}
+}
+
+// TestEmitStreamProgressSkipsNonModelAndEmpty pins emitStreamProgress's two
+// skip branches and the per-frame messageId. A nil event, a non-model (user)
+// event, and empty-text model events must all yield zero frames; only
+// model-authored text ticks the stream, and each frame gets a distinct
+// messageId (seq) so a deduping client cannot collapse a multi-round turn.
+// Neutralize checks: drop the `Role != RoleModel` guard and the user event
+// leaks a frame; drop the `sb.Len() == 0` guard and the empty events leak
+// frames; make the messageId a fixed suffix and the distinct-id assertion
+// fails.
+func TestEmitStreamProgressSkipsNonModelAndEmpty(t *testing.T) {
+	var got []*a2a.TaskStatusUpdateEvent
+	emit := func(ev any) {
+		su, ok := ev.(*a2a.TaskStatusUpdateEvent)
+		if !ok {
+			t.Fatalf("emit got %T, want *a2a.TaskStatusUpdateEvent", ev)
+		}
+		got = append(got, su)
+	}
+	mkEv := func(c *genai.Content) *adksession.Event {
+		ev := adksession.NewEvent(context.Background(), "inv-test")
+		ev.Content = c
+		return ev
+	}
+	// nil, non-model, and empty-text model events must all be skipped.
+	emitStreamProgress(emit, "a2a-x", "c1", 0, nil)
+	emitStreamProgress(emit, "a2a-x", "c1", 1, mkEv(genai.NewContentFromText("user says hi", genai.RoleUser)))
+	emitStreamProgress(emit, "a2a-x", "c1", 2, mkEv(&genai.Content{Role: genai.RoleModel}))
+	emitStreamProgress(emit, "a2a-x", "c1", 3, mkEv(&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: ""}}}))
+	if len(got) != 0 {
+		t.Fatalf("skipped events emitted %d frames, want 0: %+v", len(got), got)
+	}
+	// Two model-text events → two working, non-final frames with distinct ids.
+	emitStreamProgress(emit, "a2a-x", "c1", 4, mkEv(genai.NewContentFromText("first", genai.RoleModel)))
+	emitStreamProgress(emit, "a2a-x", "c1", 5, mkEv(genai.NewContentFromText("second", genai.RoleModel)))
+	if len(got) != 2 {
+		t.Fatalf("two model-text events emitted %d frames, want 2", len(got))
+	}
+	if got[0].TaskID != "a2a-x" || got[0].ContextID != "c1" || got[0].Status.State != a2a.TaskStateWorking || got[0].Final {
+		t.Fatalf("progress frame = %+v, want a2a-x/c1/working/non-final", got[0])
+	}
+	if got[0].Status.Message.Parts[0].Text != "first" || got[1].Status.Message.Parts[0].Text != "second" {
+		t.Fatalf("progress texts = %q,%q, want first,second", got[0].Status.Message.Parts[0].Text, got[1].Status.Message.Parts[0].Text)
+	}
+	if got[0].Status.Message.MessageID == got[1].Status.Message.MessageID {
+		t.Fatalf("progress frames share messageId %q; a deduping client would collapse them", got[0].Status.Message.MessageID)
+	}
+}
+
+// TestA2ABackendStreamForeignSessionNoEmit pins the ownership fence on the
+// stream path: a continuation targeting a foreign-surface session id
+// returns ErrTaskNotFound BEFORE any emit, so the server reports a clean
+// JSON-RPC error rather than an orphaned SSE stream. Neutralize check: move
+// the initial Task emit above the id validation and this leaks a frame.
+func TestA2ABackendStreamForeignSessionNoEmit(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	var emitted int
+	emit := func(any) { emitted++ }
+	_, _, err := b.StreamMessage(context.Background(), a2a.SubmitParams{TaskID: "incident-op1", Text: "hijack"}, emit)
+	if !errors.Is(err, a2a.ErrTaskNotFound) {
+		t.Fatalf("StreamMessage(foreign) err = %v, want ErrTaskNotFound", err)
+	}
+	if emitted != 0 {
+		t.Fatalf("foreign continuation emitted %d frames before the not-found refusal, want 0", emitted)
+	}
+}
+
+// TestA2ABackendStreamDrainingNoEmit pins the same pre-emit posture for the
+// drain gate: a draining server refuses a fresh stream with ErrUnavailable
+// and emits nothing, so the refusal rides a retryable JSON-RPC error, not a
+// half-open stream.
+func TestA2ABackendStreamDrainingNoEmit(t *testing.T) {
+	b := newA2ABackendRunner(t, &blockableModel{})
+	b.tracker.beginDrain(context.Background())
+	var emitted int
+	emit := func(any) { emitted++ }
+	_, _, err := b.StreamMessage(context.Background(), a2a.SubmitParams{Text: "hi"}, emit)
+	if !errors.Is(err, a2a.ErrUnavailable) {
+		t.Fatalf("StreamMessage(draining) err = %v, want ErrUnavailable", err)
+	}
+	if emitted != 0 {
+		t.Fatalf("draining stream emitted %d frames, want 0 (refusal precedes any emit)", emitted)
 	}
 }
 

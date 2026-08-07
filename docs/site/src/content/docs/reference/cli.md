@@ -243,13 +243,21 @@ line (`A2A-Version` header).
   terminal-abort path the operator `abort` uses. Cancel is authoritative:
   a task canceled as its turn finishes still reports `canceled`, never a
   leaked answer.
+- `message/stream` — run a turn like `message/send`, but stream its
+  progress as Server-Sent Events (`text/event-stream`), one JSON-RPC
+  response per `data:` frame: an initial `Task` snapshot, then a
+  `status-update` per model response carrying its text as progress, then
+  the closing `artifact-update` (the agent's answer) and a final
+  `status-update` (`final: true`) with the terminal state. Updates are
+  message-granular (one per model response, not token deltas). Auth,
+  scope, and rate-limit refusals are decided *before* the stream opens, so
+  a refusal is a normal JSON-RPC error, not a truncated stream. The card
+  advertises `capabilities.streaming: true`.
 
-All three verbs address **only tasks this server minted** (ids carrying
+These verbs address **only tasks this server minted** (ids carrying
 the `a2a-` prefix); any other session id — an operator incident, an
 attach or autoresume session — is reported as not found (`-32001`), so a
 caller cannot reach another surface's session through the A2A endpoint.
-- `message/stream` — recognized but not yet served; it answers the A2A
-  "unsupported operation" error (`-32004`) until SSE streaming lands.
 
 **Distributed tracing.** A2A calls propagate W3C trace context: an
 inbound `traceparent`/`baggage` header is adopted so the turn's spans
@@ -269,7 +277,8 @@ model is deliberately separate from the inject and attach tokens: A2A
 callers are external agents scoped per skill, not operators.
 
 **Rate limiting.** External callers can consume the agent's provider
-budget through `message/send`, so that verb (only) can be rate limited.
+budget through `message/send` and `message/stream`, so both turn-driving
+verbs are rate limited (they share one bucket per caller and workload).
 Set `MAST_A2A_RATE` to the allowed requests/second **per caller and
 workload**, and optionally `MAST_A2A_BURST` for the bucket depth
 (defaults to `ceil(rate)`, minimum 1):

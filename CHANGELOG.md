@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **A2A server — Stage C: `message/stream` over SSE** (docs/a2a-design.md
+  "Mast as A2A server"; #15, #78). The A2A endpoint now streams turns:
+  `POST /a2a` `message/stream` runs a turn exactly like `message/send` but
+  emits its progress as Server-Sent Events (`text/event-stream`), one
+  JSON-RPC response per `data:` frame — an initial `Task` snapshot, a
+  `status-update` per model response (its text carried as progress), then a
+  closing `artifact-update` (the agent's answer) and a final `status-update`
+  (`final: true`) with the terminal state. `message/send` and
+  `message/stream` share one `runTask` body, differing only in whether an
+  `emit` callback is threaded through the turn's event loop. Updates are
+  **message-granular** (one per model response, not token deltas — token
+  streaming needs `StreamingModeSSE` across all turn kinds and is a
+  follow-on). The SSE response is upgraded lazily on the first emitted
+  frame, so auth, scope, and rate-limit refusals — all decided before the
+  turn starts — ride a normal JSON-RPC error rather than a truncated
+  stream, and `message/stream` shares the `message/send` rate-limit bucket.
+  The agent card now advertises `capabilities.streaming: true`. This closes
+  the A2A server umbrella (#78); `message/stream` no longer answers the
+  `-32004` unsupported-operation error.
+
 - **A2A server — Stage B2: pluggable rate-limiter seam** (docs/a2a-design.md
   "Rate limiting"; #78). `message/send` — the only budget-consuming verb —
   can now be rate limited through a pluggable `a2a.RateLimiter` seam on the

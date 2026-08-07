@@ -151,6 +151,34 @@ type Artifact struct {
 	Parts       []Part `json:"parts,omitempty"`
 }
 
+// TaskStatusUpdateEvent is one streaming status update (kind:
+// "status-update") in a message/stream SSE response. Final marks the
+// terminal update that ends the stream; a server emits exactly one final
+// update per turn (docs/a2a-design.md "Stage C").
+type TaskStatusUpdateEvent struct {
+	Kind      string         `json:"kind"` // "status-update"
+	TaskID    string         `json:"taskId"`
+	ContextID string         `json:"contextId,omitempty"`
+	Status    TaskStatus     `json:"status"`
+	Final     bool           `json:"final"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// TaskArtifactUpdateEvent is one streaming artifact update (kind:
+// "artifact-update") in a message/stream SSE response, carrying an output
+// artifact produced during the turn. LastChunk marks the final piece of a
+// chunked artifact — always true for mast's whole-artifact v0.2 emits
+// (docs/a2a-design.md "Stage C").
+type TaskArtifactUpdateEvent struct {
+	Kind      string         `json:"kind"` // "artifact-update"
+	TaskID    string         `json:"taskId"`
+	ContextID string         `json:"contextId,omitempty"`
+	Artifact  Artifact       `json:"artifact"`
+	Append    bool           `json:"append,omitempty"`
+	LastChunk bool           `json:"lastChunk,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
 // TaskState is the A2A v0.3 task lifecycle vocabulary.
 type TaskState string
 

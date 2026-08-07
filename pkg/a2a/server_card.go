@@ -68,8 +68,8 @@ func (s *Server) buildCard(name, description string, skills []ExposedSkill, base
 		Version:            s.cfg.CardVersion,
 		ProtocolVersion:    ProtocolVersion,
 		PreferredTransport: TransportJSONRPC,
-		// Streaming flips true when message/stream lands (Stage C).
-		Capabilities:       Capabilities{Streaming: false},
+		// message/stream is served over SSE (Stage C).
+		Capabilities:       Capabilities{Streaming: true},
 		DefaultInputModes:  []string{"text/plain"},
 		DefaultOutputModes: []string{"text/plain"},
 		Skills:             cardSkills(skills),

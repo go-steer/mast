@@ -15,6 +15,7 @@
 package a2a
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,7 @@ type fakeBackend struct {
 	canceled      []string            // task ids passed to CancelTask, in order
 	submitted     []SubmitParams      // params passed to SubmitMessage, in order
 	submitErr     error               // when set, SubmitMessage returns it
+	emitThenErr   error               // when set, StreamMessage emits the initial Task then returns it
 	submitResult  TaskInfo            // when State != "", the snapshot SubmitMessage returns
 	lastSubmitCtx context.Context     // ctx of the most recent SubmitMessage (trace assertions)
 }
@@ -96,6 +98,42 @@ func (b *fakeBackend) SubmitMessage(ctx context.Context, p SubmitParams) (string
 		info = TaskInfo{WorkloadName: "triage", State: TaskStateCompleted, Output: "echo:" + p.Text}
 	}
 	b.tasks[id] = info
+	return id, info, nil
+}
+
+// StreamMessage mirrors SubmitMessage but drives the emit callback: the
+// initial Task snapshot, then one interim working status-update, matching
+// the daemon backend's stream shape. submitErr (when set) returns before
+// any emit, so the server's pre-stream error path stays testable.
+func (b *fakeBackend) StreamMessage(ctx context.Context, p SubmitParams, emit func(any)) (string, TaskInfo, error) {
+	b.mu.Lock()
+	b.lastSubmitCtx = ctx
+	b.submitted = append(b.submitted, p)
+	submitErr := b.submitErr
+	emitThenErr := b.emitThenErr
+	result := b.submitResult
+	b.mu.Unlock()
+	if submitErr != nil {
+		return "", TaskInfo{}, submitErr
+	}
+	id := p.TaskID
+	if id == "" {
+		id = "task-" + strconv.Itoa(len(b.submitted))
+	}
+	info := result
+	if info.State == "" {
+		info = TaskInfo{WorkloadName: "triage", State: TaskStateCompleted, Output: "echo:" + p.Text}
+	}
+	emit(&Task{Kind: "task", ID: id, ContextID: info.ContextID, Status: TaskStatus{State: TaskStateWorking}})
+	if emitThenErr != nil {
+		// The drain-after-initial-Task race: the id/context are carried on the
+		// return so the server can build a correlatable terminal frame.
+		return id, TaskInfo{WorkloadName: info.WorkloadName, ContextID: info.ContextID}, emitThenErr
+	}
+	emit(&TaskStatusUpdateEvent{Kind: "status-update", TaskID: id, ContextID: info.ContextID, Status: TaskStatus{State: TaskStateWorking}, Final: false})
+	b.mu.Lock()
+	b.tasks[id] = info
+	b.mu.Unlock()
 	return id, info, nil
 }
 
@@ -365,7 +403,7 @@ func TestRPCFramingErrors(t *testing.T) {
 		{"missing method", `{"jsonrpc":"2.0","id":1}`, errCodeInvalidRequest},
 		{"unknown method", `{"jsonrpc":"2.0","id":1,"method":"frobnicate"}`, errCodeMethodNotFound},
 		{"message/send empty params", `{"jsonrpc":"2.0","id":1,"method":"message/send","params":{}}`, errCodeInvalidParams},
-		{"message/stream unsupported", `{"jsonrpc":"2.0","id":1,"method":"message/stream","params":{}}`, errCodeUnsupportedOp},
+		{"message/stream empty params", `{"jsonrpc":"2.0","id":1,"method":"message/stream","params":{}}`, errCodeInvalidParams},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -798,6 +836,410 @@ func TestServerExtractsTraceContext(t *testing.T) {
 	}
 	if got := sc.TraceID().String(); got != traceID {
 		t.Fatalf("propagated trace id = %q, want %q", got, traceID)
+	}
+}
+
+// streamBody is a message/stream JSON-RPC body with the given text (and an
+// optional continuation task id).
+func streamBody(id, taskID, text string) string {
+	tid := ""
+	if taskID != "" {
+		tid = `"taskId":"` + taskID + `",`
+	}
+	return `{"jsonrpc":"2.0","id":` + id + `,"method":"message/stream","params":{"message":{` +
+		`"kind":"message","role":"user","messageId":"m1",` + tid +
+		`"parts":[{"kind":"text","text":"` + text + `"}]}}}`
+}
+
+// streamCall POSTs a message/stream request and returns the HTTP status,
+// the response Content-Type, and the decoded JSON-RPC responses. For an SSE
+// response it decodes one per `data:` frame, in order; for a pre-stream
+// error (application/json) it decodes the single response as one element.
+func streamCall(t *testing.T, ts *httptest.Server, token, body string) (int, string, []rpcResponse) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/a2a", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	ct := resp.Header.Get("Content-Type")
+	var out []rpcResponse
+	// Transport-level failures (401/403) ride plain-text HTTP bodies, not
+	// JSON-RPC; the caller asserts on status, so leave frames empty.
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, ct, nil
+	}
+	if strings.HasPrefix(ct, "text/event-stream") {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+			if !ok {
+				continue // blank separator line or a non-data field
+			}
+			var r rpcResponse
+			if err := json.Unmarshal([]byte(data), &r); err != nil {
+				t.Fatalf("decode SSE frame %q: %v", data, err)
+			}
+			out = append(out, r)
+		}
+		if err := scanner.Err(); err != nil {
+			t.Fatalf("scan SSE: %v", err)
+		}
+	} else {
+		raw, _ := io.ReadAll(resp.Body)
+		var r rpcResponse
+		if err := json.Unmarshal(raw, &r); err != nil {
+			t.Fatalf("decode %q: %v", raw, err)
+		}
+		out = append(out, r)
+	}
+	return resp.StatusCode, ct, out
+}
+
+// frameKind decodes the "kind" discriminator of a streamed result.
+func frameKind(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var k struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &k); err != nil {
+		t.Fatalf("decode frame kind %q: %v", raw, err)
+	}
+	return k.Kind
+}
+
+// TestMessageStreamHappyPath: a fresh message/stream returns an SSE stream
+// whose frames are, in order, the initial Task, at least one interim
+// working status-update, the result artifact, and a final status-update
+// (final=true) carrying the terminal state. The task outcome is metered
+// once.
+func TestMessageStreamHappyPath(t *testing.T) {
+	metric := &recordingMetric{}
+	ts, _ := testServer(t, Config{Metric: metric})
+	status, ct, frames := streamCall(t, ts, "", streamBody("1", "", "investigate pod"))
+	if status != http.StatusOK {
+		t.Fatalf("HTTP status = %d, want 200", status)
+	}
+	if !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	if len(frames) < 4 {
+		t.Fatalf("frames = %d, want >= 4 (task, status-update, artifact-update, final status-update)", len(frames))
+	}
+	// Every frame is a well-formed JSON-RPC success echoing the request id.
+	for i, f := range frames {
+		if f.Error != nil {
+			t.Fatalf("frame %d carried an error: %+v", i, f.Error)
+		}
+		if string(f.ID) != "1" {
+			t.Fatalf("frame %d id = %s, want 1", i, f.ID)
+		}
+	}
+	if k := frameKind(t, frames[0].Result); k != "task" {
+		t.Fatalf("first frame kind = %q, want task", k)
+	}
+	// An interim working status-update precedes the terminal bookend.
+	if k := frameKind(t, frames[1].Result); k != "status-update" {
+		t.Fatalf("second frame kind = %q, want status-update", k)
+	}
+	// The result artifact carries the agent's answer.
+	var gotArtifact bool
+	for _, f := range frames {
+		if frameKind(t, f.Result) != "artifact-update" {
+			continue
+		}
+		var au TaskArtifactUpdateEvent
+		if err := json.Unmarshal(f.Result, &au); err != nil {
+			t.Fatalf("decode artifact-update: %v", err)
+		}
+		if !au.LastChunk {
+			t.Error("artifact-update lastChunk = false, want true (whole-artifact emit)")
+		}
+		if len(au.Artifact.Parts) == 0 || au.Artifact.Parts[0].Text != "echo:investigate pod" {
+			t.Fatalf("artifact parts = %+v, want the agent answer", au.Artifact.Parts)
+		}
+		gotArtifact = true
+	}
+	if !gotArtifact {
+		t.Fatal("no artifact-update frame; the agent answer was not streamed as an artifact")
+	}
+	// The last frame is the terminal status-update: final=true, completed.
+	last := frames[len(frames)-1]
+	if k := frameKind(t, last.Result); k != "status-update" {
+		t.Fatalf("last frame kind = %q, want status-update", k)
+	}
+	var final TaskStatusUpdateEvent
+	if err := json.Unmarshal(last.Result, &final); err != nil {
+		t.Fatalf("decode final status-update: %v", err)
+	}
+	if !final.Final {
+		t.Error("last status-update final = false, want true")
+	}
+	if final.Status.State != TaskStateCompleted {
+		t.Fatalf("final state = %q, want completed", final.Status.State)
+	}
+	// Exactly one metered outcome, tagged completed.
+	metric.mu.Lock()
+	defer metric.mu.Unlock()
+	if len(metric.seen) != 1 || metric.seen[0] != "triage/"+string(TaskStateCompleted) {
+		t.Fatalf("metric = %v, want one triage/completed", metric.seen)
+	}
+}
+
+// TestMessageStreamOnlyOneFinal pins the stream-termination contract:
+// exactly one status-update carries final=true, and it is the last frame —
+// interim progress updates must not prematurely close the stream.
+func TestMessageStreamOnlyOneFinal(t *testing.T) {
+	ts, _ := testServer(t, Config{})
+	_, _, frames := streamCall(t, ts, "", streamBody("1", "", "hi"))
+	finals := 0
+	lastFinal := -1
+	for i, f := range frames {
+		if frameKind(t, f.Result) != "status-update" {
+			continue
+		}
+		var su TaskStatusUpdateEvent
+		if err := json.Unmarshal(f.Result, &su); err != nil {
+			t.Fatalf("decode status-update: %v", err)
+		}
+		if su.Final {
+			finals++
+			lastFinal = i
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("final=true count = %d, want exactly 1", finals)
+	}
+	if lastFinal != len(frames)-1 {
+		t.Fatalf("final=true at frame %d, want the last frame %d", lastFinal, len(frames)-1)
+	}
+}
+
+// TestMessageStreamRateLimited: a refusing limiter turns message/stream
+// into a normal JSON-RPC -32000 error (NOT an SSE stream) with an advisory
+// Retry-After, records a "rejected" outcome, and never reaches the backend
+// — the refusal is decided before the SSE upgrade.
+func TestMessageStreamRateLimited(t *testing.T) {
+	lim := &stubLimiter{allow: false, retryAfter: 2500 * time.Millisecond}
+	metric := &recordingMetric{}
+	be := newFakeBackend()
+	ts, _ := testServer(t, Config{Backend: be, Limiter: lim, Metric: metric})
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/a2a", strings.NewReader(streamBody("1", "", "hi")))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	httpResp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer httpResp.Body.Close()
+	if ct := httpResp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("rate-limited stream opened an SSE stream (Content-Type %q); refusal must precede the upgrade", ct)
+	}
+	if got := httpResp.Header.Get("Retry-After"); got != "3" {
+		t.Errorf("Retry-After = %q, want 3", got)
+	}
+	raw, _ := io.ReadAll(httpResp.Body)
+	var resp rpcResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("decode %q: %v", raw, err)
+	}
+	if resp.Error == nil || resp.Error.Code != errCodeUnavailable {
+		t.Fatalf("rate-limited stream: error = %+v, want %d", resp.Error, errCodeUnavailable)
+	}
+	lim.mu.Lock()
+	if len(lim.calls) != 1 || lim.calls[0].Method != methodMessageStream || lim.calls[0].Workload != "triage" {
+		t.Fatalf("limiter calls = %+v, want one message/stream for triage", lim.calls)
+	}
+	lim.mu.Unlock()
+	be.mu.Lock()
+	if len(be.submitted) != 0 {
+		t.Fatalf("rate-limited stream reached the backend: %v", be.submitted)
+	}
+	be.mu.Unlock()
+	metric.mu.Lock()
+	defer metric.mu.Unlock()
+	if len(metric.seen) != 1 || metric.seen[0] != "triage/"+string(TaskStateRejected) {
+		t.Fatalf("metric = %v, want one triage/rejected", metric.seen)
+	}
+}
+
+// TestMessageStreamRequiresText: a data-only message is rejected before the
+// backend runs, as a normal JSON-RPC error (streaming is text-only).
+func TestMessageStreamRequiresText(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	body := `{"jsonrpc":"2.0","id":1,"method":"message/stream","params":{"message":{` +
+		`"kind":"message","role":"user","messageId":"m1",` +
+		`"parts":[{"kind":"data","data":{"pod":"web-1"}}]}}}`
+	_, ct, frames := streamCall(t, ts, "", body)
+	if strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("text-less stream opened an SSE stream (Content-Type %q)", ct)
+	}
+	if len(frames) != 1 || frames[0].Error == nil || frames[0].Error.Code != errCodeInvalidParams {
+		t.Fatalf("data-only stream: frames = %+v, want one invalid-params error", frames)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 0 {
+		t.Fatalf("data-only stream reached the backend: %v", be.submitted)
+	}
+}
+
+// TestMessageStreamTaskNotFound: a continuation targeting an unknown task
+// is a pre-stream JSON-RPC not-found error, not an opened SSE stream.
+func TestMessageStreamTaskNotFound(t *testing.T) {
+	ts, _ := testServer(t, Config{})
+	_, ct, frames := streamCall(t, ts, "", streamBody("1", "ghost", "hi"))
+	if strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("unknown-continuation stream opened an SSE stream (Content-Type %q)", ct)
+	}
+	if len(frames) != 1 || frames[0].Error == nil || frames[0].Error.Code != errCodeTaskNotFound {
+		t.Fatalf("unknown continuation: frames = %+v, want one task-not-found error", frames)
+	}
+}
+
+// TestMessageStreamScopeForbidden: an authenticated-but-underscoped caller
+// cannot open a stream, and the backend is never reached (403 before the
+// SSE upgrade).
+func TestMessageStreamScopeForbidden(t *testing.T) {
+	v, _ := NewStaticBearerValidator(map[string]*Principal{
+		"weak": {Subject: "svc", Scopes: []string{"other:scope"}},
+	})
+	ts, be := testServer(t, Config{
+		Validator: v,
+		Skills:    []ExposedSkill{{WorkloadName: "triage", SkillName: "triage", Scopes: []string{"triage:invoke"}}},
+	})
+	status, _, _ := streamCall(t, ts, "weak", streamBody("1", "", "hi"))
+	if status != http.StatusForbidden {
+		t.Fatalf("underscoped stream: status = %d, want 403", status)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.submitted) != 0 {
+		t.Fatalf("underscoped stream reached the backend: %v", be.submitted)
+	}
+}
+
+// TestMessageStreamUnavailableBeforeEmit: a backend that refuses before any
+// emit (drain) yields a normal retryable JSON-RPC error (-32000), not a
+// half-open SSE stream.
+func TestMessageStreamUnavailableBeforeEmit(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	be.submitErr = fmt.Errorf("draining: %w", ErrUnavailable)
+	_, ct, frames := streamCall(t, ts, "", streamBody("1", "", "hi"))
+	if strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("pre-emit failure opened an SSE stream (Content-Type %q)", ct)
+	}
+	if len(frames) != 1 || frames[0].Error == nil || frames[0].Error.Code != errCodeUnavailable {
+		t.Fatalf("pre-emit drain: frames = %+v, want one unavailable error", frames)
+	}
+}
+
+// TestMessageStreamMidStreamError: a backend that fails AFTER the initial
+// Task frame (the drain-after-initial-Task race) must close the already-open
+// SSE stream with exactly one terminal failed status-update — final:true, and
+// carrying the minted taskId/contextId so the client can correlate the close
+// with the task it opened. Neutralize check: drop the id/context from the
+// backend's error return (as the pre-fix code did) and the taskId assertion
+// fails on an empty id.
+func TestMessageStreamMidStreamError(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	// State set so the backend's default-fill does not overwrite ContextID.
+	be.submitResult = TaskInfo{WorkloadName: "triage", State: TaskStateWorking, ContextID: "ctx-mid"}
+	be.emitThenErr = fmt.Errorf("draining mid-turn: %w", ErrUnavailable)
+
+	_, ct, frames := streamCall(t, ts, "", streamBody("1", "", "hi"))
+	if !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("mid-stream failure did not open an SSE stream (Content-Type %q)", ct)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("mid-stream failure: got %d frames, want 2 (initial task + terminal status-update)", len(frames))
+	}
+	// Initial frame: the working Task snapshot with the minted id.
+	if k := frameKind(t, frames[0].Result); k != "task" {
+		t.Fatalf("frame[0] kind = %q, want task", k)
+	}
+	var initial Task
+	if err := json.Unmarshal(frames[0].Result, &initial); err != nil {
+		t.Fatalf("decode initial task: %v", err)
+	}
+	// Terminal frame: exactly one final:true failed status-update, correlatable
+	// by the same taskId/contextId (the regression this test pins).
+	if k := frameKind(t, frames[1].Result); k != "status-update" {
+		t.Fatalf("frame[1] kind = %q, want status-update", k)
+	}
+	var term TaskStatusUpdateEvent
+	if err := json.Unmarshal(frames[1].Result, &term); err != nil {
+		t.Fatalf("decode terminal frame: %v", err)
+	}
+	if !term.Final {
+		t.Fatal("terminal frame final = false, want true (stream must end on the failure)")
+	}
+	if term.Status.State != TaskStateFailed {
+		t.Fatalf("terminal state = %q, want failed", term.Status.State)
+	}
+	if term.TaskID == "" || term.TaskID != initial.ID {
+		t.Fatalf("terminal taskId = %q, want the initial frame's %q (correlatable)", term.TaskID, initial.ID)
+	}
+	if term.ContextID != "ctx-mid" {
+		t.Fatalf("terminal contextId = %q, want ctx-mid", term.ContextID)
+	}
+}
+
+// TestMessageStreamSharesSendRateLimitBucket: message/send and message/stream
+// draw from the same (caller, workload) bucket, so exhausting one refuses the
+// other. Neutralize check: add Method to the limiter's bucket key and the
+// second (stream) call is admitted, failing the -32000 assertion.
+func TestMessageStreamSharesSendRateLimitBucket(t *testing.T) {
+	lim, err := NewTokenBucketLimiter(1, 1) // 1 token: the first turn-driving call spends it
+	if err != nil {
+		t.Fatalf("NewTokenBucketLimiter: %v", err)
+	}
+	ts, be := testServer(t, Config{Limiter: lim})
+
+	// First message/send consumes the only token.
+	st, resp := rpcCall(t, ts, "", `{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"parts":[{"kind":"text","text":"hi"}]}}}`)
+	if st != http.StatusOK || resp.Error != nil {
+		t.Fatalf("first send: status %d, resp %+v, want 200 ok", st, resp)
+	}
+	// message/stream from the same caller now finds the shared bucket empty.
+	_, ct, frames := streamCall(t, ts, "", streamBody("2", "", "hi"))
+	if strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("rate-limited stream opened an SSE stream (Content-Type %q)", ct)
+	}
+	if len(frames) != 1 || frames[0].Error == nil || frames[0].Error.Code != errCodeUnavailable {
+		t.Fatalf("shared-bucket stream: frames = %+v, want one -32000 (bucket drained by send)", frames)
+	}
+	if len(be.submitted) != 1 {
+		t.Fatalf("rate-limited stream reached the backend: submitted = %d, want 1 (send only)", len(be.submitted))
+	}
+}
+
+// TestMessageStreamCardAdvertisesStreaming: the aggregated card advertises
+// the streaming capability so a client knows message/stream is served.
+func TestMessageStreamCardAdvertisesStreaming(t *testing.T) {
+	ts, _ := testServer(t, Config{})
+	resp, err := ts.Client().Get(ts.URL + WellKnownCardPath)
+	if err != nil {
+		t.Fatalf("GET card: %v", err)
+	}
+	defer resp.Body.Close()
+	var card AgentCard
+	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {
+		t.Fatalf("decode card: %v", err)
+	}
+	if !card.Capabilities.Streaming {
+		t.Fatal("card capabilities.streaming = false, want true (message/stream is served)")
 	}
 }
 

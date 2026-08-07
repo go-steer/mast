@@ -188,6 +188,54 @@ func (c *turnCapture) onEvent(ev *session.Event) {
 	}
 }
 
+// emitStreamProgress emits an interim working status-update for one turn
+// event during a message/stream turn. It surfaces model-authored text as
+// progress; events without model text (tool-call requests, control events)
+// are skipped so the stream carries meaningful ticks rather than empty
+// frames. The terminal state and the consolidated output artifact are
+// emitted by the server from the turn's return value, not here — so the
+// final answer arrives as a result artifact, and interim status-updates are
+// progress narration (final=false). Runs synchronously inside runTurnPre's
+// event loop, on the SSE handler's goroutine, so it needs no locking.
+//
+// Because the turn runs StreamingModeNone, each model event is a whole
+// response, so the final model response is emitted BOTH here (as the last
+// progress status-update) and again by the server as the result artifact —
+// the two are distinct A2A channels (live narration vs. deliverable), and
+// the duplication is inherent to message-granular streaming; token-level
+// deltas (StreamingModeSSE) are the follow-on that removes it. seq gives
+// each progress frame a distinct messageId so a client that dedupes by it
+// does not collapse a multi-round turn's frames into one.
+func emitStreamProgress(emit func(any), taskID, contextID string, seq int, ev *session.Event) {
+	if ev == nil || ev.Content == nil || ev.Content.Role != genai.RoleModel {
+		return
+	}
+	var sb strings.Builder
+	for _, part := range ev.Content.Parts {
+		if part != nil && part.Text != "" {
+			sb.WriteString(part.Text)
+		}
+	}
+	if sb.Len() == 0 {
+		return
+	}
+	emit(&a2a.TaskStatusUpdateEvent{
+		Kind:      "status-update",
+		TaskID:    taskID,
+		ContextID: contextID,
+		Status: a2a.TaskStatus{
+			State: a2a.TaskStateWorking,
+			Message: &a2a.Message{
+				Kind:      "message",
+				Role:      "agent",
+				MessageID: fmt.Sprintf("%s-progress-%d", taskID, seq),
+				Parts:     []a2a.Part{{Kind: "text", Text: sb.String()}},
+			},
+		},
+		Final: false,
+	})
+}
+
 // A2A id namespaces. Task id == session id, so the "a2a-" prefix both
 // keeps a minted task clear of the inject "incident-" namespace and marks
 // the task as one this server owns (see isA2ATaskID). "ctx-" prefixes a
@@ -264,6 +312,28 @@ func (b *a2aBackend) GetTask(ctx context.Context, taskID string) (a2a.TaskInfo, 
 // meter, watchdog, and effects outbox by construction — and projects the
 // outcome onto the A2A task lifecycle. Execution is synchronous.
 func (b *a2aBackend) SubmitMessage(ctx context.Context, p a2a.SubmitParams) (string, a2a.TaskInfo, error) {
+	return b.runTask(ctx, p, nil)
+}
+
+// StreamMessage runs a message/stream turn through the same chokepoint as
+// SubmitMessage, emitting the initial task snapshot and per-model-event
+// working status-updates through emit as the turn runs. The server frames
+// each emit as an SSE JSON-RPC response and, from the returned terminal
+// snapshot, emits the closing artifact + final status-update.
+func (b *a2aBackend) StreamMessage(ctx context.Context, p a2a.SubmitParams, emit func(any)) (string, a2a.TaskInfo, error) {
+	return b.runTask(ctx, p, emit)
+}
+
+// runTask drives one A2A turn through runTurnPre. It backs both
+// message/send (emit nil) and message/stream (emit non-nil): the send and
+// stream paths differ ONLY in whether interim progress is emitted, so they
+// share one turn-drive body — the turn lock, cancel registry,
+// abort/gate-pause refusal, budget meter, watchdog, and effects outbox all
+// apply identically. When emit is non-nil it fires the initial Task
+// snapshot (after the id/drain pre-checks, so a pre-turn refusal is a clean
+// JSON-RPC error, not an orphaned stream) and a working status-update per
+// model-authored event. Execution is synchronous.
+func (b *a2aBackend) runTask(ctx context.Context, p a2a.SubmitParams, emit func(any)) (string, a2a.TaskInfo, error) {
 	// Drain gate: refuse new work once shutdown has begun, mirroring the
 	// inject handler (a queued turn cut mid-drain is refused in runTurnPre).
 	if b.tracker.isDraining() {
@@ -302,6 +372,19 @@ func (b *a2aBackend) SubmitMessage(ctx context.Context, p a2a.SubmitParams) (str
 		b.reg.record(taskID, taskRecord{workload: b.workloadName, state: a2a.TaskStateWorking, contextID: contextID})
 	}
 
+	// Streaming: emit the initial Task snapshot as the first SSE frame. This
+	// runs only after the id-validation and drain pre-checks above, so a
+	// pre-turn refusal (ErrTaskNotFound / ErrUnavailable) is still a clean
+	// JSON-RPC error rather than an orphaned event stream.
+	if emit != nil {
+		emit(&a2a.Task{
+			Kind:      "task",
+			ID:        taskID,
+			ContextID: contextID,
+			Status:    a2a.TaskStatus{State: a2a.TaskStateWorking},
+		})
+	}
+
 	// Same wallclock ceiling as the inject/resume paths (#47).
 	if b.bundle != nil && b.bundle.Budget.MaxWallclockSeconds > 0 {
 		var cancel context.CancelFunc
@@ -311,8 +394,22 @@ func (b *a2aBackend) SubmitMessage(ctx context.Context, p a2a.SubmitParams) (str
 
 	msg := genai.NewContentFromText(p.Text, genai.RoleUser)
 	var cap turnCapture
+	label := "a2a:message/send"
+	onEvent := cap.onEvent
+	if emit != nil {
+		label = "a2a:message/stream"
+		// Combine capture with progress streaming: cap still accumulates the
+		// final answer / HITL signal for the terminal projection, while each
+		// model-authored event also surfaces as a working status-update.
+		progressSeq := 0
+		onEvent = func(ev *session.Event) {
+			cap.onEvent(ev)
+			emitStreamProgress(emit, taskID, contextID, progressSeq, ev)
+			progressSeq++
+		}
+	}
 	err := runTurnPre(ctx, b.r, b.logger, b.store, b.meters, b.wds, b.obs, b.tracker, b.turnLocks,
-		b.workloadName, taskID, msg, "a2a:message/send", nil, cap.onEvent)
+		b.workloadName, taskID, msg, label, nil, onEvent)
 
 	// Drain can begin after the pre-check while we are blocked on the turn
 	// lock; runTurnPre then returns ErrUnavailable. Surface it as retryable
@@ -323,7 +420,11 @@ func (b *a2aBackend) SubmitMessage(ctx context.Context, p a2a.SubmitParams) (str
 		if b.reg != nil {
 			b.reg.clearInFlight(taskID)
 		}
-		return "", a2a.TaskInfo{}, de
+		// Carry the minted ids: on the streaming path the initial Task frame
+		// already went out, so the handler's mid-stream close needs them to
+		// build a correlatable terminal frame. The send path ignores these on
+		// error (it writes a JSON-RPC -32000 without a task body).
+		return taskID, a2a.TaskInfo{ContextID: contextID}, de
 	}
 
 	state, statusMsg, output := b.classifyTurn(ctx, taskID, &cap, err)
@@ -403,10 +504,13 @@ func (b *a2aBackend) classifyTurn(ctx context.Context, taskID string, cap *turnC
 			st, m := mapTranscriptState(d)
 			return st, m, ""
 		}
-		return a2a.TaskStateFailed, err.Error(), ""
+		return a2a.TaskStateFailed, "task failed", ""
 	default:
-		// Runner error, budget trip, wallclock/ctx cancellation.
-		return a2a.TaskStateFailed, err.Error(), ""
+		// Runner error, budget trip, wallclock/ctx cancellation. Log the real
+		// error for the operator, but hand the external A2A caller a generic
+		// status — internal error strings are not for the wire.
+		b.logger.Error("a2a turn failed", "task", taskID, "error", err.Error())
+		return a2a.TaskStateFailed, "task failed", ""
 	}
 }
 
