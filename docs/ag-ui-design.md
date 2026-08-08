@@ -91,7 +91,23 @@ Not specified by the protocol beyond convention: bearer token in `Authorization:
 
 ## Mast as AG-UI server
 
-Mast exposes its workloads to AG-UI clients via HTTP+SSE endpoints on the mast HTTP listener. Multiple workloads can be exposed; each is one AG-UI-callable agent.
+Mast exposes its workloads to AG-UI clients via HTTP+SSE endpoints. Multiple workloads can be exposed; each is one AG-UI-callable agent.
+
+#### Implementation status (v0.2, Stage 1)
+
+AG-UI ships in stages under umbrella #84, mirroring the A2A cadence.
+
+- **Stage 1 (shipped).** Server core. IN: the bundle `agui:` section (`expose`, `endpoint_path`, `description`, `input_schema`, `session_model`, `auth.scopes`); a per-workload HTTP+SSE run endpoint plus the `/agui/agents.json` discovery descriptor; `RunAgentInput` acceptance; shared auth + rate limiting (see [Auth](#auth-1)); the happy-path event stream (`RunStarted` → a `StateSnapshot` echoing the client's input state → the model's answer as a `TextMessage` triad, with `ToolCallStart/Args/End` + `ToolCallResult` for tool activity → a terminal `RunFinished` / `RunError`); and the `mast_agui_runs_total{workload,outcome}` + `mast_agui_run_duration_seconds{workload}` metrics. Every run drives the same `runTurnPre` chokepoint every other turn kind funnels through (turn-lock, abort / gate-pause refusal, budget meter, watchdog, effects outbox by construction), and the session id is always daemon-derived and namespaced under `agui-` with an ownership fence against the reserved ops-row namespace — a client never supplies a raw session id.
+- **Deferred (documented, follow-on stages).** The HITL interrupt/resume lifecycle (`RunFinished{outcome: interrupt}` + `RunAgentInput.Resume`) — in Stage 1 an interrupted turn maps to an **honest** `RunError{interrupt}`, never a fabricated success; the `agui://` federation client ([Mast as AG-UI client](#mast-as-ag-ui-client)); per-key `StateDelta` projection (needs the `agui.state_projection` allowlist, OQ #7); client-declared tools (`RunAgentInput.Tools`, OQ #6); activity/reasoning events; the mast-extension webhook push; and client-disconnect reconnect.
+
+##### Build-vs-buy: hand-rolled, zero-dependency (overrides the July SDK-wrap guidance)
+
+The wire vocabulary, HTTP+SSE surface, auth, and rate limiter live in a hand-rolled `pkg/agui` (+ the shared `pkg/serverauth`) with **zero new external dependencies** — *not* the community AG-UI Go SDK. This **supersedes** this doc's earlier guidance ([Mast as AG-UI client](#mast-as-ag-ui-client), the "Reimplementing the AG-UI Go SDK" [out-of-scope](#out-of-scope) line, and OQ #1's version-pin bias, all of which assumed wrapping `github.com/ag-ui-protocol/ag-ui/sdks/community/go`). Same call, and for the same reasons, as the A2A server ([`./a2a-design.md`](./a2a-design.md) "Implementation status"): (1) it keeps every AG-UI turn on the `runTurnPre` chokepoint rather than letting an SDK executor drive the runner directly and bypass the budget/pause/abort/outbox seams; and (2) the deployment slim-graph gate (`dev/ci/presubmits/slim-deps.sh`) denylists heavy transitive deps, and pulling the SDK would trip it. The wire subset mast emits is small and stable; when the client direction lands it will hand-roll the SSE client the same way. `pkg/agui` remains the isolation boundary the doc always wanted — the encoding just isn't the community SDK's.
+
+##### Deviations from the design text
+
+- **Dedicated `--agui-listen` listener** (not "on the mast HTTP listener", as the section intro originally read). mast has no single shared HTTP root — the inject, attach, and A2A surfaces each own a listener — so a dedicated `--agui-listen` bind address (empty disables) is the consistent choice, matching `--a2a-listen`.
+- **Fixed `session_model` default** (`per_thread`, with an explicit `per_run` override), rather than OQ #3's "default keyed on the workload's task class". `workload.Bundle` carries no task-class field today, so a fixed default + per-workload override is what ships; the task-class-aware default can arrive with a task-class field.
 
 ### Which workloads get exposed
 
@@ -292,7 +308,7 @@ CopilotKit's chat-platform bot SDK is open-source (no per-seat cost). Operators 
 
 1. **AG-UI protocol version pinning.** SDK is pre-1.0; specs evolve. Bias: test against pinned SDK version per mast release; document tested-against version in `pkg/agui/VERSION.md`; upgrade cadence separate from mast release cadence.
 2. **`/.well-known/` metadata endpoint for AG-UI.** Not in the standard but potentially useful for CopilotKit discovery. Bias: ship an optional aggregation endpoint (`/agui/agents.json`) but don't require clients to use it — many will be configured with direct endpoint URLs.
-3. **Thread-to-session mapping bundle default.** `per_thread` (long-lived session) or `per_run` (one session per run)? Bias: `per_thread` for `Chat`-mode workloads (matches chat UX); `per_run` for `orchestrate`/`debug`/`research`/`review` (matches task-runner UX). Explicit override always available.
+3. **Thread-to-session mapping bundle default.** `per_thread` (long-lived session) or `per_run` (one session per run)? Bias: `per_thread` for `Chat`-mode workloads (matches chat UX); `per_run` for `orchestrate`/`debug`/`research`/`review` (matches task-runner UX). Explicit override always available. *Resolved 2026-08-08 (Stage 1): a **fixed** `per_thread` default with an explicit `per_run` override ships now — `workload.Bundle` has no task-class field yet, so the task-class-aware default waits on one. See [Implementation status](#implementation-status-v02-stage-1).*
 4. **Concurrent-run policy.** Default: one active run per thread; queue if another arrives. Configurable per bundle. What's the queue depth? Bias: 3; reject with `RunError` if exceeded; observable via metric.
 5. **Reasoning event exposure.** Some model reasoning tokens are sensitive (chain-of-thought reveals prompt-injection surface). Bias: default off; opt-in per bundle (`agui.emit_reasoning: true`); document the tradeoff.
 6. **Tool declarations from AG-UI clients.** `RunAgentInput.tools` lets clients declare tools they expose *to* the agent (frontend tool calls). Mast can support this (client-side tools count as another tool class the planner can invoke); need to reconcile with bundle `tool_catalog` allowlist. Bias: client-declared tools require `agui.accept_client_tools: true` opt-in per bundle; intersected with bundle allowlist same as skills.

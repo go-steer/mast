@@ -19,6 +19,7 @@ runner, and the session store.
 | `--listen` | `:7777` | HTTP bind address for `/inject`, `/resume`, `/abort`, `/metrics`. |
 | `--attach-listen` | (empty) | Operator attach surface (HTTP/SSE for [mast-web](https://github.com/go-steer/mast-web) and other attach clients): a TCP address like `127.0.0.1:8484`, or a Unix socket as `unix:/path/mast.sock`. Empty = disabled. Requires `--session-db` (live-tail pumps from the eventlog overlay). Non-loopback TCP binds are refused unless auth is configured — set `MAST_ATTACH_TOKEN`. Serve mode only. |
 | `--a2a-listen` | (empty) | [A2A](https://a2a-protocol.org) server surface: a TCP address like `127.0.0.1:7780`. Empty = disabled. Publishes an agent card and a JSON-RPC 2.0 endpoint (`POST /a2a`) for workloads that opt in via the bundle's `a2a.expose` section. Card endpoints (`/.well-known/agent-card.json`, `/.well-known/agent-card/<name>.json`) are public; `/a2a` is authenticated when `MAST_A2A_TOKEN` is set, with per-skill scope enforcement. Non-loopback binds are refused without a token (`tasks/cancel` is destructive). Serve mode only. See [A2A server](#a2a-server). |
+| `--agui-listen` | (empty) | [AG-UI](https://docs.ag-ui.com/introduction) server surface: a TCP address like `127.0.0.1:7781`. Empty = disabled. Serves a per-workload HTTP+SSE run endpoint and a `/agui/agents.json` discovery descriptor for workloads that opt in via the bundle's `agui.expose` section. Authenticated when `MAST_AGUI_TOKEN` is set (per-workload scope enforcement); rate limits via `MAST_AGUI_RATE`/`MAST_AGUI_BURST`. Non-loopback binds are refused without a token (a run drives a budgeted turn). Serve mode only. See [AG-UI server](#ag-ui-server). |
 | `--session-db` | (empty) | SQLite file path (default driver) or Postgres DSN/URL with `--session-db-driver=postgres`. Empty = in-memory sessions, **no durability**. |
 | `--session-db-driver` | `sqlite` | `sqlite` or `postgres`. `postgres` with an empty `--session-db` is a startup error, never a silent in-memory downgrade. |
 | `--timeout` | `5m` | One-shot turn deadline (`2m`, `90s`, …); `0` disables. One-shot only — serve-mode wallclock ceilings come from workload budgets. An unresponsive backend (or a provider SDK silently retrying on quota errors) fails loudly instead of hanging a script. |
@@ -33,7 +34,10 @@ surface has its own token, `MAST_ATTACH_TOKEN` — attach can read
 transcripts and inject operator messages, so treat it as a separate
 trust boundary from the inject webhook. The A2A surface has its own
 token too, `MAST_A2A_TOKEN` — a different auth model (per-skill scopes
-for external agent callers), so treat it as a third trust boundary.
+for external agent callers), so treat it as a third trust boundary. The
+AG-UI surface has its own token as well, `MAST_AGUI_TOKEN` — per-workload
+scopes for user-facing clients (CopilotKit apps, chat-platform bots), a
+fourth trust boundary.
 
 ## `mast sessions` (operator surface)
 
@@ -293,3 +297,80 @@ returns the retryable `-32000` error with an advisory `Retry-After`
 header. `MAST_A2A_RATE` unset means no rate limiting; a set-but-malformed
 value fails startup. Control-plane verbs (`tasks/get`, `tasks/cancel`)
 are never rate limited — an operator can always read or cancel a task.
+
+## AG-UI server
+
+With `--agui-listen`, the daemon exposes its workloads to the
+[AG-UI](https://docs.ag-ui.com/introduction) ecosystem — the agent↔user
+protocol CopilotKit React apps and chat-platform bots speak. A client
+POSTs a `RunAgentInput` and receives the turn back as a Server-Sent
+Events (`text/event-stream`) run stream. It runs on its own listener,
+separate from the inject webhook, the attach surface, and the A2A
+endpoint (mast has no single shared HTTP root — each surface owns its
+listener).
+
+A workload opts in per bundle (like A2A, exposure carries real ops
+implications — auth setup, a public turn-driving endpoint, user-facing
+UX — so it is never automatic):
+
+```yaml
+# .agents/workloads/incident-triage.yaml
+agui:
+  expose: true
+  endpoint_path: /agui/incident-triage    # defaults to /agui/<name>
+  description: Investigate GKE pod-failure incidents.
+  session_model: per_thread               # or per_run
+  auth:
+    scopes: [incident-triage.run]
+```
+
+**Discovery** is public: `GET /agui/agents.json` lists every exposed
+workload as `{name, endpoint, description, input_schema, auth: {scopes}}`.
+AG-UI has no standardized well-known path (unlike A2A's agent card), so
+this descriptor is a mast convention for clients that want to
+discover-then-connect.
+
+**Invocation** is a `POST` to each workload's `endpoint_path`. The body
+is an AG-UI `RunAgentInput`; the response is the run streamed as SSE
+frames: `RunStarted`, then a `StateSnapshot` echoing the client's input
+state, then the model's answer as a `TextMessage` triad
+(`TextMessageStart`/`Content`/`End`) with `ToolCallStart`/`Args`/`End`
+and `ToolCallResult` frames for any tool activity, then exactly one
+terminal frame — `RunFinished` on success, or `RunError` (`aborted` when
+the session was aborted or gate-paused, `interrupt` when the turn paused
+for human input, `internal` on a runner error). Updates are
+message-granular (one text message per model response, not token deltas).
+The session id is always **derived by the daemon** from the AG-UI
+`threadId`/`runId` and namespaced under `agui-` — a client never supplies
+a raw session id, and an id that would collide with a reserved
+`…:mast-ops` row is refused before the stream opens. `session_model`
+picks the mapping: `per_thread` (the default — one continuing session per
+thread, matching chat UX) or `per_run` (a fresh session per run, for
+stateless one-shots).
+
+The HITL interrupt/resume lifecycle, per-key state deltas, client-declared
+tools, and the `agui://` federation client are follow-on stages; an
+interrupted turn currently returns an honest `RunError{interrupt}`, never
+a fabricated success.
+
+**Auth.** The discovery descriptor is always public. Each run endpoint is
+authenticated when `MAST_AGUI_TOKEN` is set — a request without a valid
+bearer is refused `401`, and a token lacking a workload's declared
+`auth.scopes` is refused `403`. Unset means unauthenticated (dev only,
+warned at startup) — and because a run drives a budgeted turn, a
+**non-loopback** `--agui-listen` bind is *refused at startup* without a
+token; bind loopback or set `MAST_AGUI_TOKEN`.
+
+**Rate limiting.** A run consumes the agent's provider budget, so runs are
+rate limited per caller and workload. Set `MAST_AGUI_RATE` to the allowed
+requests/second, and optionally `MAST_AGUI_BURST` for the bucket depth
+(defaults to `ceil(rate)`, minimum 1):
+
+```bash
+MAST_AGUI_RATE=5 MAST_AGUI_BURST=10 mast --agui-listen=127.0.0.1:7781 ...
+```
+
+A refused run returns HTTP `429` with an advisory `Retry-After` header
+(AG-UI has no JSON-RPC error envelope, so refusals ride HTTP status).
+`MAST_AGUI_RATE` unset means no rate limiting; a set-but-malformed value
+fails startup.

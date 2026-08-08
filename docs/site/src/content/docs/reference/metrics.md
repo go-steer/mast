@@ -60,6 +60,19 @@ lockstep with the wire vocabulary.
 |---|---|---|
 | `mast_a2a_server_tasks_total` | `workload`, `outcome` | A2A server task-lifecycle transitions. Outcomes: `submitted`, `working`, `input-required`, `completed`, `failed`, `canceled`, `rejected`. |
 
+### AG-UI server family (v0.2)
+
+The [AG-UI server](/mast/reference/cli/#ag-ui-server) counts each run it drives
+to a terminal frame, plus a duration histogram over runs that reached the turn
+(pre-turn refusals — draining, an unaddressable session id — are not timed).
+The `outcome` label is kept in lockstep with the server's terminal-frame
+vocabulary.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_agui_runs_total` | `workload`, `outcome` | AG-UI runs by terminal disposition. Outcomes: `success`, `error`, `aborted`, `rejected`. |
+| `mast_agui_run_duration_seconds` | `workload` | Histogram of executed-run wallclock (a `_bucket`/`_sum`/`_count` triple). |
+
 ## Traces
 
 Trace export is env-gated OTel: a no-op unless `OTEL_EXPORTER_OTLP_*`

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **AG-UI server — Stage 1: server core** (docs/ag-ui-design.md
+  "Implementation status"; #84). mast gains its fourth ecosystem interop
+  surface — AG-UI, the agent↔user protocol CopilotKit apps and
+  chat-platform bots speak — alongside MCP, A2A, and attach. With
+  `--agui-listen`, a workload that opts in via the bundle's new `agui:`
+  section is served at a per-workload HTTP endpoint: a client POSTs an
+  AG-UI `RunAgentInput` and receives the turn back as a Server-Sent
+  Events (`text/event-stream`) run stream — `RunStarted`, a `StateSnapshot`
+  echoing the input state, the model's answer as a `TextMessage` triad
+  with `ToolCall*` frames for tool activity, then one terminal
+  `RunFinished` / `RunError`. A `GET /agui/agents.json` descriptor lists
+  the exposed endpoints. Like the A2A server, it is **hand-rolled with
+  zero new dependencies** (`pkg/agui`, over the shared `pkg/serverauth`)
+  rather than wrapping the community AG-UI Go SDK — so every run drives
+  the same `runTurnPre` chokepoint every other turn kind funnels through
+  (turn-lock, abort / gate-pause refusal, budget meter, watchdog, effects
+  outbox), and the deployment slim-graph gate stays green. The session id
+  is always daemon-derived from the AG-UI `threadId`/`runId` and
+  namespaced under `agui-` (`session_model: per_thread` default, or
+  `per_run`), fenced off the reserved `…:mast-ops` namespace — a client
+  never supplies a raw session id. Auth is a shared bearer validator
+  (`MAST_AGUI_TOKEN`, per-workload scopes; non-loopback binds refused
+  without it) with per-caller rate limiting (`MAST_AGUI_RATE` /
+  `MAST_AGUI_BURST`, HTTP `429` + `Retry-After`). New metrics
+  `mast_agui_runs_total{workload,outcome}` and
+  `mast_agui_run_duration_seconds{workload}`. An interrupted turn maps to
+  an honest `RunError{interrupt}` — the full HITL interrupt/resume
+  lifecycle, per-key state deltas, client-declared tools, and the
+  `agui://` federation client are follow-on stages.
+
 - **A2A server — Stage C: `message/stream` over SSE** (docs/a2a-design.md
   "Mast as A2A server"; #15, #78). The A2A endpoint now streams turns:
   `POST /a2a` `message/stream` runs a turn exactly like `message/send` but
