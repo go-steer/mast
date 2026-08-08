@@ -59,6 +59,14 @@ a2a:
   skill_description: Investigate GKE pod-failure incidents.
   auth:
     scopes: [incident-triage.invoke]
+
+agui:
+  expose: true
+  endpoint_path: /agui/incident-triage
+  description: Investigate GKE pod-failure incidents.
+  session_model: per_thread
+  auth:
+    scopes: [incident-triage.run]
 ```
 
 ## Fields
@@ -80,6 +88,12 @@ a2a:
 | `a2a.skill_name`, `a2a.skill_description` | strings | The skill id/name and human-readable summary published on the agent card. `skill_name` defaults to the workload name; `skill_description` to the workload description. |
 | `a2a.input_schema`, `a2a.output_schema` | maps | A **mast-side** convention only: mast may validate inbound task inputs against them and fold them into the skill description. Spec `AgentSkill` has no schema fields, so they do **not** round-trip through the agent card as machine-readable schema. |
 | `a2a.auth.required`, `a2a.auth.scopes` | bool, list of strings | Per-skill auth policy. `scopes` are enforced per call when a token validator is configured (`MAST_A2A_TOKEN`): a caller whose token lacks a scope is refused `403`. |
+| `agui.expose` | bool | Opt this workload into the [AG-UI server](/mast/reference/cli/#ag-ui-server) surface (`--agui-listen`). Default false — like A2A, AG-UI exposure is a public turn-driving endpoint, so it is never automatic. |
+| `agui.endpoint_path` | string | The HTTP path the workload's run endpoint is served at. Must start with `/`. Defaults to `/agui/<name>`. |
+| `agui.description` | string | Surfaced in the `/agui/agents.json` discovery descriptor; defaults to the workload description. |
+| `agui.session_model` | string | How a run maps to a mast session: `per_thread` (default — one continuing session per AG-UI `threadId`, matching chat UX) or `per_run` (a fresh session per `runId`, for stateless one-shots). The daemon always derives and namespaces the session id; a client never supplies a raw one. |
+| `agui.input_schema` | map | A **mast-side** convention only: an optional JSON-Schema-shaped hint surfaced in the discovery descriptor so a client can render an input form. AG-UI's `RunAgentInput` has no schema field, so it does **not** constrain the wire input. |
+| `agui.auth.required`, `agui.auth.scopes` | bool, list of strings | Per-endpoint auth policy. `scopes` are enforced per run when a token validator is configured (`MAST_AGUI_TOKEN`): a caller whose token lacks a scope is refused `403`. |
 
 ## Budget fields
 

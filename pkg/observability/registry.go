@@ -146,6 +146,32 @@ var a2aTaskOutcomes = []string{
 	A2ATaskRejected,
 }
 
+// AG-UI server run outcomes for AGUIRun (mast_agui_runs_total
+// {workload,outcome}). A fixed vocabulary mirroring the AG-UI run
+// dispositions the server reports (docs/ag-ui-design.md): a completed run,
+// an errored/interrupted run, an operator/client abort, and a pre-stream
+// refusal (auth/scope/rate-limit/drain). The string VALUES match pkg/agui's
+// internal outcome constants — the server passes them through, so these two
+// lists must not drift. Both sides are pinned to the same literals: pkg/agui's
+// own test locks its unexported constants, and a cmd/mast test locks these
+// exported ones, so a move on either side fails a build.
+const (
+	AGUIRunSuccess  = "success"
+	AGUIRunError    = "error"
+	AGUIRunAborted  = "aborted"
+	AGUIRunRejected = "rejected"
+)
+
+// aguiRunOutcomes is the fixed label set primed for
+// mast_agui_runs_total{outcome}. Kept beside the counter so Prime and the
+// AGUIRun vocabulary can never drift.
+var aguiRunOutcomes = []string{
+	AGUIRunSuccess,
+	AGUIRunError,
+	AGUIRunAborted,
+	AGUIRunRejected,
+}
+
 // Registry is the fixed set of mast metric families. Construct one per
 // process with New and expose it via Handler on the inject listener.
 type Registry struct {
@@ -164,6 +190,8 @@ type Registry struct {
 	gatePauses      *prometheus.CounterVec
 	timedPauseFires *prometheus.CounterVec
 	a2aTasks        *prometheus.CounterVec
+	aguiRuns        *prometheus.CounterVec
+	aguiRunDur      *prometheus.HistogramVec
 }
 
 // autoResumeOutcomes is the fixed label set primed for
@@ -190,6 +218,16 @@ func New() *Registry {
 		c := prometheus.NewCounterVec(prometheus.CounterOpts{Name: name, Help: help}, labels)
 		r.reg.MustRegister(c)
 		return c
+	}
+
+	// histogram mirrors counter for latency families. The default buckets
+	// span the sub-second-to-minutes range a turn's wallclock lands in
+	// (prometheus.DefBuckets tops out at 10s, too short for a multi-round
+	// model turn), so an explicit bucket set is used.
+	histogram := func(name, help string, buckets []float64, labels ...string) *prometheus.HistogramVec {
+		h := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: name, Help: help, Buckets: buckets}, labels)
+		r.reg.MustRegister(h)
+		return h
 	}
 
 	r.turns = counter("mast_turns_total",
@@ -242,6 +280,17 @@ func New() *Registry {
 		"A2A server task lifecycle transitions, by workload and outcome.",
 		"workload", "outcome")
 
+	// AG-UI server (#84). Run outcomes + wallclock duration for inbound
+	// AG-UI runs driven through the runTurnPre chokepoint. Low-cardinality:
+	// bounded outcome vocabulary, no thread/run/session ID.
+	r.aguiRuns = counter("mast_agui_runs_total",
+		"AG-UI server run outcomes, by workload and outcome.",
+		"workload", "outcome")
+	r.aguiRunDur = histogram("mast_agui_run_duration_seconds",
+		"AG-UI server run wallclock duration in seconds, by workload.",
+		[]float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300},
+		"workload")
+
 	return r
 }
 
@@ -280,6 +329,10 @@ func (r *Registry) Prime(workload string) {
 	for _, outcome := range a2aTaskOutcomes {
 		r.a2aTasks.WithLabelValues(workload, outcome)
 	}
+	for _, outcome := range aguiRunOutcomes {
+		r.aguiRuns.WithLabelValues(workload, outcome)
+	}
+	r.aguiRunDur.WithLabelValues(workload)
 }
 
 // Handler returns the Prometheus scrape handler for this registry,
@@ -405,6 +458,24 @@ func (r *Registry) A2ATask(workload, outcome string) {
 		return
 	}
 	r.a2aTasks.WithLabelValues(workload, outcome).Inc()
+}
+
+// AGUIRun records one AG-UI server run outcome (one of the AGUIRun*
+// constants; a pkg/agui outcome value). Safe on a nil *Registry.
+func (r *Registry) AGUIRun(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.aguiRuns.WithLabelValues(workload, outcome).Inc()
+}
+
+// AGUIRunDuration records one AG-UI run's wallclock duration in seconds.
+// Safe on a nil *Registry; negative durations are ignored.
+func (r *Registry) AGUIRunDuration(workload string, seconds float64) {
+	if r == nil || seconds < 0 {
+		return
+	}
+	r.aguiRunDur.WithLabelValues(workload).Observe(seconds)
 }
 
 // AddCost accumulates spend (in USD) attributed to a workload. The

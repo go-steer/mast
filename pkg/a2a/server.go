@@ -32,7 +32,6 @@ package a2a
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,51 +45,16 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/go-steer/mast/pkg/serverauth"
 )
 
-// Principal is the authenticated caller a TokenValidator resolves a
-// bearer token to. Scopes gate per-skill access (docs/a2a-design.md
-// "Auth model"). Tenant, when set, is the caller identity the rate
-// limiter buckets on (RateLimitRequest.Tenant).
-//
-// Tenant does NOT yet drive session isolation: ADK v2.1.0's
-// IsolationScope is an event/task-level field (the workflow finish_task
-// machinery — runner.findActiveTaskIsolationScope), not a session-create
-// or tenant seam (session.CreateRequest carries no scope). Multi-tenant
-// session isolation is deferred pending an ADK session-scope seam or a
-// mast-side user-namespacing design (docs/a2a-design.md "Multi-tenancy").
-type Principal struct {
-	Subject string
-	Scopes  []string
-	Tenant  string
-}
-
-// hasScope reports whether the principal carries want.
-func (p *Principal) hasScope(want string) bool {
-	if p == nil {
-		return false
-	}
-	for _, s := range p.Scopes {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}
-
-// TokenValidator resolves a bearer token to a Principal. It returns
-// ErrInvalidToken for a token it does not recognize (→ HTTP 401); any
-// other error is treated as a validator fault (→ HTTP 500). Built-in:
-// StaticBearerValidator. JWT/JWKS, Google IAM, and OAuth2 introspection
-// validators are v0.3 (docs/a2a-design.md "Auth model") — the interface
-// ships now as the extension point.
-type TokenValidator interface {
-	Validate(ctx context.Context, token string) (*Principal, error)
-}
-
-// ErrInvalidToken marks an unrecognized bearer token; the server maps it
-// to HTTP 401.
-var ErrInvalidToken = errors.New("a2a: invalid or unknown bearer token")
+// The auth seam — Principal, TokenValidator, StaticBearerValidator,
+// ErrInvalidToken — and the rate-limit seam (RateLimiter, RateLimitRequest,
+// TokenBucketLimiter) live in pkg/serverauth so a single validator/limiter
+// instance authorizes both the A2A and AG-UI surfaces (#84). This package
+// re-exports them as aliases (serverauth_alias.go) so a2a.Principal etc.
+// keep working unchanged.
 
 // ErrTaskNotFound marks an unknown task id; the server maps it to the
 // A2A TaskNotFound JSON-RPC error (-32001).
@@ -102,50 +66,6 @@ var ErrTaskNotFound = errors.New("a2a: task not found")
 // not as an internal fault (-32603). A Backend returns it (wrapped) from
 // SubmitMessage.
 var ErrUnavailable = errors.New("a2a: backend temporarily unavailable")
-
-// StaticBearerValidator validates against a fixed token→Principal map —
-// the "static bearer tokens (for simple deployments)" validator from
-// docs/a2a-design.md. It compares in constant time across every
-// configured token so neither a miss nor a value mismatch leaks timing.
-type StaticBearerValidator struct {
-	principals map[string]*Principal
-}
-
-// NewStaticBearerValidator builds a validator from a token→Principal
-// map. At least one non-empty token with a non-nil principal is
-// required.
-func NewStaticBearerValidator(tokens map[string]*Principal) (*StaticBearerValidator, error) {
-	if len(tokens) == 0 {
-		return nil, errors.New("a2a: static bearer validator needs at least one token")
-	}
-	m := make(map[string]*Principal, len(tokens))
-	for tok, p := range tokens {
-		if tok == "" {
-			return nil, errors.New("a2a: static bearer validator: empty token")
-		}
-		if p == nil {
-			return nil, errors.New("a2a: static bearer validator: nil principal")
-		}
-		m[tok] = p
-	}
-	return &StaticBearerValidator{principals: m}, nil
-}
-
-// Validate resolves token to its principal, or ErrInvalidToken. It
-// iterates every entry with a constant-time compare so total time does
-// not depend on which (if any) token matched.
-func (v *StaticBearerValidator) Validate(_ context.Context, token string) (*Principal, error) {
-	var match *Principal
-	for tok, p := range v.principals {
-		if subtle.ConstantTimeCompare([]byte(tok), []byte(token)) == 1 {
-			match = p
-		}
-	}
-	if match == nil {
-		return nil, ErrInvalidToken
-	}
-	return match, nil
-}
 
 // ExposedSkill is one workload's A2A exposure, projected by the daemon
 // from the bundle's a2a: section (this package does not import
@@ -323,7 +243,7 @@ func New(cfg Config) (*Server, error) {
 	// (MAST_A2A_TOKEN) is the credential gate; a loopback bind is the
 	// local-dev escape hatch. Only an explicitly set Listen is checked,
 	// so the embedded/test default stays constructible.
-	if cfg.Listen != "" && !isLoopbackAddr(cfg.Listen) && cfg.Validator == nil {
+	if cfg.Listen != "" && !serverauth.IsLoopbackAddr(cfg.Listen) && cfg.Validator == nil {
 		return nil, fmt.Errorf("a2a: refusing to bind non-loopback address %q without authentication: "+
 			"any host that can reach this port could cancel sessions (tasks/cancel) and read task state "+
 			"(tasks/get). Set an A2A token (MAST_A2A_TOKEN) or bind a loopback address (e.g. 127.0.0.1:7780)", cfg.Listen)
@@ -488,7 +408,7 @@ func (s *Server) authorizeTask(w http.ResponseWriter, principal *Principal, work
 		return false
 	}
 	for _, want := range skill.Scopes {
-		if !principal.hasScope(want) {
+		if !principal.HasScope(want) {
 			http.Error(w, "forbidden: missing required scope", http.StatusForbidden)
 			return false
 		}
@@ -866,25 +786,6 @@ func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, id j
 	}
 	flusher.Flush()
 	return nil
-}
-
-// isLoopbackAddr reports whether a TCP listen address binds only a
-// loopback interface. Conservative by design (mirrors attach's #376
-// helper): an empty host (":7780"), the wildcards "0.0.0.0"/"::", and any
-// hostname other than "localhost" all count as NON-loopback — when in
-// doubt, treat the bind as network-reachable so the policy errs toward
-// refusing. Duplicated rather than shared because pkg/a2a must stay
-// slim-safe (no pkg/attach import).
-func isLoopbackAddr(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil || host == "" {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // recordTask emits the task-outcome metric when one is wired.

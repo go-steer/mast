@@ -215,6 +215,20 @@ func TestPrimeMaterializesAllFamiliesAtZero(t *testing.T) {
 		`mast_timed_pause_fires_total{outcome="resumed",workload="gke-triage"} 0`,
 		`mast_timed_pause_fires_total{outcome="skipped",workload="gke-triage"} 0`,
 		`mast_timed_pause_fires_total{outcome="error",workload="gke-triage"} 0`,
+		`mast_a2a_server_tasks_total{outcome="submitted",workload="gke-triage"} 0`,
+		`mast_a2a_server_tasks_total{outcome="working",workload="gke-triage"} 0`,
+		`mast_a2a_server_tasks_total{outcome="input-required",workload="gke-triage"} 0`,
+		`mast_a2a_server_tasks_total{outcome="completed",workload="gke-triage"} 0`,
+		`mast_a2a_server_tasks_total{outcome="failed",workload="gke-triage"} 0`,
+		`mast_a2a_server_tasks_total{outcome="canceled",workload="gke-triage"} 0`,
+		`mast_a2a_server_tasks_total{outcome="rejected",workload="gke-triage"} 0`,
+		`mast_agui_runs_total{outcome="success",workload="gke-triage"} 0`,
+		`mast_agui_runs_total{outcome="error",workload="gke-triage"} 0`,
+		`mast_agui_runs_total{outcome="aborted",workload="gke-triage"} 0`,
+		`mast_agui_runs_total{outcome="rejected",workload="gke-triage"} 0`,
+		`mast_agui_run_duration_seconds_bucket{workload="gke-triage",le="0.1"} 0`,
+		`mast_agui_run_duration_seconds_sum{workload="gke-triage"} 0`,
+		`mast_agui_run_duration_seconds_count{workload="gke-triage"} 0`,
 	} {
 		if !strings.Contains(out, sample) {
 			t.Errorf("primed scrape missing %q", sample)

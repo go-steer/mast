@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package a2a
+package serverauth
 
 import (
 	"context"
@@ -70,7 +70,7 @@ func TestTokenBucketLimiterBurstThenRefuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTokenBucketLimiter: %v", err)
 	}
-	req := RateLimitRequest{Subject: "alice", Workload: "triage", Method: methodMessageSend}
+	req := RateLimitRequest{Subject: "alice", Workload: "triage", Method: "message/send"}
 	for i := 0; i < 2; i++ {
 		if ok, _ := lim.Allow(context.Background(), req); !ok {
 			t.Fatalf("call %d within burst: want admitted, got refused", i+1)

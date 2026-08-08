@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This file defines the A2A server's pluggable rate-limit seam
-// (docs/a2a-design.md "Rate limiting"). The interface is the extension
-// point AG-UI is designed to reuse (#11); TokenBucketLimiter is the built-in for simple
-// deployments. Like the auth seam, this package never imports the
-// runtime — the daemon builds a limiter from env and hands it to New.
+// This file defines the pluggable rate-limit seam shared by mast's server
+// surfaces (docs/a2a-design.md "Rate limiting"). The interface is the
+// extension point A2A (pkg/a2a) and AG-UI (pkg/agui) both reuse;
+// TokenBucketLimiter is the built-in for simple deployments. Like the auth
+// seam, this package never imports the runtime — the daemon builds a limiter
+// from env and hands it to each server's New.
 
-package a2a
+package serverauth
 
 import (
 	"context"
@@ -30,9 +31,9 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// RateLimitRequest identifies one inbound call for an admission decision.
-// The server fills it from the authenticated principal and the resolved
-// target workload before dispatching the turn-driving verb.
+// RateLimitRequest identifies one inbound call for an admission decision. A
+// server fills it from the authenticated principal and the resolved target
+// workload before dispatching the turn-driving verb.
 type RateLimitRequest struct {
 	// Subject is the authenticated caller (Principal.Subject); empty when
 	// the endpoint is unauthenticated (all such callers share one bucket).
@@ -46,33 +47,31 @@ type RateLimitRequest struct {
 	// Workload is the target workload (skill) the call routes to.
 	Workload string
 
-	// Method is the JSON-RPC method being admitted (e.g. "message/send").
+	// Method is the protocol method being admitted (e.g. "message/send" for
+	// A2A, "agui/run" for AG-UI).
 	Method string
 }
 
-// RateLimiter admits or refuses an inbound call before the server drives
-// the turn. The server calls Allow once per turn-driving request
-// (message/send); cheap control-plane verbs (tasks/get, tasks/cancel)
-// are not gated, so an operator can always read or cancel a task. A false
-// return maps to the A2A retryable "unavailable" error (-32000) with an
-// advisory Retry-After. Nil disables rate limiting. Implementations must
-// be safe for concurrent use. The seam is designed for AG-UI to reuse
-// when it lands (issue #11).
+// RateLimiter admits or refuses an inbound call before the server drives the
+// turn. A server calls Allow once per turn-driving request; cheap
+// control-plane verbs are not gated. A false return maps to a retryable
+// refusal (A2A -32000 / AG-UI HTTP 429) with an advisory Retry-After. Nil
+// disables rate limiting. Implementations must be safe for concurrent use.
 type RateLimiter interface {
 	// Allow reports whether the request may proceed. When ok is false,
 	// retryAfter is an advisory backoff hint (zero if unknown).
 	Allow(ctx context.Context, req RateLimitRequest) (ok bool, retryAfter time.Duration)
 }
 
-// TokenBucketLimiter is the built-in RateLimiter: an independent
-// token bucket per (caller, workload), where the caller is the request's
-// Tenant if set else its Subject. Every bucket shares the same rate and
-// burst. It admits a request only when a token is available immediately;
-// a refused request reports the wait until the next token as retryAfter
-// and does NOT consume future capacity.
+// TokenBucketLimiter is the built-in RateLimiter: an independent token
+// bucket per (caller, workload), where the caller is the request's Tenant if
+// set else its Subject. Every bucket shares the same rate and burst. It
+// admits a request only when a token is available immediately; a refused
+// request reports the wait until the next token as retryAfter and does NOT
+// consume future capacity.
 //
-// The bucket map grows one entry per distinct (caller, workload) seen and
-// is not evicted — consistent with the daemon's per-session pools at v0.2
+// The bucket map grows one entry per distinct (caller, workload) seen and is
+// not evicted — consistent with the daemon's per-session pools at v0.2
 // single-instance scale (bounded eviction is a follow-on).
 type TokenBucketLimiter struct {
 	limit rate.Limit
@@ -93,27 +92,27 @@ type bucketKey struct {
 }
 
 // NewTokenBucketLimiter builds a limiter admitting perSecond requests per
-// (caller, workload) with the given burst. perSecond must be a finite
-// value > 0 and burst must be >= 1.
+// (caller, workload) with the given burst. perSecond must be a finite value
+// > 0 and burst must be >= 1.
 func NewTokenBucketLimiter(perSecond float64, burst int) (*TokenBucketLimiter, error) {
 	if math.IsNaN(perSecond) || math.IsInf(perSecond, 0) {
 		// strconv.ParseFloat accepts "NaN"/"Inf"; a non-finite rate would
 		// construct a limiter that never limits (NaN <= 0 and +Inf <= 0 are
 		// both false) — fail closed on the budget guard instead.
-		return nil, fmt.Errorf("a2a: rate-limit rate must be finite, got %v", perSecond)
+		return nil, fmt.Errorf("serverauth: rate-limit rate must be finite, got %v", perSecond)
 	}
 	if perSecond <= 0 {
-		return nil, fmt.Errorf("a2a: rate-limit rate must be > 0, got %v", perSecond)
+		return nil, fmt.Errorf("serverauth: rate-limit rate must be > 0, got %v", perSecond)
 	}
 	if rate.Limit(perSecond) >= rate.Inf {
 		// rate.Inf == Limit(math.MaxFloat64); a limit at or above it makes
 		// rate.Limiter admit every request unconditionally. A finite but
 		// astronomically large rate would slip past the IsInf guard yet still
 		// disable limiting — fail closed on the budget guard here too.
-		return nil, fmt.Errorf("a2a: rate-limit rate too large (would disable limiting), got %v", perSecond)
+		return nil, fmt.Errorf("serverauth: rate-limit rate too large (would disable limiting), got %v", perSecond)
 	}
 	if burst < 1 {
-		return nil, fmt.Errorf("a2a: rate-limit burst must be >= 1, got %d", burst)
+		return nil, fmt.Errorf("serverauth: rate-limit burst must be >= 1, got %d", burst)
 	}
 	return &TokenBucketLimiter{
 		limit:   rate.Limit(perSecond),
