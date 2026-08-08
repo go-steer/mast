@@ -50,6 +50,7 @@ import (
 	buildversion "github.com/go-steer/mast/internal/version"
 	"github.com/go-steer/mast/pkg/a2a"
 	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/pkg/agui"
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/attachadapter"
 	"github.com/go-steer/mast/pkg/budget"
@@ -111,6 +112,7 @@ func run() {
 		listen           = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
 		attachListen     = flag.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Requires --session-db (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN")
 		a2aListen        = flag.String("a2a-listen", "", "A2A server bind address (e.g. `127.0.0.1:7780`); empty disables the surface. Publishes an agent card and a JSON-RPC endpoint for workloads that opt in via the bundle's a2a.expose. Authenticated when MAST_A2A_TOKEN is set. Non-loopback binds are refused without auth (tasks/cancel is destructive) — set MAST_A2A_TOKEN or bind loopback")
+		aguiListen       = flag.String("agui-listen", "", "AG-UI server bind address (e.g. `127.0.0.1:7781`); empty disables the surface. Serves an HTTP+SSE run endpoint and a /agui/agents.json discovery doc for workloads that opt in via the bundle's agui.expose. Authenticated when MAST_AGUI_TOKEN is set (rate limits via MAST_AGUI_RATE/MAST_AGUI_BURST). Non-loopback binds are refused without auth (a run drives a budgeted turn) — set MAST_AGUI_TOKEN or bind loopback")
 		sessionDB        = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
 		sessionDrv       = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
 		timeoutFlag      = flag.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets")
@@ -184,6 +186,10 @@ func run() {
 			fmt.Fprintln(os.Stderr, "mast: --a2a-listen is a serve-mode flag; one-shot mode exposes no A2A surface")
 			os.Exit(2)
 		}
+		if *aguiListen != "" {
+			fmt.Fprintln(os.Stderr, "mast: --agui-listen is a serve-mode flag; one-shot mode exposes no AG-UI surface")
+			os.Exit(2)
+		}
 		if explicit["dispatch"] {
 			logger.Warn("--dispatch is a serve-mode flag; ignored in one-shot mode")
 		}
@@ -216,7 +222,7 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
-	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow); err != nil {
+	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
@@ -316,7 +322,7 @@ func newTimedFireCallback(
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration) error {
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -556,6 +562,35 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 				return err
 			}
 			defer func() { _ = a2aSrv.Close() }()
+		}
+	}
+
+	// AG-UI server surface (--agui-listen): an HTTP+SSE run endpoint plus a
+	// discovery doc for workloads that opt in via the bundle's agui.expose.
+	// Bound here (fail-fast), served after the inject server is up. The Backend
+	// drives each run through the same runTurnPre chokepoint as inject/a2a,
+	// translating mast events into AG-UI frames (cmd/mast/agui.go).
+	var (
+		aguiSrv *agui.Server
+		aguiLn  net.Listener
+	)
+	if aguiListen != "" {
+		backend := &aguiBackend{
+			store: store, obs: obs, tracker: tracker, logger: logger, workloadName: workloadName,
+			r: r, meters: meters, wds: wds, turnLocks: turnLocks, bundle: bundle,
+		}
+		aguiSrv, err = buildAGUIServer(logger, aguiListen, bundle, backend, obs, turnCtx)
+		if err != nil {
+			logger.Error("failed to construct AG-UI server", "error", err.Error())
+			return err
+		}
+		if aguiSrv != nil {
+			aguiLn, err = aguiListener(aguiListen)
+			if err != nil {
+				logger.Error("failed to bind AG-UI listener", "addr", aguiListen, "error", err.Error())
+				return err
+			}
+			defer func() { _ = aguiSrv.Close() }()
 		}
 	}
 
@@ -970,6 +1005,19 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			// whose A2A surface silently died is worse than a restart.
 			if err := a2aSrv.Serve(a2aLn); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
 				logger.Error("a2a server terminated", "error", err.Error())
+				stop()
+			}
+		}()
+	}
+
+	if aguiSrv != nil {
+		go func() {
+			// The listener is already bound (aguiListener); Serve only
+			// returns on Close or a hard accept failure. As with attach/a2a, a
+			// hard failure takes the daemon down — a half-alive daemon whose
+			// AG-UI surface silently died is worse than a restart.
+			if err := aguiSrv.Serve(aguiLn); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
+				logger.Error("agui server terminated", "error", err.Error())
 				stop()
 			}
 		}()

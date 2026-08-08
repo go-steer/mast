@@ -165,6 +165,64 @@ type A2AAuth struct {
 	Scopes []string `yaml:"scopes,omitempty"`
 }
 
+// AGUI is the workload's AG-UI-server exposure (docs/ag-ui-design.md): the
+// agent→user surface a browser/app UI (CopilotKit et al.) drives over an
+// HTTP POST + SSE run stream. Absent or expose:false means the workload is
+// not reachable over AG-UI — like A2A, exposure carries real ops
+// implications (auth setup, a public turn-driving endpoint), so it is opt-in
+// per workload.
+type AGUI struct {
+	// Expose gates the whole section; false (the default) means no AG-UI
+	// endpoint is served for this workload.
+	Expose bool `yaml:"expose,omitempty"`
+
+	// EndpointPath is the HTTP path the workload is served at. Defaults to
+	// "/agui/<name>". Must start with "/".
+	EndpointPath string `yaml:"endpoint_path,omitempty"`
+
+	// Description is surfaced in the /agui/agents.json discovery descriptor;
+	// defaults to the workload description.
+	Description string `yaml:"description,omitempty"`
+
+	// InputSchema is a MAST-SIDE convention only: an optional JSON-Schema-
+	// shaped hint surfaced in the discovery descriptor so a client can render
+	// an input form. AG-UI's RunAgentInput has no schema field, so this does
+	// NOT constrain the wire input.
+	InputSchema map[string]any `yaml:"input_schema,omitempty"`
+
+	// SessionModel selects how a run maps to a mast session: "per_thread"
+	// (the default — one session per AG-UI threadId, so a chat thread is one
+	// continuing conversation) or "per_run" (a fresh session per runId, for
+	// stateless one-shot runs). The daemon always derives + namespaces the
+	// session id; a client never supplies a raw session id.
+	SessionModel string `yaml:"session_model,omitempty"`
+
+	// Auth is the per-endpoint auth policy.
+	Auth AGUIAuth `yaml:"auth,omitempty"`
+}
+
+// AGUIAuth is the per-endpoint auth policy within a workload's agui: section.
+type AGUIAuth struct {
+	// Required declares the endpoint needs authentication. Informational in
+	// v0.2 when a server-wide token validator is configured (all exposed
+	// endpoints sit behind it); Scopes are the enforced grain.
+	Required bool `yaml:"required,omitempty"`
+
+	// Scopes are the token scopes a caller must carry to drive a run; missing
+	// scope → 403 (docs/ag-ui-design.md "Auth model").
+	Scopes []string `yaml:"scopes,omitempty"`
+}
+
+// SessionModel values for AGUI.SessionModel.
+const (
+	// AGUISessionPerThread maps one mast session per AG-UI threadId (the
+	// default): a chat thread continues one conversation across runs.
+	AGUISessionPerThread = "per_thread"
+	// AGUISessionPerRun maps a fresh mast session per AG-UI runId: each run
+	// is a stateless one-shot.
+	AGUISessionPerRun = "per_run"
+)
+
 // Bundle is the loaded workload bundle.
 type Bundle struct {
 	// Name is the workload identifier — unique per mast deployment.
@@ -201,6 +259,10 @@ type Bundle struct {
 	// A2A declares the workload's A2A-server exposure; zero value (or
 	// expose:false) means the workload is not reachable over A2A.
 	A2A A2A `yaml:"a2a,omitempty"`
+
+	// AGUI declares the workload's AG-UI-server exposure; zero value (or
+	// expose:false) means the workload is not reachable over AG-UI.
+	AGUI AGUI `yaml:"agui,omitempty"`
 
 	// Filename is preserved for diagnostics; not part of the on-disk
 	// schema.
