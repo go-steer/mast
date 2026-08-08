@@ -65,6 +65,13 @@ import (
 // can key on verb, though Stage 1 has just the one turn-driving verb.
 const methodRun = "agui/run"
 
+// maxRunBodyBytes caps a RunAgentInput POST body so an unbounded (or hostile)
+// upload cannot exhaust daemon memory during decode. AG-UI clients resend the
+// whole thread plus a state document each run, so the cap is far larger than
+// attach's control-plane bodies (a few KiB) yet still a hard ceiling — a body
+// over the limit is refused HTTP 400 before it is buffered.
+const maxRunBodyBytes = 1 << 20 // 1 MiB
+
 // ErrUnavailable marks a transiently-unavailable backend — e.g. a daemon
 // draining for shutdown that refuses new work. When a Backend returns it
 // before emitting any frame, the server reports HTTP 503 (retryable) rather
@@ -307,6 +314,10 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 	// tree parents under the caller's span. No-op when tracing is disabled.
 	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
+	// Cap the body before decode so an oversized upload is refused rather than
+	// buffered. MaxBytesReader makes the reader return an error past the limit,
+	// which the decoder surfaces as the same 400 a malformed body gets.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRunBodyBytes)
 	var in RunAgentInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, "bad request: malformed RunAgentInput", http.StatusBadRequest)

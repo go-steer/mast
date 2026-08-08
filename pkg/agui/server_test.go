@@ -568,6 +568,27 @@ func TestRunMalformedBody(t *testing.T) {
 	}
 }
 
+// TestRunBodyTooLarge: a POST body past the MaxBytesReader cap is refused 400
+// before it is fully buffered, and never reaches the backend. Neutralize check:
+// drop the MaxBytesReader wrap in handleRun and an oversized body decodes and
+// dispatches instead of being refused.
+func TestRunBodyTooLarge(t *testing.T) {
+	ts, be := testServer(t, Config{})
+	// A valid-shaped RunAgentInput whose single user message content exceeds the
+	// 1 MiB cap; the decoder trips the reader limit before it finishes.
+	huge := strings.Repeat("a", (2 << 20))
+	body := `{"threadId":"t","runId":"r","messages":[{"role":"user","content":"` + huge + `"}]}`
+	status, _, _ := runCall(t, ts, "", testEndpoint, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("oversized body: status = %d, want 400", status)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.runs) != 0 {
+		t.Fatalf("oversized request reached the backend: %v", be.runs)
+	}
+}
+
 // TestRunAuthRequired: with a validator, a run without a valid bearer is 401
 // (before any dispatch), and a good bearer passes.
 func TestRunAuthRequired(t *testing.T) {
@@ -743,5 +764,26 @@ func TestRunEchoesStateSnapshot(t *testing.T) {
 	}
 	if string(ss.Snapshot) != `{"count":7}` {
 		t.Fatalf("snapshot = %s, want {\"count\":7}", ss.Snapshot)
+	}
+}
+
+// TestOutcomeConstantLiterals pins this package's unexported run-outcome
+// constants to their fixed string values. The daemon passes these through to
+// observability.Registry.AGUIRun, which primes exactly these labels; if a value
+// drifted here, a real scrape would carry an unprimed series while the metric
+// registry's parallel pin (cmd/mast TestAGUIOutcomeVocabulary) stayed green.
+// The two pins bracket the same literals from both sides so neither can move
+// unnoticed.
+func TestOutcomeConstantLiterals(t *testing.T) {
+	pairs := map[string]string{
+		outcomeSuccess:  "success",
+		outcomeError:    "error",
+		outcomeAborted:  "aborted",
+		outcomeRejected: "rejected",
+	}
+	for got, want := range pairs {
+		if got != want {
+			t.Errorf("outcome constant = %q, want %q", got, want)
+		}
 	}
 }

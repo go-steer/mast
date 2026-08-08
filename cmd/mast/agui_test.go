@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/adk/v2/model"
@@ -166,6 +167,59 @@ func TestAGUIBackendRunAborted(t *testing.T) {
 	}
 	if !res.Aborted {
 		t.Fatalf("result = %+v, want Aborted (chokepoint refusal projected from the store)", res)
+	}
+}
+
+// TestAGUIClassifyRunAbortedMidFlight: an operator abort that lands WHILE the
+// turn is running cancels the turn ctx from outside the chokepoint, so
+// runTurnPre returns a plain context cancellation (not inject.ErrConflict) and
+// the run falls into classifyRun's default branch. The durable abort marker is
+// the ground truth, so the run must report Aborted, not a generic internal
+// error — the AG-UI analogue of A2A's sticky-Canceled reconciliation. The read
+// goes through a detached context because the turn ctx is already canceled.
+// Neutralize check: drop the StateAborted consult in the default branch (return
+// err directly) and this reports the raw cancellation instead of Aborted.
+func TestAGUIClassifyRunAbortedMidFlight(t *testing.T) {
+	b := newAGUIBackendRunner(t, &blockableModel{})
+	// A completed run first, so the session exists for the abort marker to land
+	// on (store.Abort requires an existing session).
+	emit, _ := collectEmit()
+	if _, err := b.RunAgent(context.Background(), agui.RunInput{ThreadID: "t1", RunID: "r1", Text: "hi"}, emit); err != nil {
+		t.Fatalf("seed RunAgent: %v", err)
+	}
+	sid := b.sessionIDFor("t1", "r1")
+	if err := b.store.Abort(context.Background(), "", sid, "operator abort mid-flight"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	// The turn ctx is canceled by the abort sweep; model that here so the test
+	// also exercises the detached-context read.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := b.classifyRun(ctx, sid, &aguiEmitter{}, context.Canceled)
+	if err != nil {
+		t.Fatalf("classifyRun returned err %v, want nil (abort marker projected to Aborted)", err)
+	}
+	if !res.Aborted {
+		t.Fatalf("result = %+v, want Aborted (durable abort marker is ground truth)", res)
+	}
+}
+
+// TestBuildAGUIServerRejectsBadSessionModel: an unknown agui.session_model
+// fails daemon startup (fail-fast) rather than silently falling back to
+// per_thread at runtime, which would route runs to a different session model
+// than the operator wrote. Neutralize check: drop the session_model guard in
+// buildAGUIServer and this constructs a server instead of erroring.
+func TestBuildAGUIServerRejectsBadSessionModel(t *testing.T) {
+	bundle := &workload.Bundle{
+		Name: "wl",
+		AGUI: workload.AGUI{Expose: true, SessionModel: "bogus"},
+	}
+	_, err := buildAGUIServer(discardLogger(), "127.0.0.1:0", bundle, &aguiBackend{}, nil, context.Background())
+	if err == nil {
+		t.Fatal("buildAGUIServer accepted invalid session_model, want error")
+	}
+	if !strings.Contains(err.Error(), "session_model") {
+		t.Fatalf("error %q does not mention session_model", err)
 	}
 }
 
@@ -435,10 +489,12 @@ func TestAGUIRateLimiter(t *testing.T) {
 	}
 }
 
-// TestAGUIOutcomeVocabulary pins the observability outcome constants against
-// the fixed wire strings the pkg/agui server records through
-// observability.Registry.AGUIRun. pkg/agui's outcome constants are unexported;
-// they must equal these literals or a scrape sees an unprimed series.
+// TestAGUIOutcomeVocabulary pins observability's exported AG-UI outcome
+// constants to their fixed string values. pkg/agui records outcomes through
+// observability.Registry.AGUIRun using its own unexported constants (locked to
+// the same literals by pkg/agui's TestOutcomeConstantLiterals); this test locks
+// the registry side, so the two pins together prevent either from drifting and
+// producing an unprimed scrape series.
 func TestAGUIOutcomeVocabulary(t *testing.T) {
 	pairs := map[string]string{
 		observability.AGUIRunSuccess:  "success",

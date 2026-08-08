@@ -152,7 +152,9 @@ var a2aTaskOutcomes = []string{
 // an errored/interrupted run, an operator/client abort, and a pre-stream
 // refusal (auth/scope/rate-limit/drain). The string VALUES match pkg/agui's
 // internal outcome constants — the server passes them through, so these two
-// lists must not drift (pinned by a test).
+// lists must not drift. Both sides are pinned to the same literals: pkg/agui's
+// own test locks its unexported constants, and a cmd/mast test locks these
+// exported ones, so a move on either side fails a build.
 const (
 	AGUIRunSuccess  = "success"
 	AGUIRunError    = "error"

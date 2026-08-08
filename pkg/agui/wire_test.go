@@ -131,6 +131,109 @@ func TestEventTypeDiscriminators(t *testing.T) {
 	}
 }
 
+// TestEventTypeStringValues pins the literal on-the-wire string for every
+// EventType discriminant. TestEventTypeDiscriminators only proves each
+// constructor stamps its own EventType constant — it would stay green if a
+// const's VALUE were renamed (e.g. EventRunStarted = "run.started"), since it
+// compares against the same constant. AG-UI fixes these SCREAMING_SNAKE_CASE
+// strings and a consumer dispatches on the exact text, so assert the literals
+// directly: a value drift is an interop break that must fail here.
+func TestEventTypeStringValues(t *testing.T) {
+	cases := []struct {
+		got  EventType
+		want string
+	}{
+		{EventRunStarted, "RUN_STARTED"},
+		{EventRunFinished, "RUN_FINISHED"},
+		{EventRunError, "RUN_ERROR"},
+		{EventStepStarted, "STEP_STARTED"},
+		{EventStepFinished, "STEP_FINISHED"},
+		{EventTextMessageStart, "TEXT_MESSAGE_START"},
+		{EventTextMessageContent, "TEXT_MESSAGE_CONTENT"},
+		{EventTextMessageEnd, "TEXT_MESSAGE_END"},
+		{EventToolCallStart, "TOOL_CALL_START"},
+		{EventToolCallArgs, "TOOL_CALL_ARGS"},
+		{EventToolCallEnd, "TOOL_CALL_END"},
+		{EventToolCallResult, "TOOL_CALL_RESULT"},
+		{EventStateSnapshot, "STATE_SNAPSHOT"},
+		{EventStateDelta, "STATE_DELTA"},
+	}
+	for _, c := range cases {
+		if string(c.got) != c.want {
+			t.Errorf("EventType value = %q, want %q", c.got, c.want)
+		}
+	}
+}
+
+// TestRunErrorCodeStringValues pins the RUN_ERROR code vocabulary literals. A
+// consumer branches its retry/resume UX on these exact strings, so a rename
+// (even one that keeps the Go code compiling) is a wire break.
+func TestRunErrorCodeStringValues(t *testing.T) {
+	cases := []struct {
+		got  RunErrorCode
+		want string
+	}{
+		{RunErrorAborted, "aborted"},
+		{RunErrorInterrupt, "interrupt"},
+		{RunErrorInternal, "internal"},
+	}
+	for _, c := range cases {
+		if string(c.got) != c.want {
+			t.Errorf("RunErrorCode value = %q, want %q", c.got, c.want)
+		}
+	}
+}
+
+// TestEventWireKeys pins the exact JSON key set every event constructor emits.
+// A consumer reads these camelCase names verbatim, so a Go-idiomatic tag rename
+// (messageId→message_id, threadId→threadID) would round-trip cleanly within Go
+// yet silently break every non-Go client. Marshal each constructor and assert
+// the full key set — both a missing expected key and an unexpected extra key
+// fail — so any tag drift surfaces here rather than at a client.
+func TestEventWireKeys(t *testing.T) {
+	cases := []struct {
+		name  string
+		event any
+		keys  []string
+	}{
+		{"run-started", NewRunStarted("t", "r"), []string{"type", "threadId", "runId"}},
+		{"run-finished", NewRunFinished("t", "r", json.RawMessage(`"x"`)), []string{"type", "threadId", "runId", "result"}},
+		{"run-error", NewRunError("boom", RunErrorInternal), []string{"type", "message", "code"}},
+		{"text-start", NewTextMessageStart("m1"), []string{"type", "messageId", "role"}},
+		{"text-content", NewTextMessageContent("m1", "hi"), []string{"type", "messageId", "delta"}},
+		{"text-end", NewTextMessageEnd("m1"), []string{"type", "messageId"}},
+		{"tool-start", NewToolCallStart("c1", "search", "m1"), []string{"type", "toolCallId", "toolCallName", "parentMessageId"}},
+		{"tool-args", NewToolCallArgs("c1", `{"q":"x"}`), []string{"type", "toolCallId", "delta"}},
+		{"tool-end", NewToolCallEnd("c1"), []string{"type", "toolCallId"}},
+		{"tool-result", NewToolCallResult("c1", "42"), []string{"type", "toolCallId", "content"}},
+		{"state-snapshot", NewStateSnapshot(json.RawMessage(`{}`)), []string{"type", "snapshot"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, err := json.Marshal(c.event)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(b, &m); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			want := make(map[string]bool, len(c.keys))
+			for _, k := range c.keys {
+				want[k] = true
+				if _, ok := m[k]; !ok {
+					t.Errorf("%s: missing key %q (payload: %s)", c.name, k, b)
+				}
+			}
+			for k := range m {
+				if !want[k] {
+					t.Errorf("%s: unexpected key %q (payload: %s)", c.name, k, b)
+				}
+			}
+		})
+	}
+}
+
 // TestTextMessageStartRole pins that the start frame declares the assistant
 // role (the content/end frames deliberately omit it) — a consumer keys the
 // rendered bubble off this.

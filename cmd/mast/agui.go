@@ -179,6 +179,11 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 // session's durable state onto Aborted/Interrupted; a clean finish is success,
 // or Interrupted when the turn paused for human input.
 func (b *aguiBackend) classifyRun(ctx context.Context, sessionID string, em *aguiEmitter, err error) (agui.RunResult, error) {
+	// The turn ctx may already be canceled here (a mid-flight abort or a
+	// wallclock trip cancels it), so project durable state through a detached
+	// context — the marker read must not fail merely because the turn's ctx is
+	// done.
+	readCtx := context.WithoutCancel(ctx)
 	switch {
 	case err == nil:
 		// A HITL pause finishes the turn with err==nil and the interrupt signal
@@ -188,27 +193,51 @@ func (b *aguiBackend) classifyRun(ctx context.Context, sessionID string, em *agu
 	case errors.Is(err, inject.ErrConflict):
 		// The chokepoint refused the turn: the session is aborted or paused.
 		// Project its durable state rather than a generic error.
-		if d, gerr := b.store.Get(ctx, "", sessionID); gerr == nil {
-			switch {
-			case d.State == transcript.StateAborted:
-				return agui.RunResult{Aborted: true}, nil
-			case d.State == transcript.StatePaused && len(d.PendingInterruptIDs) > 0:
-				return agui.RunResult{Interrupted: true}, nil
-			case d.State == transcript.StatePaused:
-				// Gate-only pause (operator/timed hold): the run was refused.
-				// Aborted is the closest Stage 1 disposition; a dedicated
-				// "refused" code is a follow-on.
-				return agui.RunResult{Aborted: true}, nil
-			}
+		if res, ok := b.dispositionFromStore(readCtx, sessionID); ok {
+			return res, nil
 		}
 		return agui.RunResult{Aborted: true}, nil
 	default:
 		// Runner error, budget trip, wallclock/ctx cancellation, or the narrow
 		// post-pre-check drain race (inject.ErrUnavailable while blocked on the
-		// turn lock). The stream is open, so the server closes it with a generic
-		// RunError{internal}; never fabricate a success.
+		// turn lock). A mid-flight operator abort cancels the turn ctx from
+		// OUTSIDE the chokepoint (the /abort door writes the durable marker, then
+		// sweeps the in-flight turn's cancel handle), so runTurnPre returns a
+		// plain context cancellation here rather than ErrConflict. The abort
+		// marker is the ground truth — the AG-UI analogue of A2A's sticky-Canceled
+		// registry reconciliation — so consult it and report Aborted rather than a
+		// misleading internal error. Budget trips and wallclock ceilings also
+		// cancel the ctx but write no abort marker, so they still surface as the
+		// generic RunError{internal} the server closes the open stream with; never
+		// fabricate a success.
+		if d, gerr := b.store.Get(readCtx, "", sessionID); gerr == nil && d.State == transcript.StateAborted {
+			return agui.RunResult{Aborted: true}, nil
+		}
 		return agui.RunResult{}, err
 	}
+}
+
+// dispositionFromStore projects a chokepoint-refused session's durable state
+// onto an AG-UI run disposition. ok is false when the read failed or the state
+// is not one the caller maps (the caller then falls back to Aborted, the safe
+// close for a refused turn).
+func (b *aguiBackend) dispositionFromStore(ctx context.Context, sessionID string) (agui.RunResult, bool) {
+	d, err := b.store.Get(ctx, "", sessionID)
+	if err != nil {
+		return agui.RunResult{}, false
+	}
+	switch {
+	case d.State == transcript.StateAborted:
+		return agui.RunResult{Aborted: true}, true
+	case d.State == transcript.StatePaused && len(d.PendingInterruptIDs) > 0:
+		return agui.RunResult{Interrupted: true}, true
+	case d.State == transcript.StatePaused:
+		// Gate-only pause (operator/timed hold): the run was refused. Aborted is
+		// the closest Stage 1 disposition; a dedicated "refused" code is a
+		// follow-on.
+		return agui.RunResult{Aborted: true}, true
+	}
+	return agui.RunResult{}, false
 }
 
 // aguiEmitter translates a turn's mast event stream into AG-UI frames and
@@ -285,7 +314,11 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 
 // emitToolCall streams one model tool invocation as start → args → end. The
 // call id prefers the runtime's FunctionCall.ID so a later FunctionResponse
-// correlates; it falls back to a minted id when absent.
+// correlates. ADK v2 populates FunctionCall.ID before the event reaches this
+// hook (the same id it echoes on the matching FunctionResponse), so the mint is
+// dead-code defence-in-depth: it keeps the ToolCall triad internally consistent
+// if a future runtime ever emits an id-less call, at the cost of a result that
+// cannot be correlated back — strictly better than emitting an empty id.
 func (e *aguiEmitter) emitToolCall(fc *genai.FunctionCall, parentMsgID string) {
 	id := fc.ID
 	if id == "" {
@@ -404,6 +437,14 @@ func buildAGUIServer(
 	if len(exposed) == 0 {
 		logger.Info("AG-UI listener requested but no workload opts into AG-UI exposure (agui.expose); AG-UI disabled")
 		return nil, nil
+	}
+	// Fail-fast on an unknown session_model rather than silently falling back to
+	// per_thread at runtime (sessionModel's default): a typo'd bundle value
+	// would otherwise route runs to a different session model than the operator
+	// wrote, surfacing only as confused session continuity later.
+	if m := bundle.AGUI.SessionModel; m != "" && m != workload.AGUISessionPerThread && m != workload.AGUISessionPerRun {
+		return nil, fmt.Errorf("agui: invalid session_model %q for workload %q (want %q or %q)",
+			m, bundle.Name, workload.AGUISessionPerThread, workload.AGUISessionPerRun)
 	}
 	validator, err := aguiValidator(logger, exposed)
 	if err != nil {
