@@ -465,6 +465,12 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if errors.Is(err, ErrConflict) {
+			// Already-terminal session (e.g. a second abort): a
+			// state conflict, not a server fault. Mirrors /pause.
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		s.logger.Error("abort failed", "error", err.Error())
 		http.Error(w, "abort failed", http.StatusInternalServerError)
 		return

@@ -97,20 +97,21 @@ for `command:` servers and dropping the `gke`-only guard):
   "after restart" reseed leg is deferred with the crash-restart family; the fires-and-resumes
   invariant ships now, no restart needed.)
 - **S8 (marker path)** — `/abort` writes the terminal marker; `assert_state aborted`;
-  `mast_aborts_total` counts once; a later inject is refused 409; re-abort keeps the counter at 1.
+  `mast_aborts_total` counts once; a later inject is refused 409; **re-abort returns 409** and
+  keeps the counter at 1.
 - **S9 (cardinality)** — no `session_id` appears as a label anywhere in `/metrics`.
 - **S4a** — clean SIGTERM drain with no in-flight turn → exit 0; bad flag → exit 2.
 
-### Latent bug the UAT surfaced — `/abort` re-abort returns HTTP 500
+### Bug the UAT surfaced — `/abort` re-abort returned HTTP 500 (fixed in #88)
 
-Re-aborting an already-aborted session returns **HTTP 500**: `abortHandler`
-(`cmd/mast/main.go:704-720`) returns `store.Abort`'s `ErrAlreadyAborted` sentinel raw, and the
-inject server maps an unrecognized error to 500. Contrast `/pause`, which maps the same sentinel
-to 409 (`main.go:834`), and A2A `tasks/cancel`, which maps it to success (`a2a.go:532`). The
-durable marker **is** idempotent (the counter stays at 1), so this is a status-code wart, not a
-correctness bug. The harness asserts the durable invariant (counter stays 1, state stays
-aborted), not the buggy status, and this is tracked for a follow-up fix (map
-`ErrAlreadyAborted` → 409 in `abortHandler`, mirroring `/pause`).
+Re-aborting an already-aborted session used to return **HTTP 500**: `abortHandler`
+(`cmd/mast/main.go`) returned `store.Abort`'s `ErrAlreadyAborted` sentinel raw, and the inject
+server mapped an unrecognized error to 500. `/pause` maps the same sentinel to 409, and A2A
+`tasks/cancel` maps it to idempotent success. The durable marker **is** idempotent (the counter
+stays at 1), so this was a status-code wart, not a correctness bug. **#88 fixed it:** `abortHandler`
+now maps `ErrAlreadyAborted` → `inject.ErrConflict`, and the inject `/abort` route maps
+`ErrConflict` → 409 (mirroring `/pause`); the operator door reports the conflict rather than
+A2A's idempotent success. S8 now asserts the 409 directly.
 
 ## What v0.2 ships (the surface under test)
 

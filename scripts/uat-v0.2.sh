@@ -322,12 +322,10 @@ assert_http "abort s8 -> 202" "$(post_code /abort '{"session_id":"incident-s8","
 assert_state "s8 aborted" incident-s8 aborted
 assert_metric "abort counted once" 'mast_aborts_total{workload="uat"} 1'
 assert_http "inject on aborted -> 409" "$(inject_code s8)" 409
-# Re-abort: the durable marker is idempotent (counter stays 1). NOTE: the
-# /abort handler currently returns 500 on the ErrAlreadyAborted sentinel
-# instead of an idempotent status (unlike A2A tasks/cancel) — a latent bug
-# the UAT surfaced; see docs/uat-v0.2-plan.md. We assert the durable
-# invariant (marker landed once), not the buggy HTTP status.
-post_code /abort '{"session_id":"incident-s8","reason":"again"}' >/dev/null 2>&1 || true
+# Re-abort of an already-terminal session is a state conflict (#88): the
+# /abort door returns 409 (mirroring /pause), and the durable marker stays
+# idempotent so the counter holds at 1.
+assert_http "re-abort -> 409" "$(post_code /abort '{"session_id":"incident-s8","reason":"again"}')" 409
 assert_metric "re-abort marker idempotent" 'mast_aborts_total{workload="uat"} 1'
 
 # ---- S9 (partial): metric cardinality — no session_id label ---------

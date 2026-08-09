@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`/abort` re-abort now returns HTTP 409, not 500** (#88). Aborting a
+  session that is already terminal is a state conflict, not a server fault:
+  the inject `/abort` door now maps the `ErrAlreadyAborted` sentinel to
+  `409 Conflict`, mirroring `/pause`. The durable abort marker was already
+  idempotent (the `mast_aborts_total` counter stays at 1); this fixes only
+  the status code. (A2A `tasks/cancel` keeps its idempotent-success
+  semantics — the operator door reports the conflict instead.)
+
 - **Local (stdio) MCP servers + generic catalog wiring**
   (docs/mcp-catalog-design.md "Implementation status"; #87). mast now wires
   every MCP server referenced by a workload generically from the `mcp.json`
