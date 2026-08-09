@@ -1,0 +1,35 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Minimal fixture workload for the v0.2 end-to-end UAT harness
+# (scripts/uat-v0.2.sh). Deliberately tiny: one coordinator, one worker
+# specialist, two declared tool policies, no MCP — so the scripted JSONL
+# stays short and the assertions stay legible. See docs/uat-v0.2-plan.md.
+
+name: uat
+description: Fixture workload for the mast v0.2 end-to-end UAT harness.
+mode: single_session
+
+tool_catalog:
+  # No MCP server: v0.2 mast only wires the hardcoded HTTP `gke` toolset,
+  # so a credential-free offline UAT declares tool *policies* only. The
+  # names below classify effects for the recorded-effect outbox; the
+  # in-flight legs that actually dispatch these tools land once local/
+  # stdio MCP support exists (see docs/uat-v0.2-plan.md "Blocking-tool
+  # prerequisite").
+  tools:
+    - name: read_status
+      mutating: false
+    - name: apply_change
+      mutating: true
+
+specialists:
+  - uat-worker
+
+budget:
+  max_wallclock_seconds: 300
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer

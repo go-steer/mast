@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **End-to-end UAT harness for the v0.2 durable-execution spine**
+  (docs/uat-v0.2-plan.md "Implementation status"; #12). `scripts/uat-v0.2.sh`
+  drives a real `mast` daemon process — boot, inject, pause, abort, timed
+  resume, drain, restart, scrape — against the offline echo model and a real
+  SQLite session DB, asserting on session state, exact `/metrics` lines, HTTP
+  status, and process exit codes. It is deterministic, credential-free, and
+  network-free (a fixed test bearer, no live provider), and runs in under a
+  minute as a new `e2e` presubmit (`dev/ci/presubmits/e2e.sh`, wired into
+  `all.sh` and a new `e2e` job in CI). It ships the no-blocking-tool subset of
+  the scenario catalogue — metric priming + cardinality, auth, operator gate
+  pause + token lifecycle (consumed-replay no-op vs expired-token rejection),
+  timed-pause fire-and-resume, terminal abort marker + idempotency, and the
+  clean-drain / usage exit codes. The scenarios that need a controllable
+  registered blocking tool (crash-mid-effect ambiguity, drain-expired exit 3,
+  mid-turn cancel, loop-breaker) are deferred until local/stdio MCP support
+  lands; the plan doc records why. A minimal fixture bundle lives under
+  `testdata/uat/`. Building the harness surfaced one latent wart — `/abort`
+  returns HTTP 500 on an already-aborted session instead of mirroring
+  `/pause`'s 409 (the durable marker is idempotent regardless) — tracked for a
+  follow-up fix.
+
 - **AG-UI server — Stage 1: server core** (docs/ag-ui-design.md
   "Implementation status"; #84). mast gains its fourth ecosystem interop
   surface — AG-UI, the agent↔user protocol CopilotKit apps and

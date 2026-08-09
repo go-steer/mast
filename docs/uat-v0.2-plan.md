@@ -27,6 +27,83 @@ This doc is the plan (scenarios, assertions, harness shape). The harness itself
 (`scripts/uat-v0.2.sh` + its CI wiring) lands as the follow-on, tracked separately, and grows
 alongside the A2A→AG-UI stack.
 
+## Implementation status (2026-08-08)
+
+`scripts/uat-v0.2.sh` has landed with its CI wiring (`dev/ci/presubmits/e2e.sh`, the `e2e`
+step in `all.sh`, the `e2e` job in `ci.yml`). It ships the **deterministic, no-blocking-tool
+subset** of the catalogue below and passes 38 assertions in under a minute on the offline echo
+model alone. Two findings from building it correct assumptions the plan above was drafted on —
+read these before extending the harness:
+
+### Correction 1 — the scripted model cannot plant a dangling mutating effect
+
+The plan (S1/S2/S4/S8/S9, "Provider: scripted") assumed a scripted `FunctionCall` to an
+undispatched tool could be `kill -9`'d between intent-persist and response-persist, leaving a
+dangling effect for the outbox to catch. It cannot. ADK persists the `FunctionCall` intent
+before dispatch (`base_flow.go:612`), but for an **unregistered** tool name it synthesizes an
+error `FunctionResponse` **in the same turn** (`base_flow.go:1090-1211`) — the call is *paired*,
+never dangling, so no ambiguous-effect mode is ever entered. The effects predicate
+(`pkg/effects/effects.go:118-134`) classifies by name (default-deny-unknown → mutating), and the
+outbox refusal (`ambiguous_prior_effect`) fires in `beforeTool`, which only runs for **registered**
+`FunctionTool`s. Getting a genuine dangling intent therefore requires a **real registered
+blocking tool** plus an interruption landed between the two persists — which the offline
+echo/scripted models cannot provide.
+
+### Correction 2 — mast cannot consume a local/stdio MCP tool yet (blocking-tool prerequisite)
+
+The natural way to supply that registered blocking tool is a local MCP server, but v0.2 mast
+cannot consume one: `mcp.json` is never parsed (its fields are decorative), and MCP wiring is
+hardcoded to the HTTP `gke` server, gated on `model != echo` (`cmd/mast/main.go:1179`). A
+credential-free offline UAT thus has **no registered tool it can dispatch and block**. The
+fixture (`testdata/uat/workload.yaml`) declares tool *policies* (`read_status` read-only,
+`apply_change` mutating) for effect classification only; it wires no MCP.
+
+**Consequence — deferred scenarios.** The legs that need a controllable registered blocking tool
+are **deferred until local/stdio MCP support lands** (a separate feature PR: make `mcp.json` real
+for `command:` servers and drop the `gke`-only guard):
+
+| Scenario | Why it needs the blocking tool |
+|---|---|
+| S1 (ambiguous-effect ack) | needs a dangling mutating effect (Correction 1) |
+| S2 (read-only auto-resume repair) | needs a dangling read-only call |
+| S3 (planned-stop `--pause-sessions`) | the drain gate-pause only fires for a session with an **active in-flight turn** (`shutdown.go:266`, `active[sid] > 0`); echo turns finish instantly |
+| S4 exit-3 (drain-expired) / S5 (watchdog) | need an in-flight turn to still be draining at the deadline (already flagged as caveats) |
+| S8 mid-turn cancel / S9 loop-breaker | need a turn held open across the abort / a failing continuation turn |
+
+### What shipped (deterministic subset)
+
+- **Boot priming** — all v0.2 metric families (plus the A2A + AG-UI families) present at zero for
+  `workload=uat` on a fresh boot.
+- **Auth** — inject refused 401 without a valid bearer; 202 with it.
+- **S7** — operator gate pause: turns blocked 409 while paused; `mast_gate_pauses_total{source=
+  "operator"}` counts once and an in-place refresh does **not** double-count (#50 F1); extend-token
+  moves the deadline; resume-by-token clears the gate.
+- **S7b (token lifecycle correction)** — the plan's "a consumed/expired token is rejected on
+  replay" conflated two behaviors. A **consumed** gate token replayed is a deliberate **idempotent
+  no-op → 202** ("the resume the token asked for has happened", `resumeByToken`
+  `main.go:658-663`), *not* a rejection. The genuine rejection path is an **expired** token →
+  **409** (`main.go:665-667`); the harness exercises it with a sub-second TTL and asserts the
+  pause remains.
+- **S6** — a timed pause (`resume_at`) fires through `ConsumeScheduled` and records
+  `mast_timed_pause_fires_total{outcome="resumed"}`, auto-resuming the session. (The plan's
+  "after restart" reseed leg is deferred with the crash-restart family; the fires-and-resumes
+  invariant ships now, no restart needed.)
+- **S8 (marker path)** — `/abort` writes the terminal marker; `assert_state aborted`;
+  `mast_aborts_total` counts once; a later inject is refused 409; re-abort keeps the counter at 1.
+- **S9 (cardinality)** — no `session_id` appears as a label anywhere in `/metrics`.
+- **S4a** — clean SIGTERM drain with no in-flight turn → exit 0; bad flag → exit 2.
+
+### Latent bug the UAT surfaced — `/abort` re-abort returns HTTP 500
+
+Re-aborting an already-aborted session returns **HTTP 500**: `abortHandler`
+(`cmd/mast/main.go:704-720`) returns `store.Abort`'s `ErrAlreadyAborted` sentinel raw, and the
+inject server maps an unrecognized error to 500. Contrast `/pause`, which maps the same sentinel
+to 409 (`main.go:834`), and A2A `tasks/cancel`, which maps it to success (`a2a.go:532`). The
+durable marker **is** idempotent (the counter stays at 1), so this is a status-code wart, not a
+correctness bug. The harness asserts the durable invariant (counter stays 1, state stays
+aborted), not the buggy status, and this is tracked for a follow-up fix (map
+`ErrAlreadyAborted` → 409 in `abortHandler`, mirroring `/pause`).
+
 ## What v0.2 ships (the surface under test)
 
 | Slice | PR | Surface exercised end-to-end |
@@ -186,8 +263,9 @@ build if any miss.
   expire → replay a consumed token.
 - **Assert:** turns blocked with **409** while gate-paused; `mast_gate_pauses_total{source=
   "operator"}` counts **once** for the initial pause and **not** for an in-place refresh
-  (the #50 F1 created-vs-refresh contract); extend moves the deadline; a consumed/expired
-  token is rejected on replay.
+  (the #50 F1 created-vs-refresh contract); extend moves the deadline; a **consumed** token
+  replayed is an idempotent no-op (202) while an **expired** token is rejected (409) — see the
+  token-lifecycle correction under *Implementation status*.
 - **Proves:** #42 gate pause + token lifecycle + #50 counter semantics.
 - **Provider:** echo.
 

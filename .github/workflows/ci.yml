@@ -93,3 +93,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: docs-lint
         run: dev/ci/presubmits/docs-lint.sh
+
+  e2e:
+    runs-on: ubuntu-latest
+    # The harness drives a real daemon through drains and waits; bound the
+    # job so a wedged turn fails fast instead of burning the 360-minute
+    # GitHub default. The suite runs in well under a minute normally.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: e2e UAT harness
+        run: dev/ci/presubmits/e2e.sh
