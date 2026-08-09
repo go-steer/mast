@@ -51,16 +51,24 @@ echo/scripted models cannot provide.
 
 ### Correction 2 — mast cannot consume a local/stdio MCP tool yet (blocking-tool prerequisite)
 
-The natural way to supply that registered blocking tool is a local MCP server, but v0.2 mast
-cannot consume one: `mcp.json` is never parsed (its fields are decorative), and MCP wiring is
-hardcoded to the HTTP `gke` server, gated on `model != echo` (`cmd/mast/main.go:1179`). A
-credential-free offline UAT thus has **no registered tool it can dispatch and block**. The
+> **Prerequisite met (#87, 2026-08-09).** mast now parses `mcp.json` and wires MCP servers
+> generically by transport, including local **stdio** (`command:`) servers, with the old
+> `gke`-only guard removed (`pkg/mcp`; see [`./mcp-catalog-design.md`](./mcp-catalog-design.md)
+> "Implementation status"). A credential-free offline UAT can therefore wire a controllable
+> blocking tool by pointing the fixture at a small stdio MCP server under `--model scripted`.
+> Implementing the deferred legs below against such a server is the remaining follow-on; the
+> blocking-tool *capability* they were waiting on now exists.
+
+The natural way to supply that registered blocking tool is a local MCP server. When this plan was
+first written, v0.2 mast could not consume one: `mcp.json` was never parsed (its fields were
+decorative), and MCP wiring was hardcoded to the HTTP `gke` server, gated on `model != echo`. A
+credential-free offline UAT thus had **no registered tool it could dispatch and block**. The
 fixture (`testdata/uat/workload.yaml`) declares tool *policies* (`read_status` read-only,
 `apply_change` mutating) for effect classification only; it wires no MCP.
 
 **Consequence — deferred scenarios.** The legs that need a controllable registered blocking tool
-are **deferred until local/stdio MCP support lands** (a separate feature PR: make `mcp.json` real
-for `command:` servers and drop the `gke`-only guard):
+were **deferred until local/stdio MCP support landed** (now shipped in #87 — making `mcp.json` real
+for `command:` servers and dropping the `gke`-only guard):
 
 | Scenario | Why it needs the blocking tool |
 |---|---|

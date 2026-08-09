@@ -134,6 +134,39 @@ Each template also has a `.md` sibling explaining:
 - Known limitations / version compatibility notes
 - Link upstream to the server's own docs
 
+## Implementation status (v0.2)
+
+`pkg/mcp` wires cataloged servers generically, dispatched by transport
+kind — **both transports are implemented**:
+
+- **`http`** — streamable HTTP; when the entry declares `auth.google_oauth`
+  the client carries an Application Default Credentials bearer token
+  (fail-fast if credentials are unavailable), otherwise the endpoint is
+  called unauthenticated. `NewGKEToolset` is a convenience wrapper over
+  this path.
+- **`stdio`** — mast launches the entry's `command` (with `args`/`env`) as
+  a local child process and speaks MCP over its stdin/stdout. `${VAR}`
+  references in the command, args, and env values are expanded against the
+  daemon environment; the child inherits the daemon environment with the
+  configured `env` layered on top. A stdio entry names a local command mast
+  executes, so `mcp.json` is a privilege-bearing control-plane file (on par
+  with `config.json`) and each launch is logged (resolved command and args)
+  for operator audit. The permission gate write-protects a catalog inside an
+  `.agents/` tree so a model cannot rewrite it to register a server;
+  catalogs at other locations (path-mode directories, `/etc/mast/agents`,
+  `$MAST_CONFIG_DIR`) rely on filesystem permissions — broadening gate
+  coverage to those roots, plus stdio env scoping and a command allowlist,
+  is tracked follow-up work (#89).
+
+The aggregate catalog file is `mcp.json` (`{version, servers: {name: …}}`)
+resolved next to the workload (directory mode) or at the config root (name
+mode); the per-server `.agents/mcp/*.example.json` templates above are the
+operator's starting point for a single entry. Workload bundles reference
+servers by name via `tool_catalog.mcp[].server`; an unknown reference is a
+fatal load error. MCP is not wired under the `echo` model (which emits no
+tool calls); the `scripted` model and real providers wire it, so a stdio
+server needs no credentials and drives tools fully offline.
+
 ## Composition with mast subsystems
 
 | Subsystem | MCP catalog interaction |

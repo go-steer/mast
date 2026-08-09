@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Local (stdio) MCP servers + generic catalog wiring**
+  (docs/mcp-catalog-design.md "Implementation status"; #87). mast now wires
+  every MCP server referenced by a workload generically from the `mcp.json`
+  catalog, dispatched by transport kind — the previous build special-cased a
+  single hard-coded HTTP `gke` toolset. Two transports are supported:
+  streamable **HTTP** (with optional Google OAuth / ADC bearer auth, the GKE
+  path) and local **stdio**, where mast launches a `command` (with
+  `args`/`env`, `${VAR}`-expanded against the daemon environment) as a child
+  process and speaks MCP over its stdin/stdout. Because a stdio server needs
+  no cloud credentials, real tool calls can now be driven fully offline under
+  `--model scripted`. A workload that references a server missing from
+  `mcp.json` is a fatal load error; `mcp.json` is treated as a
+  privilege-bearing control-plane file (a stdio entry is code execution) and
+  each launch is logged for audit. New `pkg/mcp` catalog loader + transport
+  dispatch (`Catalog`/`NewToolset`), a new `docs/site` reference page, and the
+  unblocking prerequisite for the deferred blocking-tool UAT legs.
+
 - **End-to-end UAT harness for the v0.2 durable-execution spine**
   (docs/uat-v0.2-plan.md "Implementation status"; #12). `scripts/uat-v0.2.sh`
   drives a real `mast` daemon process — boot, inject, pause, abort, timed

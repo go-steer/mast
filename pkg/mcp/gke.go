@@ -12,19 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package mcp wires MCP toolsets for the workloads mast ships. The
-// spike scope covers only the gke server (auth via Google OAuth 2.0
-// with Application Default Credentials); future servers slot in as
-// additional NewXxxToolset constructors.
+// Package mcp wires MCP toolsets for the workloads mast runs. Server
+// definitions live in a catalog file (mcp.json — see Catalog); the
+// generic NewToolset dispatches by transport kind (streamable HTTP or a
+// local stdio process). NewGKEToolset is a convenience constructor for
+// the GKE MCP server, the one server mast shipped wiring for first.
 package mcp
 
 import (
 	"context"
-	"fmt"
 
-	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/tool"
-	"google.golang.org/adk/v2/tool/mcptoolset"
 )
 
 // DefaultGKEEndpoint is the public GKE MCP server URL.
@@ -71,22 +69,9 @@ func NewGKEToolset(ctx context.Context, cfg GKEConfig) (tool.Toolset, error) {
 		name = "gke"
 	}
 
-	httpClient, err := newGoogleAuthClient(ctx, name, scopes)
-	if err != nil {
-		return nil, err
-	}
-
-	transport := &mcpsdk.StreamableClientTransport{
-		Endpoint:   endpoint,
-		HTTPClient: httpClient,
-	}
-
-	ts, err := mcptoolset.New(mcptoolset.Config{
-		Transport:  transport,
-		ToolFilter: cfg.ToolFilter,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("mcp: %q: construct toolset: %w", name, err)
-	}
-	return ts, nil
+	return newHTTPToolset(ctx, name, ServerConfig{
+		Transport: TransportHTTP,
+		URL:       endpoint,
+		Auth:      &AuthConfig{GoogleOAuth: &GoogleOAuthConfig{Scopes: scopes}},
+	}, cfg.ToolFilter)
 }

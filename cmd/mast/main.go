@@ -1094,26 +1094,30 @@ func buildModel(ctx context.Context, provider, name string) (model.LLM, error) {
 //   - Name mode: anything else is a workload name resolved via the
 //     .agents/ discovery rules in pkg/config (exclusive
 //     single-location; see docs/config-layout-design.md).
-func resolveWorkload(logger *slog.Logger, arg string) (workload.Bundle, []specialists.Spec, error) {
+//
+// resolveWorkload loads a workload bundle + its specialist roster. The
+// returned dir is where the MCP catalog (mcp.json) lives: the workload
+// directory in path mode, or the config root in name mode.
+func resolveWorkload(logger *slog.Logger, arg string) (workload.Bundle, []specialists.Spec, string, error) {
 	if fi, err := os.Stat(arg); err == nil && fi.IsDir() {
 		bundle, err := workload.Load(filepath.Join(arg, "workload.yaml"))
 		if err != nil {
-			return workload.Bundle{}, nil, fmt.Errorf("load workload: %w", err)
+			return workload.Bundle{}, nil, "", fmt.Errorf("load workload: %w", err)
 		}
 		loaded, err := specialists.LoadDir(filepath.Join(arg, "specialists"))
 		if err != nil {
-			return workload.Bundle{}, nil, fmt.Errorf("load specialists: %w", err)
+			return workload.Bundle{}, nil, "", fmt.Errorf("load specialists: %w", err)
 		}
-		return bundle, loaded, nil
+		return bundle, loaded, arg, nil
 	}
 
 	cfg, err := config.Load(logger)
 	if err != nil {
-		return workload.Bundle{}, nil, err
+		return workload.Bundle{}, nil, "", err
 	}
 	bundle, ok := cfg.Workloads[arg]
 	if !ok {
-		return workload.Bundle{}, nil, fmt.Errorf(
+		return workload.Bundle{}, nil, "", fmt.Errorf(
 			"workload %q not found in config root %s (source %s; available: %v) and it is not a directory path",
 			arg, cfg.Root.Dir, cfg.Root.Source, workloadNames(cfg))
 	}
@@ -1124,7 +1128,7 @@ func resolveWorkload(logger *slog.Logger, arg string) (workload.Bundle, []specia
 	for _, name := range bundle.Specialists {
 		loaded = append(loaded, cfg.Specialists[name])
 	}
-	return bundle, loaded, nil
+	return bundle, loaded, cfg.Root.Dir, nil
 }
 
 func workloadNames(cfg *config.Config) []string {
@@ -1159,7 +1163,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 		return a, nil, err
 	}
 
-	bundle, loaded, err := resolveWorkload(logger, workloadArg)
+	bundle, loaded, cfgDir, err := resolveWorkload(logger, workloadArg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1170,26 +1174,9 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 	)
 	logger.Info("specialists loaded", "count", len(loaded))
 
-	// Attach MCP toolsets to specialists only when a real model is in
-	// use. The echo model doesn't call tools; wiring MCP under echo
-	// would only add startup latency (and mask ADC-availability issues
-	// as workload-load failures rather than "no real LLM"). MCP wiring
-	// stays daemon-side: the library path (mast.RunWorkload) is
-	// filesystem- and network-config-free in v0.1.
-	var toolsets []tool.Toolset
-	if modelName != "echo" {
-		for _, ref := range bundle.ToolCatalog.MCP {
-			if ref.Server != "gke" {
-				logger.Warn("skipping unknown MCP server (spike supports gke only)", "server", ref.Server)
-				continue
-			}
-			ts, err := mastmcp.NewGKEToolset(ctx, mastmcp.GKEConfig{})
-			if err != nil {
-				return nil, nil, fmt.Errorf("wire MCP server %q: %w", ref.Server, err)
-			}
-			toolsets = append(toolsets, ts)
-			logger.Info("MCP toolset wired", "server", ref.Server)
-		}
+	toolsets, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	a, err := compose.BuildRoot(compose.RootConfig{
@@ -1205,6 +1192,55 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 		return nil, nil, err
 	}
 	return a, &bundle, nil
+}
+
+// wireMCPToolsets builds the workload's MCP toolsets from the mcp.json
+// catalog. Server definitions live in the catalog file alongside the
+// workload (cfgDir); the bundle only references them by name. Each entry
+// dispatches by transport kind (streamable HTTP or a local stdio process)
+// — no server is special-cased.
+//
+// It is a no-op (nil, nil) under the echo model, which never emits tool
+// calls, so wiring MCP there is pure startup cost (and, for credentialed
+// HTTP servers, would surface auth failures as workload-load errors rather
+// than "no real LLM"). The scripted model and real providers do wire MCP;
+// a stdio server needs no credentials, so offline tool-driving works under
+// --model scripted. A workload that references a server absent from the
+// catalog is a fatal error rather than a silently-dropped tool.
+func wireMCPToolsets(ctx context.Context, logger *slog.Logger, bundle workload.Bundle, cfgDir, modelName string) ([]tool.Toolset, error) {
+	if modelName == "echo" || len(bundle.ToolCatalog.MCP) == 0 {
+		return nil, nil
+	}
+	catalogPath := filepath.Join(cfgDir, mastmcp.CatalogFileName)
+	catalog, err := mastmcp.LoadCatalog(catalogPath)
+	if err != nil {
+		return nil, err
+	}
+	var toolsets []tool.Toolset
+	for _, ref := range bundle.ToolCatalog.MCP {
+		scfg, ok := catalog.Servers[ref.Server]
+		if !ok {
+			return nil, fmt.Errorf(
+				"workload references MCP server %q not defined in %s", ref.Server, catalogPath)
+		}
+		// A stdio server executes a local command — audit-log the
+		// resolved command *and* args (the security-relevant payload
+		// often lives in the args) so the operator can see what mast will
+		// run. mcp.json is a privilege-bearing control-plane file; the
+		// launch itself is lazy (on first tool use).
+		if scfg.Transport == mastmcp.TransportStdio {
+			cmdPath, cmdArgs := scfg.ResolvedCommand()
+			logger.Info("wiring stdio MCP server (launched on first tool use)",
+				"server", ref.Server, "command", cmdPath, "args", cmdArgs)
+		}
+		ts, err := mastmcp.NewToolset(ctx, ref.Server, scfg)
+		if err != nil {
+			return nil, fmt.Errorf("wire MCP server %q: %w", ref.Server, err)
+		}
+		toolsets = append(toolsets, ts)
+		logger.Info("MCP toolset wired", "server", ref.Server, "transport", scfg.Transport)
+	}
+	return toolsets, nil
 }
 
 // reservedPayloadErr rejects payloads whose derived session ID uses

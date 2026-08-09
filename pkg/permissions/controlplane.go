@@ -41,12 +41,20 @@ import "path/filepath"
 // controlPlaneBasenames is the set of privilege-bearing filenames,
 // recognized inside any `.agents/` directory. The values mirror the
 // loader constants (config.ConfigFileName = "config.json",
-// mcp.MCPFileName = "mcp.json"); they are duplicated here as literals
+// mcp.CatalogFileName = "mcp.json"); they are duplicated here as literals
 // rather than imported to avoid a permissions→config/mcp dependency
-// (and a potential import cycle). Lockstep tests assert the literals
-// track the loader constants: config.ConfigFileName in
-// controlplane_test.go here, and mcp.MCPFileName in pkg/mcp
-// (which imports permissions).
+// (and a potential import cycle). A lockstep test in pkg/mcp
+// (TestCatalogFileNameIsControlPlane, which imports permissions and
+// exercises the gate) asserts mcp.CatalogFileName is still classified
+// here, so a rename of the loader constant can't silently drop the
+// executed catalog out of control-plane protection.
+//
+// Coverage caveat: classification keys on the immediate parent directory
+// being `.agents`, so it protects the `.agents/`-tree catalog only. A
+// catalog loaded from a path-mode workload directory or a non-`.agents`
+// config root (e.g. /etc/mast/agents, $MAST_CONFIG_DIR) is not gate-write-
+// protected and must be secured by filesystem permissions. Broadening
+// classification to those locations is tracked as follow-up work (#89).
 var controlPlaneBasenames = map[string]struct{}{
 	"config.json": {}, // config.ConfigFileName — permissions/hooks/mode
 	"mcp.json":    {}, // mcp.MCPFileName — stdio MCP server commands
