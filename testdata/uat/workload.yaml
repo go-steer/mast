@@ -11,12 +11,12 @@ description: Fixture workload for the mast v0.2 end-to-end UAT harness.
 mode: single_session
 
 tool_catalog:
-  # No MCP server: v0.2 mast only wires the hardcoded HTTP `gke` toolset,
-  # so a credential-free offline UAT declares tool *policies* only. The
-  # names below classify effects for the recorded-effect outbox; the
-  # in-flight legs that actually dispatch these tools land once local/
-  # stdio MCP support exists (see docs/uat-v0.2-plan.md "Blocking-tool
-  # prerequisite").
+  # No MCP server: this fixture declares tool *policies* only, so the UAT
+  # stays credential-free and offline. The names below classify effects
+  # for the recorded-effect outbox. mast now wires MCP servers by catalog
+  # (mcp.json) over both HTTP and local stdio (#87), so the legs that
+  # actually dispatch these tools can wire a stdio server via mcp.json —
+  # see docs/uat-v0.2-plan.md "Blocking-tool prerequisite".
   tools:
     - name: read_status
       mutating: false
