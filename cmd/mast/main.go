@@ -711,6 +711,14 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// it cancels (the register-before-check handshake in runTurnPre
 		// closes the ordering window instead).
 		if err := recordAbort(reqCtx, store, obs, workloadName, req.SessionID, req.Reason); err != nil {
+			// A second abort of an already-terminal session is a state
+			// conflict, not a daemon fault — map to 409, mirroring /pause
+			// (and the idempotent durable marker keeps the counter at 1).
+			// The engine-level A2A tasks/cancel path chose idempotent
+			// success instead; the operator door reports the conflict.
+			if errors.Is(err, transcript.ErrAlreadyAborted) {
+				return fmt.Errorf("%v: %w", err, inject.ErrConflict)
+			}
 			return err
 		}
 		if tracker.cancelSession(req.SessionID) {

@@ -40,6 +40,9 @@ func TestErrorStatusMapping(t *testing.T) {
 		{"unavailable bare", ErrUnavailable, http.StatusServiceUnavailable, true, "retry against the replacement"},
 		{"unavailable wrapped", fmt.Errorf("gate: %w", ErrUnavailable), http.StatusServiceUnavailable, true, "retry against the replacement"},
 		{"bad payload wrapped", fmt.Errorf("uid %q reserved: %w", "x:mast-ops", ErrBadPayload), http.StatusBadRequest, false, "reserved"},
+		// A state conflict (e.g. a second /abort of an already-terminal
+		// session, #88) is 409 on every state-mutating door, not a 500.
+		{"conflict wrapped", fmt.Errorf("session already aborted: %w", ErrConflict), http.StatusConflict, false, "already aborted"},
 		{"other error", fmt.Errorf("model exploded"), http.StatusInternalServerError, false, "failed"},
 	}
 	for _, tc := range cases {
