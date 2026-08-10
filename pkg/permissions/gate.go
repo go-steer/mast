@@ -122,6 +122,14 @@ type Gate struct {
 	// See docs/plan-first-design.md.
 	requirePlanArtifact bool
 	planRecorded        bool
+
+	// controlPlanePaths is the set of resolved absolute paths this gate
+	// treats as privilege-bearing control-plane files in addition to the
+	// `.agents/`-tree heuristic — the daemon's actually-loaded catalog /
+	// config files, which may live outside a `.agents/` directory (#89).
+	// Shared by reference across DeriveForSession sub-gates (daemon-wide
+	// config, like policy and scope). See Gate.isControlPlaneFile.
+	controlPlanePaths map[string]struct{}
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
@@ -205,6 +213,20 @@ type Options struct {
 	// the plan-first pre-check; once a plan is recorded, the mode's
 	// usual semantics resume. See docs/plan-first-design.md.
 	RequirePlanArtifact bool
+
+	// ControlPlanePaths lists files this gate must treat as
+	// privilege-bearing control-plane files even when they fall outside
+	// the `.agents/`-tree heuristic — typically the daemon's actually-
+	// loaded mcp.json / config.json when it lives in a path-mode workload
+	// directory or a non-`.agents` config root (#89). Entries are
+	// symlink-resolved to absolute paths at construction (ResolvePath, which
+	// resolves a not-yet-existing path via its nearest existing ancestor, so
+	// a catalog that will be created later still registers); an entry that
+	// cannot be resolved at all is dropped, since it could never match a
+	// resolved write target. Writes to any listed path go through the same
+	// no-auto-approval control-plane gate as the `.agents/` copies. See
+	// Gate.isControlPlaneFile.
+	ControlPlanePaths []string
 }
 
 // New builds a Gate from the supplied options. The Mode defaults to
@@ -229,7 +251,30 @@ func New(opts Options) *Gate {
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
 		requirePlanArtifact: opts.RequirePlanArtifact,
+		controlPlanePaths:   newControlPlaneSet(opts.ControlPlanePaths),
 	}
+}
+
+// newControlPlaneSet resolves each configured control-plane path to a
+// symlink-resolved absolute path and returns the lookup set consulted by
+// isControlPlaneFile. Paths that can't be resolved are dropped: the gate
+// compares against the resolved write target (see CheckFileWrite), so an
+// entry that resolves to nothing could never match a real write anyway.
+// Returns nil for an empty input so the common case allocates nothing.
+func newControlPlaneSet(paths []string) map[string]struct{} {
+	if len(paths) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		if resolved, err := ResolvePath(p); err == nil {
+			set[resolved] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
 }
 
 // FromConfig builds a Gate from a Settings plus the resolved project
@@ -354,6 +399,7 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
 		requirePlanArtifact: template.requirePlanArtifact,
+		controlPlanePaths:   template.controlPlanePaths,
 	}
 }
 
@@ -583,10 +629,12 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 	g = g.resolveSessionGate(ctx)
 	// Control-plane classification runs FIRST and on the symlink-
 	// resolved path, before any mode/session/allowlist short-circuit,
-	// so a write (or a symlink laundering one) to .agents/config.json
-	// or .agents/mcp.json cannot be auto-approved by yolo, acceptEdits,
-	// a session-tool grant, or an allowlist entry. See #378.
-	if resolved, err := ResolvePath(path); err == nil && isControlPlanePath(resolved) {
+	// so a write (or a symlink laundering one) to a control-plane file —
+	// a `.agents/` config.json/mcp.json, or any path registered via
+	// Options.ControlPlanePaths — cannot be auto-approved by yolo,
+	// acceptEdits, a session-tool grant, or an allowlist entry. See #378,
+	// #89.
+	if resolved, err := ResolvePath(path); err == nil && g.isControlPlaneFile(resolved) {
 		return g.checkControlPlaneWrite(ctx, toolName, resolved)
 	}
 	// Scope is consulted BEFORE the per-tool session grant (#380).

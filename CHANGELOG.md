@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Local (stdio) MCP server hardening** (docs/mcp-catalog-design.md
+  "Implementation status"; #89). Three measures bound the blast radius of a
+  `mcp.json` catalog that launches local commands. **Environment scoping:** a
+  stdio server may set `env_mode: "clean"` to start its child from an empty
+  environment, passing through only the daemon variables named in
+  `env_passthrough` (plus the configured `env`) — so a `clean` server never
+  sees the daemon's provider keys or cloud credentials unless named.
+  **Command allowlist:** a new catalog-level `command_allowlist`, when
+  non-empty, makes any stdio server whose resolved `command` is not listed a
+  fatal load error (both sides `${VAR}`-expanded before comparison).
+  **Control-plane coverage beyond `.agents/`:** the permission gate now
+  accepts an explicit set of registered control-plane paths
+  (`Options.ControlPlanePaths`) so a catalog loaded from a path-mode workload
+  directory or a non-`.agents` config root can be write-protected once the
+  gate is runtime-wired, closing the parent-directory heuristic's gap. Default
+  behavior is unchanged (`env_mode` defaults to `inherit`; an empty allowlist
+  imposes no restriction).
+
 - **`/abort` re-abort now returns HTTP 409, not 500** (#88). Aborting a
   session that is already terminal is a state conflict, not a server fault:
   the inject `/abort` door now maps the `ErrAlreadyAborted` sentinel to

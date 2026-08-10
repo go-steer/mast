@@ -31,7 +31,18 @@ The permission gate write-protects a catalog that lives inside an
 `.agents/` tree — a model with file-write access cannot rewrite it to
 register a malicious server. A catalog loaded from any other location (a
 path-mode workload directory, `/etc/mast/agents`, `$MAST_CONFIG_DIR`) is
-**not** gate-protected and must be secured with filesystem permissions.
+**not** covered by the `.agents/` heuristic; the daemon registers such a
+catalog's resolved path with the gate explicitly once the gate is
+runtime-wired, and until then it relies on filesystem permissions.
+
+Two catalog-level defenses harden stdio further, independent of the gate:
+
+- **`command_allowlist`** bounds which executables any stdio server may
+  launch — a non-empty list makes an out-of-allowlist `command` a fatal
+  load error, so even an edited catalog cannot introduce a new binary.
+- **`env_mode: "clean"`** stops a stdio child from inheriting the daemon's
+  full environment (API keys, cloud credentials), passing through only the
+  variables you name in `env_passthrough`.
 :::
 
 ## Schema
@@ -39,6 +50,7 @@ path-mode workload directory, `/etc/mast/agents`, `$MAST_CONFIG_DIR`) is
 ```json
 {
   "version": 1,
+  "command_allowlist": ["/usr/local/bin/fs-mcp-server"],
   "servers": {
     "gke": {
       "transport": "http",
@@ -53,6 +65,8 @@ path-mode workload directory, `/etc/mast/agents`, `$MAST_CONFIG_DIR`) is
       "transport": "stdio",
       "command": "/usr/local/bin/fs-mcp-server",
       "args": ["--root", "${WORKSPACE}/data"],
+      "env_mode": "clean",
+      "env_passthrough": ["PATH", "HOME"],
       "env": {
         "FS_MCP_TOKEN": "${FS_MCP_TOKEN}"
       }
@@ -64,13 +78,16 @@ path-mode workload directory, `/etc/mast/agents`, `$MAST_CONFIG_DIR`) is
 | Field | Type | Notes |
 |---|---|---|
 | `version` | int | Required. Must be `1` — the only schema version this build accepts. |
+| `command_allowlist` | list of strings | Optional, catalog-level. When non-empty, every stdio server's resolved `command` must appear here or the catalog fails to load. Both sides are `${VAR}`-expanded before comparison. Empty (the default) imposes no restriction. |
 | `servers` | map | Server name → definition. The map key is the name workloads reference; it must be non-empty. |
 | `servers.<name>.transport` | string | Required. `http` or `stdio`. |
 | `servers.<name>.url` | string | Required for `http`. The streamable-HTTP endpoint. |
 | `servers.<name>.auth.google_oauth.scopes` | list of strings | `http` only. When present, requests carry an Application Default Credentials (ADC) bearer token with these scopes. Omit for an unauthenticated endpoint. Empty scopes default to `cloud-platform`. |
 | `servers.<name>.command` | string | Required for `stdio`. Executable to launch — a bare name resolved on `PATH` or an absolute path. |
 | `servers.<name>.args` | list of strings | `stdio` only. Command arguments. |
-| `servers.<name>.env` | map | `stdio` only. Environment variables layered on top of the daemon environment for the child process. |
+| `servers.<name>.env_mode` | string | `stdio` only. `inherit` (default) — the child inherits the full daemon environment. `clean` — the child starts from an empty environment and receives only `env_passthrough` variables plus `env`. |
+| `servers.<name>.env_passthrough` | list of strings | `stdio` only, and only under `env_mode: "clean"`. Names of daemon environment variables to copy through to the child (each copied only if set). Rejected under `inherit`, where the child already sees everything. |
+| `servers.<name>.env` | map | `stdio` only. Environment variables layered on top (they override an inherited or passed-through variable of the same name). |
 
 Unknown fields are tolerated (forward-compatibility with richer catalogs);
 the loader validates the version, each server name, and the per-transport
@@ -99,9 +116,21 @@ than a bearer token.
   there is no escape for a literal `$` — a value that must contain a
   literal dollar (for example a secret) should be passed through the
   inherited daemon environment rather than written into the catalog.
-- **Environment.** The child inherits the daemon's environment; the
-  configured `env` entries are layered on top (they override, and are
-  applied in a deterministic order).
+- **Environment.** Under the default `env_mode: "inherit"` the child
+  inherits the daemon's environment and the configured `env` entries are
+  layered on top (they override, applied in a deterministic order). Under
+  `env_mode: "clean"` the child starts from an empty environment and sees
+  only the `env_passthrough` daemon variables that are set, plus `env` — so
+  a local tool server never receives the daemon's provider API keys or
+  cloud credentials unless you name them explicitly.
+- **Command allowlist.** The catalog-level `command_allowlist`, when
+  non-empty, restricts which executables stdio servers may launch: an
+  out-of-allowlist `command` is a fatal load error. This bounds the blast
+  radius of an edited catalog even where the file itself is not
+  gate-protected. The match is a literal string comparison after `${VAR}`
+  expansion — it does **not** resolve `PATH` or canonicalize symlinks, so
+  list a `command` exactly as it is written in the server entry (a bare
+  `node` and an absolute `/usr/bin/node` are distinct entries).
 - **Lifecycle.** The process is launched lazily on first tool use, not at
   startup. It then lives for the duration of the daemon (mast holds the
   toolset for the process lifetime and does not tear individual toolsets

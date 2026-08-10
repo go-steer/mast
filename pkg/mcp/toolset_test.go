@@ -129,6 +129,121 @@ func TestBuildStdioCommand_ConfiguredEnvOverridesInherited(t *testing.T) {
 	}
 }
 
+// TestBuildStdioCommand_CleanModeScopesEnv verifies clean mode (#89 item
+// 2): the child starts from an empty environment, receives only the
+// passed-through daemon vars plus the configured env, and a configured key
+// still overrides a passed-through one of the same name. Crucially, a
+// daemon secret that is neither passed through nor configured must NOT
+// reach the child.
+func TestBuildStdioCommand_CleanModeScopesEnv(t *testing.T) {
+	t.Setenv("MAST_TEST_SECRET", "leaked")    // must NOT reach the child
+	t.Setenv("MAST_TEST_KEEP", "kept")        // passed through
+	t.Setenv("MAST_TEST_COLLIDE", "from-env") // overridden by config
+
+	cfg := ServerConfig{
+		Transport:      TransportStdio,
+		Command:        "/bin/true",
+		EnvMode:        EnvModeClean,
+		EnvPassthrough: []string{"MAST_TEST_KEEP", "MAST_TEST_COLLIDE", "MAST_TEST_ABSENT"},
+		Env:            map[string]string{"MAST_TEST_COLLIDE": "from-config", "EXTRA": "x"},
+	}
+	cmd := buildStdioCommand(cfg)
+
+	if slices.ContainsFunc(cmd.Env, func(e string) bool { return strings.HasPrefix(e, "MAST_TEST_SECRET=") }) {
+		t.Errorf("clean mode leaked an un-passed-through daemon secret: %v", cmd.Env)
+	}
+	if !slices.Contains(cmd.Env, "MAST_TEST_KEEP=kept") {
+		t.Errorf("clean mode dropped a passed-through var: %v", cmd.Env)
+	}
+	if !slices.Contains(cmd.Env, "EXTRA=x") {
+		t.Errorf("clean mode dropped the configured env: %v", cmd.Env)
+	}
+	// An absent passthrough name contributes nothing (no empty entry).
+	if slices.ContainsFunc(cmd.Env, func(e string) bool { return strings.HasPrefix(e, "MAST_TEST_ABSENT=") }) {
+		t.Errorf("unset passthrough var should not appear: %v", cmd.Env)
+	}
+	// Configured value wins over the passed-through one (appended last).
+	last := ""
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "MAST_TEST_COLLIDE=") {
+			last = e
+		}
+	}
+	if last != "MAST_TEST_COLLIDE=from-config" {
+		t.Errorf("collision resolved to %q, want configured value to win", last)
+	}
+}
+
+// TestBuildStdioCommand_CleanModeEmptyGivesEmptyEnv verifies that clean
+// mode with no passthrough and no configured env yields a non-nil empty
+// slice — so exec gives the child an empty environment rather than falling
+// back to the daemon's os.Environ() (which a nil cmd.Env would trigger).
+func TestBuildStdioCommand_CleanModeEmptyGivesEmptyEnv(t *testing.T) {
+	t.Setenv("MAST_TEST_SECRET", "leaked")
+	cmd := buildStdioCommand(ServerConfig{
+		Transport: TransportStdio,
+		Command:   "/bin/true",
+		EnvMode:   EnvModeClean,
+	})
+	if cmd.Env == nil {
+		t.Fatal("clean mode must set a non-nil env (nil makes exec inherit os.Environ)")
+	}
+	if len(cmd.Env) != 0 {
+		t.Errorf("clean mode with no passthrough/env = %v, want empty", cmd.Env)
+	}
+}
+
+// TestNewToolset_ValidatesConfig proves the exported library path
+// (NewToolset, used when a ServerConfig is built in code rather than parsed
+// from mcp.json) is held to the same env-scoping validation as the file
+// path — so an unrecognized EnvMode fails closed with an error instead of
+// silently inheriting the full daemon environment in childEnv (#89). A
+// mis-cased "Clean" is the motivating case: without validation it would
+// fall through to full inherit and drop EnvPassthrough entirely.
+func TestNewToolset_ValidatesConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  ServerConfig
+		want string
+	}{
+		{
+			name: "miscased env_mode",
+			cfg: ServerConfig{
+				Transport:      TransportStdio,
+				Command:        "/bin/true",
+				EnvMode:        "Clean", // not the exact "clean"
+				EnvPassthrough: []string{"PATH"},
+			},
+			want: "unknown env_mode",
+		},
+		{
+			name: "passthrough under inherit",
+			cfg: ServerConfig{
+				Transport:      TransportStdio,
+				Command:        "/bin/true",
+				EnvPassthrough: []string{"PATH"},
+			},
+			want: "env_passthrough requires env_mode",
+		},
+		{
+			name: "stdio without command",
+			cfg:  ServerConfig{Transport: TransportStdio},
+			want: "stdio transport requires a command",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewToolset(context.Background(), "x", tc.cfg)
+			if err == nil {
+				t.Fatalf("NewToolset(%+v) = nil error, want %q", tc.cfg, tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 // TestNewToolset_HTTPNoAuthConstructs verifies an HTTP server without an
 // auth block constructs offline (unauthenticated endpoint): the session,
 // and thus any network call, is deferred to first use.
@@ -146,9 +261,12 @@ func TestNewToolset_HTTPNoAuthConstructs(t *testing.T) {
 }
 
 func TestNewToolset_UnsupportedTransport(t *testing.T) {
+	// NewToolset validates the config first (mirroring Catalog.Validate),
+	// so an unknown transport surfaces the same "unknown transport" message
+	// the file path produces, rather than the switch's fallback.
 	_, err := NewToolset(context.Background(), "x", ServerConfig{Transport: "grpc"})
-	if err == nil || !strings.Contains(err.Error(), "unsupported transport") {
-		t.Fatalf("err = %v, want unsupported transport", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown transport") {
+		t.Fatalf("err = %v, want unknown transport", err)
 	}
 }
 

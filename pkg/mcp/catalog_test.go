@@ -144,6 +144,21 @@ func TestLoadCatalog_ValidationErrors(t *testing.T) {
 			body: `{"version": 1, "servers": {"x": {"transport": "stdio"}}}`,
 			want: "stdio transport requires a command",
 		},
+		{
+			name: "unknown env_mode",
+			body: `{"version": 1, "servers": {"x": {"transport": "stdio", "command": "/bin/true", "env_mode": "sandbox"}}}`,
+			want: "unknown env_mode",
+		},
+		{
+			name: "env_passthrough without clean mode",
+			body: `{"version": 1, "servers": {"x": {"transport": "stdio", "command": "/bin/true", "env_passthrough": ["PATH"]}}}`,
+			want: "env_passthrough requires env_mode",
+		},
+		{
+			name: "command not in allowlist",
+			body: `{"version": 1, "command_allowlist": ["/usr/bin/allowed"], "servers": {"x": {"transport": "stdio", "command": "/bin/evil"}}}`,
+			want: "not in the catalog command_allowlist",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -155,6 +170,79 @@ func TestLoadCatalog_ValidationErrors(t *testing.T) {
 				t.Errorf("error = %q, want substring %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+// TestLoadCatalog_CommandAllowlist verifies the catalog-level command
+// allowlist (#89 item 3): an empty list imposes no restriction, a
+// disallowed stdio command fails validation, an allowed one passes, and
+// both the entry and the resolved command are ${VAR}-expanded before the
+// membership check (so an allowlist written with a variable matches a
+// command written with the same variable).
+func TestLoadCatalog_CommandAllowlist(t *testing.T) {
+	t.Run("empty allowlist imposes no restriction", func(t *testing.T) {
+		_, err := mcp.LoadCatalog(writeCatalog(t, `{
+  "version": 1,
+  "servers": {"x": {"transport": "stdio", "command": "/anything/goes"}}
+}`))
+		if err != nil {
+			t.Fatalf("empty allowlist should allow any command: %v", err)
+		}
+	})
+
+	t.Run("allowed command passes", func(t *testing.T) {
+		_, err := mcp.LoadCatalog(writeCatalog(t, `{
+  "version": 1,
+  "command_allowlist": ["/usr/bin/allowed", "/bin/true"],
+  "servers": {"x": {"transport": "stdio", "command": "/bin/true"}}
+}`))
+		if err != nil {
+			t.Fatalf("allowed command should pass: %v", err)
+		}
+	})
+
+	t.Run("http servers are not allowlist-checked", func(t *testing.T) {
+		// The allowlist bounds only launchable commands; an HTTP server
+		// has none, so it must not be rejected by a command allowlist.
+		_, err := mcp.LoadCatalog(writeCatalog(t, `{
+  "version": 1,
+  "command_allowlist": ["/bin/true"],
+  "servers": {"x": {"transport": "http", "url": "https://x"}}
+}`))
+		if err != nil {
+			t.Fatalf("http server should not be command-allowlist checked: %v", err)
+		}
+	})
+
+	t.Run("expansion applies to both sides", func(t *testing.T) {
+		t.Setenv("MAST_TEST_BINDIR", "/opt/mcp/bin")
+		_, err := mcp.LoadCatalog(writeCatalog(t, `{
+  "version": 1,
+  "command_allowlist": ["${MAST_TEST_BINDIR}/server"],
+  "servers": {"x": {"transport": "stdio", "command": "${MAST_TEST_BINDIR}/server"}}
+}`))
+		if err != nil {
+			t.Fatalf("expanded command should match expanded allowlist entry: %v", err)
+		}
+	})
+}
+
+// TestLoadCatalog_CleanEnvMode confirms the parser accepts and preserves
+// the stdio env-scoping fields (#89 item 2).
+func TestLoadCatalog_CleanEnvMode(t *testing.T) {
+	cat, err := mcp.LoadCatalog(writeCatalog(t, `{
+  "version": 1,
+  "servers": {"x": {"transport": "stdio", "command": "/bin/true", "env_mode": "clean", "env_passthrough": ["PATH", "HOME"]}}
+}`))
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	x := cat.Servers["x"]
+	if x.EnvMode != mcp.EnvModeClean {
+		t.Errorf("env_mode = %q, want %q", x.EnvMode, mcp.EnvModeClean)
+	}
+	if len(x.EnvPassthrough) != 2 || x.EnvPassthrough[0] != "PATH" || x.EnvPassthrough[1] != "HOME" {
+		t.Errorf("env_passthrough = %v", x.EnvPassthrough)
 	}
 }
 
