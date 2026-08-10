@@ -368,7 +368,10 @@ entry against the session's open interrupt ids and drives the resume turn
 through the same chokepoint. A resume that references no open interrupt
 (or an unknown id) is refused `409` rather than silently forking a fresh
 turn. A resume run may carry an empty `input` — the `resume` array alone
-drives it.
+drives it. Under `session_model: per_run` (where the session is keyed on
+`runId`) the resume must also carry `parentRunId` naming the run that
+parked, so the daemon can reach the parked session; under the default
+`per_thread` the shared `threadId` already reaches it.
 
 Per-key state deltas, client-declared tools, and the `agui://` federation
 client are follow-on stages.

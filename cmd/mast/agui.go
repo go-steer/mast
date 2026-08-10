@@ -146,7 +146,18 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 		return agui.RunResult{}, fmt.Errorf("agui: server draining, not accepting new runs: %w", agui.ErrUnavailable)
 	}
 
-	sessionID := b.sessionIDFor(in.ThreadID, in.RunID)
+	// A resume arrives as a new run (new RunID) but must reach the session the
+	// parent run parked on. Under the run-keyed model (per_run) that session is
+	// keyed on the ORIGINAL run's id, so a spec-compliant resume carries
+	// parentRunId and we key on it; without it a per_run resume cannot locate the
+	// parked session and correctly 409s below. Under the thread-keyed model
+	// (per_thread, the default) the session ignores RunID entirely, so this is a
+	// no-op there — the same threadId already reaches the parked session.
+	runID := in.RunID
+	if len(in.Resume) > 0 && in.ParentRunID != "" {
+		runID = in.ParentRunID
+	}
+	sessionID := b.sessionIDFor(in.ThreadID, runID)
 	if !isAGUISessionID(sessionID) {
 		// A crafted threadId/runId collided with the reserved ops-row
 		// namespace; refuse before any emit rather than drive a turn into a
@@ -307,10 +318,13 @@ func (b *aguiBackend) classifyRun(ctx context.Context, sessionID string, em *agu
 			return agui.RunResult{Text: em.lastText, Interrupted: true, Interrupts: its}, nil
 		}
 		if em.interrupted {
-			// In-turn interrupt signal without a durable projection: should not
-			// happen (the pause writes its marker synchronously), but never drop a
-			// pause into a fabricated success.
-			return agui.RunResult{Text: em.lastText, Interrupted: true}, nil
+			// In-turn interrupt signal but no durable pause projection — a transient
+			// store read failure, or a pause whose marker did not land. Should not
+			// happen (the pause writes its marker synchronously). Do NOT advertise a
+			// resume-less interrupt (an interrupt outcome with an empty interrupts
+			// list the client can never answer) and do NOT fabricate a success:
+			// close the stream with an honest internal error instead.
+			return agui.RunResult{}, fmt.Errorf("agui: interrupt signaled but no durable pause projection for session %q", sessionID)
 		}
 		return agui.RunResult{Text: em.lastText}, nil
 	case errors.Is(err, inject.ErrConflict):

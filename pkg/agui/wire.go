@@ -220,8 +220,10 @@ type Interrupt struct {
 }
 
 // RunError is the terminal event for a run that did not complete normally:
-// aborted, interrupted (paused for human input), or an internal fault. Message
-// is a short human-readable summary; Code is the machine-readable disposition.
+// aborted or an internal fault. (A HITL pause is NOT a RunError — it is a
+// terminal RunFinished carrying outcome.type == "interrupt"; see RunOutcome.)
+// Message is a short human-readable summary; Code is the machine-readable
+// disposition.
 type RunError struct {
 	baseEvent
 	Message string       `json:"message"`

@@ -126,6 +126,12 @@ type RunInput struct {
 	ThreadID string
 	RunID    string
 
+	// ParentRunID is the run this one continues, when the client sets it. A
+	// resume arrives as a NEW run (new RunID) but must reach the session the
+	// parent run parked; under a run-keyed session model the daemon keys the
+	// resume's session on ParentRunID. Empty when absent.
+	ParentRunID string
+
 	// Text is the turn's user input (the last user message's content).
 	Text string
 
@@ -393,10 +399,15 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 		}
 	}
 
+	var parentRunID string
+	if in.ParentRunID != nil {
+		parentRunID = *in.ParentRunID
+	}
 	result, err := s.cfg.Backend.RunAgent(streamCtx, RunInput{
 		WorkloadName: ew.WorkloadName,
 		ThreadID:     in.ThreadID,
 		RunID:        in.RunID,
+		ParentRunID:  parentRunID,
 		Text:         text,
 		State:        in.State,
 		Resume:       in.Resume,

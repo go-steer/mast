@@ -693,9 +693,12 @@ func newAGUIBackendPlanner(t *testing.T, m model.LLM) *aguiBackend {
 // (adk_request_input, load-bearing for graph roots — a planner root resumes
 // under either name, so this test cannot pin the name itself).
 //
-// Neutralize check: drop the pendingInterrupts projection in classifyRun's
-// err==nil branch and turn 1 is misreported as a plain success (Interrupted
-// false, no interrupts).
+// Neutralize check: force the pendingInterrupts projection in classifyRun's
+// err==nil branch to miss (return ok=false) and turn 1 no longer surfaces its
+// open interrupt — it falls through to the em.interrupted guard and RunAgent
+// returns an error, failing this test at the pause-turn assertion. (The clean
+// resume-less-success misreport is separately pinned by
+// TestAGUIClassifyRunInterruptWithoutProjection.)
 func TestAGUIBackendHITLPauseAndResume(t *testing.T) {
 	var operatorAnswer map[string]any
 	m := &aguiScriptedModel{script: func(round int, req *model.LLMRequest) *model.LLMResponse {
@@ -772,5 +775,104 @@ func TestAGUIBackendHITLPauseAndResume(t *testing.T) {
 	}
 	if operatorAnswer == nil {
 		t.Fatal("planner never saw the operator answer — the resume did not unpark the parked call")
+	}
+}
+
+// TestAGUIBackendPerRunResumeViaParentRunID pins the per_run resume path. Under
+// the run-keyed session model the parked session is keyed on the ORIGINAL run's
+// id, but a resume arrives as a NEW run (new RunID) — so it can only reach the
+// parked session by carrying parentRunId. With it, turn 2 unparks the parked
+// run; without it the resume derives a fresh (empty) session and is correctly
+// refused with ErrNotResumable. (per_thread is covered by
+// TestAGUIBackendHITLPauseAndResume, where the shared threadId already reaches
+// the parked session.)
+//
+// Neutralize check: drop the `runID = in.ParentRunID` override in RunAgent and
+// the ParentRunID resume derives agui-run-<new id>, reads an empty session, and
+// returns ErrNotResumable — the unpark assertion below then fails.
+func TestAGUIBackendPerRunResumeViaParentRunID(t *testing.T) {
+	var operatorAnswer map[string]any
+	m := &aguiScriptedModel{script: func(round int, req *model.LLMRequest) *model.LLMResponse {
+		if round == 1 {
+			return aguiCallResponse(planner.ToolRequestOperatorInput, map[string]any{
+				"message": "approve?",
+			})
+		}
+		if fr := aguiLastFunctionResponse(req); fr != nil {
+			operatorAnswer = fr
+		}
+		return aguiCallResponse("finish_task", map[string]any{"result": "done"})
+	}}
+	b := newAGUIBackendPlanner(t, m)
+	b.bundle = &workload.Bundle{AGUI: workload.AGUI{SessionModel: workload.AGUISessionPerRun}}
+
+	// Turn 1: pause under per_run → session agui-run-r1.
+	emit, _ := collectEmit()
+	res, err := b.RunAgent(context.Background(), agui.RunInput{ThreadID: "t1", RunID: "r1", Text: "go"}, emit)
+	if err != nil {
+		t.Fatalf("RunAgent(pause turn): %v", err)
+	}
+	if len(res.Interrupts) != 1 {
+		t.Fatalf("interrupts = %+v, want exactly one open interrupt", res.Interrupts)
+	}
+	iid := res.Interrupts[0].ID
+
+	// A resume WITHOUT parentRunId lands on a fresh per_run session (agui-run-r2)
+	// that holds no open interrupt → refused before any emit.
+	emitNo, gotNo := collectEmit()
+	_, err = b.RunAgent(context.Background(), agui.RunInput{
+		ThreadID: "t1", RunID: "r2",
+		Resume: []agui.ResumeEntry{{InterruptID: iid, Status: agui.ResumeStatusResolved}},
+	}, emitNo)
+	if !errors.Is(err, agui.ErrNotResumable) {
+		t.Fatalf("per_run resume without parentRunId err = %v, want agui.ErrNotResumable", err)
+	}
+	if len(*gotNo) != 0 {
+		t.Fatalf("refused resume emitted %d frames, want 0", len(*gotNo))
+	}
+
+	// A resume WITH parentRunId=r1 reaches the parked session and unparks it.
+	emit2, _ := collectEmit()
+	res2, err := b.RunAgent(context.Background(), agui.RunInput{
+		ThreadID: "t1", RunID: "r3", ParentRunID: "r1",
+		Resume: []agui.ResumeEntry{{
+			InterruptID: iid,
+			Status:      agui.ResumeStatusResolved,
+			Payload:     json.RawMessage(`{"approved":true}`),
+		}},
+	}, emit2)
+	if err != nil {
+		t.Fatalf("RunAgent(per_run resume via parentRunId): %v", err)
+	}
+	if res2.Interrupted {
+		t.Fatalf("resumed run still Interrupted %+v — parentRunId did not reach the parked session", res2)
+	}
+	if operatorAnswer == nil {
+		t.Fatal("planner never saw the operator answer — the parentRunId resume did not unpark")
+	}
+}
+
+// TestAGUIClassifyRunInterruptWithoutProjection pins the degraded-path guard: if
+// the in-turn interrupt signal fired (em.interrupted) but the durable pause
+// projection is unavailable — a transient store read failure, or a pause whose
+// marker did not land — classifyRun closes the stream with an honest internal
+// error rather than advertising a resume-less interrupt (an interrupt outcome
+// with an empty interrupts list the client could never answer) or fabricating a
+// success.
+//
+// Neutralize check: restore the old `return RunResult{Interrupted: true}` in the
+// em.interrupted branch and this test fails (err == nil, Interrupted true, no
+// interrupts).
+func TestAGUIClassifyRunInterruptWithoutProjection(t *testing.T) {
+	b := newAGUIBackendPlanner(t, &aguiScriptedModel{script: func(int, *model.LLMRequest) *model.LLMResponse { return nil }})
+	em := &aguiEmitter{interrupted: true}
+	// A session that was never created has no durable pause → pendingInterrupts
+	// returns ok=false, driving the em.interrupted fallback.
+	res, err := b.classifyRun(context.Background(), "agui-thread-never-created", em, nil)
+	if err == nil {
+		t.Fatalf("classifyRun(interrupt signaled, no projection) = %+v, want an error", res)
+	}
+	if res.Interrupted || len(res.Interrupts) != 0 {
+		t.Fatalf("degraded interrupt path leaked a resume-less interrupt: %+v", res)
 	}
 }

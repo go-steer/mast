@@ -18,7 +18,10 @@
   chokepoint every other turn kind uses. A resume that references no open
   interrupt (or an unknown id) is refused with `409` (`ErrNotResumable`)
   instead of silently forking a fresh turn, and a resume run may carry empty
-  input — the `resume` array alone drives it. The terminal interrupt frame
+  input — the `resume` array alone drives it. Since a resume is a new run,
+  reaching the parked session under `session_model: per_run` (keyed on
+  `runId`) requires the resume to carry `parentRunId`; the default
+  `per_thread` reaches it via the shared `threadId`. The terminal interrupt frame
   records a new `interrupted` outcome on `mast_agui_runs_total{workload,outcome}`.
   Still hand-rolled in `pkg/agui` with zero new dependencies. Per-key state
   deltas, client-declared tools, and the `agui://` federation client remain
