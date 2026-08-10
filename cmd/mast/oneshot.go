@@ -116,9 +116,17 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	if err != nil {
 		return err
 	}
+	oneShotPred := effects.NewPredicate(nil)
+	oneShotSubAgents := effects.SubAgentNames(root)
+	// Same fail-closed collision guard as the daemon path (gate finding
+	// N2). No workload bundle here, so only mast's builtin tool names are
+	// checked against the class root's specialist names.
+	if hits := effects.CheckNameCollisions(oneShotSubAgents, oneShotPred, nil); len(hits) > 0 {
+		return fmt.Errorf("composition names both a sub-agent and a mutating tool %q: rename the specialist or the tool", strings.Join(hits, ", "))
+	}
 	outboxPlugin, err := effects.New(effects.Config{
-		Predicate:     effects.NewPredicate(nil),
-		SubAgentNames: effects.SubAgentNames(root),
+		Predicate:     oneShotPred,
+		SubAgentNames: oneShotSubAgents,
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return oneShotStore.EffectsAckedAt(ctx, "", sid)
 		},

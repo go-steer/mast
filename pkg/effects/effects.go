@@ -197,6 +197,64 @@ func SubAgentNames(root agent.Agent) map[string]bool {
 	return out
 }
 
+// CheckNameCollisions reports composed sub-agent names that also name a
+// mutating- or spawning-class tool. Such a name is ambiguous in the
+// session log: ADK emits both a task delegation and a genuine tool call
+// as a FunctionCall bearing the name, and the dangling scan excludes
+// every FunctionCall named after a sub-agent (delegations are engine
+// control flow, not effects — see Config.SubAgentNames). A real mutating
+// tool sharing a sub-agent's name is therefore invisible to the outbox: a
+// fail-open durability hole (gate finding N2). No scan-time heuristic can
+// resolve the ambiguity — by name alone a delegation and a tool call are
+// indistinguishable — so the collision must be fixed in the composition:
+// rename the specialist or the tool. Both cmd/mast and the mast library
+// entrypoints call this at construction and refuse on a non-empty result;
+// a caller wiring its own root and outbox should do the same before New.
+//
+// Only mutating/spawning tools matter: a read-only tool named after a
+// sub-agent never dangles (scanHistory keeps only mutating/spawning
+// unpaired calls), so a collision with one is harmless and is not
+// reported.
+//
+// Coverage is bounded by what is known by name at construction: mast's
+// builtins, and the tool names an operator declared in tool_catalog.tools
+// (classified through pred, so a nil-override entry still counts mutating
+// by default-deny). tool_catalog.tools is an OVERRIDE list, not a tool
+// inventory — its idiomatic use is to un-gate read-only tools, so a
+// mutating tool an operator never listed there (the common case for MCP
+// verbs) is not enumerable here and its collision is NOT caught. This
+// reliably guards builtins and explicitly-declared tools; for everything
+// else the authoring rule stands: do not name a specialist after a
+// mutating tool. The returned names are sorted for a stable message.
+func CheckNameCollisions(subAgents map[string]bool, pred Predicate, policies []ToolPolicy) []string {
+	if len(subAgents) == 0 || pred == nil {
+		return nil
+	}
+	// Candidate tool names: mast's builtins plus every declared
+	// tool_catalog policy. Classify each through pred (not the raw
+	// builtinClasses table) so a tool_catalog override is honored
+	// consistently — an operator who marks a builtin read-only must not
+	// trip the guard when the runtime outbox would treat the same call as
+	// read-only.
+	candidates := make(map[string]bool, len(builtinClasses)+len(policies))
+	for name := range builtinClasses {
+		candidates[name] = true
+	}
+	for _, p := range policies {
+		if name := strings.TrimSpace(p.Name); name != "" {
+			candidates[name] = true
+		}
+	}
+	var hits []string
+	for name := range candidates {
+		if subAgents[name] && pred(name) != ClassReadOnly {
+			hits = append(hits, name)
+		}
+	}
+	sort.Strings(hits)
+	return hits
+}
+
 // New builds the outbox as an ADK runner plugin. Attach it via
 // runner.Config.PluginConfig at every runner construction site.
 func New(cfg Config) (*plugin.Plugin, error) {

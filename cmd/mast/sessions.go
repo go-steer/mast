@@ -283,6 +283,12 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 			// daemon's in-memory state (turn gating happens on its next
 			// chokepoint read, so the CLEAR is safe — but interrupt
 			// pauses need the owning runner, refused at parse time).
+			//
+			// Same no-daemon caveat as the direct ack path (gate finding
+			// N4): mast has no on-disk liveness signal to probe, and a
+			// direct clear under a live daemon leaves its in-memory token
+			// index stale, so warn before writing.
+			fmt.Fprintln(out, "warning: --session-db clears the gate pause directly and is NOT coordinated with a running daemon (its in-memory token index would go stale); use only when no daemon serves this DB. If a daemon is serving it, drop --session-db to resume through it (optionally --addr).")
 			store, err := transcript.Open(c.db, c.app)
 			if err != nil {
 				return err
@@ -345,6 +351,15 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 			// sessions, a stopped daemon). Against a LIVE daemon's DB,
 			// use the default daemon path instead — it serializes the
 			// watermark against in-flight turns; this one cannot.
+			//
+			// mast has no on-disk daemon-liveness signal to probe (turn
+			// locks are in-memory; a --session-db can even be a Postgres
+			// DSN with no local file), so this path cannot detect a running
+			// daemon and warns instead (gate finding N4): writing the
+			// watermark under a live daemon races an in-flight turn's own
+			// dangling-scan, so the outbox could clear or miss an effect it
+			// was mid-classifying.
+			fmt.Fprintln(out, "warning: --session-db writes the ack watermark directly and is NOT serialized against a running daemon; use only when no daemon serves this DB (a one-shot session or a stopped daemon). If a daemon is serving it, drop --session-db to go through the daemon (optionally --addr).")
 			store, err := transcript.Open(c.db, c.app)
 			if err != nil {
 				return err

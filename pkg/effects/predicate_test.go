@@ -107,3 +107,89 @@ func TestBuiltinNamesMatchRegistrations(t *testing.T) {
 		t.Error("invoke_remote_agent must classify mutating (remote effects are invisible to this process)")
 	}
 }
+
+// TestCheckNameCollisions is the gate finding N2 guard: a sub-agent name
+// that also names a mutating/spawning tool is a fail-open durability hole
+// (the delegation exclusion hides the genuine tool call), so it must be
+// reported; a read-only or absent tool of the same name must not be.
+// Neutralize the mutating/spawning filter in CheckNameCollisions (report
+// every tool name) and the "read-only collision is silent" case fails;
+// neutralize the subAgents intersection (report nothing) and every
+// positive case fails.
+func TestCheckNameCollisions(t *testing.T) {
+	tr, f := true, false
+	subAgents := map[string]bool{
+		"triage_bot": true,
+		"deploy":     true, // operator specialist sharing a tool verb
+		"reader":     true, // collides only with a read-only tool
+	}
+
+	t.Run("declared mutating tool collision reported", func(t *testing.T) {
+		pred := NewPredicate(Overrides(nil, []ToolPolicy{{Name: "deploy", Mutating: &tr}}))
+		got := CheckNameCollisions(subAgents, pred, []ToolPolicy{{Name: "deploy", Mutating: &tr}})
+		if len(got) != 1 || got[0] != "deploy" {
+			t.Fatalf("CheckNameCollisions = %v, want [deploy]", got)
+		}
+	})
+
+	t.Run("nil-override MCP tool defaults mutating and collides", func(t *testing.T) {
+		// A declared tool with no class override defaults to mutating
+		// (default-deny). A specialist sharing its name is still a hole.
+		pred := NewPredicate(nil)
+		got := CheckNameCollisions(subAgents, pred, []ToolPolicy{{Name: "deploy", Mutating: nil}})
+		if len(got) != 1 || got[0] != "deploy" {
+			t.Fatalf("CheckNameCollisions = %v, want [deploy] (nil override → mutating default)", got)
+		}
+	})
+
+	t.Run("read-only tool collision is harmless and silent", func(t *testing.T) {
+		pred := NewPredicate(Overrides(nil, []ToolPolicy{{Name: "reader", Mutating: &f}}))
+		got := CheckNameCollisions(subAgents, pred, []ToolPolicy{{Name: "reader", Mutating: &f}})
+		if len(got) != 0 {
+			t.Fatalf("CheckNameCollisions = %v, want none (read-only tool never dangles)", got)
+		}
+	})
+
+	t.Run("builtin spawning tool collision reported", func(t *testing.T) {
+		// A specialist named after a builtin spawning tool (invoke_specialist)
+		// collides even with no declared policies.
+		subs := map[string]bool{"invoke_specialist": true}
+		got := CheckNameCollisions(subs, NewPredicate(nil), nil)
+		if len(got) != 1 || got[0] != "invoke_specialist" {
+			t.Fatalf("CheckNameCollisions = %v, want [invoke_specialist]", got)
+		}
+	})
+
+	t.Run("no collision when tool name is not a sub-agent", func(t *testing.T) {
+		pred := NewPredicate(Overrides(nil, []ToolPolicy{{Name: "scale_up", Mutating: &tr}}))
+		got := CheckNameCollisions(subAgents, pred, []ToolPolicy{{Name: "scale_up", Mutating: &tr}})
+		if len(got) != 0 {
+			t.Fatalf("CheckNameCollisions = %v, want none (scale_up is not a sub-agent)", got)
+		}
+	})
+
+	t.Run("multiple collisions sorted", func(t *testing.T) {
+		subs := map[string]bool{"deploy": true, "apply": true, "reader": true}
+		policies := []ToolPolicy{
+			{Name: "deploy", Mutating: &tr},
+			{Name: "apply", Mutating: nil}, // default mutating
+			{Name: "reader", Mutating: &f}, // read-only: excluded
+		}
+		// The predicate must be built from the same overrides the caller
+		// passes as policies (cmd/mast wires them from one bundle).
+		pred := NewPredicate(Overrides(nil, policies))
+		got := CheckNameCollisions(subs, pred, policies)
+		if len(got) != 2 || got[0] != "apply" || got[1] != "deploy" {
+			t.Fatalf("CheckNameCollisions = %v, want [apply deploy] (sorted, read-only dropped)", got)
+		}
+	})
+
+	t.Run("empty inputs", func(t *testing.T) {
+		if got := CheckNameCollisions(nil, NewPredicate(nil), nil); got != nil {
+			t.Fatalf("nil subAgents → %v, want nil", got)
+		}
+		if got := CheckNameCollisions(subAgents, nil, nil); got != nil {
+			t.Fatalf("nil predicate → %v, want nil", got)
+		}
+	})
+}

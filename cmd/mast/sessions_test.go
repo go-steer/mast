@@ -15,9 +15,51 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestSessionsAckEffects_DirectPathWarnsNoDaemon covers gate finding N4:
+// the direct `--session-db` ack path cannot serialize its watermark write
+// against a live daemon (mast has no on-disk liveness signal to probe), so
+// it must warn the operator before writing. Neutralize the warning line
+// and this test fails.
+func TestSessionsAckEffects_DirectPathWarnsNoDaemon(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "sessions.db")
+	// Seed a durable one-shot task session so the DB file exists with a
+	// real (non-reserved) session id to ack.
+	if err := runOneShot(context.Background(), discardLogger(), oneShotOptions{
+		Class:      "debug",
+		Model:      "echo",
+		SessionDB:  db,
+		SessionDrv: "sqlite",
+		Prompt:     "seed",
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("seed runOneShot: %v", err)
+	}
+
+	cmd, err := parseSessionsArgs([]string{
+		"ack-effects", oneShotSessionID("debug"),
+		"--session-db=" + db, "--reason=checked",
+	})
+	if err != nil {
+		t.Fatalf("parseSessionsArgs: %v", err)
+	}
+	var out bytes.Buffer
+	if err := cmd.run(context.Background(), &out); err != nil {
+		t.Fatalf("ack-effects --session-db run: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "NOT serialized") {
+		t.Errorf("direct ack output missing the no-daemon warning (gate finding N4):\n%s", got)
+	}
+	if !strings.Contains(got, "acknowledged") {
+		t.Errorf("direct ack output missing the confirmation line:\n%s", got)
+	}
+}
 
 func TestParseSessionsArgs(t *testing.T) {
 	tests := []struct {
