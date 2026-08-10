@@ -3,20 +3,26 @@
 #
 # Minimal fixture workload for the v0.2 end-to-end UAT harness
 # (scripts/uat-v0.2.sh). Deliberately tiny: one coordinator, one worker
-# specialist, two declared tool policies, no MCP — so the scripted JSONL
-# stays short and the assertions stay legible. See docs/uat-v0.2-plan.md.
+# specialist, and two declared tool policies. The tools are backed by a
+# local stdio MCP blocker (see tool_catalog.mcp below); the blocking legs
+# drive them with --model=toolactor. See docs/uat-v0.2-plan.md.
 
 name: uat
 description: Fixture workload for the mast v0.2 end-to-end UAT harness.
 mode: single_session
 
 tool_catalog:
-  # No MCP server: this fixture declares tool *policies* only, so the UAT
-  # stays credential-free and offline. The names below classify effects
-  # for the recorded-effect outbox. mast now wires MCP servers by catalog
-  # (mcp.json) over both HTTP and local stdio (#87), so the legs that
-  # actually dispatch these tools can wire a stdio server via mcp.json —
-  # see docs/uat-v0.2-plan.md "Blocking-tool prerequisite".
+  # A local, credential-free stdio MCP server (testdata/uat/blocker) supplies
+  # the two REGISTERED tools the crash/drain/abort legs dispatch and block on
+  # (docs/uat-v0.2-plan.md "Blocking-tool prerequisite"; wired generically via
+  # mcp.json since #87). It is a no-op under --model=echo (wireMCPToolsets
+  # skips the echo model), so the no-blocking-tool legs stay offline and cheap;
+  # the blocking legs run under --model=toolactor, which drives these tools.
+  # The tool *policies* below classify effects for the recorded-effect outbox:
+  # apply_change is mutating (the ambiguous-effect leg), read_status read-only
+  # (the auto-resume-repair leg).
+  mcp:
+    - server: uat-blocker
   tools:
     - name: read_status
       mutating: false

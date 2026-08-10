@@ -214,6 +214,10 @@ func BuildRoot(cfg RootConfig) (adkagent.Agent, error) {
 // name.
 //
 //   - "echo": fake in-process echo model (no credentials required).
+//   - "toolactor": request-driven offline fake that drives registered
+//     tool calls deterministically (pkg/agent/toolactor.go); the v0.2
+//     UAT harness uses it to exercise the crash/drain/abort legs against
+//     a real blocking MCP tool. No credentials required.
 //   - "scripted": JSONL recorded-turn replay via pkg/providers/mock;
 //     the recording path comes from MAST_SCRIPT, and
 //     MAST_SCRIPT_STRICT=1 enables strict Contents matching.
@@ -226,6 +230,8 @@ func BuildModel(ctx context.Context, provider, name string) (model.LLM, error) {
 	switch {
 	case name == "echo":
 		return mastagent.NewEchoModel("mast-echo"), nil
+	case name == "toolactor":
+		return mastagent.NewToolActorModel("mast-toolactor"), nil
 	case name == "scripted":
 		path := os.Getenv("MAST_SCRIPT")
 		if path == "" {
@@ -248,7 +254,7 @@ func BuildModel(ctx context.Context, provider, name string) (model.LLM, error) {
 		}
 		return p.Model(ctx, name)
 	default:
-		return nil, fmt.Errorf("unknown model %q (want `echo`, `scripted`, a `gemini-*` or a `claude-*` model id)", name)
+		return nil, fmt.Errorf("unknown model %q (want `echo`, `toolactor`, `scripted`, a `gemini-*` or a `claude-*` model id)", name)
 	}
 }
 
@@ -316,10 +322,10 @@ var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
 //
 // The echo fake keeps its inflated rate: offline smoke tests
 // (scripts/demo-spike2.sh scenario 3) trip small caps with it. The
-// scripted replay shares it — both are offline test doubles.
+// scripted replay and toolactor share it — all offline test doubles.
 func RatePer1K(modelName string) float64 {
 	switch {
-	case modelName == "echo", modelName == "scripted":
+	case modelName == "echo", modelName == "scripted", modelName == "toolactor":
 		return 0.05 // inflated so offline smoke tests can trip small caps
 	case strings.HasPrefix(modelName, "claude-"):
 		if r, ok := builtinCatalog().Lookup(modelName); ok && !r.IsZero() {

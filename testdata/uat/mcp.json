@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "servers": {
+    "uat-blocker": {
+      "transport": "stdio",
+      "command": "${MAST_UAT_BLOCKER}",
+      "env": {
+        "UAT_BLOCKER_DIR": "${UAT_BLOCKER_DIR}"
+      }
+    }
+  }
+}

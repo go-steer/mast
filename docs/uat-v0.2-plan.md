@@ -27,13 +27,16 @@ This doc is the plan (scenarios, assertions, harness shape). The harness itself
 (`scripts/uat-v0.2.sh` + its CI wiring) lands as the follow-on, tracked separately, and grows
 alongside the A2A→AG-UI stack.
 
-## Implementation status (2026-08-08)
+## Implementation status (2026-08-10)
 
 `scripts/uat-v0.2.sh` has landed with its CI wiring (`dev/ci/presubmits/e2e.sh`, the `e2e`
-step in `all.sh`, the `e2e` job in `ci.yml`). It ships the **deterministic, no-blocking-tool
-subset** of the catalogue below and passes 38 assertions in under a minute on the offline echo
-model alone. Two findings from building it correct assumptions the plan above was drafted on —
-read these before extending the harness:
+step in `all.sh`, the `e2e` job in `ci.yml`). It now ships **the full deterministic catalogue
+that is reachable without a live model** — the no-blocking-tool subset (echo model) **plus the
+blocking-tool crash/drain/abort legs** (a request-driven offline fake model driving a real
+stdio MCP tool) — and passes **73 assertions** in under a minute, credential-free and
+offline. Two findings from building the first cut correct assumptions the plan above was
+drafted on; a third records how the blocking-tool legs were finally built — read all three
+before extending the harness:
 
 ### Correction 1 — the scripted model cannot plant a dangling mutating effect
 
@@ -66,17 +69,40 @@ credential-free offline UAT thus had **no registered tool it could dispatch and 
 fixture (`testdata/uat/workload.yaml`) declares tool *policies* (`read_status` read-only,
 `apply_change` mutating) for effect classification only; it wires no MCP.
 
-**Consequence — deferred scenarios.** The legs that need a controllable registered blocking tool
-were **deferred until local/stdio MCP support landed** (now shipped in #87 — making `mcp.json` real
-for `command:` servers and dropping the `gke`-only guard):
+**Consequence — deferred scenarios (now built or degraded).** The legs that need a controllable
+registered blocking tool were deferred until local/stdio MCP support landed (#87 — `mcp.json` real
+for `command:` servers, `gke`-only guard dropped). They are now implemented against a real stdio
+blocker (see Correction 3), with the outcomes below. **Shipped** = a deterministic end-to-end
+shell leg; **degraded** = infeasible as a deterministic shell leg, so it stays covered by an
+existing Go unit test (each reason is a verified property of the runtime, not a shortcut):
 
-| Scenario | Why it needs the blocking tool |
-|---|---|
-| S1 (ambiguous-effect ack) | needs a dangling mutating effect (Correction 1) |
-| S2 (read-only auto-resume repair) | needs a dangling read-only call |
-| S3 (planned-stop `--pause-sessions`) | the drain gate-pause only fires for a session with an **active in-flight turn** (`shutdown.go:266`, `active[sid] > 0`); echo turns finish instantly |
-| S4 exit-3 (drain-expired) / S5 (watchdog) | need an in-flight turn to still be draining at the deadline (already flagged as caveats) |
-| S8 mid-turn cancel / S9 loop-breaker | need a turn held open across the abort / a failing continuation turn |
+| Scenario | Status | Detail |
+|---|---|---|
+| S1 (ambiguous-effect ack) | **shipped** | crash mid-`apply_change` → `scan.Mutating` gate → `skipped_ambiguous`; `/ack-effects` → 202 |
+| S2 (auto-resume scope) | **shipped** (as scope-boundary) | crash mid-`read_status` → the dangling coordinator→worker **delegation** (`scan.Deferred`) → `skipped_unsupported`. The "resumed" Case-A read-only *repair* needs a coordinator-authored dangling call with no dangling delegation, which the fixture's delegation topology never yields → unit: `TestAutoResumeRepairsDanglingReadOnly` |
+| S3 (planned-stop `--pause-sessions`) | **shipped** | in-flight blocked turn; `mast stop --pause-sessions` gate-pauses it; restart leaves it paused (auto-resume skips) |
+| S8 mid-turn cancel | **shipped** | `/abort` a turn blocked inside a tool → the backgrounded inject unwinds promptly (cancellation observable) → `aborted` |
+| S4 exit-3 (drain-expired) | **shipped** (budget-free variant) | a SIGTERM whose 30s default drain elapses with the turn still wedged → `freeze`+`cancelTurns` → `errDrainExpired` → exit 3; the survivor keeps its `interrupted` marker. With the budgeted fixture `drainBound == budget.max_wallclock_seconds` (`shutdown.go`) *and* the turn is bounded by that same budget, so it self-cancels first → exit 0; the leg therefore runs a runtime-generated **no-budget** copy of the fixture (unbounded turn vs. `defaultDrainBound`), the only way to make the drain window — not the turn budget — expire |
+| S4 503-during-drain | **degraded** | the drain closes the inject listener **first** (`main.go` `beginDrain` ordering), so a fresh connection is refused, not 503'd; the drain-gate 503 is reachable only over an already-open keep-alive connection, which a fresh `curl` does not make |
+| S9 loop-breaker | **degraded** | needs ≥3 sequential process-crashing continuations inside one attempt window with no deterministic forcing hook. Unit: `TestAutoResumeLoopBreaker` |
+| S5 (watchdog) | **degraded** | needs an in-flight turn still draining at the deadline (already a flagged caveat) |
+
+### Correction 3 — the blocking-tool legs use a request-driven fake model, not the scripted provider
+
+The plan specified `--model scripted` (a positional JSONL of turns) for the mutating legs. That
+model has a single **global cursor that resets to 0 on every process restart** — and every
+crash/restart leg restarts the daemon mid-flight, where the model-call count differs before vs.
+after the restart (auto-resume drives a continuation; an ambiguous session refuses the call).
+A positional script and the live call sequence therefore drift apart at exactly the
+crash-restart boundary under test. The harness instead drives these legs with a **request-driven
+offline fake** (`pkg/agent/toolactor.go`, `--model=toolactor`): it decides purely from the
+current request (delegate if the delegation tool is unanswered; call the reason-selected MCP tool
+if unanswered; else finish), so it is **restart-safe, session-independent, and needs no per-leg
+JSONL**. The blocking tool itself is a small stdio MCP server (`testdata/uat/blocker`) wired
+generically through `mcp.json` (#87); it writes `<tool>.started` on entry and blocks until the
+harness creates `<tool>.release`, giving a deterministic "intent persisted, response not yet
+recorded" crash window with no `sleep`. This deviates from the plan's "scripted provider" note,
+which predates local/stdio MCP.
 
 ### What shipped (deterministic subset)
 
@@ -101,6 +127,37 @@ for `command:` servers and dropping the `gke`-only guard):
   keeps the counter at 1.
 - **S9 (cardinality)** — no `session_id` appears as a label anywhere in `/metrics`.
 - **S4a** — clean SIGTERM drain with no in-flight turn → exit 0; bad flag → exit 2.
+- **Blocking-tool legs (the four now reachable via the stdio blocker + toolactor, per Corrections
+  1–3).** Each backgrounds a synchronous inject, waits on the blocker's `<tool>.started` marker
+  (intent persisted, response not yet recorded), then acts in that window:
+  - **S8-mid-turn** — `/abort` a turn blocked *inside* `apply_change`; the backgrounded inject
+    unwinds promptly (cancellation observable, not a drain-length hang) → `aborted`, counted once,
+    later inject 409.
+  - **S1** — SIGTERM (drain pre-marks the session `interrupted`) then `kill -9` mid-`apply_change`;
+    on restart auto-resume declines the dangling **mutating** effect →
+    `mast_autoresume_total{outcome="skipped_ambiguous"}`; session left `interrupted`;
+    `/ack-effects` → 202. (kill-9 alone writes no interruption marker, so the SIGTERM pre-mark is
+    what makes the session an auto-resume candidate — the leg SIGTERMs first, polls the DB for
+    `interrupted`, then kill-9s to skip the budget-long drain wait.)
+  - **S2 (scope boundary)** — same crash mid-`read_status`; the dangling coordinator→worker
+    **delegation** puts the session out of slice-1 auto-resume scope →
+    `mast_autoresume_total{outcome="skipped_unsupported"}`; left `interrupted`.
+  - **S3** — `mast stop --pause-sessions` while a turn is blocked in `apply_change` gate-pauses it
+    (exit 0); after `kill -9` + restart the session stays `paused` **and** its per-leg auto-resume
+    counters stay at zero — proving the paused session was excluded as a candidate, not
+    admitted-and-declined (which would also render `paused`). The decisive counter is
+    `skipped_stale`, not `skipped_ambiguous`: a gate-paused session projects with a **zero**
+    `InterruptedAt` (`project()` returns at the paused branch before reading the interrupt-time
+    marker), so a regressed paused-exclusion would decline it at the freshness gate as
+    `skipped_stale` before ever reaching the dangling-mutation check — the harness asserts all
+    three (`skipped_stale`, `skipped_ambiguous`, `resumed`) stay zero.
+  - **S4-exit3** — a budget-free copy of the fixture makes the injected turn unbounded; a SIGTERM
+    whose 30s drain window elapses with the turn still wedged in `apply_change` exits **3**
+    (`errDrainExpired`), and the cut-short session keeps its `interrupted` marker — the boot-repair
+    signal a supervisor's `restart=on-failure` acts on. (~30s; the harness still finishes under a
+    minute because the crash legs `kill -9` to skip their own drains.)
+  - Each leg uses its own per-leg session DB so the auto-resume outcome counters read cleanly in
+    isolation.
 
 ### Bug the UAT surfaced — `/abort` re-abort returned HTTP 500 (fixed in #88)
 
