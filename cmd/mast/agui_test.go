@@ -16,16 +16,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/mast/pkg/agui"
 	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/pkg/planner"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -497,10 +503,11 @@ func TestAGUIRateLimiter(t *testing.T) {
 // producing an unprimed scrape series.
 func TestAGUIOutcomeVocabulary(t *testing.T) {
 	pairs := map[string]string{
-		observability.AGUIRunSuccess:  "success",
-		observability.AGUIRunError:    "error",
-		observability.AGUIRunAborted:  "aborted",
-		observability.AGUIRunRejected: "rejected",
+		observability.AGUIRunSuccess:     "success",
+		observability.AGUIRunError:       "error",
+		observability.AGUIRunAborted:     "aborted",
+		observability.AGUIRunRejected:    "rejected",
+		observability.AGUIRunInterrupted: "interrupted",
 	}
 	for got, want := range pairs {
 		if got != want {
@@ -514,4 +521,256 @@ func mkEvent(c *genai.Content) *adksession.Event {
 	ev := adksession.NewEvent(context.Background(), "inv-agui-test")
 	ev.Content = c
 	return ev
+}
+
+// TestInterruptsFromDetailMarshalsSchema pins that a pending input's response
+// schema is projected onto the AG-UI interrupt as raw JSON (so a client can
+// render an input form), and that a schemaless pending input yields an interrupt
+// with no schema (omitted, not a null). Neutralize check: drop the ResponseSchema
+// marshal in interruptsFromDetail and the schema key vanishes from the wire.
+func TestInterruptsFromDetailMarshalsSchema(t *testing.T) {
+	d := &transcript.Detail{
+		Pending: []transcript.PendingInput{
+			{
+				InterruptID:    "int-1",
+				Message:        "approve?",
+				ResponseSchema: &jsonschema.Schema{Type: "object"},
+			},
+			{InterruptID: "int-2", Message: "no schema"},
+		},
+	}
+	its := interruptsFromDetail(d)
+	if len(its) != 2 {
+		t.Fatalf("interrupts = %d, want 2", len(its))
+	}
+	if its[0].ID != "int-1" || its[0].Message != "approve?" {
+		t.Fatalf("interrupt[0] = %+v, want int-1/approve?", its[0])
+	}
+	if len(its[0].ResponseSchema) == 0 {
+		t.Fatal("interrupt[0] lost its response schema")
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(its[0].ResponseSchema, &schema); err != nil {
+		t.Fatalf("response schema is not valid JSON: %v", err)
+	}
+	if schema["type"] != "object" {
+		t.Fatalf("response schema type = %v, want object", schema["type"])
+	}
+	if len(its[1].ResponseSchema) != 0 {
+		t.Errorf("schemaless interrupt carried a schema: %s", its[1].ResponseSchema)
+	}
+}
+
+// TestResumeAnswer pins how a resume entry's payload becomes the value forwarded
+// to the parked tool: a payload is forwarded verbatim; a resolved entry with no
+// payload forwards an empty object; a cancelled entry with no payload forwards a
+// minimal cancellation disposition so the tool can tell it apart from an empty
+// resolution. Neutralize check: collapse the cancelled branch and a payloadless
+// cancel is indistinguishable from an empty resolve.
+func TestResumeAnswer(t *testing.T) {
+	// Verbatim payload (an object).
+	if got := resumeAnswer(agui.ResumeEntry{Status: agui.ResumeStatusResolved, Payload: json.RawMessage(`{"approved":true}`)}); got.(map[string]any)["approved"] != true {
+		t.Fatalf("resolved payload not forwarded verbatim: %#v", got)
+	}
+	// Verbatim payload (a scalar).
+	if got := resumeAnswer(agui.ResumeEntry{Status: agui.ResumeStatusResolved, Payload: json.RawMessage(`"go"`)}); got != "go" {
+		t.Fatalf("scalar payload = %#v, want \"go\"", got)
+	}
+	// Resolved, no payload → empty object (not a cancellation marker).
+	got := resumeAnswer(agui.ResumeEntry{Status: agui.ResumeStatusResolved})
+	m, ok := got.(map[string]any)
+	if !ok || len(m) != 0 {
+		t.Fatalf("payloadless resolve = %#v, want empty object", got)
+	}
+	// Cancelled, no payload → cancellation disposition.
+	got = resumeAnswer(agui.ResumeEntry{Status: agui.ResumeStatusCancelled})
+	if m, ok := got.(map[string]any); !ok || m["status"] != string(agui.ResumeStatusCancelled) {
+		t.Fatalf("payloadless cancel = %#v, want {status: cancelled}", got)
+	}
+}
+
+// aguiScriptedModel is a model.LLM whose reply per call is chosen by a script
+// over the round number and request, used to drive a planner root through a real
+// HITL pause/resume from the AG-UI backend. Each response synthesizes usage
+// metadata (like a real model) so budget metering does not divide by zero.
+type aguiScriptedModel struct {
+	script func(round int, req *model.LLMRequest) *model.LLMResponse
+	round  int
+}
+
+func (m *aguiScriptedModel) Name() string { return "agui-scripted" }
+
+func (m *aguiScriptedModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		m.round++
+		resp := m.script(m.round, req)
+		if resp.UsageMetadata == nil {
+			resp.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount: 1, CandidatesTokenCount: 1, TotalTokenCount: 2,
+			}
+		}
+		resp.TurnComplete = true
+		resp.FinishReason = genai.FinishReasonStop
+		yield(resp, nil)
+	}
+}
+
+// aguiCallResponse builds a single-tool-call model response.
+func aguiCallResponse(name string, args map[string]any) *model.LLMResponse {
+	return &model.LLMResponse{
+		Content: &genai.Content{
+			Role:  genai.RoleModel,
+			Parts: []*genai.Part{genai.NewPartFromFunctionCall(name, args)},
+		},
+	}
+}
+
+// aguiLastFunctionResponse returns the last FunctionResponse payload visible in a
+// request's contents (what the model saw the operator answer with, regardless of
+// the name the resume was delivered under — a resume rides adk_request_input, not
+// the parked tool's own name).
+func aguiLastFunctionResponse(req *model.LLMRequest) map[string]any {
+	var last map[string]any
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p != nil && p.FunctionResponse != nil && p.FunctionResponse.Response != nil {
+				last = p.FunctionResponse.Response
+			}
+		}
+	}
+	return last
+}
+
+// newAGUIBackendPlanner builds an aguiBackend over a real planner root (which
+// carries the request_operator_input long-running tool), so RunAgent can drive a
+// genuine HITL pause and resume through runTurnPre — the plain llmagent harness
+// (newAGUIBackendRunner) cannot park a turn.
+func newAGUIBackendPlanner(t *testing.T, m model.LLM) *aguiBackend {
+	t.Helper()
+	svc := adksession.InMemoryService()
+	obs := observability.New()
+	obs.Prime("(test)")
+	store := transcript.NewStore(svc, appName)
+	root, err := planner.NewRoot(planner.Config{Name: "w", Model: m})
+	if err != nil {
+		t.Fatalf("planner.NewRoot: %v", err)
+	}
+	r, err := runner.New(runner.Config{
+		AppName:           appName,
+		Agent:             root,
+		SessionService:    svc,
+		AutoCreateSession: true,
+	})
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+	return &aguiBackend{
+		store:        store,
+		obs:          obs,
+		tracker:      newTurnTracker(store, discardLogger(), obs, "(test)"),
+		logger:       discardLogger(),
+		workloadName: "(test)",
+		r:            r,
+		meters:       newMeterPool(nil, "test-model"),
+		wds:          newWatchdogPool(),
+		turnLocks:    newSessionTurnLocks(),
+	}
+}
+
+// TestAGUIBackendHITLPauseAndResume drives the full HITL lifecycle over a planner
+// root. Turn 1's request_operator_input call parks the run, so RunAgent returns
+// Interrupted carrying the open interrupt (id + operator message + response
+// schema) projected from durable state — the server renders that as
+// RunFinished{outcome: interrupt}. A resume naming no open interrupt is refused
+// with ErrNotResumable before any emit (→ HTTP 409). Turn 2 answers the real
+// interrupt id; RunAgent unparks the planner via a FunctionResponse named
+// adk_request_input and the run finishes clean.
+//
+// The resume FunctionResponse name matches the operator-facing resume()
+// (adk_request_input, load-bearing for graph roots — a planner root resumes
+// under either name, so this test cannot pin the name itself).
+//
+// Neutralize check: drop the pendingInterrupts projection in classifyRun's
+// err==nil branch and turn 1 is misreported as a plain success (Interrupted
+// false, no interrupts).
+func TestAGUIBackendHITLPauseAndResume(t *testing.T) {
+	var operatorAnswer map[string]any
+	m := &aguiScriptedModel{script: func(round int, req *model.LLMRequest) *model.LLMResponse {
+		if round == 1 {
+			return aguiCallResponse(planner.ToolRequestOperatorInput, map[string]any{
+				"message": "approve the rollback?",
+				"schema":  map[string]any{"type": "object"},
+			})
+		}
+		// Resume round: the operator's answer must be visible to the planner.
+		if fr := aguiLastFunctionResponse(req); fr != nil {
+			operatorAnswer = fr
+		}
+		return aguiCallResponse("finish_task", map[string]any{"result": "rolled back"})
+	}}
+	b := newAGUIBackendPlanner(t, m)
+
+	// Turn 1: pause.
+	emit, _ := collectEmit()
+	res, err := b.RunAgent(context.Background(), agui.RunInput{ThreadID: "t1", RunID: "r1", Text: "do risky thing"}, emit)
+	if err != nil {
+		t.Fatalf("RunAgent(pause turn): %v", err)
+	}
+	if !res.Interrupted {
+		t.Fatalf("pause turn result = %+v, want Interrupted", res)
+	}
+	if len(res.Interrupts) != 1 {
+		t.Fatalf("interrupts = %+v, want exactly one open interrupt", res.Interrupts)
+	}
+	it := res.Interrupts[0]
+	if it.ID == "" {
+		t.Fatal("interrupt carries no ID (the resume correlation key)")
+	}
+	if it.Message != "approve the rollback?" {
+		t.Fatalf("interrupt message = %q, want the operator prompt", it.Message)
+	}
+	// A request_operator_input park projects only id + message (scanPending does
+	// not lift the tool's "schema" arg into ResponseSchema — that field is
+	// populated only for RequestedInput-source pauses); the schema-marshal path
+	// is covered by TestInterruptsFromDetailMarshalsSchema.
+	if res.Text != "" {
+		t.Errorf("paused turn carried answer text %q, want none", res.Text)
+	}
+
+	// A resume naming no open interrupt is refused BEFORE any emit so the server
+	// answers HTTP 409 rather than opening an orphaned stream.
+	emitBad, gotBad := collectEmit()
+	_, err = b.RunAgent(context.Background(), agui.RunInput{
+		ThreadID: "t1", RunID: "r2",
+		Resume: []agui.ResumeEntry{{InterruptID: "no-such-id", Status: agui.ResumeStatusResolved}},
+	}, emitBad)
+	if !errors.Is(err, agui.ErrNotResumable) {
+		t.Fatalf("resume(unknown id) err = %v, want agui.ErrNotResumable", err)
+	}
+	if len(*gotBad) != 0 {
+		t.Fatalf("unresumable run emitted %d frames, want 0 (refusal precedes any emit)", len(*gotBad))
+	}
+
+	// Turn 2: resume the real interrupt — unparks the planner, run finishes.
+	emit2, _ := collectEmit()
+	res2, err := b.RunAgent(context.Background(), agui.RunInput{
+		ThreadID: "t1", RunID: "r3",
+		Resume: []agui.ResumeEntry{{
+			InterruptID: it.ID,
+			Status:      agui.ResumeStatusResolved,
+			Payload:     json.RawMessage(`{"approved":true}`),
+		}},
+	}, emit2)
+	if err != nil {
+		t.Fatalf("RunAgent(resume turn): %v", err)
+	}
+	if res2.Interrupted {
+		t.Fatalf("resumed run still Interrupted %+v — the resume forked a fresh turn instead of unparking", res2)
+	}
+	if operatorAnswer == nil {
+		t.Fatal("planner never saw the operator answer — the resume did not unpark the parked call")
+	}
 }

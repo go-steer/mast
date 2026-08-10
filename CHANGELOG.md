@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **AG-UI server — Stage 2: HITL interrupt/resume lifecycle**
+  (docs/ag-ui-design.md "Implementation status"; #84). Turns the Stage-1
+  honest-placeholder `RunError{interrupt}` into the real human-in-the-loop
+  loop. A turn that parks on a HITL primitive (a `request_operator_input`-class
+  long-running tool, or a programmatic / external-signal pause) now closes the
+  SSE stream with a terminal `RunFinished` whose `outcome` is
+  `{type: "interrupt", interrupts: [{id, message, responseSchema?, expiresAt?}]}`,
+  projected from the durable session's pending-interrupt state rather than
+  fabricated. The client resumes by starting a **new run** whose
+  `RunAgentInput.resume` carries one entry per interrupt (`status:
+  "resolved" | "cancelled"`, optional payload); the daemon reconciles each
+  entry against the session's open interrupt ids, builds the resume
+  function-response, and drives the resume turn through the same `runTurnPre`
+  chokepoint every other turn kind uses. A resume that references no open
+  interrupt (or an unknown id) is refused with `409` (`ErrNotResumable`)
+  instead of silently forking a fresh turn, and a resume run may carry empty
+  input — the `resume` array alone drives it. The terminal interrupt frame
+  records a new `interrupted` outcome on `mast_agui_runs_total{workload,outcome}`.
+  Still hand-rolled in `pkg/agui` with zero new dependencies. Per-key state
+  deltas, client-declared tools, and the `agui://` federation client remain
+  follow-on stages.
+
 - **Effect-outbox durability hardening** (docs/durable-execution-design.md
   "Recorded-effect outbox"; #71). Two follow-ups from the outbox gate review.
   **Sub-agent/tool name collision is now refused at construction (N2):** the

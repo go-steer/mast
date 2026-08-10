@@ -344,9 +344,10 @@ frames: `RunStarted`, then a `StateSnapshot` echoing the client's input
 state, then the model's answer as a `TextMessage` triad
 (`TextMessageStart`/`Content`/`End`) with `ToolCallStart`/`Args`/`End`
 and `ToolCallResult` frames for any tool activity, then exactly one
-terminal frame — `RunFinished` on success, or `RunError` (`aborted` when
-the session was aborted or gate-paused, `interrupt` when the turn paused
-for human input, `internal` on a runner error). Updates are
+terminal frame — `RunFinished` on success (`outcome: {type: "success"}`)
+or on a HITL pause (`outcome: {type: "interrupt", interrupts: […]}`), or
+`RunError` (`aborted` when the session was aborted or gate-paused,
+`internal` on a runner error). Updates are
 message-granular (one text message per model response, not token deltas).
 The session id is always **derived by the daemon** from the AG-UI
 `threadId`/`runId` and namespaced under `agui-` — a client never supplies
@@ -356,10 +357,21 @@ picks the mapping: `per_thread` (the default — one continuing session per
 thread, matching chat UX) or `per_run` (a fresh session per run, for
 stateless one-shots).
 
-The HITL interrupt/resume lifecycle, per-key state deltas, client-declared
-tools, and the `agui://` federation client are follow-on stages; an
-interrupted turn currently returns an honest `RunError{interrupt}`, never
-a fabricated success.
+**HITL.** A turn that parks for human input closes the stream with a
+terminal `RunFinished` whose `outcome.type` is `interrupt`, listing each
+pending interrupt as `{id, message, responseSchema?, expiresAt?}`
+(projected from the durable session's pending-interrupt state — not a
+fabricated success). The client **resumes** by starting a new run whose
+`RunAgentInput.resume` carries one entry per interrupt (`{interruptId,
+status: "resolved" | "cancelled", payload?}`); the daemon reconciles each
+entry against the session's open interrupt ids and drives the resume turn
+through the same chokepoint. A resume that references no open interrupt
+(or an unknown id) is refused `409` rather than silently forking a fresh
+turn. A resume run may carry an empty `input` — the `resume` array alone
+drives it.
+
+Per-key state deltas, client-declared tools, and the `agui://` federation
+client are follow-on stages.
 
 **Auth.** The discovery descriptor is always public. Each run endpoint is
 authenticated when `MAST_AGUI_TOKEN` is set — a request without a valid

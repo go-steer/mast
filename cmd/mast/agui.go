@@ -23,10 +23,14 @@ package main
 // server writes. It also projects the bundle's agui: section into the exposed
 // endpoints.
 //
-// Stage 1 is server core: the happy-path run stream, discovery, auth, and rate
-// limiting. The HITL interrupt/resume lifecycle, the agui:// federation client,
-// and per-key state deltas are follow-on stages (an interrupted turn maps to an
-// honest RunError{interrupt}, never a fabricated success).
+// This wiring covers the server core (the happy-path run stream, discovery,
+// auth, rate limiting) plus the HITL interrupt/resume lifecycle: a turn that
+// pauses for human input finishes as RunFinished{outcome: interrupt} listing
+// the open interrupts (projected from the durable session state), and a
+// subsequent run carrying RunAgentInput.Resume answers them by driving a
+// FunctionResponse turn through the same chokepoint — the AG-UI spelling of
+// mast's durable pause/resume (docs/durable-execution-design.md). The agui://
+// federation client and per-key state deltas remain follow-on stages.
 
 import (
 	"context"
@@ -80,6 +84,13 @@ type aguiBackend struct {
 // one this surface owns (see isAGUISessionID).
 const aguiSessionPrefix = "agui-"
 
+// aguiResumeFunctionName is the FunctionCall name a resume's FunctionResponse
+// must carry for the runtime to route it to the parked workflow input (rather
+// than silently forking a fresh turn). It matches the hardcoded name the
+// operator-facing resume() path uses (see cmd/mast/main.go); the runtime's
+// workflow roots filter resumes by exactly this name.
+const aguiResumeFunctionName = "adk_request_input"
+
 // sessionModel returns the workload's configured AG-UI session model,
 // defaulting to per_thread (the dominant chat case: one continuing
 // conversation per thread).
@@ -123,9 +134,11 @@ func isAGUISessionID(id string) bool {
 // AG-UI frames. It emits the opening frames (RunStarted, then a StateSnapshot
 // echoing the client's input state) and, via the translating onEvent, all
 // interior text/tool frames; the server emits the terminal frame from the
-// returned RunResult. A pre-turn refusal (draining, or a crafted id that
-// escaped the owned namespace) returns before any emit so the server reports a
-// clean HTTP status rather than an orphaned stream.
+// returned RunResult. A run carrying RunAgentInput.Resume answers the session's
+// open interrupts with FunctionResponses instead of a user message, resuming a
+// parked turn. A pre-turn refusal (draining; a crafted id that escaped the owned
+// namespace; a resume against a session not awaiting input) returns before any
+// emit so the server reports a clean HTTP status rather than an orphaned stream.
 func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(any)) (agui.RunResult, error) {
 	// Drain gate: refuse new work once shutdown has begun, BEFORE any emit
 	// (mirrors the inject handler and a2a). ErrUnavailable → HTTP 503.
@@ -139,6 +152,21 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 		// namespace; refuse before any emit rather than drive a turn into a
 		// reserved row (which would corrupt its marker storage).
 		return agui.RunResult{}, fmt.Errorf("agui: derived session id %q is not addressable", sessionID)
+	}
+
+	// Build the turn message. A resume (RunAgentInput.Resume present) answers the
+	// session's open interrupts with FunctionResponses; a fresh run carries the
+	// user text. The resume's pre-validation runs BEFORE any emit so a resume
+	// against a session that is not awaiting input is refused as a clean HTTP 409
+	// (ErrNotResumable) rather than an orphaned stream.
+	label := "agui:run"
+	msg := genai.NewContentFromText(in.Text, genai.RoleUser)
+	if len(in.Resume) > 0 {
+		resumeMsg, rerr := b.buildResumeMessage(ctx, sessionID, in.Resume)
+		if rerr != nil {
+			return agui.RunResult{}, rerr
+		}
+		msg, label = resumeMsg, "agui:resume"
 	}
 
 	// Time the executed run for the duration histogram; only runs that pass
@@ -165,11 +193,95 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 	}
 
 	em := &aguiEmitter{emit: emit}
-	msg := genai.NewContentFromText(in.Text, genai.RoleUser)
 	err := runTurnPre(ctx, b.r, b.logger, b.store, b.meters, b.wds, b.obs, b.tracker, b.turnLocks,
-		b.workloadName, sessionID, msg, "agui:run", nil, em.onEvent)
+		b.workloadName, sessionID, msg, label, nil, em.onEvent)
 
 	return b.classifyRun(ctx, sessionID, em, err)
+}
+
+// buildResumeMessage turns a run's Resume entries into the FunctionResponse turn
+// that unparks the session, mirroring the operator-facing resume() path
+// (cmd/mast/main.go): each answered interrupt becomes a FunctionResponse named
+// aguiResumeFunctionName, carrying the interrupt id and a {"response": <answer>}
+// map. It reads the durable pause projection (the ground truth for which
+// interrupts are open) and answers only entries that name a genuinely-open
+// interrupt — an entry naming no open interrupt is dropped, since replaying it as
+// a FunctionResponse would either be ignored by the runtime or fork a fresh turn.
+// When no entry matches an open interrupt (a resume against a session not
+// awaiting input, or answering already-closed interrupts) it returns
+// ErrNotResumable so the server refuses with a clean HTTP 409 before any emit.
+func (b *aguiBackend) buildResumeMessage(ctx context.Context, sessionID string, entries []agui.ResumeEntry) (*genai.Content, error) {
+	d, err := b.store.Get(ctx, "", sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("agui: cannot resume %q: %w", sessionID, agui.ErrNotResumable)
+	}
+	open := map[string]bool{}
+	for _, id := range d.PendingInterruptIDs {
+		open[id] = true
+	}
+	var parts []*genai.Part
+	for _, e := range entries {
+		if e.InterruptID == "" || !open[e.InterruptID] {
+			continue
+		}
+		part := genai.NewPartFromFunctionResponse(aguiResumeFunctionName, map[string]any{
+			"response": resumeAnswer(e),
+		})
+		part.FunctionResponse.ID = e.InterruptID
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("agui: no open interrupt matched the resume for %q: %w", sessionID, agui.ErrNotResumable)
+	}
+	return &genai.Content{Role: genai.RoleUser, Parts: parts}, nil
+}
+
+// resumeAnswer decodes a resume entry's operator-supplied payload into the value
+// forwarded to the parked tool. The payload is forwarded verbatim; a resolved
+// entry with no payload forwards an empty object and a cancelled entry with no
+// payload forwards a minimal {"status":"cancelled"} disposition so the tool can
+// distinguish a cancellation from a resolution with an empty answer.
+func resumeAnswer(e agui.ResumeEntry) any {
+	if len(e.Payload) > 0 {
+		var v any
+		if err := json.Unmarshal(e.Payload, &v); err == nil {
+			return v
+		}
+	}
+	if e.Status == agui.ResumeStatusCancelled {
+		return map[string]any{"status": string(agui.ResumeStatusCancelled)}
+	}
+	return map[string]any{}
+}
+
+// interruptsFromDetail projects a session's durable pending inputs into the
+// AG-UI interrupt list carried on RunFinished{outcome: interrupt}. Each pending
+// input contributes its id and operator-facing message; its response schema (if
+// any) is marshaled to raw JSON for the client to render an input form.
+func interruptsFromDetail(d *transcript.Detail) []agui.Interrupt {
+	out := make([]agui.Interrupt, 0, len(d.Pending))
+	for _, p := range d.Pending {
+		it := agui.Interrupt{ID: p.InterruptID, Message: p.Message}
+		if p.ResponseSchema != nil {
+			if raw, err := json.Marshal(p.ResponseSchema); err == nil {
+				it.ResponseSchema = raw
+			}
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// pendingInterrupts reads the session's durable state and, when it is paused with
+// open interrupts, projects them into the AG-UI interrupt list. ok is false when
+// the read failed or the session is not paused on input, so a clean-finishing
+// turn is reported as a plain success rather than a spurious interrupt.
+func (b *aguiBackend) pendingInterrupts(ctx context.Context, sessionID string) ([]agui.Interrupt, bool) {
+	d, err := b.store.Get(ctx, "", sessionID)
+	if err != nil || d.State != transcript.StatePaused || len(d.Pending) == 0 {
+		return nil, false
+	}
+	return interruptsFromDetail(d), true
 }
 
 // classifyRun maps a runTurnPre outcome onto an AG-UI run disposition. The
@@ -186,10 +298,21 @@ func (b *aguiBackend) classifyRun(ctx context.Context, sessionID string, em *agu
 	readCtx := context.WithoutCancel(ctx)
 	switch {
 	case err == nil:
-		// A HITL pause finishes the turn with err==nil and the interrupt signal
-		// captured; report it honestly (→ RunError{interrupt}) rather than a
-		// success. The full interrupt/resume lifecycle is a follow-on stage.
-		return agui.RunResult{Text: em.lastText, Interrupted: em.interrupted}, nil
+		// A HITL pause finishes the turn with err==nil (no sentinel); the durable
+		// pause projection is the ground truth for whether the turn parked and on
+		// what. When it did, report the open interrupts so the server emits
+		// RunFinished{outcome: interrupt} listing them; otherwise the turn is a
+		// plain success.
+		if its, ok := b.pendingInterrupts(readCtx, sessionID); ok {
+			return agui.RunResult{Text: em.lastText, Interrupted: true, Interrupts: its}, nil
+		}
+		if em.interrupted {
+			// In-turn interrupt signal without a durable projection: should not
+			// happen (the pause writes its marker synchronously), but never drop a
+			// pause into a fabricated success.
+			return agui.RunResult{Text: em.lastText, Interrupted: true}, nil
+		}
+		return agui.RunResult{Text: em.lastText}, nil
 	case errors.Is(err, inject.ErrConflict):
 		// The chokepoint refused the turn: the session is aborted or paused.
 		// Project its durable state rather than a generic error.
@@ -230,7 +353,7 @@ func (b *aguiBackend) dispositionFromStore(ctx context.Context, sessionID string
 	case d.State == transcript.StateAborted:
 		return agui.RunResult{Aborted: true}, true
 	case d.State == transcript.StatePaused && len(d.PendingInterruptIDs) > 0:
-		return agui.RunResult{Interrupted: true}, true
+		return agui.RunResult{Interrupted: true, Interrupts: interruptsFromDetail(d)}, true
 	case d.State == transcript.StatePaused:
 		// Gate-only pause (operator/timed hold): the run was refused. Aborted is
 		// the closest Stage 1 disposition; a dedicated "refused" code is a

@@ -81,7 +81,7 @@ func (b *fakeBackend) RunAgent(ctx context.Context, in RunInput, emit func(any))
 	emit(NewTextMessageContent("m1", "echo:"+in.Text))
 	emit(NewTextMessageEnd("m1"))
 
-	if result == (RunResult{}) {
+	if result.Text == "" && !result.Aborted && !result.Interrupted && len(result.Interrupts) == 0 {
 		result = RunResult{Text: "echo:" + in.Text}
 	}
 	return result, nil
@@ -438,28 +438,44 @@ func TestRunAborted(t *testing.T) {
 }
 
 // TestRunInterrupted: a run that paused for human input closes with a terminal
-// RUN_ERROR carrying the interrupt code (the honest Stage 1 placeholder), never
-// a success.
+// RUN_FINISHED carrying outcome:interrupt and the open interrupts the client
+// must answer — a HITL pause is a stopping point, not an error, so it must NOT
+// surface as a RUN_ERROR nor as a success outcome.
 func TestRunInterrupted(t *testing.T) {
 	be := newFakeBackend()
-	be.result = RunResult{Interrupted: true}
-	ts, _ := testServer(t, Config{Backend: be})
+	be.result = RunResult{Interrupted: true, Interrupts: []Interrupt{
+		{ID: "int-1", Message: "approve deploy?", ResponseSchema: json.RawMessage(`{"type":"boolean"}`)},
+	}}
+	metric := &recordingMetric{}
+	ts, _ := testServer(t, Config{Backend: be, Metric: metric})
 	_, _, frames := runCall(t, ts, "", testEndpoint, runBody("t", "r", "hi"))
 	last := frames[len(frames)-1]
-	if last.typ != EventRunError {
-		t.Fatalf("last frame type = %q, want %q", last.typ, EventRunError)
+	if last.typ != EventRunFinished {
+		t.Fatalf("last frame type = %q, want %q", last.typ, EventRunFinished)
 	}
-	var re RunError
-	if err := json.Unmarshal(last.raw, &re); err != nil {
-		t.Fatalf("decode RunError: %v", err)
+	var rf RunFinished
+	if err := json.Unmarshal(last.raw, &rf); err != nil {
+		t.Fatalf("decode RunFinished: %v", err)
 	}
-	if re.Code != RunErrorInterrupt {
-		t.Fatalf("RunError code = %q, want %q", re.Code, RunErrorInterrupt)
+	if rf.Outcome == nil || rf.Outcome.Type != RunOutcomeInterrupt {
+		t.Fatalf("outcome = %+v, want type %q", rf.Outcome, RunOutcomeInterrupt)
 	}
+	if len(rf.Outcome.Interrupts) != 1 || rf.Outcome.Interrupts[0].ID != "int-1" {
+		t.Fatalf("interrupts = %+v, want one int-1", rf.Outcome.Interrupts)
+	}
+	if rf.Result != nil {
+		t.Errorf("interrupt outcome must not carry a result, got %s", rf.Result)
+	}
+	// No RUN_ERROR may appear — a pause is not a failure.
 	for _, f := range frames {
-		if f.typ == EventRunFinished {
-			t.Fatal("interrupted run emitted a RUN_FINISHED (fabricated success)")
+		if f.typ == EventRunError {
+			t.Fatal("interrupted run emitted a RUN_ERROR (pause misreported as failure)")
 		}
+	}
+	metric.mu.Lock()
+	defer metric.mu.Unlock()
+	if len(metric.seen) != 1 || metric.seen[0] != "triage/interrupted" {
+		t.Fatalf("metric = %v, want one triage/interrupted", metric.seen)
 	}
 }
 
@@ -535,6 +551,62 @@ func TestRunInternalErrorBeforeEmit(t *testing.T) {
 	}
 	if status != http.StatusInternalServerError {
 		t.Fatalf("pre-emit fault: status = %d, want 500", status)
+	}
+}
+
+// TestRunResumeThreadedToBackend: a run carrying a resume array is accepted with
+// no user message (a resume answers an open interrupt, it does not start a fresh
+// turn) and the entries reach the backend verbatim. Neutralize check: drop the
+// `len(in.Resume) == 0` clause in the text guard and a text-less resume is 400'd
+// before the backend; drop `Resume: in.Resume` in the RunInput and the entries
+// never arrive.
+func TestRunResumeThreadedToBackend(t *testing.T) {
+	be := newFakeBackend()
+	be.result = RunResult{Text: "resumed and finished"}
+	ts, _ := testServer(t, Config{Backend: be})
+	body := `{"threadId":"t","runId":"r","resume":[{"interruptId":"int-1","status":"resolved","payload":{"approved":true}}]}`
+	status, ct, frames := runCall(t, ts, "", testEndpoint, body)
+	if status != http.StatusOK || !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("resume run: status=%d ct=%q, want 200 + SSE", status, ct)
+	}
+	if last := frames[len(frames)-1]; last.typ != EventRunFinished {
+		t.Fatalf("resume run last frame = %q, want RUN_FINISHED", last.typ)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.runs) != 1 {
+		t.Fatalf("backend saw %d runs, want 1", len(be.runs))
+	}
+	got := be.runs[0].Resume
+	if len(got) != 1 || got[0].InterruptID != "int-1" || got[0].Status != ResumeStatusResolved {
+		t.Fatalf("backend resume = %+v, want one resolved int-1", got)
+	}
+	if string(got[0].Payload) != `{"approved":true}` {
+		t.Errorf("resume payload = %s, want {\"approved\":true}", got[0].Payload)
+	}
+}
+
+// TestRunNotResumable: a resume against a session that is not awaiting input is
+// refused with HTTP 409 before any SSE upgrade (so the answer is not silently
+// discarded into a fresh turn), and metered as rejected. Neutralize check: drop
+// the ErrNotResumable branch and the refusal degrades to a generic 500.
+func TestRunNotResumable(t *testing.T) {
+	metric := &recordingMetric{}
+	be := newFakeBackend()
+	be.beforeEmitErr = fmt.Errorf("stale: %w", ErrNotResumable)
+	ts, _ := testServer(t, Config{Backend: be, Metric: metric})
+	body := `{"threadId":"t","runId":"r","resume":[{"interruptId":"gone","status":"resolved"}]}`
+	status, ct, _ := runCall(t, ts, "", testEndpoint, body)
+	if strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("not-resumable refusal opened an SSE stream (Content-Type %q)", ct)
+	}
+	if status != http.StatusConflict {
+		t.Fatalf("not-resumable: status = %d, want 409", status)
+	}
+	metric.mu.Lock()
+	defer metric.mu.Unlock()
+	if len(metric.seen) != 1 || metric.seen[0] != "triage/rejected" {
+		t.Fatalf("metric = %v, want one triage/rejected", metric.seen)
 	}
 }
 
@@ -776,10 +848,11 @@ func TestRunEchoesStateSnapshot(t *testing.T) {
 // unnoticed.
 func TestOutcomeConstantLiterals(t *testing.T) {
 	pairs := map[string]string{
-		outcomeSuccess:  "success",
-		outcomeError:    "error",
-		outcomeAborted:  "aborted",
-		outcomeRejected: "rejected",
+		outcomeSuccess:     "success",
+		outcomeError:       "error",
+		outcomeAborted:     "aborted",
+		outcomeRejected:    "rejected",
+		outcomeInterrupted: "interrupted",
 	}
 	for got, want := range pairs {
 		if got != want {

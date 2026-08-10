@@ -148,18 +148,20 @@ var a2aTaskOutcomes = []string{
 
 // AG-UI server run outcomes for AGUIRun (mast_agui_runs_total
 // {workload,outcome}). A fixed vocabulary mirroring the AG-UI run
-// dispositions the server reports (docs/ag-ui-design.md): a completed run,
-// an errored/interrupted run, an operator/client abort, and a pre-stream
-// refusal (auth/scope/rate-limit/drain). The string VALUES match pkg/agui's
-// internal outcome constants — the server passes them through, so these two
-// lists must not drift. Both sides are pinned to the same literals: pkg/agui's
-// own test locks its unexported constants, and a cmd/mast test locks these
-// exported ones, so a move on either side fails a build.
+// dispositions the server reports (docs/ag-ui-design.md): a completed run, a
+// run that paused for human input (a clean interrupt, resumable via
+// RunAgentInput.Resume), an errored run, an operator/client abort, and a
+// pre-stream refusal (auth/scope/rate-limit/drain/not-resumable). The string
+// VALUES match pkg/agui's internal outcome constants — the server passes them
+// through, so these two lists must not drift. Both sides are pinned to the same
+// literals: pkg/agui's own test locks its unexported constants, and a cmd/mast
+// test locks these exported ones, so a move on either side fails a build.
 const (
-	AGUIRunSuccess  = "success"
-	AGUIRunError    = "error"
-	AGUIRunAborted  = "aborted"
-	AGUIRunRejected = "rejected"
+	AGUIRunSuccess     = "success"
+	AGUIRunInterrupted = "interrupted"
+	AGUIRunError       = "error"
+	AGUIRunAborted     = "aborted"
+	AGUIRunRejected    = "rejected"
 )
 
 // aguiRunOutcomes is the fixed label set primed for
@@ -167,6 +169,7 @@ const (
 // AGUIRun vocabulary can never drift.
 var aguiRunOutcomes = []string{
 	AGUIRunSuccess,
+	AGUIRunInterrupted,
 	AGUIRunError,
 	AGUIRunAborted,
 	AGUIRunRejected,
