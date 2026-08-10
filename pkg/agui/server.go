@@ -78,6 +78,15 @@ const maxRunBodyBytes = 1 << 20 // 1 MiB
 // than opening a stream it cannot fill.
 var ErrUnavailable = errors.New("agui: backend temporarily unavailable")
 
+// ErrNotResumable marks a resume request (RunAgentInput.Resume present) whose
+// target session is not awaiting input — no such session, or it is not paused
+// on any interrupt the client named. When a Backend returns it before emitting
+// any frame, the server reports HTTP 409 (Conflict): the client's answer does
+// not correspond to an open interrupt, so driving a fresh turn would silently
+// discard it. Refusing before the SSE upgrade keeps this a clean HTTP status
+// rather than a fabricated stream.
+var ErrNotResumable = errors.New("agui: session is not awaiting input (nothing to resume)")
+
 // ExposedWorkload is one workload's AG-UI exposure, projected by the daemon
 // from the bundle's agui: section (this package does not import pkg/workload).
 type ExposedWorkload struct {
@@ -117,23 +126,36 @@ type RunInput struct {
 	ThreadID string
 	RunID    string
 
+	// ParentRunID is the run this one continues, when the client sets it. A
+	// resume arrives as a NEW run (new RunID) but must reach the session the
+	// parent run parked; under a run-keyed session model the daemon keys the
+	// resume's session on ParentRunID. Empty when absent.
+	ParentRunID string
+
 	// Text is the turn's user input (the last user message's content).
 	Text string
 
 	// State is the client-supplied shared-state document, echoed back as the
 	// opening StateSnapshot; nil when absent.
 	State json.RawMessage
+
+	// Resume, when non-empty, makes this a resume of an interrupted run: each
+	// entry answers one open interrupt (by id) rather than driving a fresh user
+	// turn. The daemon translates the answers into the runtime's resume input.
+	Resume []ResumeEntry
 }
 
 // RunResult is the terminal outcome of a run, returned by the Backend after
 // the turn completes. Exactly one disposition holds: Aborted (operator/client
-// cancellation), Interrupted (the turn paused for human input — an honest
-// Stage 1 placeholder until the full HITL lifecycle lands), or neither
-// (success, with Text the final answer surfaced in RunFinished.result).
+// cancellation), Interrupted (the turn paused for human input), or neither
+// (success, with Text the final answer surfaced in RunFinished.result). When
+// Interrupted, Interrupts lists the open interrupts the client must answer to
+// resume; the server emits them in the terminal RunFinished{outcome: interrupt}.
 type RunResult struct {
 	Text        string
 	Aborted     bool
 	Interrupted bool
+	Interrupts  []Interrupt
 }
 
 // Backend drives an AG-UI run against the mast runtime. The daemon implements
@@ -152,17 +174,19 @@ type Backend interface {
 
 // RunMetric records AG-UI run outcomes. The daemon backs it with
 // observability.Registry.AGUIRun; nil disables. The outcome is one of a fixed
-// vocabulary (see observability.Prime): success, error, aborted, rejected.
+// vocabulary (see observability.Prime): success, interrupted, error, aborted,
+// rejected.
 type RunMetric interface {
 	AGUIRun(workload, outcome string)
 }
 
 // Run outcome labels (fixed vocabulary shared with observability.Prime).
 const (
-	outcomeSuccess  = "success"
-	outcomeError    = "error"
-	outcomeAborted  = "aborted"
-	outcomeRejected = "rejected"
+	outcomeSuccess     = "success"
+	outcomeInterrupted = "interrupted"
+	outcomeError       = "error"
+	outcomeAborted     = "aborted"
+	outcomeRejected    = "rejected"
 )
 
 // Config configures the AG-UI server.
@@ -324,8 +348,10 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 		return
 	}
 	text := lastUserText(in.Messages)
-	if text == "" {
-		http.Error(w, "bad request: no user message text (Stage 1 requires a text user message)", http.StatusBadRequest)
+	if text == "" && len(in.Resume) == 0 {
+		// A run must carry either a user message to act on or a resume answering
+		// an open interrupt; a body with neither has nothing to drive.
+		http.Error(w, "bad request: a run requires a user message text or a resume", http.StatusBadRequest)
 		return
 	}
 
@@ -373,12 +399,18 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 		}
 	}
 
+	var parentRunID string
+	if in.ParentRunID != nil {
+		parentRunID = *in.ParentRunID
+	}
 	result, err := s.cfg.Backend.RunAgent(streamCtx, RunInput{
 		WorkloadName: ew.WorkloadName,
 		ThreadID:     in.ThreadID,
 		RunID:        in.RunID,
+		ParentRunID:  parentRunID,
 		Text:         text,
 		State:        in.State,
+		Resume:       in.Resume,
 	}, emit)
 	if err != nil {
 		if !started {
@@ -386,6 +418,14 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 			if errors.Is(err, ErrUnavailable) {
 				s.recordRun(ew.WorkloadName, outcomeRejected)
 				http.Error(w, "server temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if errors.Is(err, ErrNotResumable) {
+				// The client tried to answer an interrupt that is not open on the
+				// target session. Refuse before any stream so the answer is not
+				// silently discarded into a fresh turn.
+				s.recordRun(ew.WorkloadName, outcomeRejected)
+				http.Error(w, "conflict: session is not awaiting input", http.StatusConflict)
 				return
 			}
 			s.logger.Error("agui run failed", "workload", ew.WorkloadName, "error", err.Error())
@@ -408,11 +448,12 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 		s.recordRun(ew.WorkloadName, outcomeAborted)
 		emit(NewRunError("run aborted", RunErrorAborted))
 	case result.Interrupted:
-		// Honest placeholder: the turn paused for human input. The full
-		// interrupt/resume lifecycle is a follow-on stage; never fabricate a
-		// success here.
-		s.recordRun(ew.WorkloadName, outcomeError)
-		emit(NewRunError("run interrupted: awaiting human input (resume is not yet served)", RunErrorInterrupt))
+		// The turn paused for human input: a clean run stop, not an error. The
+		// terminal RunFinished carries an interrupt outcome listing what the
+		// client must answer; a subsequent run with RunAgentInput.Resume
+		// continues from here.
+		s.recordRun(ew.WorkloadName, outcomeInterrupted)
+		emit(NewRunFinishedInterrupt(in.ThreadID, in.RunID, result.Interrupts))
 	default:
 		s.recordRun(ew.WorkloadName, outcomeSuccess)
 		emit(NewRunFinished(in.ThreadID, in.RunID, resultJSON(result.Text)))

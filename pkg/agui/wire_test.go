@@ -39,7 +39,7 @@ func TestRunAgentInputRoundTrip(t *testing.T) {
 		Context:        []Context{{Description: "tz", Value: "UTC"}},
 		ForwardedProps: json.RawMessage(`{"ui":"chat"}`),
 		Resume: []ResumeEntry{
-			{InterruptID: "int-1", Status: ResumeStatusAccepted, Payload: json.RawMessage(`{"ok":true}`)},
+			{InterruptID: "int-1", Status: ResumeStatusResolved, Payload: json.RawMessage(`{"ok":true}`)},
 		},
 	}
 	b, err := json.Marshal(in)
@@ -62,7 +62,7 @@ func TestRunAgentInputRoundTrip(t *testing.T) {
 	if len(got.Tools) != 1 || got.Tools[0].Name != "search" {
 		t.Errorf("tools round-trip lost tool: %+v", got.Tools)
 	}
-	if len(got.Resume) != 1 || got.Resume[0].Status != ResumeStatusAccepted {
+	if len(got.Resume) != 1 || got.Resume[0].Status != ResumeStatusResolved {
 		t.Errorf("resume round-trip lost entry: %+v", got.Resume)
 	}
 	// Raw-JSON passthrough must survive verbatim (semantically).
@@ -174,7 +174,6 @@ func TestRunErrorCodeStringValues(t *testing.T) {
 		want string
 	}{
 		{RunErrorAborted, "aborted"},
-		{RunErrorInterrupt, "interrupt"},
 		{RunErrorInternal, "internal"},
 	}
 	for _, c := range cases {
@@ -197,7 +196,7 @@ func TestEventWireKeys(t *testing.T) {
 		keys  []string
 	}{
 		{"run-started", NewRunStarted("t", "r"), []string{"type", "threadId", "runId"}},
-		{"run-finished", NewRunFinished("t", "r", json.RawMessage(`"x"`)), []string{"type", "threadId", "runId", "result"}},
+		{"run-finished", NewRunFinished("t", "r", json.RawMessage(`"x"`)), []string{"type", "threadId", "runId", "result", "outcome"}},
 		{"run-error", NewRunError("boom", RunErrorInternal), []string{"type", "message", "code"}},
 		{"text-start", NewTextMessageStart("m1"), []string{"type", "messageId", "role"}},
 		{"text-content", NewTextMessageContent("m1", "hi"), []string{"type", "messageId", "delta"}},
@@ -265,6 +264,71 @@ func TestRunFinishedOmitsEmptyResult(t *testing.T) {
 	}
 	if _, ok := m["result"]; ok {
 		t.Errorf("empty result should be omitted, got %s", b)
+	}
+}
+
+// TestResumeStatusStringValues pins the ResumeStatus vocabulary. A client sets
+// these exact strings on a ResumeEntry; a rename would silently change how the
+// daemon synthesizes a cancelled answer, so assert the literals directly.
+func TestResumeStatusStringValues(t *testing.T) {
+	if string(ResumeStatusResolved) != "resolved" {
+		t.Errorf("ResumeStatusResolved = %q, want resolved", ResumeStatusResolved)
+	}
+	if string(ResumeStatusCancelled) != "cancelled" {
+		t.Errorf("ResumeStatusCancelled = %q, want cancelled", ResumeStatusCancelled)
+	}
+}
+
+// TestNewRunFinishedSuccessOutcome pins that a completed run carries an explicit
+// success outcome alongside its result — a consumer that dispatches on
+// outcome.type must see "success", not a bare resultful RunFinished.
+func TestNewRunFinishedSuccessOutcome(t *testing.T) {
+	rf := NewRunFinished("t", "r", json.RawMessage(`"done"`))
+	if rf.Outcome == nil || rf.Outcome.Type != RunOutcomeSuccess {
+		t.Fatalf("outcome = %+v, want type success", rf.Outcome)
+	}
+	if len(rf.Outcome.Interrupts) != 0 {
+		t.Errorf("success outcome carried interrupts: %+v", rf.Outcome.Interrupts)
+	}
+	if string(rf.Result) != `"done"` {
+		t.Errorf("result = %s, want \"done\"", rf.Result)
+	}
+}
+
+// TestNewRunFinishedInterruptOutcome pins the HITL terminal frame: outcome type
+// interrupt, the open interrupts listed, and NO result (a paused run has produced
+// no answer). The interrupt round-trips through JSON with its wire keys intact.
+func TestNewRunFinishedInterruptOutcome(t *testing.T) {
+	its := []Interrupt{{ID: "int-1", Message: "approve?", ResponseSchema: json.RawMessage(`{"type":"object"}`)}}
+	rf := NewRunFinishedInterrupt("t", "r", its)
+	if rf.Outcome == nil || rf.Outcome.Type != RunOutcomeInterrupt {
+		t.Fatalf("outcome = %+v, want type interrupt", rf.Outcome)
+	}
+	if rf.Result != nil {
+		t.Errorf("interrupt outcome carried a result: %s", rf.Result)
+	}
+	b, err := json.Marshal(rf)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got RunFinished
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.Outcome == nil || len(got.Outcome.Interrupts) != 1 {
+		t.Fatalf("round-trip lost interrupts: %s", b)
+	}
+	gi := got.Outcome.Interrupts[0]
+	if gi.ID != "int-1" || gi.Message != "approve?" || string(gi.ResponseSchema) != `{"type":"object"}` {
+		t.Fatalf("interrupt round-trip mangled fields: %+v", gi)
+	}
+	// A resultless interrupt frame must not serialize a "result" key.
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("Unmarshal map: %v", err)
+	}
+	if _, ok := m["result"]; ok {
+		t.Errorf("interrupt frame serialized a result key: %s", b)
 	}
 }
 

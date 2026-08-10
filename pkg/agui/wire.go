@@ -43,10 +43,12 @@ const DiscoveryPath = "/agui/agents.json"
 // RunAgentInput is the request body a client POSTs to a workload's AG-UI
 // endpoint to drive one turn. Field names follow the AG-UI spec JSON
 // (camelCase). State/ForwardedProps ride along as raw JSON — the server echoes
-// State back as the opening StateSnapshot and does not otherwise interpret it
-// in Stage 1. Tools and Resume are parsed but unused in Stage 1 (client-tool
-// acceptance and the HITL interrupt/resume lifecycle are follow-on stages);
-// they are modeled so the vocabulary is complete and forward-compatible.
+// State back as the opening StateSnapshot and does not otherwise interpret it.
+// Resume carries the client's answers when continuing an interrupted run (the
+// HITL lifecycle): a non-empty Resume turns this request into a resume rather
+// than a fresh user turn. Tools are parsed but unused (client-tool acceptance
+// is a follow-on stage); modeled so the input contract stays complete and
+// forward-compatible.
 type RunAgentInput struct {
 	ThreadID       string          `json:"threadId"`
 	RunID          string          `json:"runId"`
@@ -71,8 +73,8 @@ type Message struct {
 }
 
 // Tool is a client-declared tool offered to the agent for this run. Parsed but
-// ignored in Stage 1 (accepting client tools is a follow-on); modeled so the
-// input contract is complete.
+// ignored (accepting client tools is a follow-on); modeled so the input
+// contract is complete.
 type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
@@ -80,23 +82,31 @@ type Tool struct {
 }
 
 // Context is one supplementary context entry a client attaches to a run
-// (docs/ag-ui-design.md RunAgentInput). Carried through opaquely in Stage 1.
+// (docs/ag-ui-design.md RunAgentInput). Carried through opaquely.
 type Context struct {
 	Description string `json:"description,omitempty"`
 	Value       string `json:"value,omitempty"`
 }
 
-// ResumeStatus is the disposition a client reports when resuming an
-// interrupted run (docs/ag-ui-design.md Resume). Parsed but unused in Stage 1.
+// ResumeStatus is the disposition a client reports when answering an interrupt
+// (docs/ag-ui-design.md Resume): "resolved" (the human answered) or "cancelled"
+// (the human declined). The vocabulary follows the design doc; the shipped
+// Stage 1 placeholder used "accepted"/"rejected", reconciled here now that the
+// lifecycle is live. mast forwards the entry's Payload verbatim as the
+// interrupt answer regardless of status (the runtime resume channel carries the
+// answer value, not a separate disposition — see cmd/mast buildResumeMessage);
+// when a cancelled entry carries no payload, mast synthesizes a minimal
+// {"status":"cancelled"} answer so a workload can branch on a decline.
 type ResumeStatus string
 
 const (
-	ResumeStatusAccepted ResumeStatus = "accepted"
-	ResumeStatusRejected ResumeStatus = "rejected"
+	ResumeStatusResolved  ResumeStatus = "resolved"
+	ResumeStatusCancelled ResumeStatus = "cancelled"
 )
 
-// ResumeEntry answers one prior interrupt when a client resumes a run. Parsed
-// but unused in Stage 1 (the interrupt/resume lifecycle is deferred).
+// ResumeEntry answers one prior interrupt when a client resumes a run. The
+// InterruptID must match an interrupt the server reported in a prior
+// RunFinished{outcome: interrupt}; Payload is the client's answer.
 type ResumeEntry struct {
 	InterruptID string          `json:"interruptId"`
 	Status      ResumeStatus    `json:"status"`
@@ -134,16 +144,15 @@ const (
 )
 
 // RunErrorCode is the machine-readable code on a RUN_ERROR event. The
-// vocabulary is deliberately small: aborted (operator/client cancellation),
-// interrupt (the run paused for human input — an honest Stage 1 placeholder
-// until the full HITL lifecycle lands), and internal (any server-side fault,
-// with no detail leaked to the client).
+// vocabulary is deliberately small: aborted (operator/client cancellation) and
+// internal (any server-side fault, with no detail leaked to the client). A HITL
+// pause is NOT an error — it is a terminal RunFinished{outcome: interrupt} (see
+// RunOutcome), so it carries no error code.
 type RunErrorCode string
 
 const (
-	RunErrorAborted   RunErrorCode = "aborted"
-	RunErrorInterrupt RunErrorCode = "interrupt"
-	RunErrorInternal  RunErrorCode = "internal"
+	RunErrorAborted  RunErrorCode = "aborted"
+	RunErrorInternal RunErrorCode = "internal"
 )
 
 // baseEvent is embedded in every AG-UI event: the "type" discriminator plus
@@ -164,19 +173,57 @@ type RunStarted struct {
 	RunID    string `json:"runId"`
 }
 
-// RunFinished is the terminal event for a run that completed. Result carries
-// the workload's final answer (also present as the closing TextMessage triad;
-// the duplication is inherent under message-granular streaming).
+// RunFinished is the terminal event for a run that reached a stopping point,
+// carrying a RunOutcome that says which. A success outcome carries Result (the
+// workload's final answer, also present as the closing TextMessage triad; the
+// duplication is inherent under message-granular streaming). An interrupt
+// outcome carries the open Interrupts the client must answer to resume — a HITL
+// pause is a clean run stop, not a RunError (docs/ag-ui-design.md).
 type RunFinished struct {
 	baseEvent
 	ThreadID string          `json:"threadId"`
 	RunID    string          `json:"runId"`
+	Outcome  *RunOutcome     `json:"outcome,omitempty"`
 	Result   json.RawMessage `json:"result,omitempty"`
 }
 
+// RunOutcomeType discriminates a RunFinished's disposition.
+type RunOutcomeType string
+
+const (
+	RunOutcomeSuccess   RunOutcomeType = "success"
+	RunOutcomeInterrupt RunOutcomeType = "interrupt"
+)
+
+// RunOutcome is the structured disposition on a RunFinished. Type is "success"
+// (the run completed; the answer is in RunFinished.Result) or "interrupt" (the
+// run paused for human input; Interrupts lists what to answer). The interrupt
+// lifecycle maps directly onto mast's durable pause/resume: each Interrupt.ID
+// is a mast pending-interrupt id, and a client resumes by POSTing a new run
+// whose RunAgentInput.Resume answers it.
+type RunOutcome struct {
+	Type       RunOutcomeType `json:"type"`
+	Interrupts []Interrupt    `json:"interrupts,omitempty"`
+}
+
+// Interrupt describes one open interrupt a run paused on. ID is the resume
+// correlation key (the client echoes it in a ResumeEntry.InterruptID); Message
+// is the human-readable prompt; ResponseSchema, when present, is the JSON
+// schema the answer payload should conform to (a client can render a form from
+// it). ExpiresAt (epoch ms) is modeled for spec completeness but unset — mast
+// HITL interrupts carry no wall-clock expiry today.
+type Interrupt struct {
+	ID             string          `json:"id"`
+	Message        string          `json:"message,omitempty"`
+	ResponseSchema json.RawMessage `json:"responseSchema,omitempty"`
+	ExpiresAt      *int64          `json:"expiresAt,omitempty"`
+}
+
 // RunError is the terminal event for a run that did not complete normally:
-// aborted, interrupted (paused for human input), or an internal fault. Message
-// is a short human-readable summary; Code is the machine-readable disposition.
+// aborted or an internal fault. (A HITL pause is NOT a RunError — it is a
+// terminal RunFinished carrying outcome.type == "interrupt"; see RunOutcome.)
+// Message is a short human-readable summary; Code is the machine-readable
+// disposition.
 type RunError struct {
 	baseEvent
 	Message string       `json:"message"`
@@ -277,8 +324,29 @@ func NewRunStarted(threadID, runID string) RunStarted {
 	return RunStarted{baseEvent: newBase(EventRunStarted), ThreadID: threadID, RunID: runID}
 }
 
+// NewRunFinished builds the terminal event for a run that completed
+// successfully, carrying a success outcome and the final answer.
 func NewRunFinished(threadID, runID string, result json.RawMessage) RunFinished {
-	return RunFinished{baseEvent: newBase(EventRunFinished), ThreadID: threadID, RunID: runID, Result: result}
+	return RunFinished{
+		baseEvent: newBase(EventRunFinished),
+		ThreadID:  threadID,
+		RunID:     runID,
+		Outcome:   &RunOutcome{Type: RunOutcomeSuccess},
+		Result:    result,
+	}
+}
+
+// NewRunFinishedInterrupt builds the terminal event for a run that paused for
+// human input, carrying an interrupt outcome and the open interrupts the client
+// must answer to resume. It carries no Result — the run has not produced a
+// final answer yet.
+func NewRunFinishedInterrupt(threadID, runID string, interrupts []Interrupt) RunFinished {
+	return RunFinished{
+		baseEvent: newBase(EventRunFinished),
+		ThreadID:  threadID,
+		RunID:     runID,
+		Outcome:   &RunOutcome{Type: RunOutcomeInterrupt, Interrupts: interrupts},
+	}
 }
 
 func NewRunError(msg string, code RunErrorCode) RunError {
