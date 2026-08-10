@@ -49,12 +49,20 @@ import "path/filepath"
 // here, so a rename of the loader constant can't silently drop the
 // executed catalog out of control-plane protection.
 //
-// Coverage caveat: classification keys on the immediate parent directory
-// being `.agents`, so it protects the `.agents/`-tree catalog only. A
-// catalog loaded from a path-mode workload directory or a non-`.agents`
-// config root (e.g. /etc/mast/agents, $MAST_CONFIG_DIR) is not gate-write-
-// protected and must be secured by filesystem permissions. Broadening
-// classification to those locations is tracked as follow-up work (#89).
+// Coverage caveat: the parent-directory heuristic below keys on the
+// immediate parent being `.agents`, so on its own it protects only the
+// `.agents/`-tree catalog. A catalog loaded from a path-mode workload
+// directory or a non-`.agents` config root (e.g. /etc/mast/agents,
+// $MAST_CONFIG_DIR, ~/.config/mast/agents) has an arbitrary parent name
+// the heuristic can't safely match without over-protecting unrelated
+// files. Such catalogs are covered instead by registering their resolved
+// absolute paths with the gate at construction (Options.ControlPlanePaths,
+// consulted by Gate.isControlPlaneFile) — this protects exactly the
+// catalog/config files a given daemon loads, wherever they live. The
+// daemon populates that set once the permission gate is runtime-wired
+// (#89); until then these paths rely on filesystem permissions, and stdio
+// catalogs are additionally bounded by the catalog command_allowlist and
+// per-server env scoping (pkg/mcp).
 var controlPlaneBasenames = map[string]struct{}{
 	"config.json": {}, // config.ConfigFileName — permissions/hooks/mode
 	"mcp.json":    {}, // mcp.MCPFileName — stdio MCP server commands
@@ -82,4 +90,21 @@ func isControlPlanePath(resolved string) bool {
 		return false
 	}
 	return filepath.Base(filepath.Dir(resolved)) == controlPlaneDirName
+}
+
+// isControlPlaneFile reports whether resolved is a privilege-bearing
+// control-plane file for THIS gate: either it matches the `.agents/`-tree
+// heuristic (isControlPlanePath) or it was explicitly registered as a
+// control-plane path at construction (Options.ControlPlanePaths). The
+// explicit set closes the heuristic's coverage gap for catalogs the daemon
+// loads from path-mode workload directories or non-`.agents` config roots
+// (#89), where the parent-directory name is arbitrary. resolved MUST be a
+// symlink-resolved absolute path (CheckFileWrite resolves before calling),
+// matching how the paths are stored (see newControlPlaneSet).
+func (g *Gate) isControlPlaneFile(resolved string) bool {
+	if isControlPlanePath(resolved) {
+		return true
+	}
+	_, ok := g.controlPlanePaths[resolved]
+	return ok
 }

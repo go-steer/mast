@@ -147,16 +147,32 @@ kind — **both transports are implemented**:
 - **`stdio`** — mast launches the entry's `command` (with `args`/`env`) as
   a local child process and speaks MCP over its stdin/stdout. `${VAR}`
   references in the command, args, and env values are expanded against the
-  daemon environment; the child inherits the daemon environment with the
-  configured `env` layered on top. A stdio entry names a local command mast
-  executes, so `mcp.json` is a privilege-bearing control-plane file (on par
-  with `config.json`) and each launch is logged (resolved command and args)
-  for operator audit. The permission gate write-protects a catalog inside an
-  `.agents/` tree so a model cannot rewrite it to register a server;
-  catalogs at other locations (path-mode directories, `/etc/mast/agents`,
-  `$MAST_CONFIG_DIR`) rely on filesystem permissions — broadening gate
-  coverage to those roots, plus stdio env scoping and a command allowlist,
-  is tracked follow-up work (#89).
+  daemon environment. A stdio entry names a local command mast executes, so
+  `mcp.json` is a privilege-bearing control-plane file (on par with
+  `config.json`) and each launch is logged (resolved command and args) for
+  operator audit.
+
+  Three hardening measures (#89) bound the blast radius of a stdio catalog:
+  - **Environment scoping.** `env_mode` defaults to `inherit` (the child
+    receives the full daemon environment with `env` layered on top). Setting
+    `env_mode: "clean"` starts the child from an empty environment and
+    passes through only the daemon variables named in `env_passthrough`,
+    plus `env` — so a local tool server never sees the daemon's provider
+    keys or cloud credentials unless named. (`env_passthrough` is rejected
+    under `inherit`, where it would be a no-op.)
+  - **Command allowlist.** The catalog-level `command_allowlist`, when
+    non-empty, restricts which executables stdio servers may launch: an
+    out-of-allowlist resolved `command` is a fatal load error (both sides
+    `${VAR}`-expanded before comparison).
+  - **Control-plane coverage beyond `.agents/`.** The permission gate
+    write-protects a catalog inside an `.agents/` tree via a
+    parent-directory heuristic. For catalogs at other locations (path-mode
+    directories, `/etc/mast/agents`, `$MAST_CONFIG_DIR`) — whose parent
+    name is arbitrary — the gate now accepts an explicit set of registered
+    control-plane paths (`Options.ControlPlanePaths`), so the daemon can
+    protect exactly the catalog it loads once the gate is runtime-wired.
+    Until that wiring lands, off-tree catalogs rely on filesystem
+    permissions plus the env scoping and command allowlist above.
 
 The aggregate catalog file is `mcp.json` (`{version, servers: {name: …}}`)
 resolved next to the workload (directory mode) or at the config root (name

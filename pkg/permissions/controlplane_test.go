@@ -231,3 +231,92 @@ func TestControlPlaneWrite_AgentsMdUnaffected(t *testing.T) {
 		t.Errorf("AGENTS.md write should behave as an ordinary write: %v", err)
 	}
 }
+
+// pathModeCatalog creates a path-mode-style workload directory holding an
+// mcp.json whose parent is NOT `.agents`, so the parent-directory
+// heuristic (isControlPlanePath) does not cover it. Returns the scope
+// root and the resolved absolute mcp.json path.
+func pathModeCatalog(t *testing.T) (root, mcpJSON string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A non-.agents workload directory, e.g. what path-mode (`mast run
+	// ./workload`) or a non-.agents config root (/etc/mast/agents) yields.
+	dir := filepath.Join(root, "workload")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpJSON = filepath.Join(dir, "mcp.json")
+	if err := os.WriteFile(mcpJSON, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root, mcpJSON
+}
+
+// TestIsControlPlaneFile_RegisteredPath pins the explicit-registration
+// seam (#89 item 1): a catalog outside a `.agents/` tree is NOT caught by
+// the parent-directory heuristic, but IS classified control-plane once its
+// resolved path is registered via Options.ControlPlanePaths — while an
+// unregistered sibling in the same directory is not.
+func TestIsControlPlaneFile_RegisteredPath(t *testing.T) {
+	t.Parallel()
+	root, mcpJSON := pathModeCatalog(t)
+	sibling := filepath.Join(filepath.Dir(mcpJSON), "mcp.json.bak")
+
+	// The heuristic alone does not cover a non-.agents catalog.
+	if isControlPlanePath(mcpJSON) {
+		t.Fatalf("precondition: %q should not match the .agents heuristic", mcpJSON)
+	}
+
+	scope, err := NewPathScope(root, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := New(Options{Mode: ModeYolo, Scope: scope, ControlPlanePaths: []string{mcpJSON}})
+
+	if !g.isControlPlaneFile(mcpJSON) {
+		t.Errorf("registered path %q should be classified control-plane", mcpJSON)
+	}
+	if g.isControlPlaneFile(sibling) {
+		t.Errorf("unregistered sibling %q must not be classified control-plane", sibling)
+	}
+
+	// The .agents heuristic still applies even when explicit paths are set.
+	agentsCfg := filepath.Join(root, ".agents", "config.json")
+	if !g.isControlPlaneFile(agentsCfg) {
+		t.Errorf(".agents heuristic should still classify %q as control-plane", agentsCfg)
+	}
+}
+
+// TestControlPlaneWrite_RegisteredPathElevated is the end-to-end proof for
+// #89 item 1: under yolo (which auto-approves ordinary in-scope writes) a
+// write to a registered non-.agents catalog is denied with
+// ErrControlPlaneWrite, while an unregistered sibling in the same directory
+// auto-approves — so registration, not location, drives the elevated gate.
+func TestControlPlaneWrite_RegisteredPathElevated(t *testing.T) {
+	t.Parallel()
+	root, mcpJSON := pathModeCatalog(t)
+	sibling := filepath.Join(filepath.Dir(mcpJSON), "notes.txt")
+
+	scope, err := NewPathScope(root, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := New(Options{Mode: ModeYolo, Scope: scope, ControlPlanePaths: []string{mcpJSON}})
+	ctx := context.Background()
+
+	err = g.CheckFileWrite(ctx, "write_file", mcpJSON)
+	if err == nil {
+		t.Fatal("registered catalog write should be gated as control-plane, not auto-approved")
+	}
+	if !errors.Is(err, ErrControlPlaneWrite) {
+		t.Errorf("error = %v, want ErrControlPlaneWrite", err)
+	}
+
+	// An unregistered sibling is an ordinary in-scope write: yolo approves.
+	if err := g.CheckFileWrite(ctx, "write_file", sibling); err != nil {
+		t.Errorf("unregistered sibling write should auto-approve under yolo: %v", err)
+	}
+}
