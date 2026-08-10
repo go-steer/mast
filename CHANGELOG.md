@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 (2026-08-10)
 
 - **AG-UI server — Stage 2: HITL interrupt/resume lifecycle**
   (docs/ag-ui-design.md "Implementation status"; #84). Turns the Stage-1

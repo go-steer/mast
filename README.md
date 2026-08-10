@@ -2,7 +2,7 @@
 
 The agent-infrastructure substrate for **unattended, library-embedded, multi-provider, durable** agent workloads — built for platform and SRE teams deploying agents into Cloud Run, Kubernetes, and their own Go services. Lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent), native to [ADK v2](https://google.golang.org/adk/v2).
 
-> **Status: v0.1.2 — Phase 1 complete; shutdown contract adversarially hardened.** All eleven v0.1 exit criteria from [`docs/fork-design.md`](./docs/fork-design.md) are green, including live-credential verification of the multi-provider one-shot path and attach-mode reachability from [mast-web](https://github.com/go-steer/mast-web). Docs: [go-steer.github.io/mast](https://go-steer.github.io/mast/).
+> **Status: v0.2.0 — the durable-execution spine plus the ecosystem interop surfaces.** On the v0.1.2 hardened-shutdown base, v0.2 lands the recorded-effect outbox and boot-time auto-resume (mutating-tool re-execution is now visible-and-blocking, not silent), programmatic pause/abort, and the interop surfaces: the A2A server (card + `message/send`·`tasks/get`·`tasks/cancel`·`message/stream`), the hand-rolled AG-UI server with the full HITL interrupt/resume lifecycle, and generic local/stdio MCP wiring — all on an observability v0.2 fixed registry with a teardown watchdog and verified by an end-to-end durable-execution UAT harness in CI. Docs: [go-steer.github.io/mast](https://go-steer.github.io/mast/).
 
 ## Is mast for you?
 
