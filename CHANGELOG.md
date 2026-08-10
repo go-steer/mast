@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Effect-outbox durability hardening** (docs/durable-execution-design.md
+  "Recorded-effect outbox"; #71). Two follow-ups from the outbox gate review.
+  **Sub-agent/tool name collision is now refused at construction (N2):** the
+  dangling scan excludes every FunctionCall named after a sub-agent (task
+  delegations are engine control flow, not effects), so a genuine mutating
+  tool that shared a specialist's name was invisible to the outbox — a
+  fail-open hole. mast now refuses to start when a composed sub-agent name
+  also names a mutating- or spawning-class tool (`effects.CheckNameCollisions`,
+  wired in all three construction paths — daemon, one-shot, and the library
+  entrypoints), turning a silent durability gap into a clear startup error the
+  operator fixes by renaming one side. A read-only tool of the same name is
+  harmless and still allowed. Coverage is bounded by what is known by name at
+  construction — mast's builtins and the tool names declared in
+  `tool_catalog.tools`; a mutating tool never declared there (the common case
+  for MCP verbs, since `tool_catalog.tools` is an override list) is not
+  enumerable and remains the authoring rule's responsibility: do not name a
+  specialist after a mutating tool.
+  **Direct `--session-db` ack now warns (N4):** `mast sessions ack-effects
+  --session-db=…` cannot serialize its watermark write against a running
+  daemon (mast has no on-disk liveness signal to probe), so it prints a clear
+  warning that the path is safe only when no daemon serves the DB.
+
 - **Local (stdio) MCP server hardening** (docs/mcp-catalog-design.md
   "Implementation status"; #89). Three measures bound the blast radius of a
   `mcp.json` catalog that launches local commands. **Environment scoping:** a

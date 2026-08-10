@@ -809,3 +809,39 @@ func TestCoordinatorDelegationDoesNotTripMode(t *testing.T) {
 		t.Fatalf("scale_up executed %d times, want 1 — a dangling task delegation wedged the session in ambiguous-effect mode", scale)
 	}
 }
+
+// TestCheckNameCollisions_RealRoot proves the SubAgentNames walk feeds
+// CheckNameCollisions correctly on a real composed root: a specialist
+// named after a declared mutating tool (gate finding N2's fail-open) is
+// detected. The delegation-exclusion that TestCoordinatorDelegationDoes-
+// NotTripMode relies on is the very mechanism that would hide this tool's
+// dangling calls, which is why the collision is refused at construction.
+func TestCheckNameCollisions_RealRoot(t *testing.T) {
+	specialist, err := mastagent.NewTaskAgent(mastagent.TaskAgentConfig{
+		Name:        "deploy", // operator specialist sharing a tool verb
+		Description: "test specialist",
+		Instruction: "deploy things",
+		Model:       &scriptedModel{name: "s", script: func(*model.LLMRequest) *model.LLMResponse { return textResponse("ok") }},
+	})
+	if err != nil {
+		t.Fatalf("NewTaskAgent: %v", err)
+	}
+	root, err := mastagent.NewCoordinator(mastagent.CoordinatorConfig{
+		Name:        "coord",
+		Description: "test coordinator",
+		Instruction: "coordinate",
+		Model:       &scriptedModel{name: "c", script: func(*model.LLMRequest) *model.LLMResponse { return textResponse("done") }},
+		SubAgents:   []adkagent.Agent{specialist},
+	})
+	if err != nil {
+		t.Fatalf("NewCoordinator: %v", err)
+	}
+
+	tr := true
+	policies := []ToolPolicy{{Name: "deploy", Mutating: &tr}}
+	pred := NewPredicate(Overrides(nil, policies))
+	got := CheckNameCollisions(SubAgentNames(root), pred, policies)
+	if len(got) != 1 || got[0] != "deploy" {
+		t.Fatalf("CheckNameCollisions on real root = %v, want [deploy]", got)
+	}
+}

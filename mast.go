@@ -59,6 +59,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/genai"
@@ -454,9 +455,18 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 			policies = append(policies, effects.ToolPolicy{Name: p.Name, Mutating: p.Mutating})
 		}
 	}
+	pred := effects.NewPredicate(effects.Overrides(cfg.Logger, policies))
+	subAgents := effects.SubAgentNames(root)
+	// A sub-agent name that also names a mutating tool is invisible to the
+	// outbox's dangling scan (gate finding N2) — refuse it here too, so the
+	// library surface fails closed exactly like the daemon and one-shot
+	// paths rather than running with the fail-open hole.
+	if hits := effects.CheckNameCollisions(subAgents, pred, policies); len(hits) > 0 {
+		return nil, fmt.Errorf("mast: composition names both a sub-agent and a mutating tool %q: a mutating tool sharing a specialist's name is invisible to the effect outbox — rename the specialist or the tool", strings.Join(hits, ", "))
+	}
 	outboxPlugin, err := effects.New(effects.Config{
-		Predicate:     effects.NewPredicate(effects.Overrides(cfg.Logger, policies)),
-		SubAgentNames: effects.SubAgentNames(root),
+		Predicate:     pred,
+		SubAgentNames: subAgents,
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return ackStore.EffectsAckedAt(ctx, "", sid)
 		},

@@ -130,6 +130,36 @@ func TestRunWorkloadCoordinatorShape(t *testing.T) {
 	}
 }
 
+// TestRunWorkloadRefusesNameCollision is the end-to-end guard for gate
+// finding N2 on the library path (mast.go runTurn): a bundle whose
+// tool_catalog declares a mutating tool sharing a specialist's name must
+// be refused at construction, not run with the fail-open outbox hole.
+// Neutralize the CheckNameCollisions call in runTurn and this fails.
+func TestRunWorkloadRefusesNameCollision(t *testing.T) {
+	mutating := true
+	bundle := workload.Bundle{
+		Name:        "triage_coordinator",
+		Specialists: []string{"deploy"},
+		ToolCatalog: workload.ToolCatalog{
+			Tools: []workload.ToolPolicy{{Name: "deploy", Mutating: &mutating}},
+		},
+	}
+	specs := []specialists.Spec{{
+		Name:        "deploy", // collides with the mutating tool above
+		Description: "Deploys things.",
+		Mode:        specialists.ModeTask,
+		Instruction: "Deploy and finish with a digest.",
+	}}
+	_, err := mast.RunWorkload(context.Background(), mast.Config{ModelName: "echo"},
+		bundle, specs, injectInput)
+	if err == nil {
+		t.Fatal("RunWorkload accepted a sub-agent/tool name collision; want refusal")
+	}
+	if !strings.Contains(err.Error(), "sub-agent") || !strings.Contains(err.Error(), "deploy") {
+		t.Errorf("error = %q, want a name-collision refusal naming \"deploy\"", err)
+	}
+}
+
 // TestRunWorkloadBudgetOverride: Config.Budget overrides the bundle's
 // (absent) ceilings; a one-turn cap trips on the graph's second model
 // call and surfaces budget.ErrExceeded.

@@ -432,6 +432,14 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// eligibility gate classifies dangling calls exactly as the outbox does.
 	effPred := effects.NewPredicate(effects.Overrides(logger, toolPolicies(bundle)))
 	effSubAgents := effects.SubAgentNames(root)
+	// A sub-agent name that also names a mutating tool is ambiguous in the
+	// session log and makes a genuine effect invisible to the outbox (gate
+	// finding N2). Refuse to start rather than run with the fail-open hole;
+	// the operator renames one side.
+	if hits := effects.CheckNameCollisions(effSubAgents, effPred, toolPolicies(bundle)); len(hits) > 0 {
+		logger.Error("sub-agent/tool name collision", "names", hits)
+		return fmt.Errorf("composition names both a sub-agent and a mutating tool %q: a mutating tool sharing a specialist's name is invisible to the effect outbox — rename the specialist or the tool", strings.Join(hits, ", "))
+	}
 	outboxPlugin, err := effects.New(effects.Config{
 		Predicate:     effPred,
 		SubAgentNames: effSubAgents,

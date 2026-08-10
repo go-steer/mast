@@ -175,7 +175,9 @@ calls took effect externally — or aborts the session. The
 acknowledgement surface is **`mast sessions ack-effects <id>`**
 (through the daemon by default, which serializes it against in-flight
 turns; `--session-db` writes directly when no daemon serves that DB,
-e.g. a one-shot task session), or **`resume --ack-effects`** when the
+e.g. a one-shot task session — this direct path prints a warning
+because it cannot serialize against a running daemon, so use it only
+when none serves the DB), or **`resume --ack-effects`** when the
 session is also paused on an interrupt. Unknown tools — MCP tools
 included — count as mutating unless the workload's
 `tool_catalog.tools` overrides them (see the
@@ -183,6 +185,12 @@ included — count as mutating unless the workload's
 acknowledgement is recorded durably beside the session and covers
 only calls persisted up to that moment. Task delegations, HITL
 interrupts, and long-running calls never count as dangling effects.
+Task delegations are excluded **by name** (a delegation is a
+FunctionCall named after the sub-agent), so a mutating tool that shared
+a specialist's name would slip past that exclusion — therefore mast
+**refuses to start** when a composed sub-agent name also names a
+mutating tool: rename one side (a read-only tool of the same name is
+harmless and allowed).
 
 Two related contracts: the daemon runs **one turn per session at a
 time** — a second inject or resume for the same session queues behind
