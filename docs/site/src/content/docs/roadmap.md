@@ -1,19 +1,21 @@
 ---
 title: Roadmap
-description: What v0.1.2 ships, and what lands in v0.2 — honestly.
+description: What v0.2 ships, and what lands in v0.3 — honestly.
 ---
 
-mast is at **v0.1.2**. **All eleven v0.1 exit criteria from the fork
-design are green.** The `--task` profile criterion cleared with the
-P1.3a/P1.3b adapter ports and was verified against live endpoints on
-2026-07-29 (gemini one-shot with grounded search on the tier defaults,
-Claude on Vertex completing the Task-mode tool loop, sessions durable
-across runs and providers). The final criterion — attach-mode
-reachability from mast-web — cleared the same day with the P1.3c port:
-the real mast-web SPA, served in proxy mode against a live
-`mast serve --attach-listen` daemon, connected, listed sessions, and
-round-tripped a prompt through a real turn over SSE. Next stop:
-v0.1.0.
+mast is at **v0.2.0** — the durable-execution spine plus the ecosystem
+interop surfaces, on the v0.1.2 hardened-shutdown base. See
+[Shipped in v0.2.0](#shipped-in-v020) below.
+
+**All eleven v0.1 exit criteria from the fork design are green.** The
+`--task` profile criterion cleared with the P1.3a/P1.3b adapter ports and
+was verified against live endpoints on 2026-07-29 (gemini one-shot with
+grounded search on the tier defaults, Claude on Vertex completing the
+Task-mode tool loop, sessions durable across runs and providers). The
+final criterion — attach-mode reachability from mast-web — cleared the
+same day with the P1.3c port: the real mast-web SPA, served in proxy mode
+against a live `mast serve --attach-listen` daemon, connected, listed
+sessions, and round-tripped a prompt through a real turn over SSE.
 
 ## Stability, precisely
 
@@ -63,34 +65,57 @@ trigger in
   single-user in v0.1: multi-session auth, the session ACL store, and
   operator session creation (`POST /sessions`) are v0.2 work.
 
-## v0.2
+## Shipped in v0.2.0
 
 Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
 
+- **Recorded-effect outbox, then boot-time auto-resume** — mutating tool
+  calls are at-least-once under mast's reconstruct-and-re-execute resume
+  model; the outbox (design settled 2026-08-01: the session event log *is*
+  the outbox, checked before every mutating call) makes re-execution
+  ambiguity visible and **blocking** instead of silent, and auto-resuming
+  interrupted sessions on boot unblocks behind it. Follow-up hardening
+  refuses sub-agent/tool name collisions at construction (a fail-open hole)
+  and warns on direct-ack against a live session DB.
+- **Programmatic pause / abort** — a first-class pause/abort surface with
+  planned-stop vs unexpected-stop classification, alongside the
+  HITL-interrupt-keyed resume; `/abort` on an already-terminal session now
+  returns `409`, not `500`.
 - **A2A server** — expose workloads as skills to registries (Google Agent
-  Registry, kagent); v0.1 ships the client only.
-- **AG-UI** (server + client) — CopilotKit apps and chat-platform bots;
-  waits on the interrupt-lifecycle spec extension stabilizing.
-- **Per-specialist cost attribution** — branch/node-attributed cost on top
-  of the v0.1 workload-level counters.
-- **Planner shapes** — the `run_shape_*` vocabulary tools wired to the
-  reference-graph library (they return `not_implemented` in the v0.1
-  scaffold), plus more starters: supervisor+workers, sequential pipeline,
-  map-reduce, adversarial verifier, autonomous loop.
-- **Programmatic pause / resume tokens** — today's resume surface is
-  HITL-interrupt-keyed.
-- **Recorded-effect outbox, then boot-time auto-resume** — mutating
-  tool calls are at-least-once under mast's reconstruct-and-re-execute
-  resume model; the outbox (design settled 2026-08-01: the session
-  event log is the outbox, checked before every mutating call) makes
-  re-execution ambiguity visible and blocking instead of silent, and
-  auto-resuming interrupted sessions on boot unblocks behind it.
-- **Multi-session substrate** — `mode: multi_session` bundles honored.
+  Registry, kagent): agent card publication plus
+  `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE, with
+  a pluggable `TokenValidator` and rate-limiter seam. v0.1 shipped the
+  client only.
+- **AG-UI server** — the hand-rolled, zero-dependency `pkg/agui` wire +
+  HTTP/SSE surface for CopilotKit apps and chat-platform bots, driving every
+  turn through the same `runTurnPre` chokepoint, with the full HITL
+  interrupt/resume lifecycle (terminal `RunFinished{outcome: interrupt}` →
+  resume via a new run's `resume` array). The `agui://` federation client,
+  per-key state deltas, and client-declared tools are v0.3.
+- **Local / stdio MCP** — generic, transport-dispatched MCP wiring (a
+  `mcp.json` catalog with http/stdio dispatch, not gke-only), with stdio
+  control-plane hardening: env scoping and command allowlisting.
+- **Observability v0.2 + teardown watchdog** — the fixed-registry pass
+  canonicalizing the v0.2 metric families, plus a teardown watchdog guarding
+  shutdown.
+- **End-to-end UAT harness** — a durable-execution UAT harness (crash /
+  drain / abort legs over a request-driven fake model and a stdio blocking
+  tool) gating CI.
 
 ## Further out (v0.3+)
 
-Shared memory + audit-derived memory, multi-tenant isolation scopes, MCP
-credential resolution, full mast-native federation, bundle learning.
+- **AG-UI remaining slices** — the `agui://` federation client, per-key
+  `StateDelta` emission, activity/reasoning events, webhook push, and
+  client-declared tool acceptance.
+- **Per-specialist cost attribution** — branch/node-attributed cost on top
+  of the v0.2 workload-level counters.
+- **Planner shapes** — the `run_shape_*` vocabulary tools wired to the
+  reference-graph library (they return `not_implemented` in the v0.2
+  scaffold), plus more starters: supervisor+workers, sequential pipeline,
+  map-reduce, adversarial verifier, autonomous loop.
+- **Multi-session substrate** — `mode: multi_session` bundles honored.
+- Shared memory + audit-derived memory, multi-tenant isolation scopes, MCP
+  credential resolution, full mast-native federation, bundle learning.
 
 ## The design corpus
 
