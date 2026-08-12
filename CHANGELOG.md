@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Deterministic evaluators** (docs/v0.3-plan.md W0.2). `internal/evals` scores
+  a recorded run with no provider and no cluster: `intent_coverage` (the primary
+  trajectory metric), `tool_coverage` (name-level, emitted as a diagnostic only
+  so the consolidation penalty stays visible instead of scored),
+  `severity_accuracy`, and the two mast-only invariants `effect_ordering` and
+  `exactly_once`. `TraceFromEvents` is the single adapter onto ADK's event log;
+  everything downstream is a pure function over a plain struct, so a test can
+  construct a double-fired mutation or an orphaned completion directly.
+
+  Its pairing rules mirror `pkg/effects` — same event indexing, same empty-ID
+  skip, same treatment of a confirmation placeholder as *not* a completion, so a
+  declined approval never scores as an executed effect. One deliberate
+  divergence: long-running calls are kept rather than deferred, because a
+  finished run's completed blocking tool is an effect like any other and
+  dropping it would blind `exactly_once` to a re-fired mutation.
+
+  Two guards exist specifically because upstream's equivalents are constant
+  functions on this dataset: every result carries a `Vacuous` flag when it
+  scores 1.0 for want of anything to measure, and `exactly_once` keys effect
+  identity on tool name plus canonicalized arguments rather than call ID, which
+  would make it structurally incapable of failing.
+
 - **Parity scenario corpus and intent table** (docs/v0.3-plan.md W0.1, W0.1a).
   The 31 LangChain SRE-agent evaluation scenarios are ported to
   `testdata/evals/scenarios/langchain-sre.jsonl`, and `testdata/evals/intents.yaml`
