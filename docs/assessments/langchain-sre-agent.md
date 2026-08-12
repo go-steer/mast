@@ -170,21 +170,29 @@ Six slices. P1 is the long pole. P3 and P4 parallelize behind P0.
 
 1. **Honor `spec.Model`** in `specialists.Build` — resolve per-specialist model against the provider config, fall back to `opts.Model`. Touches `pkg/specialists/register.go:74-97` and the compose path. Unlocks the whole cost story; interacts with specialists-design open Q#4 (cross-provider override).
 2. **Enforce per-specialist `MaxTurns` / `MaxCostUSD`** — compose with the workload meter, tightest-cap-wins (already the documented semantic in `pkg/workload/bundle.go:76-86`).
-3. **Add `output_schema` to specialist frontmatter** → `OutputSchema` on the Task agent (`pkg/agent/modes.go` already carries the field). Define `HealthReport` / `Finding` as mast types with `kind` / `resource_name` / `reason` for fingerprint stability.
+3. **Add `output_schema` to specialist frontmatter** → `OutputSchema` on the Task agent (`pkg/agent/modes.go:43` already carries the field).
 
-**One report contract, not two.** Both the bounded path and the agent path emit the same type. This is the wart we refuse to inherit.
+   **Mast never gains a `Finding` or `HealthReport` Go type** (per Q1). The mechanism stays generic — a `*genai.Schema` mast does not interpret — and the concrete k8s-shaped schema, with `kind` / `resource_name` / `reason` for fingerprint stability, is a workload asset shipped with the `gke-triage` bundle and published by lookout. This is *less* mast code than first drafted, and it removes the one place P0 was quietly going to make the substrate domain-aware.
+
+**One report contract, not two.** Both the bounded path and the agent path emit the same schema. This is the wart we refuse to inherit.
 
 *Exit:* a bundle can declare a Haiku-tier analyst and a Sonnet-tier synthesizer; both return a validated `HealthReport`.
 
 ### P1 — The write gate (mast) — **the important one**
 
+Granularity is settled (Q3): **both `per_call` and `per_change_set`, one gate, `per_call` first and UAT'd before `per_change_set` lands.** Sub-steps 1–5 are the `per_call` half; step 6 is `per_change_set`.
+
 1. **Wire `pkg/permissions` into the tool-execution seam `pkg/effects` already occupies.** Ordering is settled: outbox check *then* gate (resolved-decision row 144 — a replayed result needs no fresh approval).
 2. **Implement `hitl_policy.on_mutation`** (`require_approval` / `apply` / `dry_run`) against the documented mutation predicate: built-in annotation + MCP `readOnlyHint`, default-deny-unknown, per-tool audited override via the existing `tool_catalog.tools[].mutating` (`pkg/workload/bundle.go:64-74`). Note the shipped finding that ADK's mcptoolset drops MCP annotations — the override is the real un-gate in practice.
-3. **Split the roster by capability.** Analyst specialists get read-only allowlists; one `change-executor`-shaped specialist holds writes. Strip `patch_resource` / `rollout_undo` from `OOMKilled.tmpl` and its siblings. Make the boundary structural.
-4. **Extend the verdict to `{approve | reject | edit}`** with edited arguments validated against the tool's input schema. Copy their legibility rule: narrow, named tools only — nothing with `helm upgrade`-shaped blast radius, because an operator cannot approve what they cannot read.
-5. **Mirror in RBAC** in `deploy/base`: cluster-wide read, namespace-scoped write.
+3. **Restrict grant scopes for mutating tools** — normative, and it must land *with* the wiring rather than after. `AllowOnce` and change-set-minted exact-signature grants only; `AllowSessionVerb` / `AllowSessionTool` / `AllowAlways` refused. The ported scopes are developer-tool ergonomics: `AllowSessionTool` on `patch_resource` means one approval hands over the namespace for the session.
+4. **Split the roster by capability.** Analyst specialists get read-only allowlists; one `change-executor`-shaped specialist holds writes. Strip `patch_resource` / `rollout_undo` from `OOMKilled.tmpl` and its siblings. Make the boundary structural.
+5. **Extend the verdict to `{approve | reject | edit}`** with edited arguments validated against the tool's input schema. Copy their legibility rule: narrow, named tools only — nothing with `helm upgrade`-shaped blast radius, because an operator cannot approve what they cannot read.
+6. **Then `per_change_set`** — a grant-minting path in front of the gate built in 1–5, not a second mechanism. Durable minted-not-chosen grants on the resume-token pattern, consumption paired against the outbox record, plus the freshness bound and precondition re-check the window demands.
+7. **Mirror in RBAC** in `deploy/base`: cluster-wide read, namespace-scoped write.
 
-*Exit:* a diagnosis specialist structurally cannot mutate; a remediation call parks the turn *before* it fires, survives `kill -9`, and resumes on operator approval with the operator's edits applied.
+*Exit (per_call):* a diagnosis specialist structurally cannot mutate; a remediation call parks the turn *before* it fires, survives `kill -9`, and resumes on operator approval with the operator's edits applied. UAT green before step 6 starts.
+
+*Exit (per_change_set):* an operator approves N mutations once; a crash after call 3 of 5 resumes knowing which fired and re-fires none of them; a stale change set is refused back to the operator rather than silently applied.
 
 ### P2 — Fan-out (mast)
 
@@ -197,15 +205,19 @@ Implement `run_shape_fan_out_fan_in` — or, narrower and faster to land, a `dis
 1. **`scheduled:` on `EdgeTrigger`** (interval + jitter), reusing the timed-pause scheduler machinery in `cmd/mast/pausesched.go`.
 2. **Collector = `k8s-lookout`.** `lookout health --format=json` plus `triage delta` / `triage top` over lookout's MCP mode. Zero model tokens, and better than their hand-rolled collection.
 3. **Bounded analysis.** One cheap-tier call, forced structured `HealthReport`, no orchestrator, fixed step count. Their strongest lesson; we get it nearly free once P0.3 lands.
-4. **New `pkg/findings`.** Fingerprint + diff (new / escalated / ongoing / resolved / suppressed) + ack windows + digest-every-N, persisted alongside the session DB. **Port their `normalize_resource_name` outright** — the vowel-free-alphabet trick is genuinely clever and we would otherwise rediscover it the hard way. Coordinate with lookout's `triage status` records so the two layers do not double-track.
+4. **Finding state lands in lookout, not mast** (Q1). New surface: `lookout findings diff --report -` takes a `HealthReport` on stdin and returns the delta (new / escalated / ongoing / resolved / suppressed) plus a notify decision. Fingerprint + ack windows + digest-every-N live behind it. **Port their `normalize_resource_name` outright** — the vowel-free-alphabet trick is genuinely clever and we would otherwise rediscover it the hard way.
+
+   Build it by **generalizing lookout's existing occurrence store** (§9.1 `--store`) rather than adding a tracker beside it. The duplication risk does not disappear by relocating the code: lookout's dedup is window-scoped and signal-level, findings are unbounded-horizon and report-level, and two things called dedup that mean different things is the failure mode to avoid.
+
+   **Scope to single-cluster for the MVP.** Dedup state persists in the single-cluster model but is in-memory in the multi-cluster model, where finding state would not survive a restart — acks evaporate and everything re-alerts as new. Durable multi-cluster finding state (a shared store, or per-cluster sentinels reporting into a central one) is a named follow-on.
 5. Advance finding state **before** notifying (their ordering — a Slack failure must not replay the whole diff next cycle).
 
-*Exit:* a bundle runs every N minutes at bounded cost and notifies only on change, with a periodic digest.
+*Exit:* a single-cluster bundle runs every N minutes at bounded cost and notifies only on change, with a periodic digest. Mast orchestrates, meters, gates, and notifies; it never learns what a pod is.
 
 ### P4 — Slack (switchboard)
 
 1. **`POST /notify`** — agent-initiated post to a channel, rendering `HealthReport` through the existing Block Kit layer.
-2. **`EventTypeInteractive`** handling; map `block_actions` → mast's resume endpoint (`pkg/inject`'s `ResumeRequest` takes session + interrupt or a token) and → the ack endpoint.
+2. **`EventTypeInteractive`** handling; map `block_actions` → mast's resume endpoint (`pkg/inject`'s `ResumeRequest` takes session + interrupt or a token) and → the ack endpoint. Per Q1's open sub-decision, acks traverse mast for authn and audit and are forwarded to lookout, which owns the state — so switchboard keeps a single backend and the approver-attribution story does not split across two systems.
 3. **Approver allowlist**, asserted through the existing `X-Asserted-Caller` path so mast attributes the decision to a real human in the audit log.
 
 Verify the rest runs unchanged: mast's attach server already serves the daemon contract switchboard speaks (`pkg/attach/handlers.go:232-270` — `POST /sessions`, `/sessions/{sid}/inject`, `/wake`, `/interrupt`, SSE `/events`).
@@ -298,11 +310,13 @@ The deterministic tier is the structural advantage. Their `tool_coverage` requir
 
 ## 7. Open questions
 
-1. **Where does `pkg/findings` live** — mast-side, or does `k8s-lookout` grow cross-run finding state and mast consume it? lookout already has dedup and storm correlation; there is a real risk of two overlapping trackers. Leaning mast-side (findings are report-level, lookout's are signal-level), but it needs a call.
-2. **Does the fan-out synthesis node re-read, or synthesize only from branch reports?** Re-reading is more accurate and much more expensive.
-3. **Approval granularity** — per tool call (theirs) or per remediation plan (a batch an operator approves once)? Per-call is safer; per-plan is what an on-call human actually wants at 3am. Possibly both, keyed by `hitl_policy`.
-4. **Does the edit verdict need a schema-validated diff surface** in the AG-UI / attach protocols, or is a free-form arguments object enough for MVP?
-5. **`ErrParallelHITLUnsupported` under P2** — confirmed compatible for read-only analysts, but does a `dry_run` mutation inside a branch count as an interrupt origin?
+**Q1 and Q3 resolved 2026-08-12** — see [`../README.md`](../README.md)'s resolved-decisions table for the canonical rows.
+
+1. ~~**Where does `pkg/findings` live?**~~ **Resolved: `k8s-lookout`, not mast.** mast is domain-neutral substrate and Kubernetes finding identity is domain logic. Two premises in the original framing were also wrong: findings outlive sessions, so mast's session store was the wrong home on its own terms; and lookout's read-only RBAC governs *cluster* access, not its own persistence. lookout already carries the storage layer — `--store` (SQLite occurrence store, §9.1, TTL + size-bounded prune), `--dedup-persist`, and the `--distill-interval` recurrence→durable-fact pass (§9.2). **Durability is model-dependent:** single-cluster persists; multi-cluster holds dedup state in memory, so finding state would not survive restart there — acks evaporate, everything re-alerts as new. **P3's MVP targets single-cluster**; durable multi-cluster finding state is a named follow-on, not an assumption. A third repo was rejected on YAGNI. Mast's side is a wire contract (`lookout findings diff --report -`), not a Go import. *Sub-decision still open:* ack routing — bias is that acks traverse mast for authn and audit and are forwarded to lookout for state, so switchboard keeps one backend.
+2. **Does the fan-out synthesis node re-read, or synthesize only from branch reports?** Deliberately deferred: this is a cost/accuracy tuning knob, and deciding it by argument means guessing. Build P2 with the cheap option (branch reports only) and let P5's evals say whether accuracy justifies the re-read.
+3. ~~**Approval granularity?**~~ **Resolved: both, via `hitl_policy.approval_granularity: per_call | per_change_set`, default `per_call`.** Crucially it is **one gate, not two** — per-change-set compiles down to per-call by minting grants bound to exact normalized `(tool, arguments)` signatures, which the per-call gate consumes silently. The grant model is already ported and dormant in `pkg/permissions`. The sharp finding: the ported grant scopes are developer-tool ergonomics and are dangerous here — `AllowSessionTool` on `patch_resource` hands over the namespace for a session — so mutating tools admit only `AllowOnce` plus change-set-minted exact-signature grants. `per_call` is the default because `per_change_set` carries two hazards it doesn't: staleness between approval and execution, and the rubber-stamp risk if a change set isn't legible. Phasing: `per_call` ships and earns UAT first; `per_change_set` follows in the same slice. Full treatment in [`../orchestration-design.md`](../orchestration-design.md).
+4. **Does the edit verdict need a schema-validated diff surface** in the AG-UI / attach protocols, or is a free-form arguments object enough for MVP? Deferred as downstream of Q3 — now partly answered by it: `per_call` needs only arguments validated against the tool's input schema, while `per_change_set` wants a richer surface. Revisit when `per_change_set` starts.
+5. **`ErrParallelHITLUnsupported` under P2** — confirmed compatible for read-only analysts, but does a `dry_run` mutation inside a branch count as an interrupt origin? Still open, and cheap but not free: the likely answer is no (nothing executes, so nothing needs approval), but the documented gap that `NewParallelWorker` never appends worker events means a proposed mutation recorded *inside* a branch may not reliably reach the event log. If that holds, the real constraint is that branches must return proposed mutations in their report payload rather than relying on the log — a constraint on P2's synthesis contract, not a yes/no. Wants a verification pass against `pkg/effects`.
 
 ---
 
