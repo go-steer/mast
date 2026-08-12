@@ -413,7 +413,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// needs the runner, which needs the root).
 	pauseRec := &daemonPauseRecorder{store: store}
 
-	root, bundle, err := buildRoot(turnCtx, logger, llm, modelName, workloadArg, dispatchMode, pauseRec)
+	root, bundle, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode, pauseRec)
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		return err
@@ -1164,7 +1164,7 @@ func workloadNames(cfg *config.Config) []string {
 // coordinator (pkg/router) or the spike-2 workflow graph (pkg/graph).
 // Without --workload it constructs a trivial single-agent coordinator
 // (useful for pure inject-endpoint smoke).
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (adkagent.Agent, *workload.Bundle, error) {
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (adkagent.Agent, *workload.Bundle, error) {
 	if dispatch != "coordinator" && dispatch != "graph" {
 		return nil, nil, fmt.Errorf("unknown --dispatch %q (want `coordinator` or `graph`)", dispatch)
 	}
@@ -1195,10 +1195,12 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, modelNam
 		return nil, nil, err
 	}
 
-	a, err := compose.BuildRoot(compose.RootConfig{
+	a, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:        bundle,
 		Specs:         loaded,
 		Model:         llm,
+		ModelName:     modelName,
+		Provider:      providerName,
 		Toolsets:      toolsets,
 		Dispatch:      compose.Dispatch(dispatch),
 		Logger:        logger,

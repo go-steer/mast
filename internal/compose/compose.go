@@ -87,10 +87,21 @@ type RootConfig struct {
 	// build as Task-mode (the same default pkg/specialists applies).
 	Specs []specialists.Spec
 
-	// Model drives every built specialist (specs with a model override
-	// already bound it upstream — the spike binds one model per
-	// process).
+	// Model is the root model: the one the coordinator/planner runs on
+	// and the default for every specialist that declares no `model:`
+	// override.
 	Model model.LLM
+
+	// ModelName and Provider are the strings Model was built from (the
+	// --model / --provider values). They are what per-specialist
+	// `model:` overrides resolve against — see NewModelResolver.
+	//
+	// Leaving ModelName empty is legal (a library caller may hand over
+	// a model.LLM it constructed itself); overrides then resolve on
+	// their own model id, with provider selection falling back to the
+	// env-driven detection in BuildModel.
+	ModelName string
+	Provider  string
 
 	// Toolsets are offered to Task-mode specialists (and filtered
 	// through each spec's allowlist by specialists.Build). SingleTurn
@@ -121,7 +132,7 @@ type RootConfig struct {
 //   - DispatchCoordinator → the SubAgents coordinator (pkg/router).
 //   - DispatchAuto/empty → graph when the roster has both a SingleTurn
 //     classifier and a graph.FallbackName specialist, else coordinator.
-func BuildRoot(cfg RootConfig) (adkagent.Agent, error) {
+func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	dispatch := cfg.Dispatch
 	if dispatch == "" {
 		dispatch = DispatchAuto
@@ -132,11 +143,13 @@ func BuildRoot(cfg RootConfig) (adkagent.Agent, error) {
 		return nil, fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, or auto)", dispatch)
 	}
 
+	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Logger)
+
 	byName := make(map[string]adkagent.Agent, len(cfg.Specs))
 	taskOnly := make(map[string]graph.Specialist, len(cfg.Specs))
 	var classifier adkagent.Agent
 	for _, spec := range cfg.Specs {
-		opts := specialists.BuildOptions{Model: cfg.Model}
+		opts := specialists.BuildOptions{Model: cfg.Model, Resolve: resolve}
 		// Task-mode specialists get the toolsets; SingleTurn
 		// classifiers don't (they run in one shot with no tool loop).
 		// An empty Mode is Task — the same default specialists.Build
@@ -255,6 +268,77 @@ func BuildModel(ctx context.Context, provider, name string) (model.LLM, error) {
 		return p.Model(ctx, name)
 	default:
 		return nil, fmt.Errorf("unknown model %q (want `echo`, `toolactor`, `scripted`, a `gemini-*` or a `claude-*` model id)", name)
+	}
+}
+
+// offlineFakes are the model names that need no credentials and reach
+// no network: the CLI/library spellings BuildModel accepts, plus the
+// instance names it stamps on them (a library caller that constructs
+// the fake itself and passes it as Config.Model surfaces the latter
+// through Model.Name()).
+var offlineFakes = map[string]bool{
+	"echo": true, "mast-echo": true,
+	"toolactor": true, "mast-toolactor": true,
+	"scripted": true,
+}
+
+// IsOfflineFake reports whether name is one of mast's offline test
+// doubles.
+func IsOfflineFake(name string) bool { return offlineFakes[name] }
+
+// NewModelResolver returns the specialists.ModelResolver that binds a
+// specialist's `model:` override to a concrete model.LLM. Resolution
+// goes through BuildModel, so an override is dispatched exactly like a
+// --model value: by model id, with provider only disambiguating the
+// Anthropic backend.
+//
+// Two rules shape it, and both are load-bearing:
+//
+// Cross-provider overrides are allowed (specialists-design open Q#4,
+// resolved 2026-08-12). BuildModel already dispatches on the model id,
+// so a gemini-* specialist under a claude-* parent needs no new
+// machinery; refusing it would mean inventing a provider-family
+// classifier as a second source of truth beside BuildModel's own
+// dispatch. The price is that credentials for every distinct provider
+// in the roster must resolve, and they must resolve at construction —
+// which is where the error lands, not mid-incident on first call.
+//
+// When the root model is an offline fake, every override collapses back
+// to it. A bundle that declares real model tiers must still run under
+// `--model=echo` / `scripted` / `toolactor`, or tiering a bundle would
+// silently break the offline S/U/E test tiers (docs/v0.3-plan.md §2)
+// and scripts/demo-spike2.sh — the whole process is a test double, and
+// there is nothing to tier.
+//
+// Resolution is memoized per model id: eight analysts on one tier share
+// one provider client.
+func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, logger *slog.Logger) specialists.ModelResolver {
+	var (
+		mu       sync.Mutex
+		cache    = map[string]model.LLM{}
+		warnOnce sync.Once
+	)
+	return func(name string) (model.LLM, error) {
+		if root != nil && (name == rootName || IsOfflineFake(rootName)) {
+			if name != rootName && logger != nil {
+				warnOnce.Do(func() {
+					logger.Info("specialist model overrides collapsed to the root model: root is an offline fake",
+						"root_model", rootName)
+				})
+			}
+			return root, nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if m, ok := cache[name]; ok {
+			return m, nil
+		}
+		m, err := BuildModel(ctx, provider, name)
+		if err != nil {
+			return nil, err
+		}
+		cache[name] = m
+		return m, nil
 	}
 }
 

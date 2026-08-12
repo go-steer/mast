@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+- **Per-specialist model overrides are honored** (docs/specialists-design.md
+  open Q#4; docs/v0.3-plan.md W1.1). A specialist `.tmpl` has always been able
+  to declare `model:`, and `pkg/specialists` has always parsed it — but `Build`
+  constructed every specialist with the parent's model, so the field did
+  nothing and "cheap analysts, frontier synthesis" was unreachable. `Build` now
+  resolves the override through a `specialists.ModelResolver` that
+  `internal/compose` supplies, dispatching on the model id exactly as `--model`
+  does. **Cross-provider overrides are allowed** (a `gemini-*` specialist under
+  a `claude-*` parent): the dispatch is already id-based, and refusing would
+  mean maintaining a provider-family classifier as a second source of truth
+  beside it. Resolution is memoized per model id, so a roster of eight analysts
+  on one tier opens one client.
+
+  Two behaviors are deliberate. A **declared override that cannot be resolved
+  fails the build** rather than falling back to the parent's model — silent
+  fallback is the bug being fixed, and it would let a bundle read as tiered
+  while everything ran on one tier; the corollary is that credentials for every
+  provider in the roster must resolve at construction. And an **offline-fake
+  parent** (`--model=echo` / `scripted` / `toolactor`) collapses every override
+  back to itself, so tiering a bundle cannot break the credential-free smoke
+  and acceptance runs.
+
+  Behavior change for library consumers: `specialists.Build` /`BuildAll` now
+  return an error when a `Spec.Model` is set and `BuildOptions.Resolve` is nil.
+  Callers going through `mast.RunWorkload` / `mast.ResumeSession` / `cmd/mast`
+  get a resolver wired automatically. `internal/compose.BuildRoot` takes a
+  `context.Context` first argument.
+
+  No shipped bundle declares an override yet: naming a concrete model id binds
+  a bundle to one provider, so tiering `gke-triage` waits on a
+  provider-portable `tier:` field (proposed as W1.1a).
+
 ## v0.2.0 (2026-08-10)
 
 - **AG-UI server — Stage 2: HITL interrupt/resume lifecycle**

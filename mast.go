@@ -175,10 +175,11 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	if err != nil {
 		return nil, err
 	}
-	root, err := compose.BuildRoot(compose.RootConfig{
+	root, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:        bundle,
 		Specs:         specs,
 		Model:         llm,
+		ModelName:     modelName,
 		Dispatch:      compose.DispatchAuto,
 		Logger:        cfg.Logger,
 		PauseRecorder: pauseRecorder(cfg),
@@ -260,10 +261,11 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 	if err != nil {
 		return nil, err
 	}
-	root, err := compose.BuildRoot(compose.RootConfig{
+	root, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:        bundle,
 		Specs:         specs,
 		Model:         llm,
+		ModelName:     modelName,
 		Dispatch:      compose.DispatchAuto,
 		Logger:        cfg.Logger,
 		PauseRecorder: pauseRecorder(cfg),

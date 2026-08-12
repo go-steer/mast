@@ -24,14 +24,61 @@ import (
 	mastagent "github.com/go-steer/mast/pkg/agent"
 )
 
+// ModelResolver turns a specialist's `model:` frontmatter override into
+// a concrete model.LLM. It exists so pkg/specialists can honor the
+// override without depending on the provider packages: this package
+// knows a specialist declared "claude-haiku-4-5", and nothing else about
+// what that string means.
+//
+// Implementations are expected to memoize — a roster of eight analysts
+// on the same tier should share one provider client, not open eight.
+// internal/compose.NewModelResolver is the one mast ships; it resolves
+// through the same BuildModel path the root model came from.
+type ModelResolver func(name string) (model.LLM, error)
+
 // BuildOptions carries the runtime bindings a Spec needs to become a
 // concrete ADK agent. The model is required. Toolsets are offered to
 // every built specialist but filtered through Spec.Tools.MCP first —
 // see filterToolsets for the spike allowlist semantics.
 type BuildOptions struct {
-	Model    model.LLM
+	// Model is the parent's model — the default every specialist runs
+	// on when it declares no `model:` override.
+	Model model.LLM
+
+	// Resolve resolves per-specialist `model:` overrides. Nil is legal
+	// only when no Spec in the roster declares an override; Build
+	// refuses a declared override it cannot resolve rather than
+	// silently running the specialist on the parent's model (the bug
+	// this field fixes — see docs/v0.3-plan.md W1.1).
+	Resolve ModelResolver
+
 	Tools    []tool.Tool
 	Toolsets []tool.Toolset
+}
+
+// modelFor picks the model a Spec builds with: the resolved `model:`
+// override when the spec declares one, the parent's model otherwise.
+//
+// A declared-but-unresolvable override is a build error, never a
+// fallback. Falling back would reproduce exactly the failure mode W1.1
+// exists to remove — a bundle that reads as "Haiku analysts, Sonnet
+// synthesis" while every specialist quietly runs on the parent's model
+// and the cost story is a fiction.
+func (o BuildOptions) modelFor(spec Spec) (model.LLM, error) {
+	if spec.Model == "" {
+		return o.Model, nil
+	}
+	if o.Resolve == nil {
+		return nil, fmt.Errorf("specialists: build %q: model override %q declared but BuildOptions.Resolve is nil", spec.Name, spec.Model)
+	}
+	m, err := o.Resolve(spec.Model)
+	if err != nil {
+		return nil, fmt.Errorf("specialists: build %q: resolve model override %q: %w", spec.Name, spec.Model, err)
+	}
+	if m == nil {
+		return nil, fmt.Errorf("specialists: build %q: model resolver returned nil for override %q", spec.Name, spec.Model)
+	}
+	return m, nil
 }
 
 // filterToolsets applies the specialist's MCP allowlist to the offered
@@ -70,10 +117,16 @@ func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
 }
 
 // Build turns a Spec into an ADK agent, dispatching to Task or
-// SingleTurn constructors based on Spec.Mode.
+// SingleTurn constructors based on Spec.Mode. The agent runs on
+// spec.Model when the spec declares one, opts.Model otherwise — see
+// modelFor.
 func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 	if opts.Model == nil {
 		return nil, fmt.Errorf("specialists: build %q: BuildOptions.Model is required", spec.Name)
+	}
+	llm, err := opts.modelFor(spec)
+	if err != nil {
+		return nil, err
 	}
 	switch spec.Mode {
 	case ModeTask, "":
@@ -81,7 +134,7 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 			Name:        spec.Name,
 			Description: spec.Description,
 			Instruction: spec.Instruction,
-			Model:       opts.Model,
+			Model:       llm,
 			Tools:       opts.Tools,
 			Toolsets:    filterToolsets(spec, opts.Toolsets),
 		})
@@ -90,7 +143,7 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 			Name:        spec.Name,
 			Description: spec.Description,
 			Instruction: spec.Instruction,
-			Model:       opts.Model,
+			Model:       llm,
 		})
 	default:
 		return nil, fmt.Errorf("specialists: build %q: unknown mode %q", spec.Name, spec.Mode)
