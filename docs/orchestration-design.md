@@ -283,6 +283,21 @@ For any tool the mutation predicate classifies as mutating, only two grants are 
 
 **Phasing.** `per_call` ships first and earns UAT coverage before `per_change_set` lands; both sit in the same delivery slice (P1 in the assessment).
 
+### Ack routing (resolved 2026-08-12)
+
+Context: [`./assessments/langchain-sre-agent.md`](./assessments/langchain-sre-agent.md) open question Q1's remaining sub-decision, which [`./v0.3-plan.md`](./v0.3-plan.md) W4.6 gates on. An operator acking a finding suppresses it for a window. Q1 already settled that **finding state lives in lookout, not mast** — mast stays domain-neutral and never learns a k8s-shaped schema. What was left open is the *path an ack takes*, because an ack is simultaneously an authorization event (mast's concern) and a state mutation (lookout's concern).
+
+**Acks traverse mast and are forwarded to lookout.** The chat transport posts to mast; mast authenticates the caller, records the ack in its audit log, and calls lookout's ack surface. Lookout is the store of record for *the suppression*; mast is the store of record for *who asked and when*. Two consequences follow, and both are the point:
+
+1. **The chat transport keeps exactly one backend.** switchboard talks to mast and only mast. Letting the transport call lookout directly for acks and mast for approvals would fork the operator surface across two services with two auth models — and switchboard has no interactive-component event type today (its `EventType` enum covers Events API and slash commands only), so the ack path is being built either way. Build it once, against one backend.
+2. **An ack is attributable.** "Who silenced this, and when does it expire" is an audit question, and mast is where the audit trail already lives. An ack that reaches lookout without traversing mast is unattributed by construction.
+
+**Acks are not mutation approvals.** They share an operator and a chat surface, not a mechanism. An approval mints a grant that licenses a *write to the cluster* and is consumed on use; an ack is a time-boxed *read-path suppression* that asserts no diagnosis and touches nothing outside lookout's own store. They do not share the `pkg/permissions` grant vocabulary, the `approve | reject | edit` verdict schema, or the freshness/precondition machinery above. Collapsing them would drag cluster-mutation controls onto a mute button.
+
+**But the ack surface is still a gated write.** Lookout's §9.4 triage-status write is not permission-gated today (lookout `DESIGN.md` §614). If the ack path lands on that same write, mast's authn becomes the only thing standing in front of it, which makes the "traverse mast" rule load-bearing rather than merely tidy: **mast must not expose an ack tool that a workload's model can call**. Acks enter through the operator/transport ingress, never through the tool loop. Tracked on the lookout side in [go-steer/k8s-lookout#212](https://github.com/go-steer/k8s-lookout/issues/212).
+
+**Durability follows the finding state.** Single-cluster is durable (lookout's per-sentinel SQLite occurrence store); multi-cluster finding state is in-memory today, so acks evaporate on restart and everything re-alerts as `new`. That is an accepted MVP limitation and must be *named to the operator*, not discovered when a four-hour ack expires early. Follow-on against lookout #208.
+
 ## Bundle learning + refinement
 
 Once audit-derived memory is real (positioning.md priority #7, phased for v0.3+), workload bundles become self-improving via two modes:
