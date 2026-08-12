@@ -138,10 +138,16 @@ func (t IntentTable) IntentFor(upstreamTool string) (string, bool) {
 // gap in the table, and swallowing it would quietly inflate coverage.
 func (t IntentTable) IntentsFor(upstreamTools []string) (intents []string, unknown []string) {
 	seen := make(map[string]bool)
+	seenUnknown := make(map[string]bool)
 	for _, name := range upstreamTools {
 		id, ok := t.IntentFor(name)
 		if !ok {
-			unknown = append(unknown, name)
+			// Deduplicated like the intents are: a name repeated in one
+			// scenario's expected_tools is one gap, not two.
+			if !seenUnknown[name] {
+				seenUnknown[name] = true
+				unknown = append(unknown, name)
+			}
 			continue
 		}
 		if !seen[id] {
