@@ -340,8 +340,27 @@ The LLM-as-router shape (#7) was built and run end-to-end against ADK v2.1.0 in 
 - **Root-agent rules.** A `workflowagent.New`-wrapped graph runs as the runner's **root agent** directly. The runner's Chat-mode restriction applies only when the root *is* an `LlmAgent` (non-LlmAgent roots take a generic path). An earlier spike-1 conclusion that "a bare Workflow cannot be a root agent" was wrong; graphs do not need a coordinator above them. The SubAgents-dispatch pattern (Chat coordinator + auto-installed `task`/`single_turn` tools per sub-agent) remains a valid *alternative* shape — the prototype keeps both behind a flag for comparison — but it routes by tool-description reading on a frontier coordinator rather than by typed `Event.Routes`, with the cost and legibility differences that implies.
 - **Task-mode specialists in graphs.** Wrap in `workflow.NewAgentNode`, invoke via `RunNode` from a `DynamicNode` body. `finish_task` is auto-installed and its argument becomes the node output.
 - **Resume/re-execution contract.** Dynamic-node bodies re-execute on resume (`RerunOnResume`); `RunNode` does **not** return cached child results across a pause turn (dynamic children aren't in the static graph `ReconstructRunState` rehydrates). Body shape must be ResumedInput-first with a session-state stash for anything the resume pass needs. Consequence for every shape here that mixes children with HITL: side effects before the interrupt re-run unless guarded — see [`./durable-execution-design.md`](./durable-execution-design.md) side-effect semantics.
-- **Parallel-branch HITL is unsupported** (`ErrParallelHITLUnsupported`) — constrains shapes #1, #5, #6 as noted inline.
+- **Parallel-branch HITL is unsupported** (`ErrParallelHITLUnsupported`) — constrains shapes #1, #5, #6 as noted inline. See the event-visibility note below for the mechanism, which turns out to constrain more than HITL.
+
 - **v0.1 shape subset (named, resolving the phasing gap with [`./orchestration-design.md`](./orchestration-design.md)'s "2 canonical shapes in v0.1"):** **LLM-as-router** (#7 — classifier-first dispatch and the triage anchor need it; already proven) and **fan-out-fan-in** (#1 — the `gke-parallel-triage` smoke example needs it). The remaining five ship in v0.2 per fork-design Phase 2. P1.4's planner scaffold wires `run_shape_*` tools to these two; the P1.4→P1.5 sequencing in fork-design should reflect that these two shapes land *before or with* the planner scaffold, not after.
+
+### Parallel branches are invisible to the event log (verified 2026-08-12)
+
+The suppression noted inline in shape #1 is stronger than "intermediate events are dropped," and it has a consequence for the recorded-effect outbox that is worth stating separately because the failure mode is silent.
+
+In ADK v2.1.0, `runWrappedOnce` (`workflow/parallel_worker.go:213-230`) iterates the wrapped node's events and keeps **only** those for which `extractOutput(ev)` succeeds; everything else is discarded rather than forwarded. What the worker emits is `makeWorkerOutputEvent` (`:232-243`) — `&session.Event{Output: output}`, an event carrying `Output` and nothing else. It has no `Content`, therefore no `FunctionCall` or `FunctionResponse` parts. **Nothing a branch does with tools reaches the session event log.** The doc comment at `:69` says as much: *"Intermediate non-output events emitted by the wrapped node are suppressed."*
+
+Both of the recorded-effect outbox's read paths are log-derived — `scanHistory` off `sess.Events()` (`pkg/effects/effects.go:314`) and `ScanDangling` (`:569`), sharing `pairScan`. So inside a parallel branch the outbox splits in half:
+
+- **Refusal still works.** `beforeTool` is a runner plugin bracketing the `callTool` seam, which is crossed regardless of the graph shape wrapped around it, and the turn-start snapshot was computed from pre-parallel history. A pre-existing dangling mutating call still blocks tools inside a branch.
+- **Recording does not.** A `FunctionCall` issued *inside* a branch never lands in the log, so the next turn's snapshot and boot-time auto-resume are blind to it, and call-level replay (`st.completions[FunctionCallID]`) cannot fire because completions are read from the same log.
+
+Two rules follow, and they bind any shape that uses `NewParallelWorker`:
+
+1. **A branch's `Output` payload is its only durable record.** Anything a downstream node or an operator must see — including a *proposed* mutation from a `dry_run` — has to be returned in the payload. Writing it as an event and expecting to read it after the join does not work.
+2. **Mutating tools must not appear in a parallel branch's allowlist, and this should be enforced rather than documented.** A real mutation inside a branch is not merely unrecorded; it is invisible to crash recovery, so the session looks clean when it is not. That is worse than being outside outbox coverage — it defeats the outbox's central guarantee that a dangling mutation is visible and blocking. Read-only analysts satisfy the rule structurally, but nothing currently checks that a branch's roster is read-only, and the mutation predicate needed to check it already exists (`docs/orchestration-design.md`). Compare the grant-scope restriction in that doc's mutation-approval section: same shape of hazard, same remedy — refuse at construction, don't warn in prose.
+
+A `dry_run` mutation inside a branch is **not** an interrupt origin — nothing executes, so nothing needs approval — and is therefore compatible with `ErrParallelHITLUnsupported`. Rule 1 is what makes it *useful*: the proposal has to come back in the report payload.
 
 ## Open questions
 
