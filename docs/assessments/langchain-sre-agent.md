@@ -6,6 +6,8 @@ An evidence-grounded comparison of LangChain's published SRE agent against mast 
 
 This is an assessment doc (like [`../uat-v0.2-plan.md`](../uat-v0.2-plan.md)) — it records findings and a proposed plan. Decisions it produces belong in the relevant design doc and its resolved-decisions section. No docs-site mirror.
 
+**The executable form of §4 is [`../v0.3-plan.md`](../v0.3-plan.md)** — PR-sized tasks with file anchors, a parity scoreboard, and the test that proves each row. Start there to build; stay here for the evidence.
+
 Read alongside [`../orchestration-design.md`](../orchestration-design.md) (bundles, mutation predicate, evaluation harness), [`../specialists-design.md`](../specialists-design.md), [`../triage-demo-plan.md`](../triage-demo-plan.md), and [`../durable-execution-design.md`](../durable-execution-design.md).
 
 ---
@@ -110,7 +112,7 @@ mast today:
 
 Their on-demand path fans out to 8 analysts concurrently and synthesizes. `pkg/graph/graph.go` is classify → route → **one** specialist (`StringRoute` per reason, `Default` → `_fallback`). `run_shape_fan_out_fan_in` returns `not_implemented` in the v0.2 scaffold (`docs/site/src/content/docs/roadmap.md`). Today mast cannot answer "audit the whole cluster."
 
-Note the existing constraint: HITL cannot originate inside parallel branches (`ErrParallelHITLUnsupported`, [`../workflow-scaffolding-design.md`](../workflow-scaffolding-design.md)). That is compatible with the target design — analysts are read-only, so no branch needs to interrupt; remediation happens in a sequential post-synthesis node.
+Note the existing constraint: HITL cannot originate inside parallel branches (`ErrParallelHITLUnsupported`, [`../workflow-scaffolding-design.md`](../workflow-scaffolding-design.md)). That is compatible with the target design — analysts are read-only, so no branch needs to interrupt; remediation happens in a sequential post-synthesis node. Verification (Q5, §7) showed the underlying mechanism binds harder than HITL: ADK discards every branch-internal tool event, so the outbox can refuse inside a branch but cannot *record* there. Read-only analysts satisfy that structurally; nothing enforces it yet.
 
 ### G3 — No scheduled trigger, no finding-state tracker — **blocking, the proactive half**
 
@@ -198,7 +200,12 @@ Granularity is settled (Q3): **both `per_call` and `per_change_set`, one gate, `
 
 Implement `run_shape_fan_out_fan_in` — or, narrower and faster to land, a `dispatch: fanout` graph shape: N cheap-tier analysts run concurrently, one frontier-tier synthesis node merges into a single `HealthReport`. Concurrency capped at the `NewParallelWorker` `maxConcurrency` argument (the one that actually binds from a workflowagent root — resolved-decision row 133). Each branch budget-bounded. Remediation stays sequential and post-synthesis, respecting `ErrParallelHITLUnsupported`.
 
-*Exit:* "audit namespace X" produces one merged report from concurrent analysts.
+Two requirements carried in from Q5's verification, both non-negotiable because the failure they prevent is silent:
+
+1. **The synthesis contract reads branch `Output` payloads only.** ADK discards branch-internal tool events, so a branch's payload is its only durable record. Any proposed mutation a `dry_run` analyst produces must be returned there.
+2. **Refuse mutating-classified tools in a parallel branch's allowlist, at graph construction.** The mutation predicate from P1.2 is the check; this is a small increment on it. Prose discipline is not enough — a mutation inside a branch is invisible to crash recovery, so the session looks clean when it isn't.
+
+*Exit:* "audit namespace X" produces one merged report from concurrent analysts, and a bundle that puts a write tool on a fan-out analyst fails to build.
 
 ### P3 — Proactive monitoring (k8s-lookout + mast)
 
@@ -281,10 +288,10 @@ These are mast's differentiators. If they are not in the eval suite they are not
 
 | Tier | Runs on | Evaluators | Cost | Where |
 |---|---|---|---|---|
-| Deterministic | `pkg/providers/mock/scripted.go` + `pkg/agent/toolactor.go` | `tool_coverage`, `severity_accuracy`, effect-ordering, exactly-once — all pure code over the event log | zero | every PR |
-| Judge | real provider | `response_quality` | metered | nightly |
+| Deterministic | `pkg/providers/mock/scripted.go` + `pkg/agent/toolactor.go` | effect-ordering, exactly-once, refusal, rejection, budget — pure code over the event log | zero | every PR |
+| Judge | real provider | `severity_accuracy`, `tool_coverage`, `response_quality` | metered | nightly |
 
-The deterministic tier is the structural advantage. Their `tool_coverage` requires a live model call per example to observe a trajectory; ours reads the trajectory out of the durable event log, which we already query for the UAT suite. That means we can afford to gate on it.
+**Correction (2026-08-12).** An earlier draft of this table put `tool_coverage` and `severity_accuracy` in the deterministic tier, arguing that reading a trajectory out of the event log avoids the live call their harness needs. That is wrong. `tool_coverage` measures *which tools the model chose*; a scripted provider does not choose — its trajectory is the fixture — so replaying one and asserting the tools match the script asserts the script equals itself. **Measuring agent quality, and therefore comparing to LangChain at all, needs a live model.** The structural advantage is real but narrower than claimed: the free tier gates *mast's guarantees* (the five differentiator scenarios below), which their harness cannot express at any price. Both halves are necessary and they measure different things. Tier definitions live in [`../v0.3-plan.md`](../v0.3-plan.md) §2, which splits this four ways.
 
 **Harness:** `dev/ci/presubmits/evals.sh`, sibling to the existing `e2e.sh`, following the `scripts/uat-v0.2.sh` pattern.
 
@@ -310,13 +317,13 @@ The deterministic tier is the structural advantage. Their `tool_coverage` requir
 
 ## 7. Open questions
 
-**Q1 and Q3 resolved 2026-08-12** — see [`../README.md`](../README.md)'s resolved-decisions table for the canonical rows.
+**Q1, Q3, and Q5 resolved 2026-08-12** — see [`../README.md`](../README.md)'s resolved-decisions table for the canonical rows.
 
 1. ~~**Where does `pkg/findings` live?**~~ **Resolved: `k8s-lookout`, not mast.** mast is domain-neutral substrate and Kubernetes finding identity is domain logic. Two premises in the original framing were also wrong: findings outlive sessions, so mast's session store was the wrong home on its own terms; and lookout's read-only RBAC governs *cluster* access, not its own persistence. lookout already carries the storage layer — `--store` (SQLite occurrence store, §9.1, TTL + size-bounded prune), `--dedup-persist`, and the `--distill-interval` recurrence→durable-fact pass (§9.2). **Durability is model-dependent:** single-cluster persists; multi-cluster holds dedup state in memory, so finding state would not survive restart there — acks evaporate, everything re-alerts as new. **P3's MVP targets single-cluster**; durable multi-cluster finding state is a named follow-on, not an assumption. A third repo was rejected on YAGNI. Mast's side is a wire contract (`lookout findings diff --report -`), not a Go import. *Sub-decision still open:* ack routing — bias is that acks traverse mast for authn and audit and are forwarded to lookout for state, so switchboard keeps one backend.
 2. **Does the fan-out synthesis node re-read, or synthesize only from branch reports?** Deliberately deferred: this is a cost/accuracy tuning knob, and deciding it by argument means guessing. Build P2 with the cheap option (branch reports only) and let P5's evals say whether accuracy justifies the re-read.
 3. ~~**Approval granularity?**~~ **Resolved: both, via `hitl_policy.approval_granularity: per_call | per_change_set`, default `per_call`.** Crucially it is **one gate, not two** — per-change-set compiles down to per-call by minting grants bound to exact normalized `(tool, arguments)` signatures, which the per-call gate consumes silently. The grant model is already ported and dormant in `pkg/permissions`. The sharp finding: the ported grant scopes are developer-tool ergonomics and are dangerous here — `AllowSessionTool` on `patch_resource` hands over the namespace for a session — so mutating tools admit only `AllowOnce` plus change-set-minted exact-signature grants. `per_call` is the default because `per_change_set` carries two hazards it doesn't: staleness between approval and execution, and the rubber-stamp risk if a change set isn't legible. Phasing: `per_call` ships and earns UAT first; `per_change_set` follows in the same slice. Full treatment in [`../orchestration-design.md`](../orchestration-design.md).
 4. **Does the edit verdict need a schema-validated diff surface** in the AG-UI / attach protocols, or is a free-form arguments object enough for MVP? Deferred as downstream of Q3 — now partly answered by it: `per_call` needs only arguments validated against the tool's input schema, while `per_change_set` wants a richer surface. Revisit when `per_change_set` starts.
-5. **`ErrParallelHITLUnsupported` under P2** — confirmed compatible for read-only analysts, but does a `dry_run` mutation inside a branch count as an interrupt origin? Still open, and cheap but not free: the likely answer is no (nothing executes, so nothing needs approval), but the documented gap that `NewParallelWorker` never appends worker events means a proposed mutation recorded *inside* a branch may not reliably reach the event log. If that holds, the real constraint is that branches must return proposed mutations in their report payload rather than relying on the log — a constraint on P2's synthesis contract, not a yes/no. Wants a verification pass against `pkg/effects`.
+5. ~~**`ErrParallelHITLUnsupported` under P2**~~ **Resolved 2026-08-12 by verification against ADK v2.1.0 and `pkg/effects`.** A `dry_run` mutation inside a branch is **not** an interrupt origin — nothing executes, so nothing needs approval — so it is compatible. But the verification turned up something sharper than the yes/no, and worse than the assessment guessed. `runWrappedOnce` (`workflow/parallel_worker.go:213-230`) keeps only events where `extractOutput(ev)` succeeds and discards the rest; the worker emits `&session.Event{Output: output}`, which has no `Content` and therefore no `FunctionCall`/`FunctionResponse` parts. Nothing a branch does with tools reaches the event log. Since both outbox read paths are log-derived (`scanHistory` at `pkg/effects/effects.go:314`, `ScanDangling` at `:569`), the outbox splits: **refusal still works** (`beforeTool` brackets `callTool` regardless of graph shape, and the turn-start snapshot predates the fan-out), but **recording does not** — a mutation issued inside a branch is invisible to crash recovery, so the session looks clean when it isn't. Two consequences, both folded into P2: branches must return proposed mutations in their `Output` payload, and mutating tools must be *refused* in parallel branch allowlists rather than discouraged. Full treatment in [`../workflow-scaffolding-design.md`](../workflow-scaffolding-design.md), "Parallel branches are invisible to the event log."
 
 ---
 
