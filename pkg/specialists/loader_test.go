@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	adkmodel "google.golang.org/adk/v2/model"
+
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/specialists"
 )
@@ -175,8 +177,12 @@ func TestBuild(t *testing.T) {
 		t.Fatalf("LoadDir: %v", err)
 	}
 
-	model := mastagent.NewEchoModel("test-echo")
-	agents, err := specialists.BuildAll(specs, specialists.BuildOptions{Model: model})
+	// classifierSpec declares `model: gemini-2.5-flash`, so BuildAll
+	// needs a resolver — a declared override with none is a build
+	// error, not a silent fallback (see register_test.go).
+	echo := mastagent.NewEchoModel("test-echo")
+	resolve := func(string) (adkmodel.LLM, error) { return mastagent.NewEchoModel("test-echo-override"), nil }
+	agents, err := specialists.BuildAll(specs, specialists.BuildOptions{Model: echo, Resolve: resolve})
 	if err != nil {
 		t.Fatalf("BuildAll: %v", err)
 	}

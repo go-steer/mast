@@ -95,6 +95,41 @@ agui:
 | `agui.input_schema` | map | A **mast-side** convention only: an optional JSON-Schema-shaped hint surfaced in the discovery descriptor so a client can render an input form. AG-UI's `RunAgentInput` has no schema field, so it does **not** constrain the wire input. |
 | `agui.auth.required`, `agui.auth.scopes` | bool, list of strings | Per-endpoint auth policy. `scopes` are enforced per run when a token validator is configured (`MAST_AGUI_TOKEN`): a caller whose token lacks a scope is refused `403`. |
 
+## Per-specialist model override
+
+A specialist `.tmpl` may declare its own model in frontmatter, so a roster
+can run cheap analysts under a frontier synthesizer instead of billing
+every specialist at one tier:
+
+```yaml
+---
+description: Inspects pod state and returns a 3-bullet digest.
+model: claude-haiku-4-5
+---
+```
+
+Specialists that declare no `model:` inherit the process model
+(`--model`). An override is dispatched by model id, exactly like
+`--model` — the `--provider` alias only disambiguates the Anthropic
+backend — so an override **may name a different provider** than the
+parent. Resolution is memoized per model id, so eight specialists on one
+tier share one client.
+
+Two behaviors worth knowing before you tier a roster:
+
+- **A declared override that cannot be resolved fails startup.** It is
+  never quietly downgraded to the parent's model, because a bundle that
+  reads as tiered while running everything on one tier is worse than one
+  that refuses to start. Credentials for every provider named in the
+  roster must resolve at construction.
+- **Offline fakes collapse overrides.** Under `--model=echo`,
+  `scripted`, or `toolactor`, every override resolves back to that fake,
+  so a tiered bundle still runs credential-free in smoke and acceptance
+  runs.
+
+Naming a concrete model id binds the bundle to that provider — worth
+weighing before putting an override in a bundle other deployments fork.
+
 ## Budget fields
 
 | Field | Meaning |

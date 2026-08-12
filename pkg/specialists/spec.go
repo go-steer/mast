@@ -20,7 +20,10 @@
 // Schema follows docs/specialists-design.md. This package implements
 // the spike subset (name, description, mode, instruction, model
 // override). Tool allowlists are enforced at Build time (see
-// filterToolsets). Budget fields are parsed here but enforced
+// filterToolsets), as is the model override: a spec's `model:` is
+// resolved through BuildOptions.Resolve, and a declared override that
+// cannot be resolved fails the build rather than falling back to the
+// parent's model. Budget fields are parsed here but enforced
 // elsewhere, per field:
 //
 //   - max_wallclock_seconds — enforced in graph dispatch: pkg/graph
