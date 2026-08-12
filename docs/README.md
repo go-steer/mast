@@ -27,6 +27,12 @@ Design documentation for `mast` — the agent-infrastructure substrate for unatt
 
 Each doc has a Resolved-decisions section at the bottom listing what's been settled in conversation; the rest is open for discussion.
 
+## Assessments
+
+[`./assessments/`](./assessments/) holds comparative and evaluative write-ups — findings against an external system, a competitive read, a retrospective. They are *inputs* to the design corpus, not part of it: an assessment records evidence and proposes work, but nothing it proposes is settled until the owning design doc says so and the cross-reference table below records it. Like [`./uat-v0.2-plan.md`](./uat-v0.2-plan.md), they carry no docs-site mirror.
+
+- **[`./assessments/langchain-sre-agent.md`](./assessments/langchain-sre-agent.md)** (2026-08-12) — LangChain's autonomous Kubernetes SRE agent vs. mast v0.2.0. Their subagents map ~1:1 onto specialists and mast leads on durability, cost metering, multi-provider, and read-path depth (`k8s-lookout`); the gaps are the designed-but-unwired parts — structural read/write split + per-mutating-tool gate (`hitl_policy.on_mutation`), fan-out, cross-run finding state, chat egress + Slack interactivity, typed report contract, per-specialist model tier, eval harness. Includes a six-slice MVP plan across mast / switchboard / k8s-lookout.
+
 ## Status (2026-07-27)
 
 This repo holds mast's design corpus **and, since 2026-07-26, the mast code** (Phase 1 of the fork executed under the revised trigger; `v0.1.0-pre` released). The thesis (E) — *sibling products with divergent agendas* — remains the resolved framing: mast = platform-agent product; core-agent = experimentation/integration substrate for embedded consumers. Both maintained indefinitely.
