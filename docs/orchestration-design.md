@@ -104,6 +104,7 @@ budget:
 hitl_policy:
   on_ambiguity: escalate           # options: escalate | proceed | abort
   on_mutation: require_approval    # options: require_approval | apply | dry_run
+  approval_granularity: per_call   # options: per_call | per_change_set
   on_budget_exhaustion: escalate   # options: escalate | abort
 
 isolation:
@@ -128,6 +129,7 @@ isolation:
 | `budget.max_turns` | int | no (default 20) | Planner turn cap (or plain-agent turn cap when planner disabled). |
 | `hitl_policy.on_ambiguity` | enum | no (default `escalate`) | What happens when the planner (or plain agent) hits genuine ambiguity. |
 | `hitl_policy.on_mutation` | enum | no (default `require_approval`) | What happens before a state-mutating tool call. **Mutation predicate (defined 2026-07-25 — the policy previously hung on an undefined term):** a tool call is *mutating* if (a) the built-in tool's registration carries `Mutating: true` (mast annotates all built-ins), or (b) an MCP tool lacks `readOnlyHint: true` — i.e. **default-deny-unknown**: absent or ambiguous annotations classify as mutating, since MCP hints are advisory and often missing. Operators can override per tool in the bundle's `tool_catalog` (`mutating: false`) to un-gate known-safe tools; overrides are audit-logged. |
+| `hitl_policy.approval_granularity` | enum | no (default `per_call`) | Only meaningful when `on_mutation: require_approval`. `per_call` parks the turn before each mutating call; `per_change_set` parks once on a typed change set and mints per-call grants from the verdict. See "Mutation approval" below — this is a granularity axis, orthogonal to the require/apply/dry_run axis. |
 | `hitl_policy.on_budget_exhaustion` | enum | no (default `escalate`) | What happens when a budget cap is hit. |
 | `isolation.scope` | enum | no (default `per_request`) | Session isolation scope. Maps to `WithIsolationScope(scopeID)` on the root run. |
 
@@ -249,6 +251,37 @@ Plan-first gate remains a root-agent primitive. When the planner is the root age
 - If `plan_review_required: false`, the plan is recorded to eventlog for audit but execution proceeds.
 
 Prose plan + optional HITL is the best of both: human-readable, review-ready, audit-friendly, without requiring the planner to emit machine-parseable graph JSON.
+
+### Mutation approval: granularity, grants, and change sets (resolved 2026-08-12)
+
+Context: [`./assessments/langchain-sre-agent.md`](./assessments/langchain-sre-agent.md) open question Q3. `on_mutation: require_approval` was underspecified on one axis — *what does one approval authorize?* An operator approving each mutating call is a different product from an operator approving a remediation once, and the two imply different verdict schemas, notification payloads, and audit records.
+
+**Both ship.** `hitl_policy.approval_granularity` selects between them per workload, defaulting to `per_call`.
+
+**One gate, not two.** Per-change-set is not a second gate; it *compiles down to* per-call. Approving a change set mints N grants, each bound to an exact normalized `(tool, arguments)` signature; the per-call gate at the tool-execution seam then finds them pre-satisfied and does not park. Same seam, same verdict schema (`approve | reject | edit`), same audit record. The only differences are when the grant is created and how many calls one verdict covers.
+
+This is why "both" is affordable: per-change-set is a grant-minting path in front of the per-call gate, not a parallel mechanism.
+
+**Substrate already ported.** `pkg/permissions` carries the grant-scope vocabulary (`Decision`: `AllowOnce` / `AllowSession` / `AllowSessionVerb` / `AllowSessionTool` / `AllowAlways`) and a `GrantStore` with an idempotent `Persist`. Both are dormant — no `Gate` is constructed outside tests — but the model does not need inventing.
+
+**Mutating-tool grant restriction (normative).** The ported scopes were designed for developer-tool ergonomics — "allow every `git *` for this session" — which is the wrong risk model for cluster mutation. `AllowSessionTool` means *allow every call to this tool regardless of args*; applied to `patch_resource` a single approval hands over the namespace for the rest of the session.
+
+For any tool the mutation predicate classifies as mutating, only two grants are admissible:
+
+1. `DecisionAllowOnce`, and
+2. change-set-minted grants bound to an exact normalized `(tool, arguments)` signature.
+
+`AllowSessionVerb`, `AllowSessionTool`, and `AllowAlways` are **refused** for mutating tools and remain available only to non-mutating tooling. This restriction must land with the gate wiring, not after it.
+
+**A change set is not a plan.** Distinct artifact from the `plan_it_out` prose above, which stays prose — that decision is unaffected. A change set is a typed list of proposed `(tool, arguments)` tuples with no free text, existing to be *executed* after approval rather than *read* before work starts. Keeping the names distinct keeps the two review surfaces from collapsing into each other.
+
+**Durability.** Grants are durable, minted-not-chosen, ops-row recorded, and consumed on use — the resume-token pattern, reused rather than reinvented. Per-change-set opens a window between approval at T and execution of calls 1..N at T+1..T+n, so grant consumption pairs against the recorded-effect outbox's `FunctionCall`/`FunctionResponse` record: a crash mid-change-set resumes knowing which calls fired, and an unconsumed grant is not a licence to re-fire a completed one.
+
+**Freshness and preconditions.** A change set approved at T executes against a world that may have moved by T+n. `per_change_set` therefore carries a freshness bound (the `--auto-resume-window` pattern) and a precondition re-check before execution; a stale or precondition-failed change set is refused back to the operator, never silently applied. `per_call` has no such window, which is one of the two reasons it is the default.
+
+**Legibility (normative).** The other reason. A change set's value is one approval instead of N — which only pays off if the operator can actually read it. A change set of opaque calls into broad wrappers is *worse* than per-call approval, because it converts a safety control into a rubber stamp. Change sets are composed of narrow, named tools; a mutating tool whose blast radius is not evident from its name and arguments is not change-set-eligible.
+
+**Phasing.** `per_call` ships first and earns UAT coverage before `per_change_set` lands; both sit in the same delivery slice (P1 in the assessment).
 
 ## Bundle learning + refinement
 
