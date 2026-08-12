@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **Parity scenario corpus and intent table** (docs/v0.3-plan.md W0.1, W0.1a).
+  The 31 LangChain SRE-agent evaluation scenarios are ported to
+  `testdata/evals/scenarios/langchain-sre.jsonl`, and `testdata/evals/intents.yaml`
+  maps their 23 distinct tool names onto 19 diagnostic intents plus the lookout
+  tools that satisfy each. `internal/evals` loads and validates both. Nothing
+  is scored yet — the evaluators are W0.2 — but the corpus and the mapping the
+  scoreboard will be computed from now exist and are tested.
+
+  The mapping is at *intent* level, not tool-name level, because lookout
+  consolidates: 22 of the 31 scenarios are fully answered by a single lookout
+  call, and name-level set overlap would score a better-factored read path as a
+  regression. Three properties of the upstream data are recorded rather than
+  smoothed over: the corpus is ported from the `.jsonl` (what upstream actually
+  uploads and scores) even though its `.json` sidecar is an unwired *repair* of
+  it; 7 of the 23 tool names do not exist in upstream's own registry, so 16 of
+  71 tool references are unsatisfiable and are annotated `unreachable_upstream`;
+  and both upstream custom-code evaluators are constant functions on this
+  dataset, so neither provides an adoptable baseline. See the plan's W0.1/W0.1a
+  findings for the detail.
+
 - **Per-specialist model overrides are honored** (docs/specialists-design.md
   open Q#4; docs/v0.3-plan.md W1.1). A specialist `.tmpl` has always been able
   to declare `model:`, and `pkg/specialists` has always parsed it — but `Build`
