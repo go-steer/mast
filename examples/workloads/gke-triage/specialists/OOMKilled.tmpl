@@ -5,6 +5,7 @@ description: |
   the node ran out of memory). Invoked when a pod reports OOMKilled.
   Returns a short structured triage summary — limit vs. usage,
   chronic vs. one-off, concrete remediation.
+output_schema: ../schemas/finding.json
 budget:
   max_turns: 6
   max_wallclock_seconds: 60
@@ -93,7 +94,10 @@ An escalation summary should include: peak memory if known, current
 limit, request-to-limit ratio, and whether the OOM is chronic or
 acute.
 
-Return your finding by calling finish_task. Keep it short —
+Return your finding by calling `finish_task` with the fields that tool
+declares — the report schema is the contract, so `severity` must be one
+of the values it names and `reason` must be a stable CamelCase token.
+Keep `detail` short —
 operators are on-call.
 
 <!--

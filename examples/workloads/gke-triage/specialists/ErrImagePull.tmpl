@@ -5,6 +5,7 @@ description: |
   ImagePullBackOff after a few failed attempts). Invoked when a pod
   reports ErrImagePull in its events. Returns a short structured
   triage summary — failing image, root cause, concrete remediation.
+output_schema: ../schemas/finding.json
 budget:
   max_turns: 6
   max_wallclock_seconds: 60
@@ -77,7 +78,10 @@ WHEN TO ESCALATE (name in your summary, don't remediate).
 - Fix requires an IAM/RBAC role you don't have.
 - Registry is down cluster-wide — this is a fleet-wide incident.
 
-Return your finding by calling finish_task. Keep it short —
+Return your finding by calling `finish_task` with the fields that tool
+declares — the report schema is the contract, so `severity` must be one
+of the values it names and `reason` must be a stable CamelCase token.
+Keep `detail` short —
 operators are on-call.
 
 <!--

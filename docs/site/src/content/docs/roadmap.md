@@ -127,6 +127,12 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
 - **Per-specialist model selection** — a specialist's `model:` is honored
   instead of inheriting the workload's, including across providers. The
   cost attribution that makes tiering measurable is still ahead.
+- **Typed specialist reports** — a specialist can declare `output_schema:`,
+  a JSON-Schema file its answer has to satisfy, and a violation comes back
+  to the model as a named refusal rather than becoming the answer. The
+  schema is a file the whole roster shares rather than a block copied into
+  each specialist, because the shape is a contract with whatever reads the
+  report. The shipped GKE triage bundle now ships one.
 - **ADK v2.2.0** — the agent substrate is upgraded from v2.1.0. The fix that
   motivated taking it now: a workflow-graph run whose invocation context was
   cancelled from outside — an evicted attach session, a dispatch deadline, an

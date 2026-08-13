@@ -4,6 +4,7 @@ description: |
   reporting Ready. Invoked when a pod's events surface NodeNotReady.
   Returns a short structured triage summary — node condition, single
   vs. multi-node scope, concrete remediation or escalation.
+output_schema: ../schemas/finding.json
 budget:
   max_turns: 4
   max_wallclock_seconds: 60
@@ -77,7 +78,10 @@ WHEN TO ESCALATE (name in your summary, don't remediate).
 - Suspected control-plane issue (would surface in Cloud Logging).
 - Data-loss risk: pods with local storage on the failed node.
 
-Return your finding by calling finish_task. Keep it short —
+Return your finding by calling `finish_task` with the fields that tool
+declares — the report schema is the contract, so `severity` must be one
+of the values it names and `reason` must be a stable CamelCase token.
+Keep `detail` short —
 operators are on-call.
 
 <!--

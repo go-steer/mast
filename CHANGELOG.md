@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **Specialists can declare a report contract: `output_schema:`**
+  (docs/v0.3-plan.md W1.3). The field names a JSON-Schema document
+  (`.json`/`.yaml`/`.yml`) **relative to the `.tmpl` file's own directory** —
+  a shared file rather than an inline block, because a report shape is a
+  contract with its consumers and inlining it makes that contract private to
+  one specialist. `pkg/specialists/schema.go` reads, type-normalizes and
+  checks the document at *load* time, so a malformed contract fails the roster
+  on startup instead of on the first turn that dispatches to it. Refused at
+  load: unknown keys (`propertys:` constrains nothing), untyped nodes, arrays
+  without `items`, objects with no `properties`, `required` names that are not
+  properties, and a non-object top level.
+
+  Enforcement is ADK's, and it is the same on both agent modes: in `Task` mode
+  the schema becomes the `finish_task` declaration and a non-conforming call
+  comes back as a validation error naming the missing key; in `SingleTurn`
+  mode the reply is validated on the way out and the delegation is refused.
+  Either way the model that asked sees the refusal and no result, so
+  non-conforming output cannot become a specialist's answer. Mast gains no
+  `Finding` Go type — the shape is a workload asset.
+
+  The `gke-triage` bundle ships that asset:
+  `examples/workloads/gke-triage/schemas/finding.json`, referenced by all
+  twelve diagnosers (the `triage-classifier` router emits a token, not a
+  report, and is deliberately unschema'd). The test asserts the twelve resolve
+  to *one* file — twelve individually-valid schemas would satisfy "every
+  diagnoser is typed" and still be the drift a shared asset exists to prevent.
+
+  Fixed while wiring the deploy mirror: `50-statefulset-daemon.yaml` projected
+  3 of the 13 specialists the ConfigMap carries. A ConfigMap `items:` list
+  projects only what it names, so nine failure modes routed to `_fallback` in
+  a real deployment with nothing in the logs to say a dedicated specialist
+  existed.
+
 - **Judge tier: the 31 parity scenarios are scored against a live provider**
   (docs/v0.3-plan.md W0.5). `internal/evals/judge` stands up a fixture cluster
   per scenario over lookout's read-only tool surface, runs one SRE agent

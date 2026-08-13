@@ -120,6 +120,12 @@ func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
 // SingleTurn constructors based on Spec.Mode. The agent runs on
 // spec.Model when the spec declares one, opts.Model otherwise — see
 // modelFor.
+//
+// A spec's OutputSchema reaches both modes. The two enforce it
+// differently — Task mode through the finish_task declaration, which
+// rejects a malformed call back to the model, SingleTurn through
+// validation of the reply, which fails the run — but in neither case
+// can output that violates the contract become the specialist's result.
 func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 	if opts.Model == nil {
 		return nil, fmt.Errorf("specialists: build %q: BuildOptions.Model is required", spec.Name)
@@ -131,19 +137,21 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 	switch spec.Mode {
 	case ModeTask, "":
 		return mastagent.NewTaskAgent(mastagent.TaskAgentConfig{
-			Name:        spec.Name,
-			Description: spec.Description,
-			Instruction: spec.Instruction,
-			Model:       llm,
-			Tools:       opts.Tools,
-			Toolsets:    filterToolsets(spec, opts.Toolsets),
+			Name:         spec.Name,
+			Description:  spec.Description,
+			Instruction:  spec.Instruction,
+			Model:        llm,
+			Tools:        opts.Tools,
+			Toolsets:     filterToolsets(spec, opts.Toolsets),
+			OutputSchema: spec.OutputSchema,
 		})
 	case ModeSingleTurn:
 		return mastagent.NewSingleTurnAgent(mastagent.SingleTurnAgentConfig{
-			Name:        spec.Name,
-			Description: spec.Description,
-			Instruction: spec.Instruction,
-			Model:       llm,
+			Name:         spec.Name,
+			Description:  spec.Description,
+			Instruction:  spec.Instruction,
+			Model:        llm,
+			OutputSchema: spec.OutputSchema,
 		})
 	default:
 		return nil, fmt.Errorf("specialists: build %q: unknown mode %q", spec.Name, spec.Mode)
