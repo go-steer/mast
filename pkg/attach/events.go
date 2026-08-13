@@ -57,6 +57,19 @@ import "time"
 // Caller.Identity). Enables backend-agnostic clients (mast-web) to
 // render without a code change per producer. Also spec'd an optional
 // `capabilities` merge field on status-update for future hot changes.
+//
+// ADK v2.2.0 (no version bump): the `agent` frame embeds ADK's
+// session.Event verbatim, and v2.2.0 put JSON tags on that struct —
+// its fields went from PascalCase (`Content`, `Author`, `Actions`,
+// `StateDelta`) to camelCase with omitempty, for adk-python interop.
+// mast does not own that shape and never specified it, so the version
+// stays at 1.4.0 rather than claiming a schema change a client could
+// negotiate around. Recorded here because it is nonetheless visible on
+// the wire: a consumer reading those field names must accept both
+// casings, as mast-web's attach protocol normalizer already does.
+// Decoding is unaffected in both directions — encoding/json matches
+// field names case-insensitively — so session rows written by either
+// version still load.
 const protocolVersion = "1.4.0"
 
 // SSE event-type names per the protocol spec (section 2).
