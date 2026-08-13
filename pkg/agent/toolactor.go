@@ -58,7 +58,12 @@ import (
 //   - Worker turn (Task mode: finish_task is offered): if the incident
 //     envelope's reason selects a UAT tool (apply -> apply_change,
 //     read -> read_status) that is registered and not yet answered in the
-//     history, call it once; otherwise call finish_task.
+//     history, call it once; otherwise call finish_task. Its arguments
+//     satisfy the declared output schema when the specialist declares
+//     one (schemafill.go).
+//   - Classifier turn (SingleTurn mode: no tools at all): reply with the
+//     bare incident reason, so graph dispatch routes to the real
+//     per-failure-mode specialist rather than the Default edge.
 //
 // Selecting the tool from the inject reason keeps each leg's control in
 // the harness's payload (reason "ApplyChange" vs "ReadStatus"), not in a
@@ -120,9 +125,21 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 					return
 				}
 			}
-			yield(functionCall("finish_task", map[string]any{
-				"result": fmt.Sprintf("[toolactor] handled %s", reason),
-			}, usage), nil)
+			// finish_task's arguments come from its declaration: a
+			// specialist that declares `output_schema:` is handed that
+			// schema as its finish_task parameters, and a call that
+			// violates it is refused rather than accepted (schemafill.go).
+			if schemaViolationGiveUp(req) {
+				yield(&model.LLMResponse{
+					Content:       genai.NewContentFromText("[toolactor] giving up: the report contract was refused", genai.RoleModel),
+					UsageMetadata: usage,
+					TurnComplete:  true,
+					FinishReason:  genai.FinishReasonStop,
+				}, nil)
+				return
+			}
+			args := finishTaskArgs(req, reason, fmt.Sprintf("[toolactor] handled %s", reason))
+			yield(functionCall("finish_task", args, usage), nil)
 			return
 		}
 
@@ -130,6 +147,21 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 		// then answer.
 		if deleg := delegationTool(toolNames); deleg != "" && !responded(req, deleg) {
 			yield(functionCall(deleg, map[string]any{"request": reason}, usage), nil)
+			return
+		}
+		// No tools at all: a SingleTurn agent — mast's LLM-as-router
+		// classifier. Reply with the bare incident reason so graph
+		// dispatch routes to the real per-failure-mode specialist
+		// offline, the same convention the echo model follows. Without
+		// this every toolactor run fell to the Default (_fallback) edge,
+		// so a routing regression could not be seen.
+		if len(toolNames) == 0 && reason != "" {
+			yield(&model.LLMResponse{
+				Content:       genai.NewContentFromText(reason, genai.RoleModel),
+				UsageMetadata: usage,
+				TurnComplete:  true,
+				FinishReason:  genai.FinishReasonStop,
+			}, nil)
 			return
 		}
 		yield(&model.LLMResponse{

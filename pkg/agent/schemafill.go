@@ -1,0 +1,209 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package agent
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"google.golang.org/genai"
+
+	"google.golang.org/adk/v2/model"
+)
+
+// Schema-conforming finish_task arguments for the offline fake models.
+//
+// A Task-mode specialist that declares `output_schema:` (W1.3) gets that
+// schema as its finish_task parameters verbatim, and ADK validates the
+// call against it — a violation comes back to the model as an error
+// function response rather than becoming the agent's result. Both fakes
+// used to answer with a hard-coded `{"result": "<some text>"}`, which is
+// exactly such a violation: against the shipped gke-triage roster the
+// fake looped, got refused, looped again, and the run died on the
+// specialist's turn cap with no report. Offline runs of the anchor
+// workload were broken from the moment W1.3 landed and nothing said so,
+// because no test drove the shipped bundle end to end. `U-report`
+// (scripts/uat-v0.3.sh) is that test and this file is what makes it
+// possible.
+//
+// The rule is: answer the contract you were handed. The fakes read the
+// finish_task declaration off the request and synthesize a value for
+// every property in it, so a roster can change its report shape without
+// anyone touching a fake. Where no output schema is declared, ADK's
+// default single-`result` wrapper is in force and the caller's own text
+// is used, byte for byte as before.
+
+// fakeSchemaViolationEnv, when set to a non-empty value, makes the
+// offline fakes deliberately emit a finish_task call that VIOLATES a
+// declared output schema (the first required property is omitted), then
+// give up with plain text once the runtime refuses it.
+//
+// This exists so a black-box harness can show that the refusal is real:
+// a conforming report and a violating one have to reach visibly
+// different ends, or "the report conforms" is a claim about the fake
+// rather than about mast. Nothing in production reads this variable —
+// it is only consulted through the fakes, which are themselves
+// test-only models.
+const fakeSchemaViolationEnv = "MAST_FAKE_SCHEMA_VIOLATION"
+
+func violateSchemaEnabled() bool { return os.Getenv(fakeSchemaViolationEnv) != "" }
+
+// finishTaskParams digs the finish_task parameter schema out of the
+// request config — the declaration as it goes on the wire, which is
+// what the runtime validates against. Nil when finish_task is not
+// declared with parameters.
+func finishTaskParams(req *model.LLMRequest) *genai.Schema {
+	if req == nil || req.Config == nil {
+		return nil
+	}
+	for _, t := range req.Config.Tools {
+		if t == nil {
+			continue
+		}
+		for _, fd := range t.FunctionDeclarations {
+			if fd != nil && fd.Name == "finish_task" {
+				return fd.Parameters
+			}
+		}
+	}
+	return nil
+}
+
+// isDefaultResultWrapper reports whether s is ADK's stand-in schema for
+// a Task agent with no output_schema: an object carrying exactly one
+// string property named "result" (internal/workflowinternal's
+// defaultWrapperKey). Recognizing it is what keeps the unschema'd path
+// byte-identical to the fakes' historical behavior.
+func isDefaultResultWrapper(s *genai.Schema) bool {
+	if s == nil || len(s.Properties) != 1 {
+		return false
+	}
+	p, ok := s.Properties["result"]
+	return ok && schemaType(p) == genai.TypeString
+}
+
+// schemaType normalizes a schema's type, which arrives upper-cased on
+// the wire ("STRING") but may be written either way in Go.
+func schemaType(s *genai.Schema) genai.Type {
+	if s == nil {
+		return genai.TypeUnspecified
+	}
+	return genai.Type(strings.ToUpper(string(s.Type)))
+}
+
+// finishTaskArgs builds arguments for a finish_task call that satisfy
+// whatever schema the runtime declared for it.
+//
+// With no output schema declared (ADK's default `result` wrapper), the
+// caller's fallback text is used unchanged. With one declared, every
+// property is filled from its type: enums take their first value, so
+// the output is deterministic run to run, and every free string carries
+// the seed (the incident reason) so a report can be traced back to the
+// incident that produced it.
+//
+// Under MAST_FAKE_SCHEMA_VIOLATION the first required property is
+// omitted instead — but only when a real output schema is in force.
+// Dropping "result" from the default wrapper would exercise ADK's
+// baseline validation, not the workload's report contract, and the
+// point of the switch is the latter.
+func finishTaskArgs(req *model.LLMRequest, seed, fallbackResult string) map[string]any {
+	decl := finishTaskParams(req)
+	if decl == nil || isDefaultResultWrapper(decl) {
+		return map[string]any{"result": fallbackResult}
+	}
+	args := conformingArgs(decl, seed)
+	if violateSchemaEnabled() && len(decl.Required) > 0 {
+		delete(args, decl.Required[0])
+	}
+	return args
+}
+
+// conformingArgs fills every declared property of an object schema.
+func conformingArgs(s *genai.Schema, seed string) map[string]any {
+	out := make(map[string]any, len(s.Properties))
+	for name, prop := range s.Properties {
+		out[name] = sampleValue(prop, seed, name)
+	}
+	return out
+}
+
+// sampleValue synthesizes one schema-conforming value. Arrays get
+// exactly one element: an empty array satisfies most schemas but says
+// nothing about the item type, and a report whose `recommended_actions`
+// is always empty is a weaker fixture than one that is not.
+func sampleValue(s *genai.Schema, seed, name string) any {
+	switch schemaType(s) {
+	case genai.TypeString:
+		if len(s.Enum) > 0 {
+			return s.Enum[0]
+		}
+		return fakeText(seed, name)
+	case genai.TypeInteger:
+		return 1
+	case genai.TypeNumber:
+		return 1.0
+	case genai.TypeBoolean:
+		return false
+	case genai.TypeArray:
+		if s.Items == nil {
+			return []any{}
+		}
+		return []any{sampleValue(s.Items, seed, name)}
+	case genai.TypeObject:
+		return conformingArgs(s, seed)
+	default:
+		return fakeText(seed, name)
+	}
+}
+
+// fakeText is the filler for an unconstrained string. It names both the
+// fake and the incident so a report that reaches an operator's screen
+// can never be mistaken for a real diagnosis.
+func fakeText(seed, name string) string {
+	if seed == "" {
+		return fmt.Sprintf("[fake] %s", name)
+	}
+	return fmt.Sprintf("[fake:%s] %s", seed, name)
+}
+
+// schemaViolationGiveUp reports whether a fake in violation mode should
+// stop calling finish_task and end its turn with plain text — which
+// ends a Task agent without a result.
+//
+// A stateless fake that violated the contract on every call would spin
+// until some budget killed it, turning a contract test into a timeout.
+// Giving up once the refusal is visible in the history bounds the leg
+// and makes its outcome specific: no report, rather than no report and
+// a budget error to explain away.
+func schemaViolationGiveUp(req *model.LLMRequest) bool {
+	if !violateSchemaEnabled() || req == nil {
+		return false
+	}
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p == nil || p.FunctionResponse == nil || p.FunctionResponse.Name != "finish_task" {
+				continue
+			}
+			if _, bad := p.FunctionResponse.Response["error"]; bad {
+				return true
+			}
+		}
+	}
+	return false
+}

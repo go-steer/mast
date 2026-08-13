@@ -65,13 +65,40 @@ func (m *echoModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 		// Task-mode agents auto-install finish_task and terminate by
 		// calling it; when it's declared, play along so Task
 		// specialists complete deterministically offline.
+		//
+		// The arguments come from the declaration, not from here: a
+		// specialist that declares `output_schema:` has that schema as
+		// its finish_task parameters and ADK refuses a call that
+		// violates it (see schemafill.go). Without one, the text below
+		// is what goes out, unchanged.
 		if _, ok := req.Tools["finish_task"]; ok {
+			if schemaViolationGiveUp(req) {
+				yield(&model.LLMResponse{
+					Content:       genai.NewContentFromText("[echo triage] giving up: the report contract was refused", genai.RoleModel),
+					UsageMetadata: usage,
+					TurnComplete:  true,
+					FinishReason:  genai.FinishReasonStop,
+				}, nil)
+				return
+			}
+			// The incident reason is recovered from the whole history,
+			// not just the last user message: a Task specialist reached
+			// through a workflow node sees the envelope earlier in the
+			// conversation, and a retry turn's most recent content is a
+			// function response. Scanning only the last user message
+			// left the reason blank on exactly that path, so the
+			// unschema'd digest read "diagnosed from envelope: " with
+			// nothing after the colon.
+			reason := reasonAcross(req)
+			if reason == "" {
+				reason = firstMatch(reasonRe, last)
+			}
+			args := finishTaskArgs(req, reason,
+				fmt.Sprintf("[echo triage] diagnosed from envelope: %s", reason))
 			resp := &model.LLMResponse{
 				Content: &genai.Content{
-					Role: genai.RoleModel,
-					Parts: []*genai.Part{genai.NewPartFromFunctionCall("finish_task", map[string]any{
-						"result": fmt.Sprintf("[echo triage] diagnosed from envelope: %s", firstMatch(reasonRe, last)),
-					})},
+					Role:  genai.RoleModel,
+					Parts: []*genai.Part{genai.NewPartFromFunctionCall("finish_task", args)},
 				},
 				UsageMetadata: usage,
 				TurnComplete:  true,

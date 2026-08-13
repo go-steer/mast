@@ -139,6 +139,18 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   schema is a file the whole roster shares rather than a block copied into
   each specialist, because the shape is a contract with whatever reads the
   report. The shipped GKE triage bundle now ships one.
+- **The shipped example is now under test end to end** — a second
+  acceptance harness runs the GKE triage bundle exactly as the quickstart
+  does, offline and credential-free, and checks the report an operator
+  actually receives in the approval prompt: every field the schema
+  declares, a valid value for the constrained one, and the specialist the
+  incident routed to. It also proves the contract is enforced rather than
+  merely declared, by running a deliberately malformed report through the
+  same path and requiring it to be refused. Writing it found a real bug —
+  with a report contract declared, the offline demo models could not
+  produce a conforming report, so `mast --model=echo` on the shipped bundle
+  failed every injected incident. Fixed; the harness is what keeps it
+  fixed.
 - **ADK v2.2.0** — the agent substrate is upgraded from v2.1.0. The fix that
   motivated taking it now: a workflow-graph run whose invocation context was
   cancelled from outside — an evicted attach session, a dispatch deadline, an
