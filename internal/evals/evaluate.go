@@ -33,27 +33,31 @@ const (
 
 // Result is one evaluator's verdict on one scenario.
 type Result struct {
-	Metric string
+	// The json tags matter: a Result is serialized into the judge
+	// board, which is a durable artifact the nightly diffs and a human
+	// reads. Untagged, it was the one PascalCase island in an otherwise
+	// snake_case document.
+	Metric string `json:"metric"`
 	// Score is in [0,1]. For the two invariants it is binary: an
 	// invariant is not partially held.
-	Score float64
+	Score float64 `json:"score"`
 	// Comment says why, in operator-readable terms. It is the part a
 	// human reads when a scoreboard cell goes red, so it names the
 	// specific intent, tool, or call rather than reporting a bare count.
-	Comment string
+	Comment string `json:"comment,omitempty"`
 
 	// Diagnostic marks a metric emitted for visibility only. A
 	// diagnostic score is never a comparison number and never gates
 	// CI — see tool_coverage, which scores mast's consolidated read
 	// path as a regression by construction.
-	Diagnostic bool
+	Diagnostic bool `json:"diagnostic,omitempty"`
 
 	// Vacuous marks a score that is 1.0 because there was nothing to
 	// measure, not because anything was demonstrated. Upstream's
 	// tool_coverage is 1.0 on all 31 rows for exactly this reason
 	// (it reads a key no row has), and a harness that cannot tell the
 	// two apart reports a perfect score for a metric that never ran.
-	Vacuous bool
+	Vacuous bool `json:"vacuous,omitempty"`
 }
 
 // Passed reports whether a non-diagnostic result is a full score.

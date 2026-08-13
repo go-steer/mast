@@ -65,22 +65,11 @@ import (
 const (
 	// TierDeterministic is the free, credential-free gate. Default.
 	TierDeterministic = "deterministic"
-	// TierJudge is the metered nightly report. Lands in W0.5.
+	// TierJudge is the metered nightly report: the 31 corpus scenarios
+	// scored against a live model over the fixture cluster (W0.5). It
+	// reports rather than gates — see [Summary.OK].
 	TierJudge = "judge"
 )
-
-// ErrTierNotImplemented is returned for a tier the harness knows about
-// but has not built. It is an error rather than a skip on purpose:
-// asking for the judge tier and silently getting the deterministic one
-// would report a free run as a metered one.
-type ErrTierNotImplemented struct {
-	Tier string
-	Why  string
-}
-
-func (e ErrTierNotImplemented) Error() string {
-	return fmt.Sprintf("tier %q is not implemented: %s", e.Tier, e.Why)
-}
 
 // Config is what the runner needs from its caller.
 type Config struct {
@@ -88,10 +77,34 @@ type Config struct {
 	Root string
 	// Tier selects the suite. Empty means TierDeterministic.
 	Tier string
-	// Scratch is a directory the differentiator fixtures own for the
-	// duration of the run. Empty means one is made under os.TempDir
-	// (house rule #5) and removed afterwards.
+	// Scratch is a directory the fixtures own for the duration of the
+	// run. Empty means one is made under os.TempDir (house rule #5) and
+	// removed afterwards.
 	Scratch string
+
+	// Model is the model under test in the judge tier. Empty means the
+	// Anthropic default. Ignored by the deterministic tier, which has no
+	// model at all.
+	Model string
+	// Grader is the model that scores response_quality. Empty means the
+	// small Anthropic default: upstream grades with gpt-4o-mini for the
+	// same reason, and a grader is comparing two texts rather than
+	// diagnosing a cluster.
+	Grader string
+	// Provider selects the credential path for both models
+	// (`anthropic`, `anthropic-vertex`). Empty lets compose pick from
+	// the environment.
+	Provider string
+
+	// Progress, when set, receives a line per scenario as the judge tier
+	// works through the corpus. Thirty-one live runs take minutes and the
+	// report is written all at once at the end, so without this the tier
+	// is indistinguishable from a hang — which is the state an operator
+	// is most likely to react to by killing a metered run halfway.
+	//
+	// Deliberately separate from the report writer: the CLI points this
+	// at stderr so the board on stdout stays a clean artifact.
+	Progress io.Writer
 }
 
 // CorpusSummary is what the corpus suite found.
@@ -127,7 +140,14 @@ type Summary struct {
 	// declared red today. Shrinking it is v0.3's progress metric, so it
 	// is a first-class field rather than something to count by eye.
 	ExpectedFail []string `json:"expected_fail"`
+	// Judge is the metered tier's board. Nil on the deterministic tier.
+	Judge *JudgeSummary `json:"judge,omitempty"`
 	// Problems are the reasons this run failed. Empty means green.
+	//
+	// The judge tier records a Problem only when the *measurement* is
+	// broken — a metric that scores nothing, a scenario whose run never
+	// happened. A low score is never a Problem: J reports, it does not
+	// gate (docs/v0.3-plan.md §2).
 	Problems []string `json:"problems,omitempty"`
 }
 
@@ -137,10 +157,10 @@ func (s Summary) OK() bool { return len(s.Problems) == 0 }
 // Run executes the configured tier.
 //
 // It returns an error only when the harness itself could not run — an
-// unreadable fixture, an unimplemented tier. A scenario that fails, or a
-// metric that scores nothing, is a Problem on the Summary, not an error:
-// the caller wants the whole report, not the first thing that went
-// wrong.
+// unreadable fixture, an unknown tier, absent credentials. A scenario
+// that fails, or a metric that scores nothing, is a Problem on the
+// Summary, not an error: the caller wants the whole report, not the
+// first thing that went wrong.
 func Run(ctx context.Context, cfg Config) (Summary, error) {
 	tier := cfg.Tier
 	if tier == "" {
@@ -148,35 +168,27 @@ func Run(ctx context.Context, cfg Config) (Summary, error) {
 	}
 	switch tier {
 	case TierDeterministic:
+		return runDeterministic(ctx, cfg)
 	case TierJudge:
-		return Summary{}, ErrTierNotImplemented{
-			Tier: TierJudge,
-			Why:  "the judge tier lands in W0.5 (docs/v0.3-plan.md) — it needs live provider credentials, costs ~$5-15 a run, and reports rather than gates",
-		}
+		return runJudge(ctx, cfg)
 	default:
 		return Summary{}, fmt.Errorf("unknown tier %q (want %q or %q)", tier, TierDeterministic, TierJudge)
 	}
+}
 
-	sum := Summary{Tier: tier}
-	corpus, err := runCorpus(cfg.Root)
+func runDeterministic(ctx context.Context, cfg Config) (Summary, error) {
+	sum := Summary{Tier: TierDeterministic}
+	ds, tbl, err := loadFixtures(cfg.Root)
 	if err != nil {
 		return Summary{}, err
 	}
-	sum.Corpus = corpus
-	for _, m := range corpus.Dead {
-		sum.Problems = append(sum.Problems, fmt.Sprintf(
-			"metric %q scores nothing anywhere in the corpus: it is a constant function, so no board it appears on means anything", m))
-	}
+	sum.Corpus, sum.Problems = summarizeCorpus(tbl, ds)
 
-	scratch := cfg.Scratch
-	if scratch == "" {
-		dir, err := os.MkdirTemp("", "mast-evals-")
-		if err != nil {
-			return Summary{}, fmt.Errorf("harness: scratch dir: %w", err)
-		}
-		defer func() { _ = os.RemoveAll(dir) }()
-		scratch = dir
+	scratch, cleanup, err := scratchDir(cfg)
+	if err != nil {
+		return Summary{}, err
 	}
+	defer cleanup()
 
 	scenarios := differentiators.All()
 	if err := differentiators.Validate(scenarios); err != nil {
@@ -195,24 +207,53 @@ func Run(ctx context.Context, cfg Config) (Summary, error) {
 	return sum, nil
 }
 
-func runCorpus(root string) (CorpusSummary, error) {
+// scratchDir resolves the run's scratch directory, returning a cleanup
+// that removes it only when the harness made it. A caller-supplied
+// directory is the caller's to delete.
+func scratchDir(cfg Config) (string, func(), error) {
+	if cfg.Scratch != "" {
+		return cfg.Scratch, func() {}, nil
+	}
+	dir, err := os.MkdirTemp("", "mast-evals-")
+	if err != nil {
+		return "", nil, fmt.Errorf("harness: scratch dir: %w", err)
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+func loadFixtures(root string) (evals.Dataset, evals.IntentTable, error) {
 	dsPath := filepath.Join(root, "testdata", "evals", "scenarios", "langchain-sre.jsonl")
 	ds, err := evals.LoadDataset(dsPath)
 	if err != nil {
-		return CorpusSummary{}, err
+		return evals.Dataset{}, evals.IntentTable{}, err
 	}
 	tbl, err := evals.LoadIntentTable(filepath.Join(root, "testdata", "evals", "intents.yaml"))
 	if err != nil {
-		return CorpusSummary{}, err
+		return evals.Dataset{}, evals.IntentTable{}, err
 	}
+	return ds, tbl, nil
+}
+
+// summarizeCorpus reports whether the metrics can score this corpus, and
+// names any that cannot. Both tiers run it: on the deterministic tier it
+// is the whole corpus check, and on the judge tier it is what keeps a
+// board of real numbers from being read as meaningful when one of the
+// columns is a constant.
+func summarizeCorpus(tbl evals.IntentTable, ds evals.Dataset) (CorpusSummary, []string) {
 	reach := evals.CorpusReach(tbl, ds)
-	return CorpusSummary{
+	sum := CorpusSummary{
 		Dataset:   ds.Meta.Fixture,
 		Scenarios: len(ds.Scenarios),
 		Intents:   len(tbl.Intents),
 		Reach:     reach,
 		Dead:      evals.DeadMetrics(reach),
-	}, nil
+	}
+	var problems []string
+	for _, m := range sum.Dead {
+		problems = append(problems, fmt.Sprintf(
+			"metric %q scores nothing anywhere in the corpus: it is a constant function, so no board it appears on means anything", m))
+	}
+	return sum, problems
 }
 
 func summarize(rep differentiators.Report) (ScenarioSummary, []string) {
@@ -260,6 +301,24 @@ func (s Summary) WriteText(w io.Writer) {
 	for _, r := range s.Corpus.Reach {
 		p("  %s", r)
 	}
+
+	if s.Judge != nil {
+		// The judge tier scores the corpus rather than running the
+		// differentiators, which are deterministic and free and belong
+		// on the gating tier.
+		s.Judge.write(p)
+		p("")
+		if s.OK() {
+			p("REPORTED")
+			return
+		}
+		p("INCOMPLETE")
+		for _, prob := range s.Problems {
+			p("  - %s", prob)
+		}
+		return
+	}
+
 	p("")
 	p("differentiators:")
 	for _, sc := range s.Scenes {

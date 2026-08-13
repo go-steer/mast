@@ -115,6 +115,15 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   being flipped fails the suite. It also checks that the metrics scoring
   the ported 31-scenario corpus can score anything at all, so a green board
   cannot come from a measurement that never ran.
+- **Nightly judged evals** — a second, metered tier that answers the
+  question the free one cannot: how good the agent's *answers* are, not just
+  which tools it reached for. It runs the 31-scenario corpus against a live
+  model over a fixtured cluster and has a second model grade each response
+  against the upstream rubric, then posts a board and a delta against the
+  previous night. It reports; it never gates — no score can fail a build,
+  and the only things it flags are a scenario that did not run and a metric
+  that scored nothing. Scenarios the tool surface cannot satisfy are listed
+  as structural ceilings rather than folded into a low score.
 - **Per-specialist model selection** — a specialist's `model:` is honored
   instead of inheriting the workload's, including across providers. The
   cost attribution that makes tiering measurable is still ahead.

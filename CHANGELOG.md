@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- **Judge tier: the 31 parity scenarios are scored against a live provider**
+  (docs/v0.3-plan.md W0.5). `internal/evals/judge` stands up a fixture cluster
+  per scenario over lookout's read-only tool surface, runs one SRE agent
+  against it, and grades the answer with upstream's `_QUALITY_PROMPT`
+  verbatim — `{reasoning, score 1-5, specific, actionable, correct_diagnosis}`
+  normalized to `(score-1)/4`. `evals --tier=judge`, with `--model`,
+  `--grader`, `--provider`, `--out` and `--baseline`.
+  `.github/workflows/evals-nightly.yml` runs it at 07:00 UTC against
+  Anthropic-on-Vertex over keyless WIF and posts the board plus a delta
+  against the previous night's artifact. It **reports and never gates**: no
+  score, however low, can produce a non-zero exit — only "a scenario did not
+  run" or "a metric scored nothing anywhere" can.
+
+  This flips the last W0 parity row. First numbers over 31 scenarios against
+  `claude-opus-4-7`: `intent_coverage` 0.917, `response_quality` 0.968,
+  `severity_accuracy` 0.484, `tool_coverage` 0.000 (diagnostic — mast's read
+  surface shares no tool *name* with the corpus, which is the whole reason
+  `intent_coverage` is the primary metric), `effect_ordering` and
+  `exactly_once` vacuous on every row because a read-only surface cannot
+  produce a mutation to order.
+
+  Structural ceilings are reported, never folded into the score: LC-13 expects
+  a write tool, so its `intent_coverage` is capped at 0.50 and it scores 0.50.
+
+  Pointing `--model`/`--grader` at compose's `echo` fake runs all 31 rows in
+  ~2.5s with no credentials, so the tier's plumbing is exercised in CI without
+  spending a metered run. That dry run is what caught the grade parser
+  matching `(?s)\{.*\}` — greedy from the reply's first brace to its last, so
+  a restated JSON contract or a quoted `{key='node-role', …}` made every row
+  report "unparseable", which on a board is indistinguishable from a real
+  failure. Now a brace-depth scanner taking the last complete object.
+
+  Two defects the first live board found, both fixed before shipping: a tool
+  that answered a scenario but whose half of the fixture was empty returned a
+  bare header, which the model read as broken tooling and refused to diagnose
+  around — an empty half now says the same thing a non-answering tool says.
+  And the fixture-override rule was drawn at "only where the quoting rule is
+  silent", which admitted rows whose sole derived observation was a bare
+  identifier; it is now drawn at displacement — an override may enrich a thin
+  fixture, but every span the quoting rule vouched for must still reach the
+  agent.
+
 - **ADK upgraded to v2.2.0** (from v2.1.0), ahead of the v0.3 workstreams that
   build on the code it changes.
 

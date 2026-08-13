@@ -36,13 +36,25 @@
 # entry names the workstream that removes it; the list should only ever
 # shrink.
 #
-# Credential-free and network-free. Runs in a couple of seconds.
+# The default tier is credential-free and network-free, and runs in a
+# couple of seconds. It is what CI gates on.
 #
-# Usage: scripts/evals.sh [--tier=deterministic|judge] [--format=text|json]
+# --tier=judge is the metered one (W0.5): all 31 corpus scenarios against
+# a live model over the fixture cluster, graded by a second model. It
+# needs provider credentials, costs roughly $5-15 a run, takes minutes,
+# and REPORTS RATHER THAN GATES — a low score exits 0. It exits 1 only
+# when the board is incomplete. The nightly workflow runs it; nothing on
+# the PR path does.
+#
+# Usage:
+#   scripts/evals.sh [--format=text|json]
+#   scripts/evals.sh --tier=judge [--model=...] [--grader=...] [--provider=...]
+#
 # Scratch state goes under ${TMPDIR:-/tmp} (house rule #5).
 #
-# Exit codes: 0 green; 1 a scenario missed its declared outcome or a
-# metric scores nothing; 2 the harness could not run.
+# Exit codes: 0 green; 1 a scenario missed its declared outcome, a metric
+# scores nothing, or the judge board is short a row; 2 the harness could
+# not run.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
