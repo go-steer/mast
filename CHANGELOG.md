@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **New: `dispatch: fanout` — the whole roster runs concurrently over one
+  incident, one synthesis specialist merges the findings, one approval gate
+  on the merged report** (docs/v0.3-plan.md W3; parity row 7). A bundle sets
+  `dispatch: fanout` and names a `_synthesis` specialist; every other
+  specialist becomes a branch, run under a `fanout.max_concurrency` cap
+  (default 4, `-1` for unbounded). Synthesis receives each analyst's reported
+  payload plus an explicit list of who returned nothing — silence is
+  reported, never filled in. `examples/workloads/ns-audit` is the shipped
+  example: four read-only namespace analysts plus synthesis.
+
+  Fan-out branches are structurally read-only, checked at construction. A
+  roster whose analyst can reach a mutating tool is refused before the daemon
+  serves, and so is one that grants an MCP server without enumerating its
+  tools — under mast's default-deny-unknown predicate an un-enumerated grant
+  *is* a grant of mutating tools. `request_operator_input` is refused too:
+  every branch runs before the one approval gate, and a branch has no pause
+  the outer graph could record. The shipped `gke-triage` roster is
+  deliberately one of the refused ones — it holds `patch_resource`, which is
+  why fan-out ships a second example rather than converting the anchor.
+
+- **Fixed: an agent inside a parallel branch could not see its own tool
+  results.** Not a regression — nothing shipped on that path before — but
+  worth stating, because it decided the shape above. `workflow.ParallelWorker`
+  suppresses every branch event that is not an output event, and an LLM
+  agent's working memory *is* the session event list, so a branch agent's
+  second model call received a prompt identical to its first: it re-issued
+  the same tool call and looped until something cancelled it. The fan-out is
+  built on ADK's `parallelagent` instead, which delivers branch events to the
+  runner. Three things follow: a tool-using analyst works, per-specialist
+  `max_turns` / `max_cost_usd` are enforced inside a branch (the meter
+  buckets by event author, and a suppressed event is an unmetered one), and a
+  branch's work is in the durable log where crash recovery can see it.
+  Approving a merged report resumes without re-running any analyst, including
+  after the daemon has been restarted.
+
 - **Fixed: the shipped `gke-triage` example could not complete a run offline**
   (docs/v0.3-plan.md W1.4). Since `output_schema:` landed, the twelve
   diagnosers declare a report contract that becomes their `finish_task`

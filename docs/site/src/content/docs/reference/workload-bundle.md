@@ -80,6 +80,8 @@ agui:
 | `tool_catalog.tools[].name` | string | Tool name a per-tool policy override applies to. Names must be unique. |
 | `tool_catalog.tools[].mutating` | bool | Overrides the tool's mutation classification for the recorded-effect outbox. Unknown tools — MCP tools included — default to **mutating** (annotations are advisory, and ADK drops MCP `readOnlyHint` before mast can see it); `mutating: false` un-gates a known-read-only tool. Omitted means no override. Every applied override is audit-logged at startup. |
 | `specialists[]` | list of strings | Specialist names; resolve against the config root's `specialists/*.tmpl`. A roster with a SingleTurn classifier plus a `_fallback` Task specialist enables graph dispatch. |
+| `dispatch` | string | The root shape this roster is built for: `coordinator`, `graph`, `fanout`, or `auto`. Empty leaves the choice to the caller. A shape is a property of the roster, not of how the daemon happened to be launched, so the bundle is where it belongs — `--dispatch` overrides it only when an operator actually typed the flag. |
+| `fanout.max_concurrency` | int | Under `dispatch: fanout`, how many analyst branches run at once. `0` (omitted) means the default, **4**; a negative value means unbounded. Ignored under any other dispatch. |
 | `budget` | block | See below. |
 | `hitl.require_approval` | bool | When true, every specialist result pauses on a durable RequestInput interrupt until an operator resumes with a verdict. |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
@@ -94,6 +96,48 @@ agui:
 | `agui.session_model` | string | How a run maps to a mast session: `per_thread` (default — one continuing session per AG-UI `threadId`, matching chat UX) or `per_run` (a fresh session per `runId`, for stateless one-shots). The daemon always derives and namespaces the session id; a client never supplies a raw one. |
 | `agui.input_schema` | map | A **mast-side** convention only: an optional JSON-Schema-shaped hint surfaced in the discovery descriptor so a client can render an input form. AG-UI's `RunAgentInput` has no schema field, so it does **not** constrain the wire input. |
 | `agui.auth.required`, `agui.auth.scopes` | bool, list of strings | Per-endpoint auth policy. `scopes` are enforced per run when a token validator is configured (`MAST_AGUI_TOKEN`): a caller whose token lacks a scope is refused `403`. |
+
+## Fan-out rosters
+
+`dispatch: fanout` runs the whole roster against one incident at the same
+time and merges what comes back:
+
+```yaml
+dispatch: fanout
+fanout:
+  max_concurrency: 2
+specialists:
+  - dns
+  - rbac
+  - quota
+  - _synthesis
+```
+
+Three constraints the loader enforces at startup, rather than letting a
+run discover them:
+
+- **`_synthesis` is a reserved specialist name and is required.** It is
+  the one that receives every analyst's finding and writes the single
+  report an operator approves. A roster without it is refused; every
+  other Task specialist in the roster is an analyst.
+- **Analysts must be read-only.** Every branch runs *before* the one
+  approval gate, so a mutation in a branch is a mutation no operator was
+  offered the chance to refuse. A roster whose analysts can reach a
+  mutating tool is refused with the tool named — either drop it, or, if
+  it really is read-only, classify it with `tool_catalog.tools[].mutating:
+  false`. (`request_operator_input` passes the read-only check but still
+  cannot be in a branch: a branch has no gate to pause on.)
+- **Each analyst must name the tools it needs.** A branch with no tool
+  allowlist is refused rather than silently inheriting the catalog.
+
+An analyst that returns nothing is reported to `_synthesis` as silent, not
+dropped. Approving the merged report finishes the run without re-running
+any analyst — including after the daemon restarts, since branch events are
+in the session log the run state is reconstructed from.
+
+The shipped [GKE triage bundle](/quickstart/unattended-triage/) is *not* a fan-out
+roster (its specialists can change the cluster), so fan-out ships its own
+read-only example at `examples/workloads/ns-audit`.
 
 ## Per-specialist model override
 

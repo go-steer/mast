@@ -117,6 +117,35 @@ func TestLoad_DefaultsMode(t *testing.T) {
 	}
 }
 
+// A bundle names its own dispatch shape because the shape is a property
+// of the roster, not of the invocation. An unset `dispatch:` stays
+// empty rather than defaulting here: the default lives at the call site
+// (cmd/mast resolves an unset flag AND an unset bundle to coordinator),
+// so a loader default would take that choice away from a library
+// caller.
+func TestLoad_Dispatch(t *testing.T) {
+	path := writeBundle(t, "b.yaml", "name: x\ndispatch: fanout\nfanout:\n  max_concurrency: 2\nspecialists: [a, _synthesis]\n")
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if b.Dispatch != workload.DispatchFanout {
+		t.Errorf("Dispatch = %q, want %q", b.Dispatch, workload.DispatchFanout)
+	}
+	if b.Fanout.MaxConcurrency != 2 {
+		t.Errorf("Fanout.MaxConcurrency = %d, want 2", b.Fanout.MaxConcurrency)
+	}
+
+	silent := writeBundle(t, "c.yaml", "name: x\nspecialists: [a]\n")
+	sb, err := workload.Load(silent)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sb.Dispatch != "" {
+		t.Errorf("Dispatch = %q on a bundle that declares none, want empty", sb.Dispatch)
+	}
+}
+
 func TestLoad_Errors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -127,6 +156,7 @@ func TestLoad_Errors(t *testing.T) {
 		{"empty roster", "name: x\nspecialists: []\n", "specialists roster is empty"},
 		{"duplicate", "name: x\nspecialists: [a, b, a]\n", "duplicate"},
 		{"bad mode", "name: x\nmode: nonsense\nspecialists: [a]\n", "unknown mode"},
+		{"bad dispatch", "name: x\ndispatch: sideways\nspecialists: [a]\n", "unknown dispatch"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

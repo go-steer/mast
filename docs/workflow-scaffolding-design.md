@@ -362,6 +362,22 @@ Two rules follow, and they bind any shape that uses `NewParallelWorker`:
 
 A `dry_run` mutation inside a branch is **not** an interrupt origin — nothing executes, so nothing needs approval — and is therefore compatible with `ErrParallelHITLUnsupported`. Rule 1 is what makes it *useful*: the proposal has to come back in the report payload.
 
+#### Addendum (2026-08-13, W3 build wave): this is a fact about `ParallelWorker`, not about parallelism
+
+Everything above is verified and still true of `workflow.NewParallelWorker`. What the W3 build found is that it is *disqualifying* rather than constraining, and that ADK has a second parallel primitive without the property.
+
+**A ParallelWorker branch cannot use a tool at all.** An LLM agent's working memory is the session event list: `internal/llminternal/contents_processor.go` rebuilds `req.Contents` from `ctx.Session().Events().All()` on every model call, and only the runner appends. Suppress the yield and model call #2 sees exactly what call #1 saw — the agent cannot observe its own tool result, re-issues the same call, and loops until something cancels it. So the constraint is not "mutating tools must stay out of branches"; it is "**no tool-using agent can be a ParallelWorker branch**," which for an analyst roster means the primitive is the wrong one.
+
+`agent/workflowagents/parallelagent` funnels each sub-agent's events up to the caller and blocks the sub-agent until they have been appended (`ackChan`, "including session append"). Branch isolation survives, because it comes from branch *tagging* — `eventBelongsToBranch` admits only events on the invocation's own branch prefix — rather than from suppression. Costs: a Task specialist must be wrapped in a single-node workflowagent (parallelagent calls `agent.Run`, and Task completion lives on the `AgentNode`/`RunNode` path), and there is no concurrency argument, so the cap is the caller's to enforce.
+
+Consequences for the two rules above, for any shape built on parallelagent:
+
+- **Rule 1 becomes a choice, not a constraint.** Branch events are in the log, so a downstream node *can* read them. `pkg/graph/fanout.go` still merges payloads only — a report should quote what an analyst chose to report — but it is a contract now, not a limitation.
+- **Rule 2 survives on a different reason.** A mutation in a branch is no longer invisible to crash recovery. It is still refused at construction in `dispatch: fanout`, because every branch runs *before* that shape's single post-synthesis approval gate: a mutating analyst is an unapproved mutation, N of them concurrently.
+- **A third rule appears.** `request_operator_input` is classified read-only and passes any mutation check, but a branch is a nested workflowagent with its own scheduler — an interrupt raised inside one has no pause the outer graph can record. Refuse it by name.
+
+Shipped shape and evidence: `pkg/graph/fanout.go`, `TestFanoutSubstrate` (one branch body under both primitives, opposite outcomes), and `docs/v0.3-plan.md` W3 findings (a)–(g).
+
 ## Open questions
 
 1. ~~**Where does the shared classifier live?**~~ *Resolved (2026-07-01 in [`./orchestration-design.md`](./orchestration-design.md), verified in spike 2): `.agents/specialists/*.tmpl` accepts `mode: SingleTurn` frontmatter; the prototype's specialists loader implements it and the triage classifier runs as a shared SingleTurn specialist.*

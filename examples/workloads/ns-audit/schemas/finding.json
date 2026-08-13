@@ -1,0 +1,46 @@
+{
+  "title": "Finding",
+  "type": "object",
+  "description": "The report one ns-audit analyst returns for its slice of the namespace. It is the branch's ONLY durable record: a fan-out branch's Output payload is all the synthesis step can see, because ADK discards every event emitted inside a parallel branch. An analyst that finds nothing worth reporting returns no finding at all, and synthesis is told the branch was silent.",
+  "properties": {
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "warning", "info"],
+      "description": "critical = must fix now (down, crashlooping, OOMKilled); warning = fix soon (missing probes, no PDB, :latest images); info = an optimization opportunity, not an outage."
+    },
+    "title": {
+      "type": "string",
+      "description": "Short headline naming the object and the problem, e.g. 'CrashLoopBackOff on api-7d9f8b6c4-xk2p1'."
+    },
+    "detail": {
+      "type": "string",
+      "description": "The diagnosis: what is wrong, which evidence says so, and why. Name the resources and the values you read."
+    },
+    "namespace": {
+      "type": "string",
+      "description": "Kubernetes namespace of the affected object. Empty for cluster-scoped findings."
+    },
+    "kind": {
+      "type": "string",
+      "description": "Kubernetes kind of the affected object, capitalized and singular: Pod, Deployment, StatefulSet, DaemonSet, Node, Job, CronJob, Service, PersistentVolume, Namespace. Empty only for cluster-wide observations."
+    },
+    "resource_name": {
+      "type": "string",
+      "description": "Name of the single affected object, exactly as it appears in the cluster."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Stable machine-style cause in CamelCase — CrashLoopBackOff, OOMKilled, ImagePullBackOff, NodeNotReady, MissingResourceLimits. Reuse the same token for the same class of problem across runs; do not reword it."
+    },
+    "recommended_actions": {
+      "type": "array",
+      "description": "Concrete, ordered next steps. A recommendation is not an action: nothing here is executed without an operator approving it.",
+      "items": {"type": "string"}
+    },
+    "escalate": {
+      "type": "boolean",
+      "description": "True when the fix is not a triage-scope action — a bigger node pool, a suspected memory leak, an app-team bug. Say why in detail."
+    }
+  },
+  "required": ["severity", "title", "detail", "reason"]
+}
