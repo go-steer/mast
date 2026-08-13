@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **ADK upgraded to v2.2.0** (from v2.1.0), ahead of the v0.3 workstreams that
+  build on the code it changes.
+
+  **Fixed by the upgrade: a cancelled workflow-graph run reported success.**
+  Under v2.1.0 the scheduler reacted to invocation-context cancellation only in
+  its `doneChan` select arm, and a ready `doneChan` does not have to win against
+  a queued node completion — `cancelAll` never touches the parent context, so a
+  run could drain and return cleanly after being cancelled. mast cancels
+  in-flight turns from outside the graph (attach session eviction, the dispatch
+  deadline, daemon-level abort), so this was reachable in shipped builds.
+  `TestGraphRunSurfacesExternalCancellation` pins it, and was verified to fail
+  on v2.1.0.
+
+  Also improved: confirmation resume is now deterministic (re-dispatch follows
+  request order instead of Go's randomized map iteration, which made the
+  resumed calls, the assembled response, and the last-writer-wins `StateDelta`
+  merge vary run to run) and no longer re-dispatches a call whose response is
+  already in the event snapshot — i.e. no running a tool twice inside one
+  resume. `memory.InMemoryService.Search` no longer races concurrent writes.
+
+  **Wire-visible:** ADK put JSON tags on `session.Event`, `EventActions`, and
+  `LLMResponse` — PascalCase to camelCase with `omitempty`. The attach `agent`
+  frame embeds that struct verbatim, so the change is visible to SSE consumers;
+  mast-web already reads both casings, and stored sessions decode either way
+  (`encoding/json` matches field names case-insensitively). Attach protocol
+  stays at 1.4.0: mast never specified that payload's shape.
+
+  The bump drags dependencies ADK's own go.mod requires: MCP go-sdk 1.4.1 →
+  1.7.0, genai 1.63 → 1.66, glebarez/sqlite 1.8.0 → 1.11.0, jsonschema-go
+  0.4.2 → 0.4.3, gorm 1.31.0 → 1.31.2, grpc 1.82.1 → 1.83.0, plus otel/api/
+  genproto. Note for the v0.3 approval work: MCP 1.7.0 enables SEP-2322
+  multi-round-trip client middleware by default, which auto-fulfills
+  server-initiated input requests. mast registers no elicitation or sampling
+  handler, so such a request errors today rather than self-fulfilling — but a
+  handler added later would satisfy server input requests without traversing
+  mast's approval gate. `MultiRoundTripOptions.Disabled` is the off switch.
+
+  Not fixed upstream: adk-go#1229 (the concurrent-append affordance tracked in
+  #51). `session/database` is untouched in v2.2.0, so the ops-row convention
+  stays.
+
 - **The parity eval suite is a CI gate** (docs/v0.3-plan.md W0.4).
   `scripts/evals.sh` → `dev/ci/presubmits/evals.sh` → an `evals` job in
   `.github/workflows/ci.yml`, wired into `all.sh` so local == CI. Runs

@@ -15,11 +15,19 @@
 package graph
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"google.golang.org/genai"
+
 	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/workflowagent"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/workflow"
 
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/specialists"
@@ -92,5 +100,76 @@ func TestNodeConfigZeroBudgetMeansNoTimeout(t *testing.T) {
 	cfg := nodeConfig(specialists.Budget{MaxTurns: 5, MaxCostUSD: 0.5})
 	if cfg.Timeout != 0 {
 		t.Fatalf("Timeout = %v, want 0 (unbounded at node level)", cfg.Timeout)
+	}
+}
+
+// TestGraphRunSurfacesExternalCancellation pins the ADK substrate
+// guarantee that a graph run whose invocation context dies from outside
+// the scheduler reports the cancellation rather than success.
+//
+// This is a v2.2.0 fix, not a long-standing property: under v2.1.0 the
+// scheduler only reacted to cancellation in its doneChan select arm,
+// and a ready doneChan does not have to win against a queued node
+// completion — so a run could drain and return cleanly after being
+// cancelled. cancelAll never touches parentCtx, so nothing else caught
+// it. Verified against both versions when the v2.2.0 bump landed: this
+// test fails on v2.1.0 and passes on v2.2.0.
+//
+// mast cancels in-flight turns from outside the graph (session eviction
+// via the attach registry's cancelOnEvict, the dispatch deadline, the
+// daemon-level abort in pkg/transcript), and every one of those paths
+// runs through this scheduler — a cancelled run that reports success is
+// a cancelled run the durable-execution machinery records as finished.
+// If an upgrade ever makes this test fail again, treat it as a
+// durability regression, not a flaky test.
+func TestGraphRunSurfacesExternalCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	entered := make(chan struct{})
+	// The node reports nothing of its own on the way out: it observes
+	// the dying context and returns cleanly. That is the shape that
+	// used to be reported as success — a node with its own error was
+	// always surfaced.
+	blocker := workflow.NewFunctionNode("blocker",
+		func(nc adkagent.Context, _ any) (any, error) {
+			close(entered)
+			<-nc.Done()
+			return nil, nil
+		}, workflow.NodeConfig{})
+
+	root, err := workflowagent.New(workflowagent.Config{
+		Name:  "cancel_probe",
+		Edges: workflow.Chain(workflow.Start, blocker),
+	})
+	if err != nil {
+		t.Fatalf("workflowagent.New: %v", err)
+	}
+	r, err := runner.New(runner.Config{
+		AppName:           "graph-test",
+		Agent:             root,
+		SessionService:    session.InMemoryService(),
+		AutoCreateSession: true,
+	})
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+
+	go func() {
+		<-entered
+		cancel()
+	}()
+
+	var runErr error
+	for _, err := range r.Run(ctx, "op", "s1", genai.NewContentFromText("go", genai.RoleUser), adkagent.RunConfig{}) {
+		if err != nil {
+			runErr = err
+		}
+	}
+	if runErr == nil {
+		t.Fatal("cancelled graph run reported success; the invocation context died mid-node and nothing surfaced it")
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("run error = %v, want it to wrap context.Canceled", runErr)
 	}
 }

@@ -118,6 +118,15 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
 - **Per-specialist model selection** — a specialist's `model:` is honored
   instead of inheriting the workload's, including across providers. The
   cost attribution that makes tiering measurable is still ahead.
+- **ADK v2.2.0** — the agent substrate is upgraded from v2.1.0. The fix that
+  motivated taking it now: a workflow-graph run whose invocation context was
+  cancelled from outside — an evicted attach session, a dispatch deadline, an
+  operator abort — could finish reporting success. It now reports the
+  cancellation. Human-in-the-loop resume also became deterministic and can no
+  longer run a tool twice within one resume. One wire-visible consequence: the
+  attach `agent` frame embeds ADK's event struct verbatim, and its JSON field
+  names moved from `PascalCase` to `camelCase`; stored sessions are unaffected
+  and the operator UI already reads both.
 
 ## Further out (v0.3+)
 
