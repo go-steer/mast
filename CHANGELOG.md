@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **The five differentiator scenarios** (docs/v0.3-plan.md W0.3).
+  `internal/evals/differentiators` drives the composed runtime — the
+  `internal/compose` root, the `pkg/effects` outbox, a `pkg/budget` meter, a
+  real SQLite session store — with a scripted model and checks one invariant
+  per scenario: `E-exactly-once`, `E-ambiguous-refusal`, `E-budget-exhaustion`,
+  `E-approval-rejected`, `E-approval-edited`. These are the situations the
+  upstream harness structurally cannot express, because it scores a single
+  uninterrupted trajectory against a list of expected tool names.
+
+  Two of the five pass today; three are declared expected-fail against W1.2 and
+  W2. The declaration is checked *in both directions*, so landing a capability
+  without flipping its entry fails the suite by naming the entry to remove. A
+  scenario has three outcomes, not two — Pass, Fail, and **Broken**, the zero
+  value, for a fixture that could not produce a run. Broken is never
+  allowlistable, and every scenario must return both a stated reason and a
+  non-empty trace, so "the capability is missing" is always an observation
+  about a run that happened rather than the absence of one.
+
+- **Fixed: `TraceFromEvents` counted task delegations as effects.** The walk
+  excluded engine control-flow and sub-agent-named calls, but only on the call
+  side; a delegation's completion then had no recorded call to pair with and
+  fell through the orphan-completion fallback, classified mutating by
+  default-deny. Two delegations to the same specialist scored as one effect
+  applied twice, and every trace's tool set was inflated with `finish_task` and
+  the specialist's own name. The exclusion now applies to both sides.
+
 - **Deterministic evaluators** (docs/v0.3-plan.md W0.2). `internal/evals` scores
   a recorded run with no provider and no cluster: `intent_coverage` (the primary
   trajectory metric), `tool_coverage` (name-level, emitted as a diagnostic only
