@@ -135,12 +135,25 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	if err != nil {
 		return fmt.Errorf("construct effects outbox: %w", err)
 	}
+	// Pre-call write gate, after the outbox (docs/v0.3-plan.md W2).
+	// There is no workload bundle on the one-shot path, so this
+	// resolves to no gate today; the call is here so the path stays
+	// wired the day a class root carries a bundle, rather than being
+	// the one construction site somebody forgets (#53's lesson).
+	oneShotPlugins := []*plugin.Plugin{outboxPlugin}
+	writeGate, err := compose.WriteGate(compose.WriteGateConfig{Predicate: oneShotPred, Logger: logger})
+	if err != nil {
+		return fmt.Errorf("construct write gate: %w", err)
+	}
+	if writeGate != nil {
+		oneShotPlugins = append(oneShotPlugins, writeGate)
+	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
 		SessionService:    sessionSvc,
 		AutoCreateSession: true,
-		PluginConfig:      runner.PluginConfig{Plugins: []*plugin.Plugin{outboxPlugin}},
+		PluginConfig:      runner.PluginConfig{Plugins: oneShotPlugins},
 	})
 	if err != nil {
 		return fmt.Errorf("construct runner: %w", err)

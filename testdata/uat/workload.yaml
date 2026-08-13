@@ -35,6 +35,15 @@ specialists:
 budget:
   max_wallclock_seconds: 300
 
+hitl:
+  # mast's default is require_approval: an unattended workload that says
+  # nothing about mutation does not get to write. This fixture says
+  # something, because the v0.2 legs are about what happens to a mutating
+  # call that is *executing* when the process dies, drains, or is aborted
+  # — parking it before it fires would measure the write gate instead.
+  # The gate's own legs (scripts/uat-v0.3.sh) run their own workload.
+  on_mutation: apply
+
 edge_trigger:
   http:
     path: /inject

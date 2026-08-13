@@ -85,15 +85,62 @@ type Budget struct {
 	MaxCostUSD          float64 `yaml:"max_cost_usd,omitempty"`
 }
 
-// HITL is the workload's human-in-the-loop policy. Spike subset of
-// docs/orchestration-design.md's hitl_policy: a single boolean gating
-// specialist results behind operator approval (the change-safety-gate
-// stand-in from docs/triage-demo-plan.md).
+// OnMutation is what happens before a state-mutating tool call
+// (docs/orchestration-design.md, hitl_policy.on_mutation). Which calls
+// are mutating is the mutation predicate's answer, not this field's:
+// built-in annotation or absent MCP readOnlyHint, default-deny-unknown,
+// narrowed by the audited tool_catalog.tools[].mutating overrides.
+type OnMutation string
+
+const (
+	// OnMutationRequireApproval parks the call before it fires and
+	// waits for an operator verdict. The default.
+	OnMutationRequireApproval OnMutation = "require_approval"
+
+	// OnMutationApply executes mutating calls without asking. For a
+	// workload whose blast radius is bounded some other way — a test
+	// fixture, a sandbox cluster, an RBAC-confined service account.
+	OnMutationApply OnMutation = "apply"
+
+	// OnMutationDryRun never executes a mutating call and tells the
+	// agent what would have happened.
+	OnMutationDryRun OnMutation = "dry_run"
+)
+
+// HITL is the workload's human-in-the-loop policy
+// (docs/orchestration-design.md's hitl_policy; the shipped YAML key is
+// `hitl:`, and `hitl_policy:` is accepted as the documented spelling —
+// see Bundle.HITLPolicy).
 type HITL struct {
 	// RequireApproval pauses the workflow after each specialist result
 	// via a durable RequestInput interrupt; an operator resume supplies
 	// the approval verdict.
+	//
+	// This is the *result*-level gate (the change-safety-gate stand-in
+	// from docs/triage-demo-plan.md) and is orthogonal to OnMutation,
+	// which gates individual tool calls before they fire.
 	RequireApproval bool `yaml:"require_approval,omitempty"`
+
+	// OnMutation is the pre-call write gate's policy. Empty means
+	// require_approval: a workload that says nothing about mutation
+	// gets the safe answer, because the failure mode of the other
+	// default is an unattended agent writing to a production cluster
+	// that nobody agreed to.
+	//
+	// The default binds to the bundle, not to the process. A library
+	// embed running with no bundle at all has no workload policy and
+	// no channel to answer a park on, so it gets no write gate unless
+	// it asks for one; see internal/compose.WriteGate.
+	OnMutation OnMutation `yaml:"on_mutation,omitempty"`
+}
+
+// EffectiveOnMutation resolves the empty value to the documented
+// default.
+func (h HITL) EffectiveOnMutation() OnMutation {
+	if h.OnMutation == "" {
+		return OnMutationRequireApproval
+	}
+	return h.OnMutation
 }
 
 // Dispatch names the root shape a workload wants assembled. The values
@@ -290,6 +337,14 @@ type Bundle struct {
 
 	// HITL is the human-in-the-loop policy for this workload.
 	HITL HITL `yaml:"hitl,omitempty"`
+
+	// HITLPolicy is the spelling docs/orchestration-design.md uses for
+	// the same block. The two keys are equivalent and Load folds this
+	// one into HITL; declaring both is an error rather than a
+	// precedence rule, because a bundle with two conflicting HITL
+	// blocks has no reading that is obviously right and the wrong
+	// reading executes a mutation nobody approved.
+	HITLPolicy HITL `yaml:"hitl_policy,omitempty"`
 
 	// Planner configures the supervisor-body planner for this
 	// workload; zero value means planner off.

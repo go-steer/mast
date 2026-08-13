@@ -45,14 +45,17 @@ import (
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 
 	"github.com/go-steer/mast/internal/compose"
 	buildversion "github.com/go-steer/mast/internal/version"
 	"github.com/go-steer/mast/pkg/a2a"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/agui"
+	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/attachadapter"
+	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/config"
 	"github.com/go-steer/mast/pkg/effects"
@@ -453,12 +456,30 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		return err
 	}
 
+	// Pre-call write gate (docs/v0.3-plan.md W2). Registered *after*
+	// the outbox: a replayed result performs no new effect and needs no
+	// fresh approval (resolved-decision row 144).
+	plugins := []*plugin.Plugin{outboxPlugin}
+	writeGate, err := compose.WriteGate(compose.WriteGateConfig{
+		Bundle:    bundle,
+		Predicate: effPred,
+		Logger:    logger,
+	})
+	if err != nil {
+		logger.Error("failed to construct write gate", "error", err.Error())
+		return err
+	}
+	if writeGate != nil {
+		plugins = append(plugins, writeGate)
+		logger.Info("write gate registered", "on_mutation", bundle.HITL.EffectiveOnMutation())
+	}
+
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
 		SessionService:    sessionSvc,
 		AutoCreateSession: true,
-		PluginConfig:      runner.PluginConfig{Plugins: []*plugin.Plugin{outboxPlugin}},
+		PluginConfig:      runner.PluginConfig{Plugins: plugins},
 	})
 	if err != nil {
 		logger.Error("failed to construct runner", "error", err.Error())
@@ -1433,20 +1454,110 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *t
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
 		defer cancel()
 	}
-	// The FunctionResponse name stays adk_request_input REGARDLESS of
-	// the parked call's own name: workflowagent roots (planner, graph)
-	// filter resume responses by that name before matching the ID —
-	// any other name silently forks a fresh turn instead of resuming
-	// (v0.2 pause/abort design, fact 4).
-	msg := &genai.Content{
-		Role: genai.RoleUser,
-		Parts: []*genai.Part{genai.NewPartFromFunctionResponse("adk_request_input", map[string]any{
-			"response": req.Response,
-		})},
+	msg, err := resumeMessage(ctx, store, req)
+	if err != nil {
+		return err
 	}
-	msg.Parts[0].FunctionResponse.ID = req.InterruptID
 	obs.HITLResume(workloadName)
 	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID, preTurn, nil)
+}
+
+// resumeMessage builds the user turn that answers a pending interrupt.
+//
+// Two pause primitives share one endpoint, and they do NOT share a wire
+// shape. A RequestInput park is answered under the name
+// adk_request_input, which workflowagent roots (planner, graph) filter
+// resume responses by before matching the ID — any other name silently
+// forks a fresh turn instead of resuming (v0.2 pause/abort design, fact
+// 4). A write-gate park is an ADK tool confirmation and must be
+// answered under adk_request_confirmation with {confirmed, payload},
+// which is what RequestConfirmationRequestProcessor looks for before it
+// re-dispatches the original call. Sending either shape to the other
+// kind of pause leaves the session parked with an operator convinced
+// they answered it.
+//
+// The kind is read from the durable log rather than declared by the
+// client: the client is answering a question mast asked, and mast is
+// the one who knows what it asked.
+func resumeMessage(ctx context.Context, store *transcript.Store, req inject.ResumeRequest) (*genai.Content, error) {
+	var part *genai.Part
+	if isConfirmationPark(ctx, store, req) {
+		v, err := verdictFor(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", inject.ErrBadPayload, err)
+		}
+		part = genai.NewPartFromFunctionResponse(toolconfirmation.FunctionCallName, map[string]any{
+			"confirmed": v.Verdict != approval.OutcomeReject,
+			"payload":   v,
+		})
+	} else {
+		part = genai.NewPartFromFunctionResponse("adk_request_input", map[string]any{
+			"response": req.Response,
+		})
+	}
+	part.FunctionResponse.ID = req.InterruptID
+	return &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{part}}, nil
+}
+
+// isConfirmationPark reports whether the named interrupt is a parked
+// mutating tool call. A session the store cannot read, or an interrupt
+// ID it does not know, is not an error here: the runTurnPre chokepoint
+// and ADK's own resume matching are the authoritative checks, and this
+// function's only job is picking the wire shape.
+func isConfirmationPark(ctx context.Context, store *transcript.Store, req inject.ResumeRequest) bool {
+	d, err := store.Get(ctx, "", req.SessionID)
+	if err != nil {
+		return false
+	}
+	for _, p := range d.Pending {
+		if p.InterruptID == req.InterruptID {
+			return p.ToolName == toolconfirmation.FunctionCallName
+		}
+	}
+	return false
+}
+
+// verdictFor decodes the operator's answer and stamps it with the
+// authenticated approver.
+//
+// The approver is taken from the request context, never from the
+// payload: "who approved this" is the audit question the write gate
+// exists to answer, and a self-asserted answer is not an answer. A
+// client that sends one has it overwritten silently — there is nothing
+// for the operator to fix, and refusing the resume over a field the
+// client had no business setting would strand a real approval.
+func verdictFor(ctx context.Context, req inject.ResumeRequest) (approval.Verdict, error) {
+	raw, err := json.Marshal(req.Response)
+	if err != nil {
+		return approval.Verdict{}, fmt.Errorf("re-marshalling resume response: %w", err)
+	}
+	var v approval.Verdict
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return approval.Verdict{}, fmt.Errorf("resume response is not a verdict record: %w", err)
+	}
+	switch v.Verdict {
+	case approval.OutcomeApprove, approval.OutcomeReject, approval.OutcomeEdit:
+	default:
+		return approval.Verdict{}, fmt.Errorf("unknown verdict %q (want approve, reject, or edit)", v.Verdict)
+	}
+	v.Approver = approverFromContext(ctx)
+	return v, nil
+}
+
+// approverFromContext names the authenticated caller behind a resume.
+// The empty string is impossible on the /resume path (pkg/inject always
+// attributes at least the shared credential) but reachable from the
+// in-process callers — the timed-pause scheduler, boot-time auto-resume
+// — where naming the mechanism is the truthful answer.
+func approverFromContext(ctx context.Context) string {
+	c, ok := auth.CallerFromContext(ctx)
+	if !ok || c.Identity == "" {
+		return "mast:internal"
+	}
+	if by, ok := auth.ProxyByFromContext(ctx); ok && by != "" {
+		return c.Identity + " (asserted by " + by + ")"
+	}
+	return c.Identity
 }
 
 // consumeIfAnswered consumes a plane-A pause token iff the resume

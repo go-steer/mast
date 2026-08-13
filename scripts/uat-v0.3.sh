@@ -36,6 +36,26 @@
 #          and the run ends with no report, so the schema is shown to be
 #          enforced rather than merely declared
 #
+#   U-gate-percall / U-gate-crash / U-gate-scopes (W2.1-W2.3) — a
+#     mutating tool call stops before it fires, waits for an operator
+#     across a process death, and runs exactly once when approved.
+#     Driven over the v0.2 fixture (testdata/uat) with --model=toolactor
+#     and its stdio MCP blocker, because that is the only offline roster
+#     with a REAL registered mutating tool:
+#       percall/A  under the DEFAULT policy the call parks, the tool has
+#                  not run, and the parked question names it; approving
+#                  runs it exactly once
+#       percall/B  the same fixture with on_mutation=apply -> the call
+#                  fires with no gate, so leg A's park is shown to be a
+#                  property of the gate and not of the harness
+#       percall/C  a read-only call under the same policy is not gated
+#       percall/D  reject -> the tool never runs at all
+#       crash      park, SIGKILL the daemon, restart: the question is
+#                  still there, and approving it against the FRESH
+#                  process runs the call exactly once (rows 4, 5, L1)
+#       scopes     an approval that asks for more than this one call is
+#                  refused, and the tool does not run (W2.3)
+#
 #   U-fanout (W3) — the roster runs concurrently over one incident and
 #     the merged report gates ONCE, after synthesis. Driven over
 #     examples/workloads/ns-audit, the read-only bundle fan-out needs:
@@ -151,6 +171,19 @@ resume_code() {
     -d "{\"session_id\":\"$1\",\"interrupt_id\":\"$2\",\"response\":{\"approved\":true,\"note\":\"uat\"}}"
 }
 
+# resume_verdict <session-id> <interrupt-id> <response-json> — answer a
+# parked WRITE GATE through the same HTTP surface an operator uses. A
+# confirmation park takes an operator verdict, not the {"approved":...}
+# answer a RequestInput park takes; mast reads the pause kind out of the
+# durable log and sends whichever wire shape ADK matches on, so the
+# client sends the same request either way.
+resume_verdict() {
+  curl -s -m 60 -o /dev/null -w '%{http_code}' \
+    -X POST "${BASE}/resume" \
+    -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+    -d "{\"session_id\":\"$1\",\"interrupt_id\":\"$2\",\"response\":$3}"
+}
+
 # show_field <session-id> <label> — the value of one labelled line from
 # `mast sessions show` (State, Interrupt, Message, ...). Read from the DB
 # with no daemon required. Matched on the label rather than a line
@@ -177,6 +210,75 @@ wait_for() {
     sleep 0.1
   done
   return 1
+}
+
+# ---- write-gate drivers (toolactor + the stdio blocker) -------------
+# The gate legs need a REAL registered mutating tool: a gate that parks a
+# tool nothing would have executed proves nothing about execution. The
+# v0.2 fixture already has one (testdata/uat/blocker's apply_change,
+# classified mutating by the fixture's tool_catalog), driven by
+# --model=toolactor from the inject reason. Reusing it keeps the gate
+# legs offline and credential-free.
+BLOCKER="${WORK}/blocker"
+BLOCKDIR="${WORK}/blockdir"
+export MAST_UAT_BLOCKER="${BLOCKER}"
+export UAT_BLOCKER_DIR="${BLOCKDIR}"
+
+# start_gate_daemon <logfile> — the daemon over ${WL} under the toolactor
+# fake. Coordinator dispatch, matching the fixture's shape in uat-v0.2.sh.
+start_gate_daemon() {
+  local log="$1"; shift
+  mkdir -p "${BLOCKDIR}"
+  "${BIN}" --workload="${WL}" --dispatch=coordinator \
+    --listen=":${PORT}" --model=toolactor --session-db="${DB}" \
+    --log-level=info "$@" >"${log}" 2>&1 &
+  PID=$!
+  local i
+  for i in $(seq 1 100); do
+    if ! kill -0 "${PID}" 2>/dev/null; then break; fi
+    if curl -sf -m 1 "${BASE}/" >/dev/null 2>&1; then return 0; fi
+    sleep 0.1
+  done
+  echo "toolactor daemon failed to start; log:" >&2; cat "${log}" >&2; exit 1
+}
+
+# inject_uat <uid> <reason> — POST the fixture's edge event. The reason
+# selects the tool the worker drives: "Apply..." -> apply_change
+# (mutating), "Read..." -> read_status (read-only).
+inject_uat() {
+  curl -s -m 60 -o /dev/null -w '%{http_code}' \
+    -X POST "${BASE}/inject" \
+    -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+    -d "{\"kind\":\"uat-event\",\"reason\":\"$2\",\"namespace\":\"default\",\"name\":\"pod-$1\",\"uid\":\"$1\",\"message\":\"uat\",\"cluster\":\"uat\"}"
+}
+
+# reset_blocker — clear every marker between legs, so a stale one cannot
+# satisfy a later assertion. Includes the .calls ledger: a leg that
+# counted the previous leg's executions would be worse than no count.
+reset_blocker() {
+  rm -rf "${BLOCKDIR}"
+  mkdir -p "${BLOCKDIR}"
+  # Pre-release both tools. These legs are about what happens BEFORE a
+  # call fires, so a call that does fire should return immediately
+  # rather than block (the blocking behaviour is uat-v0.2.sh's subject).
+  : > "${BLOCKDIR}/apply_change.release"
+  : > "${BLOCKDIR}/read_status.release"
+}
+
+# calls_count <tool> — how many times the blocker actually ENTERED the
+# tool handler (it appends a line per entry). This is the execution
+# count the gate's whole claim rests on.
+calls_count() {
+  local f="${BLOCKDIR}/$1.calls"
+  if [ -f "${f}" ]; then wc -l < "${f}" | tr -d ' '; else echo 0; fi
+}
+
+# kill9 — SIGKILL the daemon and reap it. Nothing is drained and nothing
+# is flushed; only what is already durable survives.
+kill9() {
+  [ -n "${PID}" ] && kill -9 "${PID}" 2>/dev/null || true
+  [ -n "${PID}" ] && wait "${PID}" 2>/dev/null || true
+  PID=""
 }
 
 # ---- assertions -----------------------------------------------------
@@ -430,6 +532,178 @@ CERR="$(cat "${CLOG}")"
 assert_has "the refusal names the mutating tool" "${CERR}" "patch_resource"
 assert_has "the refusal names the analyst that holds it" "${CERR}" "fan-out analyst"
 assert_hasnt "the daemon never began serving" "${CERR}" "inject server listening"
+
+# ====================================================================
+# U-gate (W2.1-W2.3) — a mutating call stops before it fires
+# ====================================================================
+# Two workloads, derived at runtime under ${WORK} (house rule #5) from
+# the v0.2 fixture so the gated and ungated legs differ in exactly one
+# line of YAML:
+#
+#   gate-default  the fixture with its `on_mutation: apply` line removed,
+#                 so the workload says nothing about mutation and gets
+#                 mast's default. The default is the thing under test:
+#                 an unattended workload that never mentions HITL must
+#                 not be allowed to write.
+#   gate-apply    the fixture as shipped (on_mutation: apply).
+say "Build the blocking MCP fixture (the gate needs a real mutating tool)"
+(cd "${REPO}" && go build -o "${BLOCKER}" ./testdata/uat/blocker)
+FIXTURE="${REPO}/testdata/uat"
+GATE_DEFAULT="${WORK}/gate-default"
+GATE_APPLY="${WORK}/gate-apply"
+rm -rf "${GATE_DEFAULT}" "${GATE_APPLY}"
+cp -r "${FIXTURE}" "${GATE_DEFAULT}"
+cp -r "${FIXTURE}" "${GATE_APPLY}"
+grep -v '^  on_mutation: apply$' "${FIXTURE}/workload.yaml" > "${GATE_DEFAULT}/workload.yaml"
+# The derivation has to bite, or leg A would be testing `apply` and pass
+# for the wrong reason.
+if grep -q 'on_mutation' "${GATE_DEFAULT}/workload.yaml"; then
+  echo "derived gate-default still declares on_mutation; the fixture's spelling changed" >&2
+  exit 1
+fi
+note "gated workload:   ${GATE_DEFAULT} (no hitl.on_mutation -> mast's default)"
+note "ungated workload: ${GATE_APPLY} (on_mutation: apply, as shipped)"
+
+# ---- U-gate-percall leg A: the default parks a mutating call --------
+say "U-gate-percall/A: an unconfigured workload parks its mutating call"
+DB="${WORK}/gate-a.db"
+WL="${GATE_DEFAULT}"
+LOG="${WORK}/gate-a.log"
+reset_blocker
+start_gate_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat ga1 ApplyChange)" 202
+assert_state "session parked on the write gate" incident-ga1 paused
+assert_eq "the mutating tool did NOT run" "$(calls_count apply_change)" 0
+
+GAMSG="$(show_field incident-ga1 Message)"
+note "the operator's question: ${GAMSG}"
+assert_has "the parked question names the tool" "${GAMSG}" "apply_change"
+assert_has "the parked question is an approval, not an ADK internal" "${GAMSG}" "Approve mutating call"
+GAINT="$(show_field incident-ga1 Interrupt)"
+if [ -n "${GAINT}" ]; then ok "the park has an interrupt id (${GAINT})"; else bad "no interrupt id to answer"; fi
+
+assert_http "approve it -> 202" "$(resume_verdict incident-ga1 "${GAINT}" '{"verdict":"approve","note":"uat"}')" 202
+assert_state "approved run finishes" incident-ga1 idle
+assert_eq "the approved call ran exactly once" "$(calls_count apply_change)" 1
+assert_log_count "the approval is on the audit trail" "${LOG}" \
+  'mutating tool call approved by operator' 1
+stop_term
+
+# ---- U-gate-percall leg B: on_mutation=apply does not gate ----------
+# The discriminating control. Same fixture, same fake, same tool — one
+# line of YAML different. Without this leg, "the call parked" could be
+# any of a dozen things the harness does.
+say "U-gate-percall/B: with on_mutation=apply the same call fires unasked"
+DB="${WORK}/gate-b.db"
+WL="${GATE_APPLY}"
+LOG="${WORK}/gate-b.log"
+reset_blocker
+start_gate_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat gb1 ApplyChange)" 202
+assert_state "the run finishes without stopping" incident-gb1 idle
+assert_eq "the mutating tool ran, unapproved" "$(calls_count apply_change)" 1
+assert_no_log "nothing was parked for approval" "${LOG}" 'awaiting_approval'
+stop_term
+
+# ---- U-gate-percall leg C: read-only work is not gated --------------
+# A gate that stopped everything would pass leg A too. read_status is
+# classified read-only by the same tool_catalog the outbox reads, under
+# the same require_approval policy as leg A.
+say "U-gate-percall/C: a read-only call under the same policy is not gated"
+DB="${WORK}/gate-c.db"
+WL="${GATE_DEFAULT}"
+LOG="${WORK}/gate-c.log"
+reset_blocker
+start_gate_daemon "${LOG}"
+
+assert_http "inject ReadStatus -> 202" "$(inject_uat gc1 ReadStatus)" 202
+assert_state "the read-only run finishes" incident-gc1 idle
+assert_eq "the read-only tool ran without approval" "$(calls_count read_status)" 1
+assert_eq "and the mutating tool was never touched" "$(calls_count apply_change)" 0
+stop_term
+
+# ---- U-gate-percall leg D: reject means it never happens ------------
+say "U-gate-percall/D: a rejected call is not made"
+DB="${WORK}/gate-d.db"
+WL="${GATE_DEFAULT}"
+LOG="${WORK}/gate-d.log"
+reset_blocker
+start_gate_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat gd1 ApplyChange)" 202
+assert_state "session parked on the write gate" incident-gd1 paused
+GDINT="$(show_field incident-gd1 Interrupt)"
+assert_http "reject it -> 202" \
+  "$(resume_verdict incident-gd1 "${GDINT}" '{"verdict":"reject","note":"not during the freeze"}')" 202
+assert_state "the rejected run finishes" incident-gd1 idle
+assert_eq "the rejected call never ran" "$(calls_count apply_change)" 0
+assert_log_count "the refusal is on the audit trail" "${LOG}" 'denied_by_operator' 1
+stop_term
+
+# ---- U-gate-crash: the question outlives the process ----------------
+# Row 5. mast's own permissions.Prompter cannot do this by construction —
+# it is a synchronous in-process ask — which is why the pause is ADK's
+# durable confirmation flow and the gate only decides policy.
+say "U-gate-crash: a parked call survives kill -9 and is answered by the next process"
+DB="${WORK}/gate-e.db"
+WL="${GATE_DEFAULT}"
+LOG="${WORK}/gate-e-boot.log"
+reset_blocker
+start_gate_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat ge1 ApplyChange)" 202
+assert_state "session parked on the write gate" incident-ge1 paused
+GEINT="$(show_field incident-ge1 Interrupt)"
+kill9
+assert_eq "the tool had not run when the process died" "$(calls_count apply_change)" 0
+
+LOG="${WORK}/gate-e-restart.log"
+start_gate_daemon "${LOG}"
+assert_state "the fresh process still shows the park" incident-ge1 paused
+assert_eq "and still shows the same question" "$(show_field incident-ge1 Interrupt)" "${GEINT}"
+EMSG="$(show_field incident-ge1 Message)"
+assert_has "which still names the tool" "${EMSG}" "apply_change"
+
+assert_http "approve against the fresh process -> 202" \
+  "$(resume_verdict incident-ge1 "${GEINT}" '{"verdict":"approve","note":"after the crash"}')" 202
+assert_state "the resumed run finishes" incident-ge1 idle
+# L1 / E-exactly-once, at the gate: the crash must not turn one approved
+# change into two applied ones.
+assert_eq "the call ran exactly once across the crash" "$(calls_count apply_change)" 1
+stop_term
+
+# ---- U-gate-scopes: an approval covers this call and no more --------
+# W2.3. A verdict that asks to authorize a pattern, a session, or "always"
+# is REFUSED rather than narrowed to `once`: silently narrowing would tell
+# an operator they had a standing grant when they did not.
+say "U-gate-scopes: an approval that reaches past this one call is refused"
+DB="${WORK}/gate-f.db"
+WL="${GATE_DEFAULT}"
+LOG="${WORK}/gate-f.log"
+reset_blocker
+start_gate_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat gf1 ApplyChange)" 202
+assert_state "session parked on the write gate" incident-gf1 paused
+GFINT="$(show_field incident-gf1 Interrupt)"
+assert_http "approve for the whole session -> 202 (accepted as a message)" \
+  "$(resume_verdict incident-gf1 "${GFINT}" '{"verdict":"approve","scope":"session"}')" 202
+assert_state "the run finishes" incident-gf1 idle
+assert_eq "the over-broad approval did not run the call" "$(calls_count apply_change)" 0
+assert_log_count "the scope refusal is on the audit trail" "${LOG}" 'approval_scope_refused' 1
+
+# And the same operator, re-issuing for this one call, is honoured — so
+# the leg above is a refusal of the SCOPE and not of the approver.
+assert_http "inject ApplyChange again -> 202" "$(inject_uat gf2 ApplyChange)" 202
+assert_state "session parked on the write gate" incident-gf2 paused
+GF2INT="$(show_field incident-gf2 Interrupt)"
+assert_http "approve this one call -> 202" \
+  "$(resume_verdict incident-gf2 "${GF2INT}" '{"verdict":"approve","scope":"once"}')" 202
+assert_state "the approved run finishes" incident-gf2 idle
+assert_eq "the re-issued approval ran the call exactly once" "$(calls_count apply_change)" 1
+stop_term
 
 # ---- summary --------------------------------------------------------
 say "Summary"

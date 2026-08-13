@@ -135,6 +135,14 @@ type rigConfig struct {
 	// steps drive the scripted model; see scriptModel.
 	steps []step
 
+	// onMutation is the fixture's hitl_policy.on_mutation. Empty means
+	// apply — which is *not* mast's default (that is require_approval)
+	// but is what a scenario measuring something other than the write
+	// gate wants: E-exactly-once is about the outbox replaying a
+	// recorded effect, and parking every mutating call behind an
+	// operator would measure the gate instead.
+	onMutation workload.OnMutation
+
 	// op is the operator the fixture offers. Nil means no approval is
 	// expected.
 	//
@@ -236,6 +244,7 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 			MaxCostUSD: cfg.limits.MaxCostUSD,
 			MaxTurns:   cfg.limits.MaxTurns,
 		},
+		HITL: workload.HITL{OnMutation: onMutationOr(cfg.onMutation, workload.OnMutationApply)},
 	}
 
 	root, err := compose.BuildRoot(ctx, compose.RootConfig{
@@ -268,12 +277,26 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rig: construct effects outbox: %w", err)
 	}
+	// The write gate comes from the same compose helper the daemon
+	// calls, after the outbox, so what these scenarios exercise is
+	// mast's wiring and not the rig's.
+	plugins := []*plugin.Plugin{outbox}
+	writeGate, err := compose.WriteGate(compose.WriteGateConfig{
+		Bundle:    &bundle,
+		Predicate: r.pred,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rig: %w", err)
+	}
+	if writeGate != nil {
+		plugins = append(plugins, writeGate)
+	}
 	r.runner, err = runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
 		SessionService:    svc,
 		AutoCreateSession: true,
-		PluginConfig:      runner.PluginConfig{Plugins: []*plugin.Plugin{outbox}},
+		PluginConfig:      runner.PluginConfig{Plugins: plugins},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rig: construct runner: %w", err)
@@ -629,6 +652,13 @@ func textOf(s string) *model.LLMResponse {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func onMutationOr(v, fallback workload.OnMutation) workload.OnMutation {
+	if v == "" {
+		return fallback
+	}
+	return v
+}
 
 // scratch makes a per-scenario subdirectory under the caller's root.
 func scratch(root, id string) (string, error) {

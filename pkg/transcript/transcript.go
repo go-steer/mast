@@ -67,7 +67,9 @@ import (
 	"google.golang.org/genai"
 
 	adksession "google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 
+	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/eventlog"
 )
 
@@ -833,6 +835,18 @@ func scanPending(events adksession.Events) []PendingInput {
 					p.ToolName = part.FunctionCall.Name
 					if m, ok := part.FunctionCall.Args["message"].(string); ok {
 						p.Message = m
+					}
+					if part.FunctionCall.Name == toolconfirmation.FunctionCallName {
+						// A parked mutating call (the write gate, W2). The
+						// operator-facing detail lives inside the call's
+						// args; without this the pause projects as a bare
+						// interrupt ID on an ADK-internal tool name, which
+						// tells an operator nothing about what they are
+						// being asked to authorize.
+						d := approval.DescribeConfirmation(part.FunctionCall.Args)
+						p.Message = d.Summary()
+						p.Payload = d.Request
+						p.ResponseSchema = approval.VerdictSchema()
 					}
 				}
 			}

@@ -488,12 +488,27 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	if err != nil {
 		return nil, fmt.Errorf("mast: construct effects outbox: %w", err)
 	}
+	// Pre-call write gate, registered after the outbox (docs/v0.3-plan.md
+	// W2). With no bundle there is no workload policy and no resume
+	// surface, so the library default is no gate — see compose.WriteGate.
+	plugins := []*plugin.Plugin{outboxPlugin}
+	writeGate, err := compose.WriteGate(compose.WriteGateConfig{
+		Bundle:    bundle,
+		Predicate: pred,
+		Logger:    cfg.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mast: %w", err)
+	}
+	if writeGate != nil {
+		plugins = append(plugins, writeGate)
+	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
 		SessionService:    svc,
 		AutoCreateSession: true,
-		PluginConfig:      runner.PluginConfig{Plugins: []*plugin.Plugin{outboxPlugin}},
+		PluginConfig:      runner.PluginConfig{Plugins: plugins},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: construct runner: %w", err)

@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/envelope"
 )
 
@@ -241,6 +242,30 @@ type Config struct {
 	// ResumeHandler is called for each valid resume POST. Optional.
 	ResumeHandler ResumeHandler
 
+	// Authenticator, when set, resolves the caller identity behind a
+	// /resume request and puts it on the handler's context
+	// (auth.CallerFromContext). It runs IN ADDITION to BearerToken, not
+	// instead of it: the shared token still admits the request, and
+	// this says who presented it.
+	//
+	// Only /resume consults it, deliberately. An approval is the one
+	// place in v0.3 where identity is load-bearing — "who authorized
+	// this change" is the audit question the release exists to answer,
+	// and it is the half that cannot be backfilled (docs/v0.3-plan.md
+	// W2.1). Extending authentication to the other routes is a
+	// behaviour change for every existing emitter and belongs with the
+	// multi-session substrate, not here.
+	//
+	// Nil means unauthenticated: verdicts record the shared-credential
+	// identity, which is honest about what a single bearer token can
+	// prove.
+	Authenticator auth.Authenticator
+
+	// AssertedCallerHeader is the header a proxy Caller uses to assert
+	// the effective identity. Empty means auth.HeaderAssertedCaller.
+	// Ignored unless Authenticator implements auth.AuthenticatorWithProxy.
+	AssertedCallerHeader string
+
 	// AbortHandler is called for each valid abort POST. Optional.
 	AbortHandler AbortHandler
 
@@ -415,7 +440,14 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("resume received", "session", req.SessionID, "interrupt_id", req.InterruptID)
 	}
 
-	if err := s.cfg.ResumeHandler(r.Context(), req); err != nil {
+	ctx, err := s.callerContext(r)
+	if err != nil {
+		s.logger.Warn("resume caller rejected", "error", err.Error())
+		http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+		return
+	}
+
+	if err := s.cfg.ResumeHandler(ctx, req); err != nil {
 		if errors.Is(err, ErrUnavailable) {
 			w.Header().Set("Retry-After", "10")
 			http.Error(w, "shutting down; retry against the replacement instance", http.StatusServiceUnavailable)
@@ -632,6 +664,58 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(res)
+}
+
+// SharedCredentialIdentity is the Caller identity recorded when no
+// Authenticator is configured. It is deliberately not "anonymous" and
+// deliberately not a person: the request did present a credential — the
+// daemon's shared bearer token — and the honest audit record says that
+// a holder of that token approved, not that nobody did and not that
+// somebody in particular did.
+const SharedCredentialIdentity = "shared-bearer-token"
+
+// callerContext resolves who is behind a request and returns a context
+// carrying them. With no Authenticator configured it attributes the
+// shared credential; with one, it authenticates and applies the proxy
+// (X-Asserted-Caller) path.
+//
+// Authentication failure is an error, not a silent downgrade to the
+// shared identity: an operator who has configured a user table has
+// asked for attributed approvals, and recording "shared token" for a
+// request that presented a bad user token would be a lie in the audit
+// log.
+func (s *Server) callerContext(r *http.Request) (context.Context, error) {
+	ctx := r.Context()
+	if s.cfg.Authenticator == nil {
+		return auth.WithCaller(ctx, auth.Caller{Identity: SharedCredentialIdentity}), nil
+	}
+	caller, err := s.cfg.Authenticator.Authenticate(r)
+	if err != nil {
+		return nil, err
+	}
+	header := s.cfg.AssertedCallerHeader
+	if header == "" {
+		header = auth.HeaderAssertedCaller
+	}
+	asserted := r.Header.Get(header)
+	if asserted == "" {
+		return auth.WithCaller(ctx, caller), nil
+	}
+	proxy, ok := s.cfg.Authenticator.(auth.AuthenticatorWithProxy)
+	if !ok || !proxy.CanProxyAs(caller) {
+		return nil, auth.ErrAssertedCallerForbidden
+	}
+	lookup, ok := s.cfg.Authenticator.(interface {
+		LookupIdentity(string) (auth.Caller, bool)
+	})
+	if !ok {
+		return nil, auth.ErrAssertedCallerForbidden
+	}
+	effective, ok := lookup.LookupIdentity(asserted)
+	if !ok {
+		return nil, auth.ErrAssertedCallerUnknown
+	}
+	return auth.WithProxyBy(auth.WithCaller(ctx, effective), caller.Identity), nil
 }
 
 func (s *Server) authOK(r *http.Request) bool {
