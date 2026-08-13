@@ -1,0 +1,130 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The judge tier of the v0.3 parity evals (docs/v0.3-plan.md W0.5): all
+# 31 ported LangChain SRE scenarios run against a live model over the
+# fixture cluster, scored by the deterministic evaluators plus an
+# LLM-as-judge quality grade, and diffed against the previous night's
+# board.
+#
+# This workflow REPORTS. It is not a required check, it does not run on
+# pull_request, and a low score does not fail it — that is the plan's
+# §2 four-tier split, where S/U/E gate and J reports. The job does fail
+# when the *board* is broken: a row that did not run, or a metric that
+# scores nothing anywhere in the corpus. That is a failure of the
+# measurement, not of mast, and it needs someone to look.
+#
+# Cost is roughly $5-15 a run and the scenarios run sequentially, so
+# expect tens of minutes.
+#
+# ## What it needs configured
+#
+# Nothing here is repo-visible, so the job skips cleanly rather than
+# failing red when a repo (or a fork) has not set it up:
+#
+#   vars.MAST_EVALS_VERTEX_PROJECT   GCP project serving Claude on Vertex
+#   secrets.MAST_EVALS_WIF_PROVIDER  workload identity provider resource name
+#   secrets.MAST_EVALS_SERVICE_ACCOUNT  service account to impersonate
+#   vars.MAST_EVALS_VERTEX_REGION    optional; defaults to us-east5
+#   vars.MAST_EVALS_MODEL            optional; defaults to the Anthropic default
+#   vars.MAST_EVALS_GRADER           optional; defaults to the small Anthropic model
+#
+# Keyless auth (OIDC → workload identity federation) rather than a
+# service-account key: a long-lived key in a repo secret is the thing
+# this project's security review would object to first.
+
+name: evals-nightly
+
+on:
+  schedule:
+    # 07:00 UTC — after the working day in the timezones that touch this
+    # repo, so a morning reader sees a finished board.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model under test (overrides vars.MAST_EVALS_MODEL)'
+        required: false
+        type: string
+      grader:
+        description: 'Grading model (overrides vars.MAST_EVALS_GRADER)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  # Reading the previous run's board artifact, and minting the OIDC
+  # token the Vertex auth exchanges.
+  actions: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    # Forks have no credentials and would post an empty board.
+    if: github.repository == 'go-steer/mast'
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check the tier is configured
+        id: config
+        env:
+          PROJECT: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
+          WIF: ${{ secrets.MAST_EVALS_WIF_PROVIDER }}
+        run: dev/ci/evals-nightly-configured.sh
+
+      - name: Authenticate to Google Cloud
+        if: steps.config.outputs.configured == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.MAST_EVALS_WIF_PROVIDER }}
+          service_account: ${{ secrets.MAST_EVALS_SERVICE_ACCOUNT }}
+
+      # Last night's board, so tonight's can be a delta rather than a
+      # wall of absolute numbers. A first run (or an expired artifact)
+      # has none, and the delta section is simply omitted.
+      - name: Fetch the previous board
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: dev/ci/evals-nightly-baseline.sh
+
+      - name: Judge tier
+        if: steps.config.outputs.configured == 'true'
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
+          CLOUD_ML_REGION: ${{ vars.MAST_EVALS_VERTEX_REGION || 'us-east5' }}
+          MAST_EVALS_MODEL: ${{ inputs.model || vars.MAST_EVALS_MODEL }}
+          MAST_EVALS_GRADER: ${{ inputs.grader || vars.MAST_EVALS_GRADER }}
+        run: dev/ci/evals-nightly.sh
+
+      # Uploaded whether or not the run was clean: a board with a row
+      # missing is still the baseline tomorrow's delta needs.
+      - name: Upload the board
+        if: always() && steps.config.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-board
+          path: ${{ runner.temp }}/mast-evals/board.json
+          retention-days: 90
+          if-no-files-found: warn

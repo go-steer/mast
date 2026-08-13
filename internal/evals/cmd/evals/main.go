@@ -19,13 +19,19 @@
 //
 //	go run ./internal/evals/cmd/evals              # deterministic tier
 //	go run ./internal/evals/cmd/evals --format=json
+//	go run ./internal/evals/cmd/evals --tier=judge # metered; needs credentials
+//	go run ./internal/evals/cmd/evals --tier=judge --baseline=last.json --out=board.json
 //
 // Exit codes mirror the harness's own three-valued outcome, because the
 // distinction matters to whoever reads the CI log:
 //
 //	0  the suite gates green
 //	1  a scenario missed its declared outcome, or a metric is a constant
-//	2  the harness could not run — bad fixture, unknown or unbuilt tier
+//	2  the harness could not run — bad fixture, unknown tier, no credentials
+//
+// The judge tier reports rather than gates, so a low score exits 0. It
+// exits 1 only when the board is incomplete: a row that did not run, or
+// a metric that scores nothing anywhere.
 package main
 
 import (
@@ -41,13 +47,26 @@ import (
 
 func main() {
 	var (
-		tier   = flag.String("tier", harness.TierDeterministic, "which tier to run: deterministic (free, gating) or judge (metered, W0.5)")
-		root   = flag.String("root", "", "repository root; defaults to the nearest ancestor with a go.mod")
-		format = flag.String("format", "text", "output format: text or json")
+		tier     = flag.String("tier", harness.TierDeterministic, "which tier to run: deterministic (free, gating) or judge (metered, live credentials)")
+		root     = flag.String("root", "", "repository root; defaults to the nearest ancestor with a go.mod")
+		format   = flag.String("format", "text", "output format: text or json")
+		model    = flag.String("model", "", "judge tier: the model under test (default: the Anthropic default)")
+		grader   = flag.String("grader", "", "judge tier: the model that scores response_quality (default: the small Anthropic model)")
+		provider = flag.String("provider", "", "judge tier: anthropic or anthropic-vertex (default: whichever the environment provides)")
+		baseline = flag.String("baseline", "", "a previous board (--format=json output) to report this run's delta against")
+		out      = flag.String("out", "", "also write the JSON board to this path, whatever --format prints")
 	)
 	flag.Parse()
 
-	err := run(*tier, *root, *format)
+	err := run(harness.Config{
+		Tier:     *tier,
+		Root:     *root,
+		Model:    *model,
+		Grader:   *grader,
+		Provider: *provider,
+		// stderr, so a run piped through tee still writes a clean board.
+		Progress: os.Stderr,
+	}, *format, *baseline, *out)
 	switch {
 	case err == nil:
 	case errors.Is(err, errFailed):
@@ -64,21 +83,49 @@ func main() {
 // tell it apart from "the harness could not run".
 var errFailed = errors.New("suite failed")
 
-func run(tier, root, format string) error {
-	if root == "" {
+func run(cfg harness.Config, format, baseline, out string) error {
+	if cfg.Root == "" {
 		r, err := findRoot()
 		if err != nil {
 			return err
 		}
-		root = r
+		cfg.Root = r
 	}
 	if format != "text" && format != "json" {
 		return fmt.Errorf("unknown format %q (want text or json)", format)
 	}
 
-	sum, err := harness.Run(context.Background(), harness.Config{Root: root, Tier: tier})
+	// Read the baseline before spending a metered run on a board that
+	// then turns out to have nothing to compare against.
+	var prev harness.Summary
+	if baseline != "" {
+		p, err := harness.LoadSummary(baseline)
+		if err != nil {
+			return err
+		}
+		prev = p
+	}
+
+	sum, err := harness.Run(context.Background(), cfg)
 	if err != nil {
 		return err
+	}
+
+	// A judge run costs money and minutes; losing it because the
+	// delta or the terminal failed afterwards would be the expensive
+	// kind of avoidable.
+	if out != "" {
+		f, err := os.Create(out)
+		if err != nil {
+			return err
+		}
+		werr := sum.WriteJSON(f)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			return werr
+		}
 	}
 
 	switch format {
@@ -88,6 +135,9 @@ func run(tier, root, format string) error {
 		}
 	default:
 		sum.WriteText(os.Stdout)
+		if baseline != "" {
+			sum.WriteDelta(os.Stdout, prev)
+		}
 	}
 	if !sum.OK() {
 		return errFailed

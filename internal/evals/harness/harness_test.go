@@ -66,20 +66,143 @@ func TestRun_Deterministic(t *testing.T) {
 	}
 }
 
-// TestRun_JudgeTierRefused pins that asking for the metered tier fails
-// loudly. Silently running the free tier instead would report a
-// deterministic result as a LangChain-comparable one.
-func TestRun_JudgeTierRefused(t *testing.T) {
-	_, err := Run(context.Background(), Config{Root: repoRoot, Tier: TierJudge, Scratch: t.TempDir()})
+// TestRun_JudgeTierUnbuildableModelFailsLoudly pins the tier boundary.
+// Silently falling back to the free tier when the metered one cannot
+// start would report a deterministic result as a LangChain-comparable
+// one, and it is the runner's exit-2 case rather than exit 1: nothing
+// was measured.
+func TestRun_JudgeTierUnbuildableModelFailsLoudly(t *testing.T) {
+	_, err := Run(context.Background(), Config{
+		Root: repoRoot, Tier: TierJudge, Scratch: t.TempDir(),
+		Model: "no-such-model-9000", Grader: "echo",
+	})
 	if err == nil {
-		t.Fatal("judge tier ran; it is not implemented until W0.5")
+		t.Fatal("the judge tier started with a model that cannot be built")
 	}
-	var notImpl ErrTierNotImplemented
-	if !errors.As(err, &notImpl) {
-		t.Fatalf("error = %v, want ErrTierNotImplemented so the runner can exit 2 rather than 1", err)
+	if !strings.Contains(err.Error(), "unknown model") {
+		t.Fatalf("error = %v, want it to name the unbuildable model", err)
 	}
-	if !strings.Contains(notImpl.Why, "W0.5") {
-		t.Errorf("Why = %q, want it to name the workstream that builds it", notImpl.Why)
+}
+
+// TestRun_JudgeTierRunsTheWholeCorpus exercises the metered tier's
+// plumbing end to end without credentials or cost, by pointing it at
+// compose's offline echo model. It is not a quality check — echo does
+// not choose tools, so every score is meaningless — it checks that all
+// 31 rows reach the board, that both model names are recorded, and that
+// a grader which cannot produce a grade costs one column rather than the
+// row.
+func TestRun_JudgeTierRunsTheWholeCorpus(t *testing.T) {
+	sum, err := Run(context.Background(), Config{
+		Root: repoRoot, Tier: TierJudge, Scratch: t.TempDir(),
+		Model: "echo", Grader: "echo",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if sum.Judge == nil {
+		t.Fatal("the judge tier produced no board")
+	}
+	if got := len(sum.Judge.Scenes); got != 31 {
+		t.Fatalf("board has %d rows, want 31", got)
+	}
+	for _, s := range sum.Judge.Scenes {
+		if s.Error != "" {
+			t.Errorf("%s: did not run: %s", s.ID, s.Error)
+		}
+	}
+	if sum.Judge.Model != "echo" || sum.Judge.Grader != "echo" {
+		t.Errorf("board records model %q / grader %q, want both named", sum.Judge.Model, sum.Judge.Grader)
+	}
+	// Grading with the model under test is a real methodological
+	// problem, so the board has to say so rather than leave it to be
+	// noticed.
+	if len(sum.Judge.Notes) == 0 || !strings.Contains(sum.Judge.Notes[0], "grading its own output") {
+		t.Errorf("notes = %v, want the same-model warning", sum.Judge.Notes)
+	}
+	// The echo model returns the prompt, which is not a grade. That
+	// must show up as a missing column, not as a zero.
+	if len(sum.Problems) == 0 {
+		t.Error("an ungradeable reply from the grader was recorded as a score")
+	}
+	for _, p := range sum.Problems {
+		if !strings.Contains(p, "response_quality was not graded") {
+			t.Errorf("unexpected problem: %s", p)
+		}
+	}
+	// LC-13 is the one structurally-capped row; the rest must not be.
+	if len(sum.Judge.Ceilings) != 1 || sum.Judge.Ceilings[0].ID != "LC-13-rollback-needed-after-bad" {
+		t.Errorf("ceilings = %+v, want only LC-13", sum.Judge.Ceilings)
+	}
+}
+
+// TestAggregate_ExcludesVacuousRows pins the averaging rule. Counting a
+// row that had nothing to score as a zero reports the corpus's shape as
+// the agent's performance.
+func TestAggregate_ExcludesVacuousRows(t *testing.T) {
+	scenes := []JudgeScenario{
+		{ID: "a", Results: []evals.Result{{Metric: evals.MetricIntentCoverage, Score: 1}}},
+		{ID: "b", Results: []evals.Result{{Metric: evals.MetricIntentCoverage, Score: 0.5}}},
+		{ID: "c", Results: []evals.Result{{Metric: evals.MetricIntentCoverage, Score: 0, Vacuous: true}}},
+	}
+	got := aggregate(scenes)
+	if len(got) != 1 {
+		t.Fatalf("aggregate = %+v, want one metric", got)
+	}
+	if got[0].Mean != 0.75 || got[0].Scored != 2 || got[0].Vacuous != 1 {
+		t.Errorf("aggregate = %+v, want mean 0.75 over 2 scored with 1 vacuous", got[0])
+	}
+}
+
+// TestSummary_WriteTextJudgeTier keeps the metered board honest about
+// what it is: a report, with its ceilings stated and its models named.
+func TestSummary_WriteTextJudgeTier(t *testing.T) {
+	sum := Summary{
+		Tier: TierJudge,
+		Corpus: CorpusSummary{
+			Dataset: "langchain-sre", Scenarios: 31, Intents: 19,
+			Reach: []evals.MetricReach{{Metric: evals.MetricIntentCoverage, Scenarios: 31, Reaches: 31}},
+		},
+		Judge: &JudgeSummary{
+			Model: "claude-opus-4-7", Grader: "claude-haiku-4-5", Provider: "anthropic-vertex",
+			Scenes: []JudgeScenario{{
+				ID: "LC-13-rollback-needed-after-bad", Ceiling: 0.5, Tools: []string{"k8s_recent_changes"},
+				Results: []evals.Result{{Metric: evals.MetricIntentCoverage, Score: 0.5}},
+			}},
+			Aggregate: []MetricSummary{{Metric: evals.MetricIntentCoverage, Mean: 0.5, Scored: 1}},
+			Ceilings: []CeilingFinding{{
+				ID: "LC-13-rollback-needed-after-bad", Ceiling: 0.5, Scored: 0.5, Why: "the corpus expects a write tool",
+			}},
+		},
+	}
+
+	var buf bytes.Buffer
+	sum.WriteText(&buf)
+	out := buf.String()
+	for _, want := range []string{
+		"tier judge",
+		"model under test claude-opus-4-7",
+		"grader claude-haiku-4-5",
+		"LC-13-rollback-needed-after-bad",
+		"ceiling 0.50",
+		"structural ceilings",
+		"does not gate",
+		"REPORTED",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report is missing %q:\n%s", want, out)
+		}
+	}
+	// The differentiator section belongs to the free tier; printing an
+	// empty one here would read as five scenarios having vanished.
+	if strings.Contains(out, "differentiators:") {
+		t.Errorf("the judge board printed an empty differentiator section:\n%s", out)
+	}
+
+	sum.Problems = []string{"LC-02: the run did not complete"}
+	buf.Reset()
+	sum.WriteText(&buf)
+	if out := buf.String(); !strings.Contains(out, "INCOMPLETE") || strings.Contains(out, "REPORTED") {
+		t.Errorf("an incomplete board reported itself as complete:\n%s", out)
 	}
 }
 
