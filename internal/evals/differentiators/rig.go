@@ -26,6 +26,8 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"google.golang.org/genai"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -177,7 +179,13 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	}
 	r := &rig{cfg: cfg, model: &scriptModel{steps: cfg.steps, tokens: cfg.tokensPerCall}}
 
-	svc, err := database.NewSessionService(sqlite.Open(filepath.Join(cfg.dir, "sessions.db")))
+	// Silence GORM the way pkg/eventlog.Open does. Left at ADK's default
+	// the five scenarios emit ~48KB of SELECT and "record not found"
+	// chatter, which buries the report this suite exists to print.
+	svc, err := database.NewSessionService(
+		sqlite.Open(filepath.Join(cfg.dir, "sessions.db")),
+		&gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("rig: open session store: %w", err)
 	}

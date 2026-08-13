@@ -102,6 +102,23 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   drain / abort legs over a request-driven fake model and a stdio blocking
   tool) gating CI.
 
+## Landed toward v0.3 (unreleased)
+
+- **Parity eval gate** — a credential-free eval suite gating every PR
+  (`scripts/evals.sh`, alongside the v0.2 UAT harness). It runs the
+  scenarios that mast's durability guarantees turn on — exactly-once
+  mutation across a crash, refusal after an ambiguous one, budget
+  exhaustion, an approval rejected, an approval edited — against the
+  composed runtime, and holds each to a declared outcome. Capabilities not
+  yet built are declared expected-fail with the workstream that removes
+  them; that list only shrinks, and a capability landing without its entry
+  being flipped fails the suite. It also checks that the metrics scoring
+  the ported 31-scenario corpus can score anything at all, so a green board
+  cannot come from a measurement that never ran.
+- **Per-specialist model selection** — a specialist's `model:` is honored
+  instead of inheriting the workload's, including across providers. The
+  cost attribution that makes tiering measurable is still ahead.
+
 ## Further out (v0.3+)
 
 - **AG-UI remaining slices** — the `agui://` federation client, per-key

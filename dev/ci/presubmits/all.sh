@@ -26,7 +26,7 @@
 set -euo pipefail
 
 dir="$(cd "$(dirname "$0")" && pwd)"
-steps=(build vet fmt lint mod-tidy test vuln docs-lint slim-deps e2e)
+steps=(build vet fmt lint mod-tidy test vuln docs-lint slim-deps e2e evals)
 failed=()
 
 for step in "${steps[@]}"; do
