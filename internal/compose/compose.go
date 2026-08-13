@@ -42,6 +42,7 @@ import (
 
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
+	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/pricing"
@@ -65,13 +66,77 @@ const (
 	// (pkg/graph). Requires a SingleTurn classifier in the roster.
 	DispatchGraph Dispatch = "graph"
 
-	// DispatchAuto picks the shape from the roster: graph when a
+	// DispatchFanout is the W3 fan-out shape (pkg/graph.BuildFanout):
+	// the roster's Task specialists run concurrently as read-only
+	// analysts and a graph.SynthesisName specialist merges what they
+	// return. Requires that specialist, and refuses to build an analyst
+	// that can mutate.
+	DispatchFanout Dispatch = "fanout"
+
+	// DispatchAuto picks the shape from the roster: fanout when a
+	// graph.SynthesisName specialist is present, graph when a
 	// SingleTurn classifier and a graph.FallbackName Task specialist
 	// are both present (the pair graph dispatch needs), coordinator
 	// otherwise. This is the library default — programmatic callers
 	// declare a roster, not a flag.
 	DispatchAuto Dispatch = "auto"
 )
+
+// Resolve returns the dispatch shape to build, given the caller's
+// choice and the bundle's own declaration.
+//
+// A shape is a property of the roster — fan-out needs read-only
+// analysts and a synthesis specialist, graph needs a SingleTurn
+// classifier and a `_fallback` — so a bundle that declares one is
+// stating a fact about itself, not a preference. It therefore wins over
+// an unspecified caller, and loses to a caller that named a shape
+// explicitly (an operator overriding one run).
+func (d Dispatch) Resolve(b workload.Bundle) Dispatch {
+	if d != "" && d != DispatchAuto {
+		return d
+	}
+	if b.Dispatch != "" {
+		return Dispatch(b.Dispatch)
+	}
+	if d == "" {
+		return DispatchAuto
+	}
+	return d
+}
+
+// RosterShape reads the dispatch shape out of a roster: fan-out when it
+// has a synthesis merger, graph when it has both a SingleTurn
+// classifier and a graph.FallbackName Task specialist, coordinator
+// otherwise.
+//
+// Exported because BuildRoot is not the only caller that has to know
+// the shape — cmd/mast's boot-time auto-resume pass runs only under
+// coordinator dispatch, and a second copy of this rule living there is
+// a copy that drifts. It reads specs rather than built agents so a
+// caller can ask before paying for construction.
+func RosterShape(specs []specialists.Spec) Dispatch {
+	var hasSynthesis, hasFallback, hasClassifier bool
+	for _, s := range specs {
+		if s.Mode == specialists.ModeSingleTurn {
+			hasClassifier = true
+			continue
+		}
+		switch s.Name {
+		case graph.SynthesisName:
+			hasSynthesis = true
+		case graph.FallbackName:
+			hasFallback = true
+		}
+	}
+	switch {
+	case hasSynthesis:
+		return DispatchFanout
+	case hasClassifier && hasFallback:
+		return DispatchGraph
+	default:
+		return DispatchCoordinator
+	}
+}
 
 // RootConfig carries everything BuildRoot needs to turn a loaded
 // bundle + specs into a root agent. Bundle and Specs use the existing
@@ -130,24 +195,31 @@ type RootConfig struct {
 //     (pkg/planner); Dispatch is ignored.
 //   - DispatchGraph → the workflow graph (pkg/graph); errors without
 //     a SingleTurn classifier.
+//   - DispatchFanout → the concurrent-analysts fan-out shape
+//     (pkg/graph.BuildFanout); errors without a graph.SynthesisName
+//     specialist, or if any analyst can reach a mutating tool.
 //   - DispatchCoordinator → the SubAgents coordinator (pkg/router).
-//   - DispatchAuto/empty → graph when the roster has both a SingleTurn
+//   - DispatchAuto/empty → the bundle's own `dispatch:` when it names
+//     one (see Dispatch.Resolve); otherwise fanout when the roster has
+//     a synthesis specialist, graph when it has both a SingleTurn
 //     classifier and a graph.FallbackName specialist, else coordinator.
 func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
-	dispatch := cfg.Dispatch
-	if dispatch == "" {
-		dispatch = DispatchAuto
-	}
+	dispatch := cfg.Dispatch.Resolve(cfg.Bundle)
 	switch dispatch {
-	case DispatchCoordinator, DispatchGraph, DispatchAuto:
+	case DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchAuto:
 	default:
-		return nil, fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, or auto)", dispatch)
+		return nil, fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, fanout, or auto)", dispatch)
 	}
 
 	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Logger)
 
 	byName := make(map[string]adkagent.Agent, len(cfg.Specs))
 	taskOnly := make(map[string]graph.Specialist, len(cfg.Specs))
+	// analysts are every Task specialist that is neither the synthesis
+	// merger nor the graph-dispatch fallback: the fan-out branch set,
+	// in roster order. Collected on every path so DispatchAuto can ask
+	// whether the roster is a fan-out roster.
+	var analysts []graph.Analyst
 	var classifier adkagent.Agent
 	for _, spec := range cfg.Specs {
 		opts := specialists.BuildOptions{Model: cfg.Model, Resolve: resolve}
@@ -169,6 +241,16 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 			// The spec's budget rides along so graph.Build can map
 			// max_wallclock_seconds onto the node's Timeout.
 			taskOnly[spec.Name] = graph.Specialist{Agent: a, Budget: spec.Budget}
+			if spec.Name != graph.SynthesisName && spec.Name != graph.FallbackName {
+				// The allowlist rides along too: BuildFanout checks it,
+				// and the built agent no longer carries it.
+				analysts = append(analysts, graph.Analyst{
+					Name:   spec.Name,
+					Agent:  a,
+					Budget: spec.Budget,
+					Tools:  spec.Tools,
+				})
+			}
 		} else if classifier == nil {
 			classifier = a
 		}
@@ -195,12 +277,16 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	}
 
 	if dispatch == DispatchAuto {
-		_, hasFallback := taskOnly[graph.FallbackName]
-		if classifier != nil && hasFallback {
-			dispatch = DispatchGraph
-		} else {
-			dispatch = DispatchCoordinator
-		}
+		dispatch = RosterShape(cfg.Specs)
+	}
+
+	if dispatch == DispatchFanout {
+		return graph.BuildFanout(graph.FanoutConfig{
+			Bundle:    cfg.Bundle,
+			Analysts:  analysts,
+			Synthesis: taskOnly[graph.SynthesisName],
+			Mutating:  MutationPredicate(cfg.Bundle, cfg.Logger),
+		})
 	}
 
 	if dispatch == DispatchGraph {
@@ -219,6 +305,22 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 		Specialists: byName,
 		Model:       cfg.Model,
 	})
+}
+
+// MutationPredicate builds the tool mutation classifier for a bundle:
+// mast's default-deny-unknown stance, narrowed by the workload's
+// audited tool_catalog.tools overrides.
+//
+// The conversion exists because pkg/effects deliberately does not
+// import pkg/workload (that would drag the YAML loader into every
+// library embed that only wants the guard), so somebody who imports
+// both has to bridge the two ToolPolicy types. compose imports both.
+func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate {
+	policies := make([]effects.ToolPolicy, 0, len(b.ToolCatalog.Tools))
+	for _, p := range b.ToolCatalog.Tools {
+		policies = append(policies, effects.ToolPolicy{Name: p.Name, Mutating: p.Mutating})
+	}
+	return effects.NewPredicate(effects.Overrides(logger, policies))
 }
 
 // BuildModel constructs the model.LLM for the given provider alias

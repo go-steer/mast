@@ -1,0 +1,66 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Fan-out anchor workload: a standing audit of one namespace.
+# See docs (in the mast repo): v0.3-plan.md (W3).
+#
+# Why this is a separate bundle from gke-triage rather than another
+# --dispatch on it: the two rosters have different capabilities, not
+# just different shapes. A triage specialist carries the mutating tools
+# its remediation path needs (patch_resource, rollout_undo). A fan-out
+# analyst may not carry any, because a mutation inside a parallel branch
+# leaves no record in the event log — ADK discards every branch-internal
+# event and keeps only the branch's Output payload. So the shipped
+# gke-triage roster cannot be a fan-out roster, and pointing
+# `--dispatch=fanout` at it is refused at construction.
+
+name: ns-audit
+description: Standing audit of one Kubernetes namespace — concurrent read-only analysts, one merged report.
+mode: single_session
+
+dispatch: fanout
+
+fanout:
+  # Cap on concurrent analyst branches. Passed to ADK's
+  # NewParallelWorker, the only concurrency knob that binds from a
+  # workflowagent root.
+  max_concurrency: 2
+
+tool_catalog:
+  mcp:
+    - server: gke
+  # Fan-out forces this list to exist. mast classifies an unknown tool
+  # as mutating (MCP annotations are advisory AND dropped by ADK's
+  # mcptoolset), so without an explicit read-only classification every
+  # analyst allowlist below would be refused. That is the intended
+  # cost of the guarantee: an analyst is read-only because an operator
+  # said each of these tools is, by name, not because the tool sounds
+  # harmless.
+  tools:
+    - name: get_k8s_resource
+      mutating: false
+    - name: describe_k8s_resource
+      mutating: false
+    - name: list_k8s_events
+      mutating: false
+
+specialists:
+  - workloads-audit
+  - networking-audit
+  - storage-audit
+  - policy-audit
+  - _synthesis
+
+budget:
+  max_wallclock_seconds: 300
+
+# One gate, after synthesis. An analyst branch never parks: a
+# RequestInput emitted inside a ParallelWorker branch is swallowed with
+# every other branch-internal event, so the operator would never see it.
+hitl:
+  require_approval: true
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer

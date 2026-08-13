@@ -151,6 +151,18 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   produce a conforming report, so `mast --model=echo` on the shipped bundle
   failed every injected incident. Fixed; the harness is what keeps it
   fixed.
+- **Parallel fan-out** — a workload can set `dispatch: fanout` and have its
+  whole roster investigate one incident at the same time, bounded by a
+  concurrency cap, with a single synthesis specialist merging what comes back
+  into one report and a single approval on that report. An analyst that
+  returns nothing is reported as silent rather than quietly dropped, and
+  approving the merged report finishes the run without re-running any
+  analyst — including after the daemon has been restarted. Fan-out branches
+  are read-only by construction: a roster whose analysts can change the
+  cluster is refused at startup, with the tool named, because every branch
+  runs before the approval gate. The shipped GKE triage bundle is one of
+  those rosters, so fan-out ships its own read-only example instead of
+  converting it.
 - **ADK v2.2.0** — the agent substrate is upgraded from v2.1.0. The fix that
   motivated taking it now: a workflow-graph run whose invocation context was
   cancelled from outside — an evicted attach session, a dispatch deadline, an

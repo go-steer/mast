@@ -52,6 +52,11 @@ func (b *Bundle) validate() error {
 	if b.Mode != "" && b.Mode != ModeSingleSession && b.Mode != ModeMultiSession {
 		return fmt.Errorf("unknown mode %q (want single_session or multi_session)", b.Mode)
 	}
+	switch b.Dispatch {
+	case "", DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchAuto:
+	default:
+		return fmt.Errorf("unknown dispatch %q (want coordinator, graph, fanout, or auto)", b.Dispatch)
+	}
 	seen := make(map[string]bool, len(b.Specialists))
 	for _, name := range b.Specialists {
 		if name == "" {

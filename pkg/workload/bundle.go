@@ -96,6 +96,40 @@ type HITL struct {
 	RequireApproval bool `yaml:"require_approval,omitempty"`
 }
 
+// Dispatch names the root shape a workload wants assembled. The values
+// mirror internal/compose.Dispatch; the string lives here so a bundle
+// can declare its own shape instead of depending on how it happens to
+// be launched. An empty value leaves the choice to the caller.
+//
+// Precedence is caller-explicit over bundle: `mast serve --dispatch=X`
+// wins when the operator actually typed it, the bundle's declaration
+// wins otherwise. A shape is a property of the roster (fan-out needs
+// read-only analysts and a synthesis specialist; graph needs a
+// SingleTurn classifier and a `_fallback`), so the bundle is where it
+// belongs — the flag stays for overriding one run.
+const (
+	// DispatchCoordinator is the SubAgents coordinator shape.
+	DispatchCoordinator = "coordinator"
+	// DispatchGraph is the workflow-graph LLM-as-router shape.
+	DispatchGraph = "graph"
+	// DispatchFanout is the concurrent-analysts + synthesis shape.
+	DispatchFanout = "fanout"
+	// DispatchAuto picks a shape from the roster.
+	DispatchAuto = "auto"
+)
+
+// Fanout configures the fan-out dispatch shape (docs/v0.3-plan.md W3).
+// Ignored under any other dispatch.
+type Fanout struct {
+	// MaxConcurrency caps how many analyst branches run at once. It is
+	// passed to ADK's NewParallelWorker, which is the only concurrency
+	// knob that binds from a workflowagent root (resolved-decision row
+	// 133 — WithMaxConcurrency is unreachable there). 0 means the
+	// package default; negative means unbounded, which is ADK's own
+	// meaning for the argument and is why the field is not clamped.
+	MaxConcurrency int `yaml:"max_concurrency,omitempty"`
+}
+
 // Planner is the workload's planner block (docs/orchestration-design.md
 // "The planner"). v0.1 scaffold subset: enabled only. Later fields —
 // plan_review_required, reference_shapes — join when their subsystems
@@ -242,6 +276,14 @@ type Bundle struct {
 	// Names resolve against the .agents/specialists/ directory (or the
 	// spike's --specialists-dir).
 	Specialists []string `yaml:"specialists,omitempty"`
+
+	// Dispatch declares the root shape this roster is built for; empty
+	// leaves the choice to the caller. See the Dispatch* constants.
+	Dispatch string `yaml:"dispatch,omitempty"`
+
+	// Fanout configures the fan-out shape; ignored under any other
+	// dispatch.
+	Fanout Fanout `yaml:"fanout,omitempty"`
 
 	// Budget bounds this workload's per-invocation runtime.
 	Budget Budget `yaml:"budget,omitempty"`

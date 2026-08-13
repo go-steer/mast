@@ -105,7 +105,7 @@ func main() {
 func run() {
 	var (
 		workloadFlag     = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
-		dispatchMode     = flag.String("dispatch", "coordinator", "dispatch shape: `coordinator` (spike-1 SubAgents pattern) or `graph` (workflow-graph LLM-as-router)")
+		dispatchMode     = flag.String("dispatch", "", "dispatch shape: `coordinator` (spike-1 SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (concurrent read-only analysts + a _synthesis merge), or `auto` (read the shape off the roster). Unset takes the workload's own `dispatch:`, then coordinator")
 		modelName        = flag.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`")
 		providerFlag     = flag.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. For claude-* models the alias also picks the backend (first-party vs Vertex)")
 		taskFlag         = flag.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)")
@@ -413,7 +413,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// needs the runner, which needs the root).
 	pauseRec := &daemonPauseRecorder{store: store}
 
-	root, bundle, specs, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode, pauseRec)
+	root, bundle, specs, dispatchMode, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode, pauseRec)
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		return err
@@ -1160,13 +1160,20 @@ func workloadNames(cfg *config.Config) []string {
 // the workload bundle + specialists + tool catalog and hands the
 // loaded roster to the shared core (internal/compose.BuildRoot — the
 // same code the library-facing mast.RunWorkload uses) to construct
-// the dispatch shape selected by --dispatch: the spike-1 SubAgents
-// coordinator (pkg/router) or the spike-2 workflow graph (pkg/graph).
-// Without --workload it constructs a trivial single-agent coordinator
-// (useful for pure inject-endpoint smoke).
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (adkagent.Agent, *workload.Bundle, []specialists.Spec, error) {
-	if dispatch != "coordinator" && dispatch != "graph" {
-		return nil, nil, nil, fmt.Errorf("unknown --dispatch %q (want `coordinator` or `graph`)", dispatch)
+// the dispatch shape: the spike-1 SubAgents coordinator (pkg/router),
+// the spike-2 workflow graph (pkg/graph), or the W3 fan-out shape
+// (pkg/graph.BuildFanout). Without --workload it constructs a trivial
+// single-agent coordinator (useful for pure inject-endpoint smoke).
+//
+// The shape comes from --dispatch when the operator typed one, from the
+// workload's own `dispatch:` otherwise, and from the historical
+// coordinator default when neither names a shape — see resolveDispatch.
+// It is returned alongside the agent because callers act on it too (the
+// boot-time auto-resume pass only runs under coordinator dispatch), and
+// one resolution shared beats two that can drift.
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (adkagent.Agent, *workload.Bundle, []specialists.Spec, string, error) {
+	if err := validateDispatch(dispatch); err != nil {
+		return nil, nil, nil, "", err
 	}
 	if workloadArg == "" {
 		logger.Warn("no --workload supplied; running trivial single-agent coordinator")
@@ -1176,23 +1183,32 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 			Instruction: "Acknowledge the incident briefly.",
 			Model:       llm,
 		})
-		return a, nil, nil, err
+		return a, nil, nil, resolveDispatch(dispatch, nil), err
 	}
 
 	bundle, loaded, cfgDir, err := resolveWorkload(logger, workloadArg)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, "", err
+	}
+	resolved := resolveDispatch(dispatch, &bundle)
+	if resolved == workload.DispatchAuto {
+		// Resolve `auto` here rather than handing it downstream: the
+		// returned shape is what the caller's own decisions key off
+		// (boot-time auto-resume runs only under coordinator dispatch),
+		// and "auto" is not a shape.
+		resolved = string(compose.RosterShape(loaded))
 	}
 	logger.Info("workload loaded",
 		"name", bundle.Name,
 		"specialists", len(bundle.Specialists),
 		"mcp_servers", len(bundle.ToolCatalog.MCP),
+		"dispatch", resolved,
 	)
 	logger.Info("specialists loaded", "count", len(loaded))
 
 	toolsets, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, "", err
 	}
 
 	a, err := compose.BuildRoot(ctx, compose.RootConfig{
@@ -1202,14 +1218,45 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		ModelName:     modelName,
 		Provider:      providerName,
 		Toolsets:      toolsets,
-		Dispatch:      compose.Dispatch(dispatch),
+		Dispatch:      compose.Dispatch(resolved),
 		Logger:        logger,
 		PauseRecorder: pauseRec,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, "", err
 	}
-	return a, &bundle, loaded, nil
+	return a, &bundle, loaded, resolved, nil
+}
+
+// validateDispatch rejects a --dispatch value the binary cannot build.
+// Empty is legal: it means "the workload decides".
+func validateDispatch(dispatch string) error {
+	switch dispatch {
+	case "", workload.DispatchCoordinator, workload.DispatchGraph, workload.DispatchFanout, workload.DispatchAuto:
+		return nil
+	default:
+		return fmt.Errorf("unknown --dispatch %q (want `coordinator`, `graph`, `fanout` or `auto`)", dispatch)
+	}
+}
+
+// resolveDispatch applies cmd/mast's precedence: an explicit --dispatch
+// wins, then the workload's own `dispatch:`, then coordinator.
+//
+// Coordinator stays the terminal default rather than `auto` so that
+// upgrading mast cannot silently re-shape an existing bundle that never
+// said anything about dispatch — adding a `_synthesis` specialist to a
+// roster should not turn a coordinator into a fan-out behind an
+// operator's back. A bundle (or an operator, for one run) opts into
+// being auto-shaped by naming `auto`, which the caller then resolves
+// against the roster via compose.RosterShape.
+func resolveDispatch(flagValue string, bundle *workload.Bundle) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if bundle != nil && bundle.Dispatch != "" {
+		return bundle.Dispatch
+	}
+	return workload.DispatchCoordinator
 }
 
 // wireMCPToolsets builds the workload's MCP toolsets from the mcp.json

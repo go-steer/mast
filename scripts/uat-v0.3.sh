@@ -36,6 +36,19 @@
 #          and the run ends with no report, so the schema is shown to be
 #          enforced rather than merely declared
 #
+#   U-fanout (W3) — the roster runs concurrently over one incident and
+#     the merged report gates ONCE, after synthesis. Driven over
+#     examples/workloads/ns-audit, the read-only bundle fan-out needs:
+#       A  four analysts run, each on its own branch, and the merged
+#          report parks on the single approve-_synthesis gate; approving
+#          finishes the run without re-running any of them
+#       B  MAST_FAKE_SCHEMA_VIOLATION=1 -> every branch goes silent, so
+#          leg A's "4 of 4" is shown to be a count and not a constant,
+#          and a report nobody contributed to does not gate at all
+#       C  the SHIPPED gke-triage roster under --dispatch=fanout is
+#          refused at construction, because its specialists hold
+#          patch_resource and every branch runs before the gate
+#
 # The observation point is `mast sessions show`: with `--dispatch=graph`
 # and the roster's `hitl.require_approval`, each specialist result is
 # parked on a durable RequestInput interrupt whose message quotes the
@@ -79,12 +92,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# start_graph <logfile> — launch the daemon over ${WL} under graph
-# dispatch (the roster's classifier -> per-failure-mode specialist ->
-# approval gate path) and spin until it answers.
-start_graph() {
+# start_daemon <logfile> — launch the daemon over ${WL} under ${DISPATCH}
+# and spin until it answers. Graph dispatch is the roster's classifier ->
+# per-failure-mode specialist -> approval gate path; fanout dispatch runs
+# the whole roster concurrently and gates once, after synthesis.
+DISPATCH=graph
+start_daemon() {
   local log="$1"; shift
-  "${BIN}" --workload="${WL}" --dispatch=graph \
+  "${BIN}" --workload="${WL}" --dispatch="${DISPATCH}" \
     --listen=":${PORT}" --model=echo --session-db="${DB}" \
     --log-level=info "$@" >"${log}" 2>&1 &
   PID=$!
@@ -115,6 +130,25 @@ inject_code() {
     -X POST "${BASE}/inject" \
     -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
     -d "{\"kind\":\"Event\",\"reason\":\"$2\",\"namespace\":\"prod\",\"name\":\"api-$1\",\"uid\":\"$1\",\"message\":\"uat\",\"cluster\":\"uat\"}"
+}
+
+# inject_audit <uid> — POST the namespace-audit envelope the ns-audit
+# bundle listens for. Fan-out has no classifier: every analyst gets the
+# same incident, so the envelope carries no failure mode.
+inject_audit() {
+  curl -s -m 60 -o /dev/null -w '%{http_code}' \
+    -X POST "${BASE}/inject" \
+    -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+    -d "{\"kind\":\"Namespace\",\"reason\":\"AuditRequested\",\"namespace\":\"prod\",\"name\":\"prod\",\"uid\":\"$1\",\"message\":\"uat\",\"cluster\":\"uat\"}"
+}
+
+# resume_code <session-id> <interrupt-id> — answer a parked gate through
+# the daemon's HTTP surface, the way an operator (or mast-web) does.
+resume_code() {
+  curl -s -m 60 -o /dev/null -w '%{http_code}' \
+    -X POST "${BASE}/resume" \
+    -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+    -d "{\"session_id\":\"$1\",\"interrupt_id\":\"$2\",\"response\":{\"approved\":true,\"note\":\"uat\"}}"
 }
 
 # show_field <session-id> <label> — the value of one labelled line from
@@ -225,7 +259,7 @@ say "U-report/A: a declared output_schema is answered end to end"
 DB="${WORK}/a.db"
 WL="${WORKLOAD}"
 LOG="${WORK}/a.log"
-start_graph "${LOG}"
+start_daemon "${LOG}"
 
 assert_http "inject OOMKilled -> 202" "$(inject_code a1 OOMKilled)" 202
 assert_state "session parked at the approval gate" incident-a1 paused
@@ -266,7 +300,7 @@ rm -rf "${WL}"
 cp -r "${WORKLOAD}" "${WL}"
 grep -v '^output_schema:' "${WORKLOAD}/specialists/OOMKilled.tmpl" \
   > "${WL}/specialists/OOMKilled.tmpl"
-start_graph "${LOG}"
+start_daemon "${LOG}"
 
 assert_http "inject OOMKilled -> 202" "$(inject_code b1 OOMKilled)" 202
 assert_state "session parked at the approval gate" incident-b1 paused
@@ -288,7 +322,7 @@ DB="${WORK}/c.db"
 WL="${WORKLOAD}"
 LOG="${WORK}/c.log"
 export MAST_FAKE_SCHEMA_VIOLATION=1
-start_graph "${LOG}"
+start_daemon "${LOG}"
 
 assert_http "inject OOMKilled -> 202" "$(inject_code c1 OOMKilled)" 202
 assert_state "session parked at the approval gate" incident-c1 paused
@@ -303,6 +337,99 @@ assert_log_count "one refusal" "${LOG}" 'function_response:finish_task' 1
 assert_no_log "no budget exhaustion" "${LOG}" 'BUDGET EXCEEDED'
 stop_term
 unset MAST_FAKE_SCHEMA_VIOLATION
+
+# ====================================================================
+# U-fanout (W3) — the roster runs concurrently and gates once
+# ====================================================================
+# The observation point is the same as U-report's: the durable interrupt
+# `mast sessions show` reads back out of SQLite. What differs is the
+# shape being asserted — one gate for the whole roster instead of one per
+# specialist, and a message that has to account for every analyst.
+FANOUT_WL="${REPO}/examples/workloads/ns-audit"
+ANALYSTS="networking-audit policy-audit storage-audit workloads-audit"
+
+# ---- U-fanout leg A: the roster reports and the merged report gates --
+say "U-fanout/A: four analysts run concurrently, one gate on the merged report"
+DB="${WORK}/f.db"
+WL="${FANOUT_WL}"
+LOG="${WORK}/f.log"
+DISPATCH=fanout
+start_daemon "${LOG}"
+
+assert_http "inject AuditRequested -> 202" "$(inject_audit f1)" 202
+assert_state "session parked at the single post-synthesis gate" incident-f1 paused
+assert_eq "the gate is the synthesis gate, not a per-analyst one" \
+  "$(show_field incident-f1 Interrupt)" approve-_synthesis
+
+FMSG="$(show_field incident-f1 Message)"
+note "merged report as the operator sees it: ${FMSG}"
+assert_has "every analyst is accounted for in the gate message" "${FMSG}" "4 of 4 analysts"
+
+# Each analyst's events reach the runner under its own branch tag —
+# two apiece for a clean report (the finish_task call and its response).
+# This is the property the fan-out was rebuilt for (pkg/graph/fanout.go):
+# a branch whose events are suppressed cannot see its own tool results,
+# cannot be metered by author, and leaves nothing for crash recovery.
+for a in ${ANALYSTS}; do
+  assert_log_count "analyst ${a} ran on its own branch" "${LOG}" \
+    "\"branch\":\"ns-audit_fan.branch_${a}\"" 2
+done
+assert_no_log "no dispatch failure" "${LOG}" 'inject dispatch failed'
+assert_no_log "no budget exhaustion" "${LOG}" 'BUDGET EXCEEDED'
+
+# Approving finishes the run without re-running the roster: on a resume
+# the scheduler re-enters the asker, not its predecessors.
+assert_http "approve the merged report -> 202" "$(resume_code incident-f1 approve-_synthesis)" 202
+assert_state "approved run finishes" incident-f1 idle
+# The approved run's terminal result, which only exists after the gate is
+# answered: every analyst's finding is in it, and so is the verdict.
+assert_log_count "the approved result counts every analyst's finding" "${LOG}" 'reported:4' 1
+assert_log_count "the operator's verdict is on the result" "${LOG}" 'approval:map\[approved:true' 1
+for a in ${ANALYSTS}; do
+  assert_log_count "analyst ${a} did not re-run on the approval turn" "${LOG}" \
+    "\"branch\":\"ns-audit_fan.branch_${a}\"" 2
+done
+stop_term
+
+# ---- U-fanout leg B: silence is reported, not invented ---------------
+# The discriminating control for leg A. MAST_FAKE_SCHEMA_VIOLATION makes
+# every analyst's report violate its schema, so every branch goes silent.
+# If a silent branch were merged as a finding anyway, this leg would park
+# with "4 of 4" exactly like leg A.
+say "U-fanout/B: analysts that report nothing are silent, and there is nothing to approve"
+DB="${WORK}/g.db"
+WL="${FANOUT_WL}"
+LOG="${WORK}/g.log"
+export MAST_FAKE_SCHEMA_VIOLATION=1
+start_daemon "${LOG}"
+
+assert_http "inject AuditRequested -> 202" "$(inject_audit g1)" 202
+assert_state "a report no analyst contributed to does not gate" incident-g1 idle
+# An idle session prints no result, so the count is read from the run's
+# own terminal event in the daemon log rather than from `sessions show`.
+assert_log_count "the merged report records that nobody reported" "${LOG}" 'reported:0' 1
+assert_no_log "leg A's gate does not appear here" "${LOG}" 'approve-_synthesis' 
+assert_no_log "a refused report ends the branch instead of looping it" "${LOG}" 'BUDGET EXCEEDED'
+stop_term
+unset MAST_FAKE_SCHEMA_VIOLATION
+
+# ---- U-fanout leg C: a mutating roster is refused at construction ----
+# The shipped gke-triage roster is a remediation roster: its specialists
+# hold patch_resource. Fan-out runs every branch BEFORE the one approval
+# gate, so that roster is not a fan-out roster — and mast has to say so
+# at startup rather than discover it mid-incident.
+say "U-fanout/C: a roster that can mutate is refused before the daemon serves"
+CLOG="${WORK}/h.log"
+set +e
+"${BIN}" --workload="${WORKLOAD}" --dispatch=fanout \
+  --listen=":${PORT}" --model=echo --session-db="${WORK}/h.db" >"${CLOG}" 2>&1
+CRC=$?
+set -e
+assert_eq "startup fails" "${CRC}" 1
+CERR="$(cat "${CLOG}")"
+assert_has "the refusal names the mutating tool" "${CERR}" "patch_resource"
+assert_has "the refusal names the analyst that holds it" "${CERR}" "fan-out analyst"
+assert_hasnt "the daemon never began serving" "${CERR}" "inject server listening"
 
 # ---- summary --------------------------------------------------------
 say "Summary"
