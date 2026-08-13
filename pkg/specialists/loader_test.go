@@ -140,6 +140,13 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 		"_fallback":         specialists.ModeTask,
 		"triage-classifier": specialists.ModeSingleTurn,
 	}
+	// The report contract is one file, shared. Collecting the resolved
+	// paths and asserting there is exactly one is the assertion that
+	// matters: twelve specialists each with their own valid schema would
+	// satisfy "every diagnoser is typed" and still be the drift the
+	// single asset exists to prevent.
+	schemaPaths := map[string]int{}
+
 	for _, s := range specs {
 		mode, ok := want[s.Name]
 		if !ok {
@@ -152,10 +159,35 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 		if s.Description == "" {
 			t.Errorf("%s: empty description", s.Name)
 		}
+		switch s.Name {
+		case "triage-classifier":
+			// The router emits a bare token, not a report. Holding it
+			// to the finding contract would make every routing decision
+			// a validation failure.
+			if s.OutputSchema != nil {
+				t.Errorf("%s: has an output schema; the router emits a token, not a finding", s.Name)
+			}
+		default:
+			if s.OutputSchema == nil {
+				t.Errorf("%s: no output schema — a diagnoser returns a finding, and untyped is how free text creeps back", s.Name)
+				break
+			}
+			if _, ok := s.OutputSchema.Properties["severity"]; !ok {
+				t.Errorf("%s: schema has no severity property, got %v", s.Name, s.OutputSchema.Properties)
+			}
+			schemaPaths[s.OutputSchemaPath]++
+		}
 		delete(want, s.Name)
 	}
 	for name := range want {
 		t.Errorf("roster is missing specialist %q", name)
+	}
+	if len(schemaPaths) != 1 {
+		t.Errorf("diagnosers reference %d distinct schema files, want 1: %v", len(schemaPaths), schemaPaths)
+	}
+	shared := filepath.Join("..", "..", "examples", "workloads", "gke-triage", "schemas", "finding.json")
+	if n := schemaPaths[shared]; n != 12 {
+		t.Errorf("%d diagnosers reference %s, want 12 (paths seen: %v)", n, shared, schemaPaths)
 	}
 }
 

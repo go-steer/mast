@@ -19,12 +19,23 @@
 //
 // Schema follows docs/specialists-design.md. This package implements
 // the spike subset (name, description, mode, instruction, model
-// override). Tool allowlists are enforced at Build time (see
-// filterToolsets), as is the model override: a spec's `model:` is
-// resolved through BuildOptions.Resolve, and a declared override that
-// cannot be resolved fails the build rather than falling back to the
-// parent's model. Budget fields are parsed here but enforced
-// elsewhere, per field:
+// override) plus the output-schema contract. Tool allowlists are
+// enforced at Build time (see filterToolsets), as is the model
+// override: a spec's `model:` is resolved through BuildOptions.Resolve,
+// and a declared override that cannot be resolved fails the build
+// rather than falling back to the parent's model.
+//
+// A spec's `output_schema:` names a JSON-Schema document relative to
+// the .tmpl file; it is read, normalized and checked at load time (see
+// schema.go) and reaches the agent as llmagent.Config.OutputSchema.
+// From there ADK enforces it — a violation is an error on both paths,
+// never a warning. In Task mode the schema becomes the finish_task
+// declaration and an invalid call is rejected back to the model with
+// the validation error, so a bad shape cannot become the task's output.
+// In SingleTurn mode the reply is validated on the way out and a
+// failure propagates as a run error.
+//
+// Budget fields are parsed here but enforced elsewhere, per field:
 //
 //   - max_wallclock_seconds — enforced in graph dispatch: pkg/graph
 //     maps it to workflow.NodeConfig.Timeout on the specialist's
@@ -43,6 +54,8 @@
 //     the only cost ceiling; a specialist's max_cost_usd is recorded
 //     but has no effect.
 package specialists
+
+import "google.golang.org/genai"
 
 // Mode is the ADK v2 agent mode a specialist runs in.
 type Mode string
@@ -92,6 +105,11 @@ type Frontmatter struct {
 	Model       string        `yaml:"model,omitempty"`
 	Budget      Budget        `yaml:"budget,omitempty"`
 	Tools       ToolAllowlist `yaml:"tools,omitempty"`
+
+	// OutputSchema is a path to a JSON-Schema document, relative to the
+	// .tmpl file's own directory. It is a reference rather than an
+	// inline block on purpose — see the comment at the top of schema.go.
+	OutputSchema string `yaml:"output_schema,omitempty"`
 }
 
 // Spec is a fully-loaded specialist: parsed frontmatter plus the raw
@@ -112,4 +130,14 @@ type Spec struct {
 	// Instruction is the body of the .tmpl file — the specialist's
 	// system prompt, verbatim.
 	Instruction string
+
+	// OutputSchema is the loaded, normalized and checked contract this
+	// specialist's output must satisfy, or nil when the spec declares
+	// none. Loaded eagerly by LoadFile so a broken schema is a load
+	// error rather than a surprise on the first live turn.
+	OutputSchema *genai.Schema
+
+	// OutputSchemaPath is the resolved path OutputSchema came from,
+	// preserved for diagnostics. Empty when the spec declares none.
+	OutputSchemaPath string
 }

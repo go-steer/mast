@@ -128,10 +128,19 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
-        # The workload dir (workload.yaml + mcp.json + specialists/*.tmpl)
-        # is projected from a flat ConfigMap; ConfigMap keys can't
-        # contain "/", so the generator flattens paths with "_" and
-        # items:.path reconstitutes the tree.
+        # The workload dir (workload.yaml + mcp.json + schemas/*.json +
+        # specialists/*.tmpl) is projected from a flat ConfigMap;
+        # ConfigMap keys can't contain "/", so the generator flattens
+        # paths with "_" and items:.path reconstitutes the tree.
+        #
+        # Every specialist the ConfigMap carries must be listed here.
+        # An items: list projects only what it names, so a roster entry
+        # missing from this block is absent from the pod and its failure
+        # mode routes to _fallback with no sign that a dedicated
+        # specialist exists — a silent downgrade, not an error. The
+        # schemas/ dir has the same property: `output_schema:` resolves
+        # relative to the .tmpl, so a specialist projected without its
+        # schema fails to load.
         - name: workload
           configMap:
             name: mast-workload
@@ -140,10 +149,32 @@ spec:
                 path: workload.yaml
               - key: mcp.json
                 path: mcp.json
+              - key: schemas_finding.json
+                path: schemas/finding.json
               - key: specialists_triage-classifier.tmpl
                 path: specialists/triage-classifier.tmpl
+              - key: specialists_CrashLoopBackOff.tmpl
+                path: specialists/CrashLoopBackOff.tmpl
               - key: specialists_ImagePullBackOff.tmpl
                 path: specialists/ImagePullBackOff.tmpl
+              - key: specialists_ErrImagePull.tmpl
+                path: specialists/ErrImagePull.tmpl
+              - key: specialists_OOMKilled.tmpl
+                path: specialists/OOMKilled.tmpl
+              - key: specialists_FailedMount.tmpl
+                path: specialists/FailedMount.tmpl
+              - key: specialists_FailedScheduling.tmpl
+                path: specialists/FailedScheduling.tmpl
+              - key: specialists_BackOff.tmpl
+                path: specialists/BackOff.tmpl
+              - key: specialists_Unhealthy.tmpl
+                path: specialists/Unhealthy.tmpl
+              - key: specialists_NetworkNotReady.tmpl
+                path: specialists/NetworkNotReady.tmpl
+              - key: specialists_NodeNotReady.tmpl
+                path: specialists/NodeNotReady.tmpl
+              - key: specialists_Evicted.tmpl
+                path: specialists/Evicted.tmpl
               - key: specialists__fallback.tmpl
                 path: specialists/_fallback.tmpl
   volumeClaimTemplates:

@@ -5,6 +5,7 @@ description: |
   Invoked when an event's reason is the bare `BackOff` with no
   more-specific sibling. First narrows to the real failure mode,
   then triages controller/Job/init-container back-offs directly.
+output_schema: ../schemas/finding.json
 budget:
   max_turns: 4
   max_wallclock_seconds: 60
@@ -80,7 +81,10 @@ WHEN TO ESCALATE (name in your summary, don't remediate).
   without a clear trigger. Include the full pod-describe events in
   the escalation summary.
 
-Return your finding by calling finish_task. Keep it short —
+Return your finding by calling `finish_task` with the fields that tool
+declares — the report schema is the contract, so `severity` must be one
+of the values it names and `reason` must be a stable CamelCase token.
+Keep `detail` short —
 operators are on-call.
 
 <!--

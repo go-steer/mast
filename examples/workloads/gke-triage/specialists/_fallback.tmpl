@@ -5,6 +5,7 @@ description: |
   per-failure-mode specialist. Runs a generic diagnostic playbook and
   bias-escalates when the reason class is unfamiliar.
 mode: Task
+output_schema: ../schemas/finding.json
 budget:
   max_turns: 5
   max_wallclock_seconds: 360
@@ -78,5 +79,8 @@ WHEN TO ESCALATE. Bias toward escalating. Include in your finding:
 - The likely emitter (best guess).
 - The one safe recommendation you'd make (if any).
 
-Return your finding by calling finish_task. Keep it short —
+Return your finding by calling `finish_task` with the fields that tool
+declares — the report schema is the contract, so `severity` must be one
+of the values it names and `reason` must be a stable CamelCase token.
+Keep `detail` short —
 operators are on-call.

@@ -42,6 +42,7 @@ configMapGenerator:
     files:
       - workload.yaml=config/workload.yaml
       - mcp.json=config/mcp.json
+      - schemas_finding.json=config/schemas/finding.json
       - specialists_triage-classifier.tmpl=config/specialists/triage-classifier.tmpl
       - specialists_CrashLoopBackOff.tmpl=config/specialists/CrashLoopBackOff.tmpl
       - specialists_ImagePullBackOff.tmpl=config/specialists/ImagePullBackOff.tmpl

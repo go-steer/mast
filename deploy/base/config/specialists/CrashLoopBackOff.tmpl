@@ -5,6 +5,7 @@ description: |
   when a pod reports CrashLoopBackOff in its events. Returns a short
   structured triage summary — exit code, crash class, concrete
   remediation.
+output_schema: ../schemas/finding.json
 budget:
   max_turns: 8
   max_wallclock_seconds: 60
@@ -109,7 +110,10 @@ An escalation summary should include: the exit code, the first 10
 lines of logs, whether the pod was Ready recently, and any recent
 operations visible on the controller.
 
-Return your finding by calling finish_task. Keep it short —
+Return your finding by calling `finish_task` with the fields that tool
+declares — the report schema is the contract, so `severity` must be one
+of the values it names and `reason` must be a stable CamelCase token.
+Keep `detail` short —
 operators are on-call.
 
 <!--

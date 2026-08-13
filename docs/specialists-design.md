@@ -55,6 +55,12 @@ mode: Task                           # options: Task, SingleTurn
 # Model override (optional; inherits parent if absent)
 model: gemini-2.5-flash              # full model ID; provider inferred from parent's config
 
+# Report contract (optional; free-form output if absent)
+# Path to a JSON-Schema document, relative to this .tmpl file. A shared
+# file, not an inline block: a report shape is a contract with its
+# consumers, and inlining makes it private to one specialist.
+output_schema: ../schemas/finding.json
+
 # Tool allowlist (optional; specialist inherits ALL parent tools if absent)
 tools:
   builtin:                           # core-agent built-in tools
@@ -96,10 +102,20 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | `budget.max_cost_usd` | float | 0 | Per-invocation cost ceiling. 0 = inherit session ceiling. Useful for cheap-but-frequently-invoked specialists where bounded per-call cost matters more than session-level. |
 | `mode` | string | `Task` | ADK v2 agent mode. Options: `Task` (default; auto-installs `finish_task` — specialist returns via `finish_task` argument), `SingleTurn` (one call, no `finish_task` needed — useful for lightweight classifier specialists consumed by the LLM-as-router shape in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) and by workload-bundle classifier-first dispatch in [`./orchestration-design.md`](./orchestration-design.md)). `Chat` is deliberately not exposed — specialists are sub-agents, not coordinators. |
 | `model` | string | inherit parent | Full model ID (`gemini-2.5-flash`, `claude-haiku-4-5`, etc.). Dispatched by model id, exactly like `--model`; the parent's provider alias only disambiguates the Anthropic backend, so a cross-provider override is legal (open Q#4, resolved 2026-08-12). Resolution is memoized per id, and an override that cannot be resolved fails the build rather than silently inheriting the parent's model. Under an offline-fake parent (`echo` / `scripted` / `toolactor`) every override collapses back to the parent so tiered bundles still run credential-free. Common pattern: frontier parent dispatching to cheap-tier specialists for high-volume tasks. |
+| `output_schema` | string | none | Path to a JSON-Schema document (`.json`, `.yaml`, `.yml`) **relative to the `.tmpl` file's own directory**, so a roster stays relocatable. Absent = the specialist returns free-form output. The document is read, type-normalized and checked at *load* time — a malformed contract fails the roster on startup, not on the first turn that dispatches to the specialist. Enforcement is ADK's: in `Task` mode the schema becomes the `finish_task` declaration and a non-conforming call comes back as a validation error the model can correct; in `SingleTurn` mode the reply is validated on the way out and a violation refuses the delegation. Either way the caller sees a refusal that names the offending key, and non-conforming output never becomes the specialist's result. Constraints checked at load: the top level must be an object (see below), every node needs a `type`, arrays need `items`, objects need `properties`, and every `required` name must be a declared property. Mast does not interpret the schema — there is no `Finding` Go type; the shape is a workload asset (`examples/workloads/gke-triage/schemas/finding.json`). |
 | `tools.builtin` | []string | inherit all | Allowlist (not denylist) of core-agent built-in tools. Absent = inherit all; present-but-empty = deny all builtins (see the normative table below — empty and absent are NOT equivalent, revised 2026-07-25). |
 | `tools.mcp[].server` | string | required if `mcp` set | MCP server name as configured under `.agents/mcp/` (path per [`./config-layout-design.md`](./config-layout-design.md), which is authoritative for layout; an earlier `.agents/mcp.json` reference here was stale). |
 | `tools.mcp[].tools` | []string | all from this server | Allowlist of tools from this MCP server. Absent = whole server; non-empty = narrowed to those names (enforced via stock `tool.FilterToolset`, verified 2026-07-25). |
 | `tools.skills` | []string | inherit all | Allowlist of skills (SKILL.md bundles per [`./skills-design.md`](./skills-design.md)) the specialist may invoke. References resolve the same way as workload-bundle `skills:` entries (local name or registry URL). Absent = inherit the bundle's `skills:` roster; present-but-empty = deny skill access (normative table below). Skill invocation from a specialist follows the standard three-way policy layering: skill's `allowed_tools` ∩ specialist's `tools` ∩ workload bundle's `tool_catalog` — narrowest wins. Skill budget *hints* are advisory (per [`./skills-design.md`](./skills-design.md) — hints are not enforcement); the enforced ceiling is the specialist's `budget.max_cost_usd`, itself bounded by the bundle's. |
+
+### Why `output_schema` must be an object at the top level (2026-08-13)
+
+Mast refuses a scalar or array top-level schema, and the reason is that ADK's two modes disagree about them. Task mode wraps a non-object schema under a `result` key in the `finish_task` declaration and unwraps it again on the way out; SingleTurn's validator unmarshals the reply into a `map[string]any` *before* it consults the schema, so a scalar contract can never validate there at all. The same document would therefore mean two different things depending on a field elsewhere in the frontmatter. A report contract is an object anyway, so the restriction costs nothing and removes a trap.
+
+Two smaller load-time refusals are worth naming for the same reason — each is a document that parses cleanly and constrains nothing:
+
+- **Unknown keys are fatal.** `propertys:` for `properties:` would otherwise produce a schema with no properties, which is not a narrower contract but the absence of one.
+- **An object with no properties is fatal.** ADK's validator rejects any key the schema does not name, so an empty-property object accepts nothing at all — never what the author meant.
 
 ### Allowlist semantics — normative table (rewritten 2026-07-25)
 

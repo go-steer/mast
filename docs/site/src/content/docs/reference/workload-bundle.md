@@ -130,6 +130,62 @@ Two behaviors worth knowing before you tier a roster:
 Naming a concrete model id binds the bundle to that provider — worth
 weighing before putting an override in a bundle other deployments fork.
 
+## Per-specialist report contract
+
+A specialist `.tmpl` may declare the shape of what it returns:
+
+```yaml
+---
+description: Diagnoses OOMKilled container terminations.
+output_schema: ../schemas/finding.json
+---
+```
+
+The value is a path to a JSON-Schema document (`.json`, `.yaml` or
+`.yml`), resolved **relative to the `.tmpl` file's own directory** — so
+`../schemas/finding.json` means the same thing whether the roster sits in
+a workload bundle or a shared config root.
+
+It is a file reference rather than an inline block on purpose. A report
+shape is a contract between the specialist that produces it and every
+consumer that reads it; inlining it in one specialist's frontmatter makes
+that contract private to that specialist, and a roster of a dozen
+diagnosers ends up with a dozen copies that drift. The shipped
+`gke-triage` bundle points all twelve diagnosers at one
+`schemas/finding.json`.
+
+**A violation is a refusal, not a warning**, and the shape is the same in
+both agent modes:
+
+- **`Task` mode** — the schema becomes the auto-injected `finish_task`
+  declaration. A non-conforming call comes back to the model as a
+  validation error naming the offending key, and the model can correct
+  itself within its turn budget.
+- **`SingleTurn` mode** — the reply is validated on the way out. A
+  violation refuses the delegation; the caller sees an error naming the
+  key, with no result attached.
+
+Either way non-conforming output never becomes the specialist's answer,
+and the caller — not just a log line — learns that it was refused.
+
+The document is read and checked when the roster loads, not when a
+specialist first runs, so a broken contract fails startup with the file
+named. Refused at load time: unknown keys (a misspelled `propertys:`
+would otherwise produce a schema that constrains nothing), a node with no
+`type`, an array with no `items`, an object with no `properties`, a
+`required` name that is not a declared property, and a top level that is
+not an object.
+
+That last one is a mast restriction rather than an ADK one, because ADK's
+two modes disagree about non-object schemas: `Task` wraps a scalar under
+a `result` key, while `SingleTurn` unmarshals the reply into an object
+before it consults the schema at all, so a scalar contract can never
+validate there. Rather than let one document mean two things, mast
+requires an object. A report contract is an object anyway.
+
+Mast does not interpret the schema. There is no built-in report type; the
+shape belongs to the workload.
+
 ## Budget fields
 
 | Field | Meaning |

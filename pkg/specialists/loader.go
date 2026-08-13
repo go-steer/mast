@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	"google.golang.org/genai"
 	"gopkg.in/yaml.v3"
 )
 
@@ -76,15 +77,30 @@ func LoadFile(path string) (Spec, error) {
 	if mode != ModeTask && mode != ModeSingleTurn {
 		return Spec{}, fmt.Errorf("specialists: %q: unknown mode %q (want Task or SingleTurn)", path, mode)
 	}
+	var schema *genai.Schema
+	var schemaPath string
+	if fm.OutputSchema != "" {
+		// Loaded here rather than at Build time so that a bundle with a
+		// malformed contract fails to load, not to run. The difference
+		// matters at 3am: a load error names the file on startup, a
+		// build error surfaces on the first turn that dispatches to
+		// this specialist.
+		schema, schemaPath, err = loadOutputSchema(path, fm.OutputSchema)
+		if err != nil {
+			return Spec{}, fmt.Errorf("specialists: %q: %w", path, err)
+		}
+	}
 	return Spec{
-		Filename:    path,
-		Name:        name,
-		Description: fm.Description,
-		Mode:        mode,
-		Model:       fm.Model,
-		Budget:      fm.Budget,
-		Tools:       fm.Tools,
-		Instruction: strings.TrimSpace(body),
+		Filename:         path,
+		Name:             name,
+		Description:      fm.Description,
+		Mode:             mode,
+		Model:            fm.Model,
+		Budget:           fm.Budget,
+		Tools:            fm.Tools,
+		Instruction:      strings.TrimSpace(body),
+		OutputSchema:     schema,
+		OutputSchemaPath: schemaPath,
 	}, nil
 }
 
