@@ -106,7 +106,7 @@ func newTurnHarness(t *testing.T, m model.LLM) *turnHarness {
 	h := &turnHarness{
 		svc:    adksession.InMemoryService(),
 		locks:  newSessionTurnLocks(),
-		meters: newMeterPool(nil, "test-model"),
+		meters: newMeterPool(nil, nil, "test-model"),
 		wds:    newWatchdogPool(),
 		obs:    observability.New(),
 	}

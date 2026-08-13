@@ -24,11 +24,38 @@
 // checked as events stream; the caller aborts the run when Observe
 // reports the ceiling is crossed.
 //
-// Known limitation (finding, not TODO): metering at the event stream
-// is enforcement-after-the-call — a single runaway call is only caught
-// once its usage event lands. Pre-call gating needs a model-layer
-// interceptor (wrap model.LLM) or the v2.1.0 TaskRunner seam for tool
-// fan-out; both compose with this meter rather than replacing it.
+// # Scopes: per-specialist ceilings under the session's
+//
+// A workload budget bounds the session; a specialist's own budget
+// bounds that specialist. Config.Scopes composes the two by attributing
+// each usage event to the agent that authored it — session.Event.Author
+// is the agent's name on every dispatch shape mast builds (a
+// coordinator's sub-agent tool, a workflow-graph node, a planner's
+// invoke_specialist), which is what makes one seam enough. A scope
+// carries its own ceilings and, when the specialist declares a `model:`
+// override, its own price, so a cheap analyst's tokens are not billed
+// at the synthesizer's rate.
+//
+// Composition is tightest-cap-wins by construction rather than by
+// arithmetic: every event is checked against its scope and against the
+// session, and whichever ceiling is crossed first stops the run. A
+// scope's ceiling is reported ahead of the session's on the event that
+// crosses both, because the specialist is the more specific fact and
+// the workload's cap would have been crossed on a later call anyway.
+//
+// # Known limitations (findings, not TODOs)
+//
+// Metering at the event stream is enforcement-after-the-call — a single
+// runaway call is only caught once its usage event lands. Pre-call
+// gating needs a model-layer interceptor (wrap model.LLM) or ADK's
+// BeforeModel plugin callback; both compose with this meter rather than
+// replacing it.
+//
+// A crossed scope ceiling stops the session, not just the specialist,
+// because the event stream is outside the specialist's own run and the
+// only lever there is the run context. Stopping one specialist and
+// handing the coordinator a refusal it can route around is the better
+// shape, and it needs the pre-call seam above.
 package budget
 
 import (
@@ -58,21 +85,63 @@ type Limits struct {
 	// calls before finish_task has spent five turns, not one.
 	MaxTurns int
 
-	RatePer1K float64 // flat USD per 1K total tokens (spike pricing model)
+	// RatePer1K is the flat USD price per 1K total tokens (spike
+	// pricing model).
+	//
+	// On a scope, zero means "inherit the session's rate" — the right
+	// default for a specialist that declares no model of its own, and
+	// the reason an un-tiered roster prices exactly as it did before
+	// scopes existed.
+	RatePer1K float64
 }
 
-// Meter accumulates usage for one session.
+// Config is the full meter shape: the session's ceilings plus the
+// per-agent scopes composed under them.
+type Config struct {
+	// Limits are the session-wide ceilings (the workload budget).
+	Limits Limits
+
+	// Scopes are per-agent ceilings and prices, keyed by the agent name
+	// that authors the event — for a specialist, its spec name. An
+	// agent with no scope is metered into the session totals only.
+	Scopes map[string]Limits
+}
+
+// Meter accumulates usage for one session, and for each scoped agent
+// within it.
 type Meter struct {
 	mu     sync.Mutex
 	limits Limits
+	scopes map[string]Limits
+	total  usage
+	spent  map[string]*usage
+}
+
+// usage is one accumulator: a session's or a scope's.
+type usage struct {
 	tokens int64
 	cost   float64
 	calls  int
 }
 
-// NewMeter constructs a Meter with the given limits.
+// NewMeter constructs a Meter with the given session limits and no
+// per-agent scopes.
 func NewMeter(limits Limits) *Meter {
-	return &Meter{limits: limits}
+	return New(Config{Limits: limits})
+}
+
+// New constructs a Meter from a full config.
+func New(cfg Config) *Meter {
+	m := &Meter{limits: cfg.Limits}
+	if len(cfg.Scopes) > 0 {
+		m.scopes = make(map[string]Limits, len(cfg.Scopes))
+		m.spent = make(map[string]*usage, len(cfg.Scopes))
+		for name, l := range cfg.Scopes {
+			m.scopes[name] = l
+			m.spent[name] = &usage{}
+		}
+	}
+	return m
 }
 
 // Observe folds one event's usage into the meter and reports whether a
@@ -84,25 +153,69 @@ func (m *Meter) Observe(ev *session.Event) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls++
-	m.tokens += int64(ev.UsageMetadata.TotalTokenCount)
-	m.cost = float64(m.tokens) / 1000 * m.limits.RatePer1K
 
-	if m.limits.MaxTurns > 0 && m.calls > m.limits.MaxTurns {
-		return fmt.Errorf("%w: %d model calls (turns) > cap %d", ErrExceeded, m.calls, m.limits.MaxTurns)
+	tokens := int64(ev.UsageMetadata.TotalTokenCount)
+	rate := m.limits.RatePer1K
+	scope, scoped := m.scopes[ev.Author]
+	if scoped && scope.RatePer1K > 0 {
+		rate = scope.RatePer1K
 	}
-	if m.limits.MaxTokens > 0 && m.tokens > m.limits.MaxTokens {
-		return fmt.Errorf("%w: %d tokens > cap %d", ErrExceeded, m.tokens, m.limits.MaxTokens)
+	// Cost accrues per event rather than being recomputed from the
+	// running token total: with per-scope rates the session total is a
+	// sum of differently-priced calls, not one multiplication.
+	spend := float64(tokens) / 1000 * rate
+
+	m.total.add(tokens, spend)
+	if scoped {
+		u := m.spent[ev.Author]
+		u.add(tokens, spend)
+		if err := check(scope, u); err != nil {
+			return fmt.Errorf("%w: specialist %q: %s", ErrExceeded, ev.Author, err)
+		}
 	}
-	if m.limits.MaxCostUSD > 0 && m.cost > m.limits.MaxCostUSD {
-		return fmt.Errorf("%w: $%.4f > cap $%.4f (%d tokens over %d calls)", ErrExceeded, m.cost, m.limits.MaxCostUSD, m.tokens, m.calls)
+	if err := check(m.limits, &m.total); err != nil {
+		return fmt.Errorf("%w: %s", ErrExceeded, err)
 	}
 	return nil
 }
 
-// Snapshot returns the cumulative usage so far.
+func (u *usage) add(tokens int64, cost float64) {
+	u.calls++
+	u.tokens += tokens
+	u.cost += cost
+}
+
+// check reports the first ceiling in l that u has crossed, as the
+// detail half of an ErrExceeded message.
+func check(l Limits, u *usage) error {
+	if l.MaxTurns > 0 && u.calls > l.MaxTurns {
+		return fmt.Errorf("%d model calls (turns) > cap %d", u.calls, l.MaxTurns)
+	}
+	if l.MaxTokens > 0 && u.tokens > l.MaxTokens {
+		return fmt.Errorf("%d tokens > cap %d", u.tokens, l.MaxTokens)
+	}
+	if l.MaxCostUSD > 0 && u.cost > l.MaxCostUSD {
+		return fmt.Errorf("$%.4f > cap $%.4f (%d tokens over %d calls)", u.cost, l.MaxCostUSD, u.tokens, u.calls)
+	}
+	return nil
+}
+
+// Snapshot returns the session's cumulative usage so far.
 func (m *Meter) Snapshot() (tokens int64, costUSD float64, calls int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.tokens, m.cost, m.calls
+	return m.total.tokens, m.total.cost, m.total.calls
+}
+
+// ScopeSnapshot returns one scoped agent's cumulative usage. ok is
+// false for an agent the meter carries no scope for — which is not the
+// same as an agent that has spent nothing.
+func (m *Meter) ScopeSnapshot(name string) (tokens int64, costUSD float64, calls int, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.spent[name]
+	if !ok {
+		return 0, 0, 0, false
+	}
+	return u.tokens, u.cost, u.calls, true
 }

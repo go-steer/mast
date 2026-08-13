@@ -93,10 +93,11 @@ type Config struct {
 // re-runs. Zero means no per-node timeout; the node is bounded only by
 // the dispatch deadline (workload max_wallclock_seconds in cmd/mast).
 //
-// The other Budget fields are not node-level knobs: max_turns is
-// enforced by the workload-level meter (pkg/budget Limits.MaxTurns);
-// per-specialist max_cost_usd is not yet enforced (see the pkg
-// specialists package doc).
+// The other Budget fields are not node-level knobs: max_turns and
+// max_cost_usd are enforced by the session meter, which buckets usage
+// per specialist by event author (pkg/budget, "Scopes"). A node cannot
+// see them — cost is a property of the event stream, not of an
+// activation.
 func nodeConfig(b specialists.Budget) workflow.NodeConfig {
 	var cfg workflow.NodeConfig
 	if b.MaxWallclockSeconds > 0 {

@@ -40,19 +40,18 @@
 //   - max_wallclock_seconds — enforced in graph dispatch: pkg/graph
 //     maps it to workflow.NodeConfig.Timeout on the specialist's
 //     AgentNode (the sanctioned per-node wallclock knob).
-//   - max_turns — the per-specialist turn cap is not yet enforced;
-//     it needs turn counting inside the specialist's own run. The
-//     workload-level max_turns ceiling (pkg/budget Limits.MaxTurns)
-//     does bound the session as a whole.
-//   - max_cost_usd — not yet enforced per specialist, and Build is
-//     the wrong place to try: cost is derived from UsageMetadata on
-//     the runner's event stream, which Build never sees. Enforcement
-//     lands with per-branch attribution — events carry Branch and
-//     NodeInfo, so the session meter (pkg/budget) can learn to bucket
-//     spend per specialist and apply min(workload-remaining,
-//     specialist-cap). Until then the workload-level max_cost_usd is
-//     the only cost ceiling; a specialist's max_cost_usd is recorded
-//     but has no effect.
+//   - max_turns and max_cost_usd — enforced by the session meter, not
+//     here: cost and turns are derived from UsageMetadata on the
+//     runner's event stream, which Build never sees. The roster's
+//     declarations become budget scopes (internal/compose.MeterScopes
+//     → budget.Config.Scopes) that the meter buckets by event author,
+//     so a specialist with a tighter ceiling than its workload stops
+//     the run on its own — see pkg/budget, "Scopes", for the
+//     composition rule and its two known limitations.
+//
+// Attribution is by session.Event.Author, which carries the agent's
+// name on every dispatch shape mast builds. Event.Branch is not the
+// seam: in the coordinator/sub-agent-tool shape it is empty.
 package specialists
 
 import "google.golang.org/genai"
@@ -72,10 +71,9 @@ const (
 
 // Budget captures the per-specialist runtime bounds. See
 // docs/specialists-design.md schema for field semantics, and the
-// package doc above for the per-field enforcement status:
-// MaxWallclockSeconds is enforced (pkg/graph → NodeConfig.Timeout);
-// MaxTurns and MaxCostUSD are parsed and preserved but not yet
-// enforced per specialist.
+// package doc above for where each is enforced: MaxWallclockSeconds by
+// graph dispatch (pkg/graph → NodeConfig.Timeout), MaxTurns and
+// MaxCostUSD by the session meter (pkg/budget scopes).
 type Budget struct {
 	MaxTurns            int     `yaml:"max_turns,omitempty"`
 	MaxWallclockSeconds int     `yaml:"max_wallclock_seconds,omitempty"`

@@ -225,8 +225,7 @@ func ambiguousRefusal() Scenario {
 // cap, not on the workload's.
 //
 // Upstream has no cost ceiling at any level, so the scenario is not
-// expressible there. It is red here too, for a different reason —
-// see Blocked.
+// expressible there.
 func budgetExhaustion() Scenario {
 	const (
 		specCap       = 2.50 // USD, the specialist's own ceiling
@@ -238,11 +237,8 @@ func budgetExhaustion() Scenario {
 	return Scenario{
 		ID:        "E-budget-exhaustion",
 		Invariant: "a specialist whose declared max_cost_usd is tighter than the workload's stops on its own ceiling",
-		Expect:    Fail,
-		Blocked: "W1.2 — pkg/budget.Meter carries one session-wide Limits and folds every event into a single total, " +
-			"so a specialist's max_cost_usd is parsed (specialists.Spec.Budget) and dropped. Per-specialist attribution " +
-			"needs event Branch/Author bucketing; see the W1.1 finding (a) in docs/v0.3-plan.md.",
-		Rows: []string{"L2"},
+		Expect:    Pass,
+		Rows:      []string{"L2"},
 		Run: func(ctx context.Context, env Env) (Result, error) {
 			costPerCall := float64(tokensPerCall) / 1000.0 * ratePer1K
 			// Vacuity guard: the script must offer more work than the

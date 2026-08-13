@@ -413,7 +413,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// needs the runner, which needs the root).
 	pauseRec := &daemonPauseRecorder{store: store}
 
-	root, bundle, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode, pauseRec)
+	root, bundle, specs, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode, pauseRec)
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		return err
@@ -465,7 +465,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		return err
 	}
 
-	meters := newMeterPool(bundle, modelName)
+	meters := newMeterPool(bundle, specs, modelName)
 	wds := newWatchdogPool()
 
 	// Fixed metric registry (pkg/observability owns every family name;
@@ -1164,9 +1164,9 @@ func workloadNames(cfg *config.Config) []string {
 // coordinator (pkg/router) or the spike-2 workflow graph (pkg/graph).
 // Without --workload it constructs a trivial single-agent coordinator
 // (useful for pure inject-endpoint smoke).
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (adkagent.Agent, *workload.Bundle, error) {
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (adkagent.Agent, *workload.Bundle, []specialists.Spec, error) {
 	if dispatch != "coordinator" && dispatch != "graph" {
-		return nil, nil, fmt.Errorf("unknown --dispatch %q (want `coordinator` or `graph`)", dispatch)
+		return nil, nil, nil, fmt.Errorf("unknown --dispatch %q (want `coordinator` or `graph`)", dispatch)
 	}
 	if workloadArg == "" {
 		logger.Warn("no --workload supplied; running trivial single-agent coordinator")
@@ -1176,12 +1176,12 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 			Instruction: "Acknowledge the incident briefly.",
 			Model:       llm,
 		})
-		return a, nil, err
+		return a, nil, nil, err
 	}
 
 	bundle, loaded, cfgDir, err := resolveWorkload(logger, workloadArg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	logger.Info("workload loaded",
 		"name", bundle.Name,
@@ -1192,7 +1192,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 
 	toolsets, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	a, err := compose.BuildRoot(ctx, compose.RootConfig{
@@ -1207,9 +1207,9 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		PauseRecorder: pauseRec,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return a, &bundle, nil
+	return a, &bundle, loaded, nil
 }
 
 // wireMCPToolsets builds the workload's MCP toolsets from the mcp.json
@@ -1285,14 +1285,15 @@ func sessionIDFor(p envelope.InjectPayload) string {
 }
 
 // meterPool hands out one budget.Meter per session, sized from the
-// workload bundle's budget block.
+// workload bundle's budget block and the roster's per-specialist
+// budgets.
 type meterPool struct {
-	mu     sync.Mutex
-	limits budget.Limits
-	byID   map[string]*budget.Meter
+	mu   sync.Mutex
+	cfg  budget.Config
+	byID map[string]*budget.Meter
 }
 
-func newMeterPool(bundle *workload.Bundle, modelName string) *meterPool {
+func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, modelName string) *meterPool {
 	// Pricing lives in the shared core (internal/compose.RatePer1K)
 	// so the daemon and mast.RunWorkload derive identical costs.
 	limits := budget.Limits{RatePer1K: compose.RatePer1K(modelName)}
@@ -1302,7 +1303,11 @@ func newMeterPool(bundle *workload.Bundle, modelName string) *meterPool {
 		// budget.Limits.MaxTurns for the vocabulary).
 		limits.MaxTurns = bundle.Budget.MaxTurns
 	}
-	return &meterPool{limits: limits, byID: map[string]*budget.Meter{}}
+	// Per-specialist ceilings compose under the workload's; a
+	// specialist that declares a tighter cap stops the run on its own
+	// (pkg/budget, "Scopes").
+	cfg := budget.Config{Limits: limits, Scopes: compose.MeterScopes(specs, modelName)}
+	return &meterPool{cfg: cfg, byID: map[string]*budget.Meter{}}
 }
 
 func (mp *meterPool) meter(sessionID string) *budget.Meter {
@@ -1310,7 +1315,7 @@ func (mp *meterPool) meter(sessionID string) *budget.Meter {
 	defer mp.mu.Unlock()
 	m, ok := mp.byID[sessionID]
 	if !ok {
-		m = budget.NewMeter(mp.limits)
+		m = budget.New(mp.cfg)
 		mp.byID[sessionID] = m
 	}
 	return m

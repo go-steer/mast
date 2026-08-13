@@ -674,7 +674,7 @@ func newAGUIBackendPlanner(t *testing.T, m model.LLM) *aguiBackend {
 		logger:       discardLogger(),
 		workloadName: "(test)",
 		r:            r,
-		meters:       newMeterPool(nil, "test-model"),
+		meters:       newMeterPool(nil, nil, "test-model"),
 		wds:          newWatchdogPool(),
 		turnLocks:    newSessionTurnLocks(),
 	}

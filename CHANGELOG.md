@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **Per-specialist budgets are enforced, not just parsed**
+  (docs/v0.3-plan.md W1.2). A specialist's declared `max_turns` and
+  `max_cost_usd` are now ceilings on that specialist's own spend. The roster's
+  declarations become per-agent scopes on the session meter
+  (`internal/compose.MeterScopes` → `budget.Config.Scopes`), and
+  `budget.Meter.Observe` buckets each usage event by its author, checking it
+  against that specialist's ceiling and against the workload's. Composition is
+  tightest-cap-wins by construction rather than by arithmetic — whichever
+  ceiling a call crosses first stops the run — and when one call crosses both,
+  the error names the specialist, because that is the more specific fact and
+  the one an operator acts on. A specialist running on its own `model:` is
+  priced at that model's rate, so a cheap analyst's tokens are no longer
+  billed at the synthesizer's.
+
+  Attribution is by `session.Event.Author`, which carries the agent's name on
+  every dispatch shape mast builds — a coordinator's sub-agent tool, a
+  workflow-graph node, the planner's `invoke_specialist`. The design docs had
+  named `Event.Branch` as the eventual seam; it is empty in the
+  coordinator/sub-agent-tool shape, so a branch-keyed meter would have metered
+  nothing there while passing under graph dispatch. Corrected in
+  `pkg/specialists`, `pkg/graph` and `docs/specialists-design.md`.
+
+  Two limits, recorded in the `pkg/budget` package doc rather than left
+  implicit: metering reads the event stream, so a ceiling is crossed *by* the
+  call that reports it (the cap bounds spend within one call's overshoot, it
+  does not pre-authorize a call); and a crossed specialist ceiling stops the
+  session rather than handing the coordinator a refusal it could route
+  around. Both need a seam in front of the model call.
+
 - **Specialists can declare a report contract: `output_schema:`**
   (docs/v0.3-plan.md W1.3). The field names a JSON-Schema document
   (`.json`/`.yaml`/`.yml`) **relative to the `.tmpl` file's own directory** —

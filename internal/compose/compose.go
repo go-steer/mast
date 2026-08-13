@@ -41,6 +41,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 
 	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/pricing"
@@ -424,4 +425,47 @@ func RatePer1K(modelName string) float64 {
 	default:
 		return 0.001
 	}
+}
+
+// MeterScopes derives the per-specialist budget scopes for a roster:
+// the ceilings a spec declares (`max_turns`, `max_cost_usd`) plus, when
+// it declares a `model:` override, that model's price. Specialists that
+// declare neither get no scope — they are metered into the session
+// totals and nothing else, which is what an un-tiered, un-capped roster
+// wants.
+//
+// max_wallclock_seconds is deliberately absent: it is a node-level knob
+// (pkg/graph maps it onto workflow.NodeConfig.Timeout), not something a
+// usage meter can see.
+//
+// Pricing collapses under an offline fake, on the same condition
+// NewModelResolver collapses the models themselves: if the root model
+// is echo/scripted/toolactor then every override resolved back to it,
+// so every token was produced by the fake and pricing a specialist at
+// its declared tier would report a cost that provably did not happen.
+// The consequence is worth stating plainly — per-model cost attribution
+// cannot be demonstrated end-to-end in a credential-free test tier,
+// because the condition that makes the tier credential-free is exactly
+// the condition that collapses the tiers. The derivation is unit-
+// testable here; the end-to-end claim needs real models.
+func MeterScopes(specs []specialists.Spec, rootModelName string) map[string]budget.Limits {
+	fake := IsOfflineFake(rootModelName)
+	var scopes map[string]budget.Limits
+	for _, s := range specs {
+		l := budget.Limits{
+			MaxTurns:   s.Budget.MaxTurns,
+			MaxCostUSD: s.Budget.MaxCostUSD,
+		}
+		if s.Model != "" && !fake {
+			l.RatePer1K = RatePer1K(s.Model)
+		}
+		if l == (budget.Limits{}) {
+			continue
+		}
+		if scopes == nil {
+			scopes = make(map[string]budget.Limits, len(specs))
+		}
+		scopes[s.Name] = l
+	}
+	return scopes
 }
