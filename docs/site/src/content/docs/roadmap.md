@@ -163,6 +163,19 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   runs before the approval gate. The shipped GKE triage bundle is one of
   those rosters, so fan-out ships its own read-only example instead of
   converting it.
+- **The write gate** — a call that would change something now stops and asks
+  before it fires, one call at a time, with the tool and its arguments in
+  front of the operator. "Would change something" is the same test the
+  effect log uses, and a tool nothing has classified counts as mutating, so
+  a workload does not get to write by omission: a bundle that says nothing
+  about mutation is gated, and unattended writes have to be asked for
+  (`hitl.on_mutation: apply`). The question is durable — the daemon can be
+  killed between asking and being answered, and the approval still lands on
+  whatever process is running when the operator gets to it, running the call
+  exactly once. Approvals are recorded against an authenticated approver,
+  including when a bot relays a human's decision, and an approval that tries
+  to authorize more than the one call in front of it is refused rather than
+  quietly narrowed.
 - **ADK v2.2.0** — the agent substrate is upgraded from v2.1.0. The fix that
   motivated taking it now: a workflow-graph run whose invocation context was
   cancelled from outside — an evicted attach session, a dispatch deadline, an

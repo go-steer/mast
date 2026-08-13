@@ -124,6 +124,18 @@ func block(ctx context.Context, dir, tool string) error {
 		fmt.Fprintf(os.Stderr, "blocker: %s: cannot write started marker: %v\n", tool, err)
 	}
 
+	// Append one line per ENTRY to "<tool>.calls". The started marker is
+	// truncating and so only answers "did it run at all"; the write gate's
+	// legs (scripts/uat-v0.3.sh) need "how many times", because approving
+	// a parked call twice, or re-running it on a resume, is the failure
+	// mode they exist to catch. Also best-effort, for the same reason.
+	if f, err := os.OpenFile(filepath.Join(dir, tool+".calls"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		_, _ = fmt.Fprintln(f, tool)
+		_ = f.Close()
+	} else {
+		fmt.Fprintf(os.Stderr, "blocker: %s: cannot append call marker: %v\n", tool, err)
+	}
+
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	for {

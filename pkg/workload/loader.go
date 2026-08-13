@@ -33,6 +33,9 @@ func Load(path string) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("workload: parse %q: %w", path, err)
 	}
 	b.Filename = path
+	if err := b.foldHITLPolicy(); err != nil {
+		return Bundle{}, fmt.Errorf("workload: parse %q: %w", path, err)
+	}
 	if err := b.validate(); err != nil {
 		return Bundle{}, fmt.Errorf("workload: validate %q: %w", path, err)
 	}
@@ -40,6 +43,20 @@ func Load(path string) (Bundle, error) {
 		b.Mode = ModeSingleSession
 	}
 	return b, nil
+}
+
+// foldHITLPolicy collapses the documented `hitl_policy:` spelling onto
+// the shipped `hitl:` field so everything downstream reads one place.
+func (b *Bundle) foldHITLPolicy() error {
+	if b.HITLPolicy == (HITL{}) {
+		return nil
+	}
+	if b.HITL != (HITL{}) {
+		return fmt.Errorf("both hitl: and hitl_policy: are set; they are the same block — keep one")
+	}
+	b.HITL = b.HITLPolicy
+	b.HITLPolicy = HITL{}
+	return nil
 }
 
 func (b *Bundle) validate() error {
@@ -56,6 +73,11 @@ func (b *Bundle) validate() error {
 	case "", DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchAuto:
 	default:
 		return fmt.Errorf("unknown dispatch %q (want coordinator, graph, fanout, or auto)", b.Dispatch)
+	}
+	switch b.HITL.OnMutation {
+	case "", OnMutationRequireApproval, OnMutationApply, OnMutationDryRun:
+	default:
+		return fmt.Errorf("unknown hitl.on_mutation %q (want require_approval, apply, or dry_run)", b.HITL.OnMutation)
 	}
 	seen := make(map[string]bool, len(b.Specialists))
 	for _, name := range b.Specialists {
