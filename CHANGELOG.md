@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **The parity eval suite is a CI gate** (docs/v0.3-plan.md W0.4).
+  `scripts/evals.sh` → `dev/ci/presubmits/evals.sh` → an `evals` job in
+  `.github/workflows/ci.yml`, wired into `all.sh` so local == CI. Runs
+  credential-free in a couple of seconds and prints one board. Exit 0 green, 1
+  a scenario missed its declared outcome or a metric scores nothing, 2 the
+  harness could not run. `--format=json` emits the same report in the shape
+  W0.5's nightly will diff run-to-run.
+
+  The deterministic tier does **not** score the 31 ported scenarios — a
+  scripted provider does not choose, so replaying a fixture would assert only
+  that the script equals itself. What it gates instead is that the measurement
+  works: `CorpusReach` reports how many scenarios each metric can score at all,
+  and a gating metric that scores nothing anywhere fails the run. Both of the
+  upstream harness's custom-code evaluators are constant functions today, and
+  the test suite reproduces both defects to prove the guard catches them.
+
+  The expected-fail allowlist is the report's headline (`3 of 5` today), each
+  entry printed with the workstream that removes it. There is deliberately no
+  second allowlist file: `differentiators.Scenario.Expect` is the one record,
+  and it is checked in both directions.
+
+- **Fixed: the eval rig inherited ADK's default GORM logger**, emitting ~48KB
+  of SQL chatter per suite run. `pkg/eventlog.Open` has silenced this since
+  v0.1, but `internal/evals/differentiators` builds ADK's session service
+  directly and never picked it up.
+
 - **The five differentiator scenarios** (docs/v0.3-plan.md W0.3).
   `internal/evals/differentiators` drives the composed runtime — the
   `internal/compose` root, the `pkg/effects` outbox, a `pkg/budget` meter, a

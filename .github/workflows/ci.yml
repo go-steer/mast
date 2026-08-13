@@ -107,3 +107,17 @@ jobs:
           go-version-file: go.mod
       - name: e2e UAT harness
         run: dev/ci/presubmits/e2e.sh
+
+  evals:
+    runs-on: ubuntu-latest
+    # Same reasoning as e2e: the differentiator scenarios drive the
+    # composed runtime against a real SQLite DB. A couple of seconds
+    # normally.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: parity evals (deterministic tier)
+        run: dev/ci/presubmits/evals.sh
