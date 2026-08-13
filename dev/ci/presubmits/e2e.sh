@@ -13,11 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# e2e.sh — presubmit: the v0.2 end-to-end UAT harness. Builds mast,
-# drives a real daemon process against the offline echo model + a real
-# SQLite DB, and asserts on session state, /metrics, HTTP status, and
-# process exit codes (scripts/uat-v0.2.sh; docs/uat-v0.2-plan.md).
-# Credential-free and network-free — CI-runnable in under a minute.
+# e2e.sh — presubmit: the end-to-end UAT harnesses. Both build mast and
+# drive a real daemon process against an offline model + a real SQLite
+# DB. Credential-free and network-free — CI-runnable in a couple of
+# minutes.
+#
+#   scripts/uat-v0.2.sh — the durable-execution spine: session state,
+#     /metrics, HTTP status, process exit codes, crash/drain/abort legs
+#     against a blocking stdio MCP tool (docs/uat-v0.2-plan.md).
+#   scripts/uat-v0.3.sh — the v0.3 parity work against the SHIPPED
+#     examples/workloads/gke-triage bundle: what an operator actually
+#     receives at the end of a run (docs/v0.3-plan.md §2, tier U).
+#
+# Both run, in order, and a failure in either fails the presubmit. The
+# v0.2 harness is the spine and stays exactly as it is; v0.3 additions
+# go in their own script rather than growing that one, so a release's
+# acceptance pass can be read and re-run on its own.
 #
 # These scripts are exactly what CI runs (.github/workflows/ci.yml →
 # dev/ci/presubmits/all.sh); run all.sh locally before pushing.
@@ -25,4 +36,5 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
-exec scripts/uat-v0.2.sh
+scripts/uat-v0.2.sh
+scripts/uat-v0.3.sh

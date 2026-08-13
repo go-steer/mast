@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **Fixed: the shipped `gke-triage` example could not complete a run offline**
+  (docs/v0.3-plan.md W1.4). Since `output_schema:` landed, the twelve
+  diagnosers declare a report contract that becomes their `finish_task`
+  parameters; the offline fake models (`--model=echo`, `--model=toolactor`)
+  answered with a hard-coded `{"result": "<text>"}`, which violates it. The
+  call was refused, retried unchanged, and the run died on the specialist's
+  newly-enforced `max_turns` — `POST /inject` returned **500** on the bundle
+  the README and `scripts/demo-spike2.sh` point at. Neither the schema work
+  nor the budget work is individually at fault; the composition is, and
+  nothing caught it because no test drove the shipped bundle end to end.
+
+  The fakes now read the `finish_task` declaration off the request and
+  synthesize a value for every property in it (`pkg/agent/schemafill.go`), so
+  a roster can change its report shape without anyone touching a fake. Where
+  no `output_schema:` is declared, ADK's default single-`result` wrapper is
+  recognized and the previous text goes out unchanged. Two smaller fixes fell
+  out: the echo model's unschema'd digest read `diagnosed from envelope:`
+  with nothing after the colon when a specialist was reached as a
+  workflow-graph node (the incident is now recovered from the whole history,
+  not just the last user message), and `--model=toolactor` answered a
+  classifier turn with prose, which routed every incident to `_fallback`
+  instead of to its specialist.
+
+- **New end-to-end acceptance harness: `scripts/uat-v0.3.sh`**
+  (docs/v0.3-plan.md W1.4, tier U). It drives the **shipped**
+  `examples/workloads/gke-triage` bundle — not a fixture — under
+  `--dispatch=graph --model=echo`, credential-free and network-free, and
+  asserts on what an operator actually receives: the report quoted in the
+  approval prompt that `mast sessions show` prints. Three legs, 29
+  assertions: a declared `output_schema:` is answered in full (every
+  property, a valid enum member, one `finish_task` call, no budget error, and
+  the routed specialist named rather than `_fallback`); the same roster with
+  the schema removed falls back to the default wrapper; and a deliberately
+  violating report is *refused* and reaches the gate with no result. The last
+  two are what make the first a statement about mast rather than about the
+  fake. `dev/ci/presubmits/e2e.sh` now runs this alongside the v0.2 spine —
+  both, in order — so the durable-execution harness is added to, not replaced.
+
 - **Per-specialist budgets are enforced, not just parsed**
   (docs/v0.3-plan.md W1.2). A specialist's declared `max_turns` and
   `max_cost_usd` are now ceilings on that specialist's own spend. The roster's
