@@ -153,7 +153,8 @@ func (t Trace) CalledTools() []string {
 // exists to catch.
 func TraceFromEvents(events adksession.Events, pred effects.Predicate, subAgents map[string]bool) Trace {
 	var tr Trace
-	byID := make(map[string]int) // call ID -> index into tr.Calls
+	byID := make(map[string]int)     // call ID -> index into tr.Calls
+	control := make(map[string]bool) // call IDs excluded as engine control flow
 	evIdx := -1
 
 	for ev := range events.All() {
@@ -174,6 +175,7 @@ func TraceFromEvents(events adksession.Events, pred effects.Predicate, subAgents
 			}
 			if fc := part.FunctionCall; fc != nil && fc.ID != "" {
 				if isControl(fc.Name, subAgents) {
+					control[fc.ID] = true
 					continue
 				}
 				if _, dup := byID[fc.ID]; dup {
@@ -192,6 +194,23 @@ func TraceFromEvents(events adksession.Events, pred effects.Predicate, subAgents
 				})
 			}
 			if fr := part.FunctionResponse; fr != nil && fr.ID != "" {
+				// The call side dropped this ID as control flow, so its
+				// completion is control flow too. Without this the orphan
+				// fallback below re-materializes exactly what the
+				// exclusion removed: a task delegation's response has no
+				// recorded call to pair with, so it lands as an orphan
+				// classified mutating by default-deny — and two
+				// delegations to the same specialist then read as one
+				// effect applied twice. Found by E-exactly-once (W0.3).
+				if control[fr.ID] {
+					continue
+				}
+				// Same exclusion for a completion whose call event is not
+				// in this log at all (a truncated or partially exported
+				// log): judge it by its own name.
+				if _, paired := byID[fr.ID]; !paired && isControl(fr.Name, subAgents) {
+					continue
+				}
 				// A confirmation-gated call persists a placeholder
 				// response before pausing for the operator. It is not a
 				// completion: the approved call re-fires under the same

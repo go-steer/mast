@@ -131,6 +131,51 @@ func TestTraceFromEvents_Exclusions(t *testing.T) {
 		}
 	})
 
+	// Regression, found by E-exactly-once (W0.3): excluding a control
+	// call on the call side is not enough. Its completion has no
+	// recorded call to pair with, so the orphan fallback re-materializes
+	// it — classified mutating by default-deny, with EventIndex -1 — and
+	// two delegations to the same specialist then score as one effect
+	// applied twice. The paired shape below is the one a real run
+	// produces; the call-only fixture above cannot reach it.
+	t.Run("control-and-subagent-completions-are-not-orphans", func(t *testing.T) {
+		events := eventList{
+			modelEvent(callPart("remediator", "d1", map[string]any{"request": "scale it"})),
+			userEvent(respPart("remediator", "d1")),
+			modelEvent(callPart("finish_task", "f1", nil)),
+			userEvent(respPart("finish_task", "f1")),
+			modelEvent(callPart("remediator", "d2", map[string]any{"request": "scale it"})),
+			userEvent(respPart("remediator", "d2")),
+			modelEvent(callPart("k8s_cluster_health", "c1", nil)),
+			userEvent(respPart("k8s_cluster_health", "c1")),
+		}
+		tr := TraceFromEvents(events, pred, map[string]bool{"remediator": true})
+		if got := tr.CalledTools(); !reflect.DeepEqual(got, []string{"k8s_cluster_health"}) {
+			t.Fatalf("CalledTools() = %v, want only the real tool", got)
+		}
+		if len(tr.Calls) != 1 {
+			t.Fatalf("Calls = %+v, want exactly the one real call", tr.Calls)
+		}
+		// The consequence, asserted directly: two identical delegations
+		// must not read as a repeated effect.
+		if res := ExactlyOnce(tr); !res.Passed() {
+			t.Fatalf("ExactlyOnce = %.2f (%s), want a pass — delegations are not effects", res.Score, res.Comment)
+		}
+	})
+
+	t.Run("orphan-completion-with-an-absent-call-is-still-excluded", func(t *testing.T) {
+		// A truncated log: the delegation's call event is gone, so the
+		// call-side exclusion never saw the ID. The response must be
+		// judged by its own name rather than defaulting to mutating.
+		events := eventList{
+			userEvent(respPart("remediator", "d1")),
+			userEvent(respPart("finish_task", "f1")),
+		}
+		if tr := TraceFromEvents(events, pred, map[string]bool{"remediator": true}); len(tr.Calls) != 0 {
+			t.Fatalf("Calls = %+v, want none (control-flow completions are not effects)", tr.Calls)
+		}
+	})
+
 	t.Run("empty-id-calls-are-unkeyable", func(t *testing.T) {
 		events := eventList{modelEvent(callPart("k8s_cluster_health", "", nil))}
 		if tr := TraceFromEvents(events, pred, nil); len(tr.Calls) != 0 {
