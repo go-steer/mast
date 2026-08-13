@@ -125,8 +125,14 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   that scored nothing. Scenarios the tool surface cannot satisfy are listed
   as structural ceilings rather than folded into a low score.
 - **Per-specialist model selection** — a specialist's `model:` is honored
-  instead of inheriting the workload's, including across providers. The
-  cost attribution that makes tiering measurable is still ahead.
+  instead of inheriting the workload's, including across providers.
+- **Per-specialist budgets** — the `max_turns` and `max_cost_usd` a
+  specialist declares are now enforced, not just parsed. Each is a ceiling
+  on that specialist's own spend, composed under the workload's so
+  whichever cap is crossed first stops the run, and the error names the
+  specialist rather than the workload. A specialist running on its own
+  `model:` is priced at that model's rate, which is the cost attribution
+  that makes a tiered roster measurable.
 - **Typed specialist reports** — a specialist can declare `output_schema:`,
   a JSON-Schema file its answer has to satisfy, and a violation comes back
   to the model as a named refusal rather than becoming the answer. The
@@ -148,8 +154,10 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
 - **AG-UI remaining slices** — the `agui://` federation client, per-key
   `StateDelta` emission, activity/reasoning events, webhook push, and
   client-declared tool acceptance.
-- **Per-specialist cost attribution** — branch/node-attributed cost on top
-  of the v0.2 workload-level counters.
+- **Pre-call budget gating** — today a ceiling is crossed by the call that
+  reports it, and a crossed specialist ceiling stops the session rather
+  than handing the coordinator a refusal it can route around. Both need a
+  seam in front of the model call rather than behind it.
 - **Planner shapes** — the `run_shape_*` vocabulary tools wired to the
   reference-graph library (they return `not_implemented` in the v0.2
   scaffold), plus more starters: supervisor+workers, sequential pipeline,

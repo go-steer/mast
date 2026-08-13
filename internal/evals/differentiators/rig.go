@@ -153,6 +153,7 @@ type rig struct {
 	store  *transcript.Store
 	runner *runner.Runner
 	model  *scriptModel
+	meter  budget.Config
 	pred   effects.Predicate
 	subs   map[string]bool
 
@@ -178,6 +179,12 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 		cfg.tokensPerCall = 15
 	}
 	r := &rig{cfg: cfg, model: &scriptModel{steps: cfg.steps, tokens: cfg.tokensPerCall}}
+	// The meter is built from the same two inputs the daemon uses: the
+	// workload ceilings and the roster's per-specialist scopes. Deriving
+	// the scopes through compose rather than hand-writing them here is
+	// what makes the budget scenario evidence about mast instead of
+	// about the fixture.
+	r.meter = budget.Config{Limits: cfg.limits}
 
 	// Silence GORM the way pkg/eventlog.Open does. Left at ADK's default
 	// the five scenarios emit ~48KB of SELECT and "record not found"
@@ -213,6 +220,7 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	for _, s := range specs {
 		names = append(names, s.Name)
 	}
+	r.meter.Scopes = compose.MeterScopes(specs, rigModel)
 	bundle := workload.Bundle{
 		Name:        "differentiators",
 		Description: "v0.3 differentiator eval fixture",
@@ -358,7 +366,7 @@ func (r *rig) turn(ctx context.Context, sessionID, text string) (stopped error, 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	r.model.beginTurn()
-	meter := budget.NewMeter(r.cfg.limits)
+	meter := budget.New(r.meter)
 	msg := genai.NewContentFromText(text, genai.RoleUser)
 	for ev, rerr := range r.runner.Run(ctx, userID, sessionID, msg, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeNone,

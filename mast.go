@@ -195,7 +195,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	}
 
 	msg := genai.NewContentFromText(input, genai.RoleUser)
-	return runTurn(ctx, cfg, root, &bundle, limits(cfg, &bundle, modelName), newSessionID(), msg)
+	return runTurn(ctx, cfg, root, &bundle, meterConfig(cfg, &bundle, specs, modelName), newSessionID(), msg)
 }
 
 // Run is the single-agent convenience: one Chat-mode agent with the
@@ -216,7 +216,7 @@ func Run(ctx context.Context, cfg Config, instruction, input string) (*Result, e
 		return nil, fmt.Errorf("mast: build agent: %w", err)
 	}
 	msg := genai.NewContentFromText(input, genai.RoleUser)
-	return runTurn(ctx, cfg, root, nil, limits(cfg, nil, modelName), newSessionID(), msg)
+	return runTurn(ctx, cfg, root, nil, meterConfig(cfg, nil, nil, modelName), newSessionID(), msg)
 }
 
 // ListSessions returns the operator projections (pkg/transcript) for
@@ -281,7 +281,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		})},
 	}
 	msg.Parts[0].FunctionResponse.ID = interruptID
-	return runTurn(ctx, cfg, root, &bundle, limits(cfg, &bundle, modelName), sessionID, msg)
+	return runTurn(ctx, cfg, root, &bundle, meterConfig(cfg, &bundle, specs, modelName), sessionID, msg)
 }
 
 // AckEffects records the operator's acknowledgement of ambiguous prior
@@ -438,11 +438,22 @@ func limits(cfg Config, bundle *workload.Bundle, modelName string) budget.Limits
 	return l
 }
 
+// meterConfig composes the session ceilings with the roster's
+// per-specialist scopes. Config.Budget overrides the workload's
+// ceilings but not a specialist's: a caller-supplied session budget
+// says what the whole run may spend, not what each specialist may.
+func meterConfig(cfg Config, bundle *workload.Bundle, specs []specialists.Spec, modelName string) budget.Config {
+	return budget.Config{
+		Limits: limits(cfg, bundle, modelName),
+		Scopes: compose.MeterScopes(specs, modelName),
+	}
+}
+
 // runTurn drives one turn through an ADK runner over cfg.Sessions,
 // metering usage against limits and collecting the final output (the
 // last node output or model text on the event stream — the same
 // projection examples/deploy/slim uses).
-func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, lim budget.Limits, sessionID string, msg *genai.Content) (*Result, error) {
+func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, mcfg budget.Config, sessionID string, msg *genai.Content) (*Result, error) {
 	svc := cfg.Sessions
 	if svc == nil {
 		svc = adksession.InMemoryService()
@@ -493,7 +504,7 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	// cancels the run context, aborting in-flight model/tool work.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	meter := budget.NewMeter(lim)
+	meter := budget.New(mcfg)
 
 	res := &Result{SessionID: sessionID}
 	for event, err := range r.Run(ctx, userID, sessionID, msg, adkagent.RunConfig{

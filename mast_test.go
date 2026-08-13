@@ -173,6 +173,32 @@ func TestRunWorkloadBudgetOverride(t *testing.T) {
 	}
 }
 
+// TestRunWorkloadSpecialistBudgetStopsFirst: the library path meters
+// per-specialist ceilings too. The bundle declares none, so the only
+// ceiling in the run is the one ImagePullBackOff declares for itself —
+// and the run stops on it, naming it. (TestRunWorkloadProgrammaticBundle
+// is the same roster without the cap, and it completes: the cap is what
+// changes the outcome, not the fixture.)
+func TestRunWorkloadSpecialistBudgetStopsFirst(t *testing.T) {
+	bundle, specs := triageBundle(false)
+	for i := range specs {
+		if specs[i].Name == "ImagePullBackOff" {
+			// Below one echo call's cost, so it trips on the
+			// specialist's first call — after the classifier's has
+			// already gone through unmetered against any ceiling.
+			specs[i].Budget = specialists.Budget{MaxCostUSD: 1e-9}
+		}
+	}
+	_, err := mast.RunWorkload(context.Background(), mast.Config{ModelName: "echo"},
+		bundle, specs, injectInput)
+	if !errors.Is(err, budget.ErrExceeded) {
+		t.Fatalf("err = %v, want budget.ErrExceeded from the specialist's own cap", err)
+	}
+	if !strings.Contains(err.Error(), "ImagePullBackOff") {
+		t.Errorf("error = %q, want it to name the specialist whose ceiling stopped the run", err)
+	}
+}
+
 // TestRun is the single-agent convenience path: instruction + input,
 // one model call, echo output.
 func TestRun(t *testing.T) {

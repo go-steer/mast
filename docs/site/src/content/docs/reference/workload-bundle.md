@@ -198,6 +198,39 @@ Crossing a ceiling cancels the run context mid-turn, aborts in-flight
 model/tool work, and increments `mast_budget_trips_total`. Budgets compose:
 workload-level and per-specialist budgets both apply, tightest cap wins.
 
+### Per-specialist ceilings
+
+A specialist `.tmpl` may declare its own budget in frontmatter, alongside
+the model override and report contract above:
+
+```yaml
+---
+description: Diagnoses OOMKilled container terminations.
+budget:
+  max_turns: 6
+  max_wallclock_seconds: 60
+  max_cost_usd: 0.25
+---
+```
+
+`max_turns` and `max_cost_usd` are ceilings on *that specialist's* spend,
+checked on every model call it authors; `max_wallclock_seconds` bounds
+each activation of its node under graph dispatch. Composition with the
+workload's ceilings is by construction rather than arithmetic: each call
+is measured against the specialist's ceiling and the workload's, and
+whichever is crossed first stops the run. When one call crosses both, the
+error names the specialist — the more specific fact, and the one an
+operator acts on. A specialist that declares a `model:` override is priced
+at that model's rate, so a cheap analyst's tokens are not billed at the
+synthesizer's.
+
+Two limits are worth knowing. Metering reads the event stream, so a
+ceiling is crossed *by* the call that reports it: the cap bounds total
+spend within one call's overshoot, it does not pre-authorize a call.
+And a crossed specialist ceiling stops the session rather than just that
+specialist — handing the coordinator a refusal it could route around
+needs a pre-call seam mast does not have yet.
+
 ### Env-var overrides
 
 Scalar budget values can be overridden process-wide (applies to every
