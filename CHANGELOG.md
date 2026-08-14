@@ -1,6 +1,111 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 (2026-08-14)
+
+- **New: the write gate — a tool call that changes anything stops and asks,
+  once per call, and the pause survives `kill -9`** (docs/v0.3-plan.md
+  W2.1–W2.3; parity rows 9–11). Approval used to be per *turn*: a specialist
+  finished, its whole result parked, and approving it authorized whatever it
+  did next. The gate is now in front of the call. `hitl.on_mutation` takes
+  `require_approval` (the default), `apply` (run it, audit it) or `dry_run`
+  (never run it, report what would have run); the older `require_approval:
+  true` spelling still parses, and declaring both forms is refused rather than
+  silently resolved.
+
+  What counts as mutating is a declaration, not a guess. mast reads the
+  built-in annotation where a tool has one, and otherwise the workload's
+  `tool_catalog.tools[].mutating` — **a tool named nowhere counts as
+  mutating**. That default is load-bearing rather than cautious: ADK's
+  mcptoolset drops MCP's own `readOnlyHint` annotations on the way through, so
+  for an MCP tool the catalog is the *only* place the answer can come from,
+  and the failure mode of guessing "read-only" is a silent unreviewed write.
+  The cost is that adding a read tool without classifying it makes it stop and
+  ask.
+
+  Every gate decision is an audit record — `awaiting_approval`, `apply`,
+  `dry_run`, `denied_by_policy`, `denied_by_operator` — carrying the tool, the
+  arguments, the specialist, and the approver. The approver is taken from the
+  authenticated caller on `/resume`, never from the payload: a body claiming
+  `"approver":"sre-oncall"` over an unauthenticated connection has that field
+  overwritten, because an approval whose author is self-asserted is not an
+  approval. And an approval is `AllowOnce`. A verdict that tries to widen
+  itself to the session is refused and audited as
+  `approval_scope_refused` — approving one `delete_k8s_resource` cannot
+  become standing permission to delete.
+
+- **New: a specialist declares whether it may change anything —
+  `capability: read_only | change_executor`** (docs/v0.3-plan.md W2.4; parity
+  row 12). Defaults to `read_only`. A roster where a `read_only` specialist
+  can reach a mutating tool is refused at construction
+  (`internal/compose.CheckCapabilitySplit`), on every path that builds a root
+  and under every dispatch shape, so the check cannot be dodged by entering
+  through a different door. The shipped `gke-triage` roster was rebuilt around
+  it: the twelve diagnosers gave up their write tools and name the remediation
+  in their finding, and one new `change-executor` specialist holds the write
+  surface behind its own report contract (`schemas/change-report.json`).
+
+  This replaces a boundary that used to live in prompt text — "diagnose only,
+  do not remediate" in a specialist's `.tmpl`. A prompt is a request; a
+  construction-time refusal is a property. Rosters that relied on the prose
+  version keep working only if they now say so in the field.
+
+- **New: an operator can correct a call instead of approving it —
+  `{"verdict":"edit"}`** (docs/v0.3-plan.md W2.5; parity row 13). The resume
+  payload is three-valued: `approve`, `reject`, or `edit` with replacement
+  `args`. An edit is checked before it runs — attributable to an
+  authenticated approver, restricted to arguments the tool declares,
+  schema-valid against that declaration, and re-adjudicated against policy, so
+  an edit cannot turn a permitted call into a forbidden one. A tool that
+  declares no input schema cannot be edited at all. What was applied is
+  written to the session as a durable `AppliedEdit` record and printed by
+  `mast sessions show`, because ADK re-issues the *original* call on resume:
+  without that record the log would say the operator approved arguments that
+  never ran.
+
+- **New: the deploy base mirrors the capability split in Kubernetes RBAC**
+  (docs/v0.3-plan.md W2.6; parity row 14). `deploy/base` grants the daemon
+  cluster-wide read and nothing else, with secrets excluded; the permission to
+  change a namespace is a separate, per-namespace apply under
+  `deploy/remediation-target/`. `scripts/rbac-matrix.sh` proves both halves
+  against a live or dry-run cluster.
+
+  **Read the caveat before trusting the split on GKE.** GKE authorizes a call
+  if *either* IAM or RBAC allows it, and mast reaches the cluster through the
+  GKE MCP server as its Workload Identity principal, which
+  `scripts/setup-wif.sh` binds to `roles/container.admin` — so today IAM, not
+  RBAC, is what bounds the daemon, and the RBAC split documents intent rather
+  than enforcing it. The narrowing (`WRITE_SCOPE=namespaced`, dropping the
+  binding to `roles/container.viewer` and carrying writes on the namespaced
+  Role) ships as an opt-in rather than the default, because the
+  WIF-principal-to-RBAC-subject mapping has not been verified against a live
+  cluster.
+
+- **Fixed: the shipped `gke-triage` catalog named three tools the GKE MCP
+  server does not have.** `rollout_undo`, `patch_resource` and `scale_resource`
+  are not tools `https://container.googleapis.com/mcp` offers; its 23 real
+  tools are now enumerated, each classified to match its own `readOnlyHint`,
+  verified against a live `tools/list`. This mattered more than a typo
+  normally would, in both directions. ADK's allowlist predicate is a map
+  lookup on the tool name, so an allowlisted name the server does not offer is
+  dropped **silently**: `change-executor` would have started, declared its
+  write capability, passed the capability-split check vacuously, and held zero
+  write tools. In the other direction, sixteen genuinely read-only tools were
+  absent from the catalog, so default-deny-unknown would have parked ordinary
+  reads at the write gate. Found by pointing the workload at a real cluster —
+  no offline test could have caught it, since the fakes answer whatever is
+  declared.
+
+- **Known limitation: the change executor is operator-invoked, not
+  automatic** (docs/v0.3-plan.md W7.0). The gate above is real, and the
+  executor is the only specialist that could reach it — but in both shipped
+  dispatch shapes an incident ends at a finding. A diagnoser names its
+  remediation in prose, graph nodes are terminal, and the coordinator is
+  instructed to return analysis only, so nothing hands the diagnosis to the
+  executor. Closing that needs the finding to carry a *typed* proposed change
+  rather than a sentence — scoped as W7.0 and deliberately not patched with
+  coordinator prompt text, which is the same prompt-held boundary W2.4 just
+  finished deleting. What v0.3 claims is the narrower statement: a remediation
+  call cannot fire without an operator, and that survives `kill -9`.
 
 - **New: `dispatch: fanout` — the whole roster runs concurrently over one
   incident, one synthesis specialist merges the findings, one approval gate

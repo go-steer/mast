@@ -1,11 +1,11 @@
 ---
 title: Roadmap
-description: What v0.2 ships, and what lands in v0.3 — honestly.
+description: What v0.3 ships, and what lands after it — honestly.
 ---
 
-mast is at **v0.2.0** — the durable-execution spine plus the ecosystem
-interop surfaces, on the v0.1.2 hardened-shutdown base. See
-[Shipped in v0.2.0](#shipped-in-v020) below.
+mast is at **v0.3.0** — the write gate and the structural read/write split,
+on the v0.2.0 durable-execution spine. See
+[Shipped in v0.3.0](#shipped-in-v030) below.
 
 **All eleven v0.1 exit criteria from the fork design are green.** The
 `--task` profile criterion cleared with the P1.3a/P1.3b adapter ports and
@@ -102,7 +102,7 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   drain / abort legs over a request-driven fake model and a stdio blocking
   tool) gating CI.
 
-## Landed toward v0.3 (unreleased)
+## Shipped in v0.3.0
 
 - **Parity eval gate** — a credential-free eval suite gating every PR
   (`scripts/evals.sh`, alongside the v0.2 UAT harness). It runs the
@@ -193,10 +193,14 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   tool server, or simply inherits the workload's catalog without saying which
   tools it needs. So a diagnosis specialist is not kept in its lane by the
   wording of its prompt; it structurally has nowhere else to go. The shipped
-  GKE triage bundle is now seven read-only diagnosers that name the
+  GKE triage bundle is now twelve read-only diagnosers that name the
   remediation, plus one change executor that carries it out under the write
   gate — and which specialists can change your cluster is a startup log line,
-  not something you work out by reading three files.
+  not something you work out by reading three files. **The executor is
+  operator-invoked, not automatic:** a diagnosis names its remediation in
+  prose and no dispatch shape hands that to the executor on its own, so an
+  incident ends at a finding. Closing that needs the finding to carry a typed
+  proposed change, which is the next slice rather than a prompt tweak.
 - **The same split, in the deployment manifests** — the kustomize base grants
   the daemon cluster-wide read (and no secrets); permission to *change* a
   namespace is a separate `Role` you apply once per namespace, so an approved
@@ -214,8 +218,12 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   names moved from `PascalCase` to `camelCase`; stored sessions are unaffected
   and the operator UI already reads both.
 
-## Further out (v0.3+)
+## Further out (v0.4+)
 
+- **The change-set producer** — the missing half of the write gate. A finding
+  carries a typed proposed change rather than a sentence, the executor is
+  reachable from a diagnosis, and an approval can then be bound to that exact
+  change set instead of to a tool name.
 - **AG-UI remaining slices** — the `agui://` federation client, per-key
   `StateDelta` emission, activity/reasoning events, webhook push, and
   client-declared tool acceptance.
