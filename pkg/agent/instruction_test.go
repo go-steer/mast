@@ -30,14 +30,15 @@ import (
 )
 
 // recordingModel is a scripted model.LLM that captures the system
-// instruction of every request it receives, so tests can observe what
-// the constructors actually wired into the agent — the instruction is
-// not readable back off an adkagent.Agent, but it is visible to the
-// model on every call.
+// instruction and the tool declarations of every request it receives, so
+// tests can observe what the constructors actually wired into the agent —
+// neither is readable back off an adkagent.Agent, but both are visible to
+// the model on every call.
 type recordingModel struct {
 	name    string
 	respond func(req *model.LLMRequest) *model.LLMResponse
 	systems []string
+	decls   []*genai.FunctionDeclaration
 }
 
 func (m *recordingModel) Name() string { return m.name }
@@ -45,8 +46,24 @@ func (m *recordingModel) Name() string { return m.name }
 func (m *recordingModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		m.systems = append(m.systems, systemText(req))
+		m.decls = append(m.decls, declarations(req)...)
 		yield(m.respond(req), nil)
 	}
+}
+
+// declarations flattens the function declarations attached to a request.
+// ADK assembles these several layers below llmagent.Config — the transfer
+// tool, for one, is appended by a request processor — so the request is the
+// only place the model's actual surface can be read.
+func declarations(req *model.LLMRequest) []*genai.FunctionDeclaration {
+	if req == nil || req.Config == nil {
+		return nil
+	}
+	var out []*genai.FunctionDeclaration
+	for _, t := range req.Config.Tools {
+		out = append(out, t.FunctionDeclarations...)
+	}
+	return out
 }
 
 func systemText(req *model.LLMRequest) string {

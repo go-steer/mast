@@ -41,6 +41,30 @@ type TaskAgentConfig struct {
 	Tools        []tool.Tool
 	Toolsets     []tool.Toolset
 	OutputSchema *genai.Schema
+
+	// DisallowTransferToParent and DisallowTransferToPeers suppress ADK's
+	// transfer_to_agent tool. They pass straight through to llmagent.Config,
+	// and setting both empties the agent's transfer target list, which makes
+	// shouldUseAutoFlow false and removes the tool *and* its instruction block
+	// from every request the agent makes.
+	//
+	// Set both on a Task specialist that hangs off a Chat-mode coordinator.
+	// Peers are already unreachable — transferTargets skips Task-mode agents,
+	// so a specialist's only offered destination is the coordinator above it —
+	// and taking that one destination is fatal: ADK forwards the transfer
+	// in-process, so the coordinator's runChat executes under the specialist's
+	// node context, and its first act is to re-dispatch the still-unresolved
+	// delegation call through workflow.RunNode. That fails with "workflow:
+	// RunNode called outside a dynamic node" and the run produces nothing.
+	//
+	// The flags are right on their own terms and not only as a crash fix.
+	// Delegation to a specialist is one-way: a specialist that transfers
+	// abandons the question it was asked, and the coordinator gets no digest
+	// to merge.
+	//
+	// The zero value leaves ADK's default (transfer permitted) untouched.
+	DisallowTransferToParent bool
+	DisallowTransferToPeers  bool
 }
 
 // NewTaskAgent constructs a Task-mode agent. Suitable for
@@ -55,14 +79,16 @@ func NewTaskAgent(cfg TaskAgentConfig) (adkagent.Agent, error) {
 		return nil, fmt.Errorf("agent: TaskAgent %q has no Model", cfg.Name)
 	}
 	return llmagent.New(llmagent.Config{
-		Name:         cfg.Name,
-		Description:  cfg.Description,
-		Instruction:  effectiveInstruction(cfg.Instruction, DefaultTaskInstruction),
-		Model:        cfg.Model,
-		Tools:        cfg.Tools,
-		Toolsets:     cfg.Toolsets,
-		OutputSchema: cfg.OutputSchema,
-		Mode:         llmagent.ModeTask,
+		Name:                     cfg.Name,
+		Description:              cfg.Description,
+		Instruction:              effectiveInstruction(cfg.Instruction, DefaultTaskInstruction),
+		Model:                    cfg.Model,
+		Tools:                    cfg.Tools,
+		Toolsets:                 cfg.Toolsets,
+		OutputSchema:             cfg.OutputSchema,
+		DisallowTransferToParent: cfg.DisallowTransferToParent,
+		DisallowTransferToPeers:  cfg.DisallowTransferToPeers,
+		Mode:                     llmagent.ModeTask,
 	})
 }
 
