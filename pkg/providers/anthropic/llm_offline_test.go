@@ -317,6 +317,15 @@ func TestGenerateContent_OfflineStream_PartialsAndFinal(t *testing.T) {
 	if u.CachedContentTokenCount != 0 {
 		t.Errorf("CachedContentTokenCount = %d, want 0 (fixture has no cache reads)", u.CachedContentTokenCount)
 	}
+
+	// The usage above is worth nothing to a caller that cannot say which
+	// model it belongs to. A multi-tier agent bills its coordinator and its
+	// subagents at different rates, and without this field every consumer
+	// summing UsageMetadata gets one undifferentiated total. Taken from the
+	// model the server echoed in message_start, not from the request.
+	if final.ModelVersion != "claude-test" {
+		t.Errorf("ModelVersion = %q, want %q (the model the API echoed back)", final.ModelVersion, "claude-test")
+	}
 }
 
 // TestGenerateContent_OfflineStream_ExplicitModelWins pins that a

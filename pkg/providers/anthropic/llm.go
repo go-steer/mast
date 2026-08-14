@@ -150,8 +150,25 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, str
 				log.Printf("anthropic: pause_turn continuation cap (%d) reached on model %s; yielding accumulated content", maxPauseTurnContinuations, params.Model)
 			}
 
+			// ModelVersion names the model these tokens were billed
+			// against. ADK defines the field and nothing was setting it,
+			// so every consumer summing UsageMetadata across a multi-tier
+			// agent got one undifferentiated total — which is unusable for
+			// cost, since the tiers are priced differently, and unusable
+			// for checking a tier assignment, which is the reason to have
+			// tiers at all. Prefer the model the API resolved and echoed
+			// back over the one we asked for; they normally agree, and
+			// where they do not the server's answer is the billed one.
+			//
+			// anthropic.Model is an alias for string, so neither read
+			// needs a conversion.
+			modelVersion := final.Model
+			if modelVersion == "" {
+				modelVersion = params.Model
+			}
 			yield(&adkmodel.LLMResponse{
 				Content:       &genai.Content{Role: genai.RoleModel, Parts: parts},
+				ModelVersion:  modelVersion,
 				UsageMetadata: usageMetadata(usage),
 				FinishReason:  mapStopReason(final.StopReason),
 				TurnComplete:  true,
