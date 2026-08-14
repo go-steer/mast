@@ -189,7 +189,7 @@ The shipped manifests live in `deploy/` (base + `overlays/example` + `remediatio
 
 Three properties are deliberate and are pinned by `deploy/rbac_test.go`:
 
-- **The write grant is narrower than the tools.** `apply_manifest` can name any kind; the Role lets it create workload objects and ConfigMaps only, in one namespace, and lets nothing delete a Deployment. A call outside the grant fails at the API server as a `Forbidden` the specialist sees as a tool error.
+- **The write grant is narrower than the tools.** `apply_k8s_manifest` can name any kind; the Role lets it create workload objects and ConfigMaps only, in one namespace, and lets nothing delete a Deployment. A call outside the grant fails at the API server as a `Forbidden` the specialist sees as a tool error.
 - **The write grant is not in `base`.** The base pins `namespace: mast-triage` on everything it renders, so a Role carried there would land in the daemon's own namespace and an operator retargeting it would widen the base for everyone. As a separate kustomization, every remediable namespace is a separate, visible apply.
 - **The lint walks from the subject.** Any ClusterRoleBinding naming the daemon's ServiceAccount is checked, not just the file called "read" — because this boundary erodes by someone adding a cluster-scoped grant for one tool.
 

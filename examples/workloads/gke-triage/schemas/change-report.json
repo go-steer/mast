@@ -9,7 +9,7 @@
     },
     "action": {
       "type": "string",
-      "description": "The change, as executed: the tool called and what it did, e.g. 'patch_resource: set spec.template.spec.containers[0].resources.limits.memory=1Gi'."
+      "description": "The change, as executed: the tool called and what it did, e.g. 'patch_k8s_resource: set spec.template.spec.containers[0].resources.limits.memory=1Gi'."
     },
     "namespace": {
       "type": "string",
