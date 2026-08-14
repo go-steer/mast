@@ -218,12 +218,48 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   names moved from `PascalCase` to `camelCase`; stored sessions are unaffected
   and the operator UI already reads both.
 
-## Further out (v0.4+)
+## Next: v0.4
+
+Planned work, entirely in this repo — nothing here waits on another project.
+The claim it adds up to: *an operator approves the exact call that will fire,
+the loop runs on a schedule without an orchestrator, and every verdict becomes
+a labelled eval row.*
 
 - **The change-set producer** — the missing half of the write gate. A finding
-  carries a typed proposed change rather than a sentence, the executor is
-  reachable from a diagnosis, and an approval can then be bound to that exact
-  change set instead of to a tool name.
+  carries a typed proposed change rather than a sentence, drawn from the
+  workload's own tool catalog and checked against that tool's input schema
+  when the finding is returned. The executor becomes reachable from a
+  diagnosis through a structural rule rather than a prompt, and an operator
+  approves the object that actually fires instead of a paragraph describing
+  it. This is what closes the honest gap v0.3 shipped with: a remediation
+  call cannot fire without an operator, and today nothing generates one.
+- **Change-set approvals** — approve N mutations once, bound to exact
+  `(tool, arguments)` signatures rather than to a tool name, with a freshness
+  check before each one fires. A crash after call 3 of 5 resumes knowing
+  which fired and re-fires none.
+- **Decisions become training data** — every approve, reject and edit is
+  logged as a labelled eval example. *"The operator edited 10 replicas down to
+  4"* is the highest-signal thing the system produces, and it is free now
+  that the verdict is richer than a boolean and the edit is recorded durably.
+- **Scheduled triggers** — a bundle wakes on an interval, with jitter, and the
+  schedule survives a daemon restart. Today the only trigger is HTTP.
+- **A bounded analysis path** — one cheap-tier model call with a forced
+  structured answer and a fixed step count, for the cycles that do not need an
+  orchestrator. Same report contract as the agent path, because the schema is
+  a shared file rather than a block copied into each specialist.
+
+## Then: v0.5 — unattended monitoring, end to end
+
+The parity claim, and the release where the other two projects land their
+halves: cross-run finding state and resource-name normalization in
+[k8s-lookout](https://github.com/go-steer/k8s-lookout), chat egress and
+in-chat Approve/Reject with an approver allowlist in switchboard. On mast's
+side: zero-token collection, wiring the finding diff, notifying only on
+change (with a failed post that does not resurrect the diff next cycle), and
+ack windows.
+
+## Further out
+
 - **AG-UI remaining slices** — the `agui://` federation client, per-key
   `StateDelta` emission, activity/reasoning events, webhook push, and
   client-declared tool acceptance.
