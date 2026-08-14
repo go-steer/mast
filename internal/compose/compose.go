@@ -189,7 +189,9 @@ type RootConfig struct {
 	PauseRecorder planner.PauseRecorder
 }
 
-// BuildRoot builds the roster and assembles the dispatch shape:
+// BuildRoot builds the roster and assembles the dispatch shape. Every
+// shape is refused up front if the roster's read/write split does not
+// hold — see CheckCapabilitySplit.
 //
 //   - bundle.Planner.Enabled → the supervisor-body planner root
 //     (pkg/planner); Dispatch is ignored.
@@ -209,6 +211,16 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	case DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchAuto:
 	default:
 		return nil, fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, fanout, or auto)", dispatch)
+	}
+
+	// The read/write split is checked before anything is built, on every
+	// dispatch shape: a roster whose diagnosers can remediate is a
+	// roster mast refuses to run, not one it runs carefully. The
+	// predicate takes a nil logger here because the fan-out path below
+	// builds the same one with cfg.Logger, and the audited-override
+	// lines are worth exactly one appearance in a startup log.
+	if err := CheckCapabilitySplit(cfg.Bundle, cfg.Specs, MutationPredicate(cfg.Bundle, nil), cfg.Logger); err != nil {
+		return nil, err
 	}
 
 	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Logger)

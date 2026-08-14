@@ -84,6 +84,7 @@ agui:
 | `fanout.max_concurrency` | int | Under `dispatch: fanout`, how many analyst branches run at once. `0` (omitted) means the default, **4**; a negative value means unbounded. Ignored under any other dispatch. |
 | `budget` | block | See below. |
 | `hitl.require_approval` | bool | When true, every specialist result pauses on a durable RequestInput interrupt until an operator resumes with a verdict. |
+| `hitl.on_mutation` | string | What happens before a call that would change something: `require_approval` (**the default** — the call parks on a durable interrupt, with its arguments, and fires only once an operator approves it), `apply` (run it, unattended), or `dry_run` (never run it; report what would have happened). Because this defaults to gating, a bundle that says nothing about mutation does not get to write; unattended writes have to be asked for. The block may also be spelled `hitl_policy:`; setting both is an error. |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
 | `edge_trigger.http.path`, `.auth` | strings | Informational in v0.1 — the inject server declares its routes globally; per-workload path prefixes come later. |
 | `a2a.expose` | bool | Opt this workload into the [A2A server](/mast/reference/cli/#a2a-server) surface (`--a2a-listen`). Default false — A2A exposure is an external contract, so it is never automatic. |
@@ -136,8 +137,55 @@ any analyst — including after the daemon restarts, since branch events are
 in the session log the run state is reconstructed from.
 
 The shipped [GKE triage bundle](/quickstart/unattended-triage/) is *not* a fan-out
-roster (its specialists can change the cluster), so fan-out ships its own
-read-only example at `examples/workloads/ns-audit`.
+roster — it carries a change executor, and a branch check refuses even a
+declared one, since a branch has no gate to pause on — so fan-out ships its
+own read-only example at `examples/workloads/ns-audit`.
+
+## Per-specialist capability
+
+A specialist declares whether it may change anything:
+
+```yaml
+---
+description: Applies one approved remediation and reports what it did.
+capability: change_executor
+---
+```
+
+The values are `read_only` and `change_executor`. **`read_only` is the
+default**, so a specialist that says nothing about capability gets the safe
+one.
+
+Mast refuses to build a roster in which a read-only specialist can reach a
+mutating tool, naming the specialist, the tools, and the fix. Three shapes
+are refused:
+
+- it names a mutating tool in `tools.mcp[].tools` or `tools.builtin`;
+- it grants itself a whole MCP server (`- server: gke` with no `tools:`),
+  since whatever that server adds later is unreviewed;
+- it declares no `tools.mcp` at all while the bundle ships a
+  `tool_catalog` — inheriting the catalog inherits everything mutating in
+  it.
+
+Fix any of them by enumerating the read-only tools the specialist needs, by
+writing `mcp: []` if it needs none, or by declaring `capability:
+change_executor` if it really is meant to change things. `SingleTurn`
+specialists are exempt; the mode carries no tools.
+
+"Mutating" is the same test the write gate (`hitl.on_mutation`, above) and
+the effect log use — including its default-deny-unknown rule, so a tool your
+`tool_catalog` has not classified counts as mutating and will fail the
+roster rather than the incident. Classify the catalog with
+`tool_catalog.tools[].mutating`.
+
+Every `change_executor` in a roster is logged at startup, so the answer to
+"which specialists here can change my cluster" is one log line rather than
+an intersection of three files. The shipped GKE triage bundle logs exactly
+one.
+
+This is a stronger guarantee than prompt wording. A diagnoser told "do not
+mutate anything" is one persuasive incident away from doing it; a diagnoser
+that holds no mutating tool has nowhere to go.
 
 ## Per-specialist model override
 

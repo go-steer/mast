@@ -139,6 +139,15 @@ scripts/demo-spike2.sh
 - Set `MAST_INJECT_TOKEN` in the daemon's environment to require bearer
   auth on `/inject`, `/resume`, and `/abort` (unset = unauthenticated, dev
   only).
+- Against a real cluster the roster's shape starts to matter: the twelve
+  diagnosers hold read tools only and name the remediation in their finding,
+  and the one `change-executor` specialist carries it out — parking for your
+  approval before each call that changes anything. Mast refuses to start a
+  roster that blurs that line. See [per-specialist
+  capability](/reference/workload-bundle/#per-specialist-capability), and
+  classify any tools you add with `tool_catalog.tools[].mutating`: an
+  unclassified tool counts as mutating, so an unclassified read tool will
+  stop and ask.
 - For production topologies (Cloud Run + Postgres sessions, GKE, systemd)
   see `examples/deploy/` in the repo. The GKE kustomize base under
   `deploy/` is durable by default — the daemon runs as a StatefulSet

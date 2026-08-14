@@ -151,6 +151,8 @@ spec:
                 path: mcp.json
               - key: schemas_finding.json
                 path: schemas/finding.json
+              - key: schemas_change-report.json
+                path: schemas/change-report.json
               - key: specialists_triage-classifier.tmpl
                 path: specialists/triage-classifier.tmpl
               - key: specialists_CrashLoopBackOff.tmpl
@@ -177,6 +179,8 @@ spec:
                 path: specialists/Evicted.tmpl
               - key: specialists__fallback.tmpl
                 path: specialists/_fallback.tmpl
+              - key: specialists_change-executor.tmpl
+                path: specialists/change-executor.tmpl
   volumeClaimTemplates:
     # Session state: SQLite DB (sessions, durable pauses, abort +
     # interruption markers) plus room for growth. Uses the cluster's

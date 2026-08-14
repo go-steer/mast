@@ -77,6 +77,16 @@ func LoadFile(path string) (Spec, error) {
 	if mode != ModeTask && mode != ModeSingleTurn {
 		return Spec{}, fmt.Errorf("specialists: %q: unknown mode %q (want Task or SingleTurn)", path, mode)
 	}
+	capability := fm.Capability
+	if capability == "" {
+		capability = CapabilityReadOnly
+	}
+	if capability != CapabilityReadOnly && capability != CapabilityChangeExecutor {
+		// Refused rather than defaulted: a misspelled capability is a
+		// write declaration that did not take, and defaulting it to
+		// read_only would fail the roster somewhere far from the typo.
+		return Spec{}, fmt.Errorf("specialists: %q: unknown capability %q (want read_only or change_executor)", path, capability)
+	}
 	var schema *genai.Schema
 	var schemaPath string
 	if fm.OutputSchema != "" {
@@ -96,6 +106,7 @@ func LoadFile(path string) (Spec, error) {
 		Description:      fm.Description,
 		Mode:             mode,
 		Model:            fm.Model,
+		Capability:       capability,
 		Budget:           fm.Budget,
 		Tools:            fm.Tools,
 		Instruction:      strings.TrimSpace(body),

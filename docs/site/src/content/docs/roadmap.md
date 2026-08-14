@@ -176,6 +176,17 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   including when a bot relays a human's decision, and an approval that tries
   to authorize more than the one call in front of it is refused rather than
   quietly narrowed.
+- **Read-only diagnosers** — a specialist now declares whether it is allowed
+  to change anything, and read-only is what it gets by saying nothing. Mast
+  refuses to start a workload in which a read-only specialist can reach a
+  tool that changes something — whether it names one, helps itself to a whole
+  tool server, or simply inherits the workload's catalog without saying which
+  tools it needs. So a diagnosis specialist is not kept in its lane by the
+  wording of its prompt; it structurally has nowhere else to go. The shipped
+  GKE triage bundle is now seven read-only diagnosers that name the
+  remediation, plus one change executor that carries it out under the write
+  gate — and which specialists can change your cluster is a startup log line,
+  not something you work out by reading three files.
 - **ADK v2.2.0** — the agent substrate is upgraded from v2.1.0. The fix that
   motivated taking it now: a workflow-graph run whose invocation context was
   cancelled from outside — an evicted attach session, a dispatch deadline, an
