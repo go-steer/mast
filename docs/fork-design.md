@@ -225,7 +225,7 @@ This phase is "what was the point of the fork." Lands at v0.5.0+ — by which ti
 
 Fresh site, not a port. Targets:
 
-- **Landing page.** "Agent infrastructure for unattended / library / multi-provider workloads. Not a Claude Code competitor." Top-of-fold message.
+- **Landing page.** "Agent infrastructure for unattended / library / multi-provider workloads — built for platform and SRE teams." Top-of-fold message. *(Revised 2026-08-14: the original wording carried a "not a Claude Code competitor" clause; the positioning now says what mast is for rather than what it is not — see [`./positioning.md`](./positioning.md).)*
 - **Quickstart.** Three flavors: (1) library embedding, (2) GKE platform agent, (3) interactive REPL + web UI (`mast-web`). The first two are the moat; the third keeps the user-pinned interactive story via browser rather than terminal.
 - **Reference docs.** Port from old site selectively. Anything that assumed the broader scope gets rewritten.
 - **Migration page** for existing core-agent users (more critical under **(B)/(D)** than **(A)**).

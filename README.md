@@ -9,8 +9,8 @@ The agent-infrastructure substrate for **unattended, library-embedded, multi-pro
 Thirty seconds of honesty before anything else:
 
 - **You're a platform / SRE team putting agents where no human is watching** — incident triage in a Cloud Run pod, a scheduled drift monitor, runbook automation behind a webhook, an agent compiled into your own service. **You're in the right place; keep reading.**
-- **You're a developer who wants brilliant interactive coding at your laptop.** Use [Claude Code](https://claude.com/claude-code), Antigravity, or Cursor. That experience is downstream of model + IDE investment this substrate doesn't compete with — and doesn't try to.
 - **You want one simple agent loop in Go — no governance, no durability, no operator surface.** Use [raw ADK v2](https://google.golang.org/adk/v2); that niche is ADK's, and mast would be overhead. Come back when the loop must survive restarts, needs budget or permission governance, needs to switch providers without code changes, or stops having a human watching it.
+- **You're after an interactive coding tool for your own laptop.** That's a different product shape; mast is built for agents running in your infrastructure, not in your editor.
 
 ## The four pillars
 
@@ -44,7 +44,7 @@ Workflow-graph and SubAgents dispatch on ADK v2; specialists (subagent-as-tool w
 
 ## What `mast` is *not*
 
-- **Not a Claude Code competitor** — see the routing above; this is a deliberate scope decision, not a gap.
+- **Not an interactive coding tool.** No LSP integration, no AST tooling, no syntax-aware diff UI — the file-editing tools exist to serve unattended workloads, not an editor. A deliberate scope decision, not a gap.
 - **Not the successor to core-agent.** Sibling products with different jobs: `mast` is the platform-agent runtime; [`core-agent`](https://github.com/go-steer/core-agent) stays the experimentation + integration substrate. Both are maintained.
 - **Not a framework sampler.** The interop surfaces (MCP now; A2A server, AG-UI in v0.2) exist so workloads compose with the ecosystem, not to chase every protocol.
 

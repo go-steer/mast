@@ -1,12 +1,12 @@
 # mast: positioning + scope
 
-**Status:** draft, 2026-06-10 (updated 2026-07-01 — ADK v2 implications on task-class profiles, workflow scaffolding, and small-tier-parent classifier). Strategy doc, not a design doc — proposes the positioning thesis for `mast`, the lean fork of core-agent (per [`./fork-design.md`](./fork-design.md)). Concrete cut/keep/change-shape decisions follow from the thesis below.
+**Status:** draft, 2026-06-10 (updated 2026-07-01 — ADK v2 implications on task-class profiles, workflow scaffolding, and small-tier-parent classifier; updated 2026-08-14 — the thesis is stated in positive terms and no longer positions mast against named coding products. The scope boundary it encoded is unchanged: interactive-editing UX is out, and nothing on the cut list moved). Strategy doc, not a design doc — proposes the positioning thesis for `mast`, the lean fork of core-agent (per [`./fork-design.md`](./fork-design.md)). Concrete cut/keep/change-shape decisions follow from the thesis below.
 
 Under the (E) — sibling-products motivation in [`./fork-design.md`](./fork-design.md), this doc is *mast's* positioning; core-agent retains its own (broader, experimentation-shaped) positioning, to be captured separately as that work lands.
 
 ## Thesis
 
-**mast** is the agent-infrastructure substrate for **unattended, library-embedded, multi-provider, durable** workloads. It is explicitly *not* a Claude Code / Antigravity competitor. The dev-laptop interactive coding experience is downstream of model + IDE + training investment we cannot match; competing there loses on every axis. The cloud-native / headless / library shape is genuinely underserved and is where the moat lives.
+**mast** is the agent-infrastructure substrate for **unattended, library-embedded, multi-provider, durable** workloads. Its scope is the deployed shape — agents running in infrastructure rather than in an editor — and interactive coding UX is explicitly out of it: that experience is downstream of model + IDE + training investment we do not make, and chasing it loses on every axis. The cloud-native / headless / library shape is genuinely underserved and is where the moat lives.
 
 The four pillars:
 
@@ -19,7 +19,7 @@ The four pillars:
 
 **On "library-embedded" specifically:** it names a *capability* mast commits to (few agent frameworks are cleanly embeddable), not a deployment mode that excludes the standalone binary. Mast ships **both** consumer shapes as equal first-class citizens — a `mast` binary for Cloud Run / GKE / systemd / laptop CLI use, and a Go library (`import "github.com/go-steer/mast/..."`) for host services that want agent capabilities inline. Same subsystems, same features, same durability + observability + orchestration in both; only the config-injection surface differs. [`./deployment-design.md`](./deployment-design.md) enumerates all four production topologies (Cloud Run, GKE, library-embedded, standalone) and [`./library-api-design.md`](./library-api-design.md) covers the library-consumer contract.
 
-The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in the core-agent repo) is the proximate motivator: frontier Gemini ran 164 turns / $5.41 / 196K context on a code-investigation prompt that Claude Code with Opus handles in a handful of turns. That gap is real, structural, and the wrong fight to pick. mast sharpens scope around the fights this kind of substrate *can* win.
+The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in the core-agent repo) is the proximate motivator: an open-ended code-investigation prompt ran 164 turns / $5.41 / 196K context — the kind of unbounded interactive workload a purpose-built coding product is shaped around and this substrate is not. That gap is real, structural, and the wrong fight to pick. mast sharpens scope around the fights this kind of substrate *can* win.
 
 ## What this means concretely
 
@@ -34,7 +34,7 @@ The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in t
 - A developer is sitting at their laptop wanting brilliant code-edit UX.
 - The user is doing open-ended exploratory bug hunts in unfamiliar codebases.
 - LSP-style symbol/AST awareness is core to the workflow.
-- The user already has Claude Code / Antigravity / Cursor and is happy.
+- The agent's home is a developer's editor rather than the user's infrastructure.
 
 ## What stays
 
@@ -66,7 +66,7 @@ The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in t
 
 ### Cut or de-emphasize
 
-- **Investment in interactive-coding UX polish beyond "functional".** `edit_file`, `write_file` stay; no further investment in matching Claude Code's editing experience. No LSP integration, no AST tooling, no syntax-aware diff UI.
+- **Investment in interactive-coding UX polish beyond "functional".** `edit_file`, `write_file` stay, serving unattended workloads; no further investment in editor-grade editing experience. No LSP integration, no AST tooling, no syntax-aware diff UI.
 - **Effort to make Gemini-customtools good at open-ended bare-tool debug loops.** Per `docs/gemini-tier1-followup-plan.md:166` — the team itself concluded this needs workflow-shaped subagents, not better primitives. Route open-ended debug to Claude in core-agent; build out workflow scaffolding for Gemini's strengths.
 - ~~**Skills subsystem** (`pkg/skills/` + ADK `skilltoolset`). Cut from mast's scope.~~ *Reversed 2026-07-01: skills reinstated as first-class consumable. GKE + broader Google teams publishing skills as first-class artifacts inverted the audience-fit calculus that motivated the original cut. See [`./skills-design.md`](./skills-design.md) for the reinstatement rationale and design; see the keep-list entry above. Specialists and skills now coexist as complementary authoring models — specialists for mast-authored subagents, skills for consumed published templates.*
 - **Per-model prompt engineering for code search.** Measured ineffective for Gemini (`docs/gemini-tier1-followup-plan.md`), unnecessary for Claude. Don't invest further.
@@ -77,7 +77,7 @@ The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in t
 - **DefaultInstruction** (`pkg/agent/agent.go:76`): today is a generic helpful-assistant frame + parallelism mandate + plan nudge. Should be reoriented around unattended-loop discipline: "conservative defaults; explicit state persistence to the eventlog; fail-fast on ambiguity; structured tool preference; plan-before-act required; subagents over open-ended search." Post-ADK-v2: split into per-mode variants — `Chat`-mode gets conversational framing for attach-mode / `mast-web` operators; `Task`-mode gets the opinionated unattended-loop frame; `SingleTurn`-mode gets minimal framing (used by LLM-as-router classifiers). The 4-paragraph generic-assistant prose becomes three role-shaped guidance blocks.
 - **Default tool catalog.** `--task=implement` keeps the current broad set (edit/test cycle needs it). Every other task class defaults to a curated structured subset (per filed issue #160). Bash gets gated against search-shaped commands by default (per filed issue #158). Task-class profiles are shaped by ADK v2 agent modes: `--task=chat` → `Chat` mode; `--task=debug|implement|research|review|orchestrate` → `Task` mode. SingleTurn mode is internal (classifier-first workload dispatch, `mode: SingleTurn` specialists, LLM-as-router classifiers) rather than a public task class — see [`./orchestration-design.md`](./orchestration-design.md).
 - **Unattended dispatch is bundle-driven, not CLI-flag-driven.** The `--task=X` flag stays for laptop / library-embedder use, but unattended entry points (HTTP webhooks, queue consumers, scheduled jobs) resolve task class + operational profile from **workload bundles** — declarative YAML files under `.agents/workloads/*.yaml` naming specialists, tool catalog, budgets, HITL policy, and whether the planner runs. Four resolution paths (explicit / envelope / bundle-selection / classifier-first) coexist. See [`./orchestration-design.md`](./orchestration-design.md).
-- **README + docs-site entry points** *(site is Astro + Starlight per core-agent's actual convention — "Hugo" here was stale, corrected 2026-07-26)*. Lead with unattended / platform / library. The "I'm a developer who wants Claude Code" reader should be told within 30 seconds: *"Use Claude Code; this isn't that."* The "I'm a platform team deploying agents into Cloud Run / Kubernetes" reader should see their use case in the first screen. *(Added 2026-07-25: third routing pointer — the "I just want one simple agent loop in Go, no governance, no durability" reader gets sent to **raw ADK v2** with the same 30-second honesty, plus the specific return triggers: come back when the loop must survive restarts, needs budget/permission governance, needs provider switching, or stops having a human watching it. See "Smaller agents, slim embeds" below.)* Both surfaces need a rewrite, not a tweak.
+- **README + docs-site entry points** *(site is Astro + Starlight per core-agent's actual convention — "Hugo" here was stale, corrected 2026-07-26)*. Lead with unattended / platform / library. The "I want an interactive coding tool for my laptop" reader should be told within 30 seconds that this is a different product shape, without naming or ranking anyone else's. The "I'm a platform team deploying agents into Cloud Run / Kubernetes" reader should see their use case in the first screen. *(Added 2026-07-25: third routing pointer — the "I just want one simple agent loop in Go, no governance, no durability" reader gets sent to **raw ADK v2** with the same 30-second honesty, plus the specific return triggers: come back when the loop must survive restarts, needs budget/permission governance, needs provider switching, or stops having a human watching it. See "Smaller agents, slim embeds" below.)* Both surfaces need a rewrite, not a tweak.
 - **Examples directory.** Rebalance toward platform/SRE/library patterns. Target ratio: 70% unattended (GKE triage, Cloud Run, scheduled monitor, library embedding, MCP runbooks), 30% interactive (web UI, plan-first, attach-mode driving). Today's mix skews the other way.
 - **Subagent / spawn_agent / workflow scaffolding.** This becomes first-class, and — post-ADK-v2 — is delivered as **reference graphs on v2's workflow package**, not as a helper layer above the runtime. Seven canonical shapes shipped as `examples/workflows/<shape>/`:
   - Fan-out-fan-in (`gke-parallel-triage` becomes the reference implementation)
@@ -108,7 +108,7 @@ In rough priority order:
 - LSP integration / AST tooling.
 - Skill ecosystem for developer-laptop workflows.
 - Polishing interactive edit UX beyond functional.
-- Any work whose primary motivation is "to compete with Claude Code on axis X."
+- Any work whose primary motivation is matching another product's interactive-coding experience rather than serving an unattended workload.
 
 ## Smaller agents, slim embeds (added 2026-07-25)
 
@@ -132,8 +132,8 @@ Explicitly rejected: prebuilt single-purpose binaries (`mast-triage`, `mast-moni
 
 A non-trivial chunk of code, docs, and example surface exists today because we haven't picked which fight is ours. Committing to this thesis means:
 
-- We stop apologizing for being less polished than Claude Code on dev-laptop UX.
-- We stop measuring ourselves against Antigravity's IDE experience.
+- We stop apologizing for dev-laptop UX polish we were never building.
+- We stop benchmarking ourselves against IDE experiences that aren't the job.
 - We get permission to be sharper about which models work for which task classes (route to what works; stop trying to make everything work everywhere).
 - Documentation tells a coherent story instead of trying to address every possible reader.
 - Roadmap prioritization becomes mechanical: does this work serve unattended/library/multi-provider/governance? If yes, ship. If no, defer or cut.
