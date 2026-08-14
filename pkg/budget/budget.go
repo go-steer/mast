@@ -64,6 +64,8 @@ import (
 	"sync"
 
 	"google.golang.org/adk/v2/session"
+
+	"github.com/go-steer/mast/pkg/pricing"
 )
 
 // ErrExceeded is returned by Observe once the session's cumulative
@@ -85,8 +87,35 @@ type Limits struct {
 	// calls before finish_task has spent five turns, not one.
 	MaxTurns int
 
+	// Catalog prices each model call exactly, from the model the event
+	// says it was billed against.
+	//
+	// Optional, and strictly better than RatePer1K where a caller can
+	// supply it. The flat rate exists because this meter originally saw
+	// only UsageMetadata.TotalTokenCount, so internal/compose derives it
+	// as the plain average of a model's input and output rates — an
+	// approximation that "overcharges input-heavy sessions and
+	// undercharges output-heavy ones". Both halves of that premise have
+	// since stopped being true: the event carries the input/output split
+	// and the cache-read subset, and it carries ModelVersion, so the call
+	// can be priced against the same pkg/pricing catalog everything else
+	// uses. The error is not small on a real agent — an input-heavy,
+	// cache-warm session measured here ran 5.9x over its flat-rate
+	// figure, and a cost ceiling that wrong is a ceiling that fires on
+	// the wrong sessions.
+	//
+	// Unknown models fall through to RatePer1K, so a catalog miss never
+	// silently drops a session's cost to zero. Unpriced counts them.
+	//
+	// On a scope, nil means "inherit the session's catalog", matching
+	// RatePer1K's rule below. A per-scope catalog is unusual — a rate is
+	// a property of the model, and the model is on the event — but the
+	// inherit rule costs nothing and keeps the two price knobs behaving
+	// alike.
+	Catalog *pricing.Catalog
+
 	// RatePer1K is the flat USD price per 1K total tokens (spike
-	// pricing model).
+	// pricing model), and the fallback for a call Catalog cannot price.
 	//
 	// On a scope, zero means "inherit the session's rate" — the right
 	// default for a specialist that declares no model of its own, and
@@ -115,6 +144,12 @@ type Meter struct {
 	scopes map[string]Limits
 	total  usage
 	spent  map[string]*usage
+
+	// unpriced counts calls a configured Catalog could not price. It is
+	// session-wide rather than per-scope: it exists to label one cost
+	// figure as a mix of two pricing models, and every figure this meter
+	// reports is drawn from the same stream of calls.
+	unpriced int
 }
 
 // usage is one accumulator: a session's or a scope's.
@@ -156,14 +191,21 @@ func (m *Meter) Observe(ev *session.Event) error {
 
 	tokens := int64(ev.UsageMetadata.TotalTokenCount)
 	rate := m.limits.RatePer1K
+	cat := m.limits.Catalog
 	scope, scoped := m.scopes[ev.Author]
-	if scoped && scope.RatePer1K > 0 {
-		rate = scope.RatePer1K
+	if scoped {
+		if scope.RatePer1K > 0 {
+			rate = scope.RatePer1K
+		}
+		if scope.Catalog != nil {
+			cat = scope.Catalog
+		}
 	}
 	// Cost accrues per event rather than being recomputed from the
-	// running token total: with per-scope rates the session total is a
-	// sum of differently-priced calls, not one multiplication.
-	spend := float64(tokens) / 1000 * rate
+	// running token total: with per-scope rates and per-model catalog
+	// pricing the session total is a sum of differently-priced calls,
+	// not one multiplication.
+	spend := m.priceOf(ev, cat, rate)
 
 	m.total.add(tokens, spend)
 	if scoped {
@@ -200,6 +242,34 @@ func check(l Limits, u *usage) error {
 	return nil
 }
 
+// priceOf costs one model call, against cat where it can and the flat
+// rate where it cannot. Caller holds m.mu.
+//
+// Cached input is billed at the catalog's cache-read rate, which is
+// typically a tenth of fresh input; on a cache-warm agent that subset is
+// the majority of the prompt, so folding it in at the input rate is the
+// single largest source of error in a flat-rate figure.
+func (m *Meter) priceOf(ev *session.Event, cat *pricing.Catalog, rate float64) float64 {
+	u := ev.UsageMetadata
+	if cat != nil {
+		if r, ok := cat.Lookup(ev.ModelVersion); ok && !r.IsZero() {
+			// Clamped, not trusted: a provider that over-reports the
+			// cached counter would otherwise produce negative uncached
+			// tokens, and CostUSDWithCache would bill them at the input
+			// rate as a credit — a ceiling that gets *further* away the
+			// more the provider miscounts. core-agent's usage tracker
+			// guards the same quirk the same way.
+			cached := int(u.CachedContentTokenCount)
+			if prompt := int(u.PromptTokenCount); cached > prompt {
+				cached = prompt
+			}
+			return r.CostUSDWithCache(int(u.PromptTokenCount)-cached, cached, int(u.CandidatesTokenCount))
+		}
+		m.unpriced++
+	}
+	return float64(u.TotalTokenCount) / 1000 * rate
+}
+
 // Snapshot returns the session's cumulative usage so far.
 func (m *Meter) Snapshot() (tokens int64, costUSD float64, calls int) {
 	m.mu.Lock()
@@ -218,4 +288,15 @@ func (m *Meter) ScopeSnapshot(name string) (tokens int64, costUSD float64, calls
 		return 0, 0, 0, false
 	}
 	return u.tokens, u.cost, u.calls, true
+}
+
+// Unpriced reports how many calls a configured Catalog could not price and
+// that fell back to RatePer1K. Non-zero means the cost figure is a mix of
+// two pricing models and should be read as approximate — a caller that
+// displays cost should surface it rather than let a stale catalog quietly
+// downgrade an exact number.
+func (m *Meter) Unpriced() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.unpriced
 }
