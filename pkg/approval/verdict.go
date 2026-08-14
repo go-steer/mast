@@ -35,10 +35,11 @@ const (
 	// not to look for another way to achieve the same effect.
 	OutcomeReject Outcome = "reject"
 	// OutcomeEdit runs the call with arguments the operator supplied in
-	// place of the agent's. Accepted by the wire format from W2.1 so
-	// clients can be written against the final shape; refused as
-	// not-yet-implemented until W2.5 lands the schema validation an
-	// edited argument set has to pass.
+	// place of the agent's. The operator's arguments are validated against
+	// the tool's declared input schema, re-adjudicated against policy
+	// under their own call key, and recorded durably as an AppliedEdit —
+	// an edit that fails any of those is refused rather than narrowed
+	// (edit.go).
 	OutcomeEdit Outcome = "edit"
 )
 
@@ -72,15 +73,15 @@ var scopeDecisions = map[Scope]permissions.Decision{
 
 // Verdict is the operator's answer, carried in the Payload of the ADK
 // tool confirmation that resumes a parked call
-// (docs/orchestration-design.md, "Mutation approval"). The wire shape is
-// three-valued from the start so a client written today does not need
-// changing when OutcomeEdit becomes executable.
+// (docs/orchestration-design.md, "Mutation approval").
 //
 // Approver is not client-supplied trust. Whatever a client puts there is
 // overwritten at the resume boundary with the authenticated principal
-// that presented the verdict; a verdict that reaches the gate without
-// one is refused, because "who approved this" is the whole point of the
-// audit record.
+// that presented the verdict (cmd/mast's verdictFor), so every verdict
+// mast itself produces carries one. An OutcomeEdit that nonetheless
+// reaches the gate without an approver is refused: an edit executes
+// arguments no model proposed and no policy pattern vetted, so the
+// attribution is the only record of where they came from.
 type Verdict struct {
 	Verdict  Outcome        `json:"verdict"`
 	Scope    Scope          `json:"scope,omitempty"`
@@ -114,6 +115,26 @@ func knownScopes() string {
 	}
 	sort.Strings(names)
 	return strings.Join(names, ", ")
+}
+
+// ConfirmationResponse builds the FunctionResponse payload that answers
+// a parked mutating call. It is the exact wire shape ADK's
+// RequestConfirmationRequestProcessor looks for before re-dispatching
+// the original call: `confirmed` is the boolean it reads, `payload`
+// carries the verdict it cannot express.
+//
+// It lives here, next to DecodeVerdict, so the writer and the reader of
+// that shape stay in one place — the daemon's /resume handler and the
+// eval rig both build it from this rather than each deriving it, which
+// is what makes the rig's result evidence about mast.
+//
+// An edit is confirmed=true: the operator is authorizing a call, just
+// not the one the model proposed. The gate decides which arguments run.
+func ConfirmationResponse(v Verdict) map[string]any {
+	return map[string]any{
+		"confirmed": v.Verdict != OutcomeReject,
+		"payload":   v,
+	}
 }
 
 // DecodeVerdict reads mast's verdict record out of an ADK tool

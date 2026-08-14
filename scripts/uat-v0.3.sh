@@ -283,6 +283,15 @@ calls_count() {
   if [ -f "${f}" ]; then wc -l < "${f}" | tr -d ' '; else echo 0; fi
 }
 
+# calls_args <tool> — the ledger's lines, which name the ARGUMENTS each
+# entry was called with. The edit legs rest on this: "the tool ran once"
+# is satisfied equally by the model's call and the operator's, and only
+# the recorded arguments tell them apart.
+calls_args() {
+  local f="${BLOCKDIR}/$1.calls"
+  if [ -f "${f}" ]; then cat "${f}"; fi
+}
+
 # kill9 — SIGKILL the daemon and reap it. Nothing is drained and nothing
 # is flushed; only what is already durable survives.
 kill9() {
@@ -801,6 +810,76 @@ assert_http "approve this one call -> 202" \
   "$(resume_verdict incident-gf2 "${GF2INT}" '{"verdict":"approve","scope":"once"}')" 202
 assert_state "the approved run finishes" incident-gf2 idle
 assert_eq "the re-issued approval ran the call exactly once" "$(calls_count apply_change)" 1
+stop_term
+
+# ---- U-gate-edit leg G: the operator's arguments are the ones that run
+# W2.5. The scoreboard row is "an operator can edit the call before it
+# runs", and the only end-to-end evidence for it is what the tool was
+# handed: the fixture's apply_change records its `replicas` argument, the
+# fake proposes 10, and the operator sends 2.
+say "U-gate-edit/G: an edited verdict runs the operator's arguments, not the model's"
+DB="${WORK}/gate-g.db"
+WL="${GATE_DEFAULT}"
+LOG="${WORK}/gate-g.log"
+reset_blocker
+start_gate_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat gg1 ApplyChange)" 202
+assert_state "session parked on the write gate" incident-gg1 paused
+GGMSG="$(show_field incident-gg1 Message)"
+assert_has "the parked question shows the arguments the model proposed" "${GGMSG}" "replicas=10"
+GGINT="$(show_field incident-gg1 Interrupt)"
+assert_http "edit it down to two replicas -> 202" \
+  "$(resume_verdict incident-gg1 "${GGINT}" \
+    '{"verdict":"edit","args":{"replicas":2},"note":"ten would exhaust the node pool"}')" 202
+assert_state "the edited run finishes" incident-gg1 idle
+assert_eq "the call ran exactly once" "$(calls_count apply_change)" 1
+GGCALLS="$(calls_args apply_change)"
+assert_has "and it ran with the OPERATOR's arguments" "${GGCALLS}" "replicas=2"
+assert_hasnt "not with the model's" "${GGCALLS}" "replicas=10"
+assert_log_count "the edit is on the audit trail" "${LOG}" 'edit_applied' 1
+
+# The audit gap W2.5 exists to close. ADK re-fires the parked call
+# verbatim, so the durable FunctionCall still says replicas=10; without
+# the AppliedEdit record `sessions show` would tell an operator, with
+# confidence, the wrong thing about what mast did.
+GGSHOW="$("${BIN}" sessions show incident-gg1 --session-db="${DB}" 2>/dev/null)"
+assert_has "sessions show reports the applied edit" "${GGSHOW}" "Operator edit applied"
+assert_has "naming the call that actually ran" "${GGSHOW}" "apply_change(replicas=2)"
+assert_has "and the call the model had proposed" "${GGSHOW}" "apply_change(replicas=10)"
+assert_has "attributed to the authenticated approver" "${GGSHOW}" "shared-bearer-token"
+stop_term
+
+# ---- U-gate-edit leg H: an edit the schema rejects is refused --------
+# The discriminating control for leg G. If the gate simply forwarded
+# whatever the operator typed, leg G would pass exactly as it does now —
+# so the claim under test is that the arguments are CHECKED, and that a
+# refused edit runs neither the operator's call nor the model's.
+#
+# The execution count is NOT what discriminates here, and the leg does
+# not pretend it is: the MCP server validates its own inputs, so a
+# type-invalid call fails there too and the count stays 0 either way.
+# Deleting mast's check (verified by neutralization) leaves the count
+# untouched and trips the last two assertions instead — mast records the
+# edit as APPLIED and never logs the refusal, i.e. tells the operator
+# their arguments ran when the tool errored.
+say "U-gate-edit/H: an edit the tool's schema rejects never reaches the tool"
+DB="${WORK}/gate-h.db"
+WL="${GATE_DEFAULT}"
+LOG="${WORK}/gate-h.log"
+reset_blocker
+start_gate_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat gh1 ApplyChange)" 202
+assert_state "session parked on the write gate" incident-gh1 paused
+GHINT="$(show_field incident-gh1 Interrupt)"
+assert_http "edit it to a replica count that is not a number -> 202" \
+  "$(resume_verdict incident-gh1 "${GHINT}" '{"verdict":"edit","args":{"replicas":"two"}}')" 202
+assert_state "the run finishes" incident-gh1 idle
+assert_eq "neither the edited call nor the model's ran" "$(calls_count apply_change)" 0
+assert_log_count "the refusal is on the audit trail" "${LOG}" 'edit_refused' 1
+GHSHOW="$("${BIN}" sessions show incident-gh1 --session-db="${DB}" 2>/dev/null)"
+assert_hasnt "and nothing is recorded as applied" "${GHSHOW}" "Operator edit applied"
 stop_term
 
 # ---- summary --------------------------------------------------------

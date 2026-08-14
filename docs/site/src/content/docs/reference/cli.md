@@ -60,7 +60,9 @@ The split is deliberate:
   with state (`paused` / `aborted` / `interrupted` / `idle`) and pending
   interrupt IDs;
   `show` prints session detail including each pending interrupt's message,
-  response schema, and a copy-pasteable resume command.
+  response schema, and a copy-pasteable resume command — plus, for a
+  mutating call an operator edited, the arguments that actually ran and
+  who authorized them (see [the write gate](/reference/write-gate/)).
 - **`resume` / `abort` go through a running daemon** (`--addr`, default
   `http://127.0.0.1:7777`) — resume must be executed by the runner that
   owns the workflow, and routing abort through the daemon keeps a single

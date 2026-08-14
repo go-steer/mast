@@ -135,7 +135,7 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 	// Second pass. The operator has answered and ADK has re-dispatched
 	// the original call with the confirmation attached.
 	if c := ctx.ToolConfirmation(); c != nil {
-		return g.honorVerdict(ctx, t, key, c)
+		return g.honorVerdict(ctx, t, key, args, c)
 	}
 
 	switch g.cfg.Policy {
@@ -194,7 +194,13 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 // attached. Anything it cannot make sense of refuses the call: the
 // failure mode of a permissive reading here is mutating a cluster on the
 // strength of a payload nobody vouched for.
-func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, c *toolconfirmation.ToolConfirmation) (map[string]any, error) {
+//
+// args is the live map ADK will hand the tool. An edited verdict is
+// applied to it in place, and everything downstream of the edit — the
+// deny policy, the grant scope, the audit record — is adjudicated
+// against the arguments that will actually run, never the ones the model
+// proposed.
+func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, args map[string]any, c *toolconfirmation.ToolConfirmation) (map[string]any, error) {
 	v, err := DecodeVerdict(c)
 	if err != nil {
 		g.audit(ctx, t, key, "malformed_verdict", err.Error())
@@ -204,29 +210,28 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, c *
 		}, nil
 	}
 
+	// The call under adjudication. An edit replaces it wholesale: from
+	// here on, key and edited are what the gate is deciding about.
+	effKey, edited := key, map[string]any(nil)
 	if v.Verdict == OutcomeEdit {
-		// The wire format accepts an edit from W2.1 so clients can be
-		// written once, but executing one means validating the
-		// operator's arguments against the tool's input schema, which is
-		// W2.5. Until then the honest answer is that mast did not do it.
-		g.audit(ctx, t, key, "edit_not_implemented", "operator supplied edited arguments; edits land in W2.5")
-		return map[string]any{
-			"error": "not_implemented",
-			"detail": "The operator returned edited arguments, which this build cannot yet apply (mast W2.5). " +
-				"The call was NOT made, with either the original or the edited arguments. Report this and stop.",
-		}, nil
+		refusal, norm := g.prepareEdit(ctx, t, key, v)
+		if refusal != nil {
+			return refusal, nil
+		}
+		edited = norm
+		effKey = CallKey(t.Name(), norm)
 	}
 
 	d, err := v.Decision()
 	if err != nil {
-		g.audit(ctx, t, key, "malformed_verdict", err.Error())
+		g.audit(ctx, t, effKey, "malformed_verdict", err.Error())
 		return map[string]any{
 			"error":  "malformed_verdict",
 			"detail": err.Error() + " The call was not made.",
 		}, nil
 	}
 
-	if err := g.cfg.Gate.RecordMutationVerdict(ctx, t.Name(), key, d); err != nil {
+	if err := g.cfg.Gate.RecordMutationVerdict(ctx, t.Name(), effKey, d); err != nil {
 		code := "denied_by_operator"
 		detail := "The operator refused this call. Do not retry it and do not attempt the same change by another route. " +
 			"Report the refusal, including the operator's reason if one was given, and stop."
@@ -235,7 +240,7 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, c *
 			detail = "The approval asked to authorize more than this one call, which mast does not allow for a mutating tool. " +
 				"The call was NOT made. Report that the approval must be re-issued for this single call."
 		}
-		g.audit(ctx, t, key, code, err.Error())
+		g.audit(ctx, t, effKey, code, err.Error())
 		out := map[string]any{"error": code, "detail": detail}
 		if v.Note != "" {
 			out["operator_note"] = v.Note
@@ -246,11 +251,114 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, c *
 		return out, nil
 	}
 
+	if edited != nil {
+		// Last, and only once the verdict has survived every check: the
+		// live map ADK is about to hand the tool becomes the operator's.
+		record := AppliedEdit{
+			Tool:         t.Name(),
+			Approver:     v.Approver,
+			ProposedKey:  key,
+			ExecutedKey:  effKey,
+			ProposedArgs: copyArgs(args),
+			ExecutedArgs: copyArgs(edited),
+			Note:         v.Note,
+		}
+		applyArgs(args, edited)
+		g.recordEdit(ctx, t, record)
+	}
+
 	g.cfg.Logger.Info("mutating tool call approved by operator",
-		"tool", t.Name(), "call", key, "approver", v.Approver, "note", v.Note,
+		"tool", t.Name(), "call", effKey, "approver", v.Approver, "note", v.Note,
+		"edited", edited != nil, "proposed_call", key,
 		"session", ctx.SessionID(), "invocation", ctx.InvocationID(),
 		"function_call_id", ctx.FunctionCallID())
 	return nil, nil
+}
+
+// prepareEdit validates an edited verdict and re-adjudicates the deny
+// policy against the arguments the operator actually wants run. It
+// returns either a refusal to hand the model, or the normalized
+// arguments to execute.
+//
+// The policy re-check is the load-bearing half. CheckMutatingToolCall
+// ran before the park, against the model's call; an edit produces a
+// different call, and a configured deny that matched the operator's
+// version would otherwise be bypassed by the very act of approving —
+// "deny scale_deployment(deployment=prod-*)" must not be defeatable by
+// editing an approved staging call into a production one.
+func (g *writeGate) prepareEdit(ctx agent.Context, t tool.Tool, key string, v Verdict) (refusal, edited map[string]any) {
+	// An edit executes arguments no model proposed and no policy pattern
+	// vetted, so the audit record is the only trace of where they came
+	// from. An unattributed one is not a record (W2.3: the approver is
+	// stamped at the resume boundary from the authenticated caller, and
+	// every mast path stamps one).
+	if v.Approver == "" {
+		const detail = "an edited verdict arrived with no approver; mast will not run operator-authored arguments it cannot attribute"
+		g.audit(ctx, t, key, "edit_unattributed", detail)
+		return map[string]any{
+			"error": "edit_unattributed",
+			"detail": "The operator's edited arguments arrived without an authenticated approver, so mast refused them. " +
+				"The call was NOT made, with either the original or the edited arguments. Report this and stop.",
+		}, nil
+	}
+	norm, err := normalizeEdit(t, v.Args)
+	if err != nil {
+		g.audit(ctx, t, key, "edit_refused", err.Error())
+		return map[string]any{
+			"error": "edit_refused",
+			"detail": "The operator's edited arguments were refused: " + err.Error() +
+				". The call was NOT made, with either the original or the edited arguments. Report this and stop.",
+		}, nil
+	}
+	editedKey := CallKey(t.Name(), norm)
+	err = g.cfg.Gate.CheckMutatingToolCall(ctx, t.Name(), editedKey)
+	if !errors.Is(err, permissions.ErrApprovalRequired) {
+		g.audit(ctx, t, editedKey, "denied_by_policy", err.Error())
+		return map[string]any{
+			"error": "denied_by_policy",
+			"detail": "The operator's edited call is refused by the configured permission policy, not by a person who might reconsider: " + err.Error() +
+				" The call was NOT made. Do not retry it and do not attempt the same change by another route.",
+		}, nil
+	}
+	return nil, norm
+}
+
+// recordEdit writes the durable "what actually ran" record. It rides the
+// state delta of the event ADK is already about to append for this tool
+// call, so it lands in the same session, in the same write, with no
+// second writer — which matters: the runner owns that row's write lease
+// (mast #45/#46).
+func (g *writeGate) recordEdit(ctx agent.Context, t tool.Tool, e AppliedEdit) {
+	raw, err := json.Marshal(e)
+	if err != nil {
+		// Refusing the call here would be worse than a thin record: the
+		// operator approved it and the policy cleared it.
+		g.cfg.Logger.Error("write gate: applied an edit but could not encode its audit record",
+			"tool", t.Name(), "call", e.ExecutedKey, "error", err.Error())
+		return
+	}
+	if a := ctx.Actions(); a != nil {
+		if a.StateDelta == nil {
+			a.StateDelta = map[string]any{}
+		}
+		a.StateDelta[EditStateKey(ctx.FunctionCallID())] = string(raw)
+	}
+	g.cfg.Logger.Info("write gate: operator edit applied",
+		"outcome", "edit_applied", "tool", t.Name(),
+		"call", e.ExecutedKey, "proposed_call", e.ProposedKey,
+		"approver", e.Approver, "agent", ctx.AgentName(),
+		"session", ctx.SessionID(), "invocation", ctx.InvocationID(),
+		"function_call_id", ctx.FunctionCallID())
+}
+
+// copyArgs snapshots an argument map for the audit record, so the record
+// is not aliased to the live map applyArgs is about to rewrite.
+func copyArgs(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 func (g *writeGate) audit(ctx agent.Context, t tool.Tool, key, outcome, detail string) {
@@ -270,6 +378,22 @@ type Request struct {
 	Policy  string         `json:"policy"`
 	Agent   string         `json:"agent"`
 	Verdict map[string]any `json:"verdict_format"`
+}
+
+// DecodeRequest reads the parked confirmation's payload back into the
+// typed Request. The value is whatever the caller got out of the durable
+// log — Parked.Request, or a transcript projection's Payload — which is
+// the map JSON leaves behind rather than the struct the gate wrote.
+func DecodeRequest(v any) (Request, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return Request{}, fmt.Errorf("approval: re-marshalling parked request: %w", err)
+	}
+	var r Request
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return Request{}, fmt.Errorf("approval: parked payload is not an approval request: %w", err)
+	}
+	return r, nil
 }
 
 // verdictHelp travels with every parked call so an operator answering

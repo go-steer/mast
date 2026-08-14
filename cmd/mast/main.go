@@ -1486,10 +1486,7 @@ func resumeMessage(ctx context.Context, store *transcript.Store, req inject.Resu
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", inject.ErrBadPayload, err)
 		}
-		part = genai.NewPartFromFunctionResponse(toolconfirmation.FunctionCallName, map[string]any{
-			"confirmed": v.Verdict != approval.OutcomeReject,
-			"payload":   v,
-		})
+		part = genai.NewPartFromFunctionResponse(toolconfirmation.FunctionCallName, approval.ConfirmationResponse(v))
 	} else {
 		part = genai.NewPartFromFunctionResponse("adk_request_input", map[string]any{
 			"response": req.Response,

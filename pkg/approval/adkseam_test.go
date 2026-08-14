@@ -134,6 +134,9 @@ type seamProbe struct {
 	// verdicts is one entry per callback invocation: nil before the
 	// operator answers, the confirmation afterwards.
 	verdicts []*toolconfirmation.ToolConfirmation
+	// svc is the store the probe ran against, so a test can read the
+	// durable session back.
+	svc adksession.Service
 }
 
 func runSeamProbe(t *testing.T, gate func(p *seamProbe) llmagent.BeforeToolCallback, respond func(confID string) *genai.Content) *seamProbe {
@@ -181,6 +184,7 @@ func runSeamProbe(t *testing.T, gate func(p *seamProbe) llmagent.BeforeToolCallb
 	}
 
 	svc := sqliteService(t)
+	probe.svc = svc
 	r, err := runner.New(runner.Config{
 		AppName:           testApp,
 		Agent:             root,
