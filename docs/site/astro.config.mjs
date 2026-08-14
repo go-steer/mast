@@ -55,11 +55,17 @@ export default defineConfig({
       // Palette + typography live in one file so the whole visual
       // system is swappable (same pattern as core-agent).
       customCss: ['./src/styles/theme.css'],
+      // Audience-first, same shape as core-agent's: decide whether mast
+      // is for you, get it running, understand how it fits together,
+      // then look up exact fields. Concepts sits between the
+      // quickstarts and the reference because that is the order the
+      // questions arrive in.
       sidebar: [
         {
           label: 'Overview',
           items: [
             { label: 'Introduction', link: '/' },
+            { label: 'Why mast', link: '/why-mast/' },
             { label: 'Install', link: '/install/' },
             { label: 'Roadmap', link: '/roadmap/' },
           ],
@@ -71,6 +77,10 @@ export default defineConfig({
             { label: 'Embed the library', link: '/quickstart/library-embed/' },
             { label: 'Fork a starter', link: '/quickstart/fork-a-starter/' },
           ],
+        },
+        {
+          label: 'Concepts',
+          items: [{ autogenerate: { directory: 'concepts' } }],
         },
         {
           label: 'Reference',

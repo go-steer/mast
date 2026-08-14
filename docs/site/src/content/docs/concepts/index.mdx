@@ -1,0 +1,57 @@
+---
+title: Concepts
+description: How a mast deployment fits together — workloads and specialists, dispatch shapes, durability, approvals, budgets, tools, providers, and interop.
+sidebar:
+  label: Overview
+  order: 0
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+The building blocks every mast deployment touches, whether you run the
+daemon or embed the library. These pages explain *how the pieces fit and
+why they are shaped that way*; the [reference](/reference/workload-bundle/)
+section is where the exact fields, flags, and outcomes live.
+
+If you'd rather see it work first, the
+[offline quickstart](/quickstart/unattended-triage/) runs the whole loop —
+inject, park, `kill -9`, resume — with no credentials in about five
+minutes.
+
+<CardGrid>
+  <LinkCard
+    title="Workloads and specialists"
+    description="The bundle as the unit of deployment, the roster it names, and what a specialist declares about itself — capability, model, budget, report contract."
+    href="/mast/concepts/specialists-and-dispatch/"
+  />
+  <LinkCard
+    title="Durability"
+    description="Why a pause outlives the process that asked, what reconstruct-and-re-execute means for mutating tools, and how the effect log turns duplicate risk into a visible refusal."
+    href="/mast/concepts/durability/"
+  />
+  <LinkCard
+    title="Approvals and the write gate"
+    description="Four boundaries in front of a cluster change — capability split, mutation classification, the per-call gate, and the cluster's own RBAC — and what each does not cover."
+    href="/mast/concepts/approvals/"
+  />
+  <LinkCard
+    title="Budgets and cost"
+    description="Turn, wallclock, and dollar ceilings at both the workload and the specialist level, how spend is attributed, and the two limits worth knowing before you rely on a cap."
+    href="/mast/concepts/budgets/"
+  />
+  <LinkCard
+    title="Tools and MCP"
+    description="The tool catalog, per-specialist allowlists, and the default-deny-unknown mutation predicate — plus the silent failure mode an allowlist typo produces."
+    href="/mast/concepts/tools-and-mcp/"
+  />
+  <LinkCard
+    title="Providers and models"
+    description="Gemini, Claude, and the offline fakes; picking a model per specialist across providers; and why an unresolvable override fails startup."
+    href="/mast/concepts/providers/"
+  />
+  <LinkCard
+    title="Interop surfaces"
+    description="A2A, AG-UI, and the mast-native attach protocol — three ways in, aimed at three different consumers. Which one you want, and when."
+    href="/mast/concepts/interop/"
+  />
+</CardGrid>

@@ -5,7 +5,7 @@ template: doc
 tableOfContents: false
 banner:
   content: |
-    v0.1.0 — Phase 1 complete, all eleven exit criteria green. APIs are experimental except the five stable-from-v0.1 packages; see the <a href="/mast/roadmap/">roadmap</a>.
+    v0.3.0 — the write gate and the structural read/write split, on the v0.2 durable-execution spine. APIs are experimental except the five stable-from-v0.1 packages; see the <a href="/mast/roadmap/">roadmap</a>.
 hero:
   title: mast
   tagline: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads. Not a Claude Code competitor.
@@ -49,10 +49,31 @@ import { CardGrid, LinkCard, Card } from '@astrojs/starlight/components';
 
 ## The four pillars
 
-1. **Unattended.** Runs without a human watching: HTTP-triggered workloads, budget ceilings, HITL pauses that wait for an operator instead of failing.
+1. **Unattended.** Runs without a human watching: HTTP-triggered workloads, [budget ceilings](/concepts/budgets/), and [approvals](/concepts/approvals/) that wait for an operator instead of failing.
 2. **Library-embedded.** Composes as a Go library inside larger services — with a [tested slim-embed guarantee](/quickstart/library-embed/): pay for what you import.
-3. **Multi-provider.** Same config switches models without code changes (v0.1 ships Gemini — with Google Search and URL-context builtins — Claude on the first-party API or Vertex, and offline echo/scripted test models; the provider surface is one of the stable-from-v0.1 interfaces).
-4. **Durable.** Sessions live in SQLite or Postgres and survive process death — a paused approval outlives `kill -9` and resumes in a fresh process.
+3. **Multi-provider.** Same config switches [models](/concepts/providers/) without code changes — Gemini (with Google Search and URL-context builtins), Claude on the first-party API or Vertex, and offline test models; the provider surface is one of the stable-from-v0.1 interfaces.
+4. **Durable.** Sessions live in SQLite or Postgres and [survive process death](/concepts/durability/) — a paused approval outlives `kill -9` and resumes in a fresh process.
+
+## Nothing changes your cluster without an operator
+
+A specialist that would change something stops before the call fires, shows
+the operator the tool and its arguments, and waits — durably, across a
+restart. That boundary is structural rather than prompt-held: a specialist
+declares whether it may change anything, and mast **refuses to start** a
+roster in which a read-only one can reach a mutating tool.
+
+<CardGrid>
+  <LinkCard
+    title="The write gate"
+    description="What parks, the approve / reject / edit verdict an operator sends back, and what mast records about what actually ran."
+    href="/mast/reference/write-gate/"
+  />
+  <LinkCard
+    title="How the boundaries compose"
+    description="Capability split, mutation classification, the gate, and the cluster's own RBAC — four layers, and what each one does not cover."
+    href="/mast/concepts/approvals/"
+  />
+</CardGrid>
 
 ## Two ways to run it
 
@@ -68,6 +89,10 @@ import { CardGrid, LinkCard, Card } from '@astrojs/starlight/components';
     href="/mast/quickstart/library-embed/"
   />
 </CardGrid>
+
+Then read the [concepts](/concepts/) — how workloads, dispatch, durability,
+approvals, budgets, tools and providers fit together — or [why mast
+exists](/why-mast/) if you want the argument before the API.
 
 mast is the lean sibling of [core-agent](https://github.com/go-steer/core-agent)
 — same org, different job. The full design corpus lives in the repo under
