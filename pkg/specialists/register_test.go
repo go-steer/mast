@@ -37,6 +37,10 @@ import (
 type countingModel struct {
 	name  string
 	calls int
+	// decls is the tool surface of the last request. ADK assembles it
+	// several layers below the config a Spec turns into, so this is the
+	// only place it can be read.
+	decls []string
 }
 
 func (m *countingModel) Name() string { return m.name }
@@ -44,6 +48,14 @@ func (m *countingModel) Name() string { return m.name }
 func (m *countingModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		m.calls++
+		m.decls = nil
+		if req.Config != nil {
+			for _, gt := range req.Config.Tools {
+				for _, fd := range gt.FunctionDeclarations {
+					m.decls = append(m.decls, fd.Name)
+				}
+			}
+		}
 		resp := &model.LLMResponse{
 			TurnComplete: true,
 			FinishReason: genai.FinishReasonStop,
@@ -233,5 +245,45 @@ func TestBuild_ResolverUnusedWithoutOverride(t *testing.T) {
 	}
 	if called {
 		t.Error("resolver called for a spec with no model override")
+	}
+}
+
+// A Task specialist must not be offered transfer_to_agent. Under a Chat
+// coordinator — the topology pkg/router builds — the coordinator is its only
+// possible destination, since ADK's transferTargets skips Task-mode peers,
+// and taking it aborts the run: the transfer is forwarded in-process, so the
+// coordinator's runChat executes under the specialist's node context and
+// re-dispatches the unresolved delegation through workflow.RunNode, which
+// fails with "RunNode called outside a dynamic node".
+//
+// It is also right on its own terms. A specialist reports through
+// finish_task; one that transfers abandons the question it was asked and the
+// coordinator gets nothing to merge.
+func TestBuild_TaskSpecialistsCannotTransfer(t *testing.T) {
+	sub := &countingModel{name: "sub"}
+	spec := specialists.Spec{Name: "pod_inspector", Description: "d", Instruction: "i", Mode: specialists.ModeTask}
+	a, err := specialists.Build(spec, specialists.BuildOptions{Model: sub})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	runUnderCoordinator(t, []adkagent.Agent{a})
+
+	if sub.calls == 0 {
+		t.Fatal("the specialist's model was never called, so this test proves nothing")
+	}
+	var sawFinish bool
+	for _, name := range sub.decls {
+		if name == "transfer_to_agent" {
+			t.Errorf("the specialist is offered transfer_to_agent; its only target is the "+
+				"coordinator and taking it aborts the run. Declared: %v", sub.decls)
+		}
+		if name == "finish_task" {
+			sawFinish = true
+		}
+	}
+	// Removing the escape hatch must not remove the exit: a specialist with
+	// no finish_task closes no delegation at all.
+	if !sawFinish {
+		t.Errorf("the specialist has no finish_task, so it cannot report; declared: %v", sub.decls)
 	}
 }
