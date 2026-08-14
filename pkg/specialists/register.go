@@ -149,6 +149,14 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 			Tools:        opts.Tools,
 			Toolsets:     filterToolsets(spec, opts.Toolsets),
 			OutputSchema: spec.OutputSchema,
+			// A specialist reports through finish_task and never by handing
+			// the question back. Peers are already unreachable — ADK's
+			// transferTargets skips Task-mode agents — so the only transfer a
+			// specialist can make is to the coordinator that delegated to it,
+			// and under pkg/router's Chat coordinator that transfer aborts the
+			// run. See TaskAgentConfig for the mechanism.
+			DisallowTransferToParent: true,
+			DisallowTransferToPeers:  true,
 		})
 	case ModeSingleTurn:
 		return mastagent.NewSingleTurnAgent(mastagent.SingleTurnAgentConfig{
