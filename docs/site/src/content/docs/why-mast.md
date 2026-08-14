@@ -35,23 +35,12 @@ requirement someone hit in production rather than a feature someone wanted:
    question. *Unattended without durable is unwatched but fragile* — which
    is why durability is a pillar and not a storage detail.
 
-## What mast is not
+## Where mast fits
 
-**It is not a Claude Code competitor, and not trying to become one.**
-
-The dev-laptop interactive coding experience is downstream of model, IDE,
-and training investment this project cannot match, and competing there
-loses on every axis. That is a positioning decision, made once, on
-evidence: a frontier model spent 164 turns and $5.41 on a code
-investigation that a purpose-built coding assistant handles in a handful of
-turns. The right response to that gap is to pick a different fight, not to
-spend a year narrowing it.
-
-So, three honest routings — the sooner you get one, the better:
+Two honest routings — the sooner you get one, the better:
 
 | If you are… | Use | Why |
 |---|---|---|
-| A developer wanting great code-edit UX at your laptop | **Claude Code**, Antigravity, Cursor | That experience is their whole product. This isn't that. |
 | Someone who needs one simple agent loop in Go | **raw ADK v2** | Smallest surface, no governance, no durability. That niche is ADK's, and wedging a thin mast-branded layer in front of it would shrink every time ADK improves. |
 | A platform or SRE team putting agents where no human is watching | **mast** | Keep reading. |
 
@@ -59,6 +48,13 @@ Come back from ADK when the loop must survive restarts, needs budget or
 permission governance, needs provider switching, or stops having a human
 watching it. Adding those is an import, not a migration — you start inside
 mast either way.
+
+The scope decision behind that: mast invests in the deployed shape —
+durability, governance, operator surfaces, provider portability — and not
+in interactive editing UX. There is no LSP integration, no AST tooling, no
+syntax-aware diff UI, and the file-editing tools exist to serve unattended
+workloads rather than an editor. That is a boundary chosen once, not a
+backlog item.
 
 ## Where mast wins
 
@@ -73,10 +69,11 @@ mast either way.
 
 ## Where it does not
 
-- A developer is at their laptop wanting brilliant code-edit UX.
+- The agent's home is a developer's editor rather than your infrastructure.
 - The work is open-ended exploratory bug hunting in unfamiliar codebases.
 - LSP-style symbol and AST awareness is core to the workflow.
-- The team already has a coding assistant they're happy with.
+- One process, one loop, one human watching — no durability or governance
+  needed.
 
 ## The sibling, not the successor
 

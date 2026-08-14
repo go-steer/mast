@@ -1,6 +1,6 @@
 ---
 title: mast
-description: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads. Not a Claude Code competitor.
+description: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads — built for platform and SRE teams.
 template: doc
 tableOfContents: false
 banner:
@@ -8,7 +8,7 @@ banner:
     v0.3.0 — the write gate and the structural read/write split, on the v0.2 durable-execution spine. APIs are experimental except the five stable-from-v0.1 packages; see the <a href="/mast/roadmap/">roadmap</a>.
 hero:
   title: mast
-  tagline: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads. Not a Claude Code competitor.
+  tagline: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads — built for platform and SRE teams.
   actions:
     - text: Install
       link: /mast/install/
@@ -29,21 +29,21 @@ import { CardGrid, LinkCard, Card } from '@astrojs/starlight/components';
 ## Is mast for you? Thirty seconds of honesty
 
 <CardGrid>
-  <Card title="You want a coding assistant" icon="laptop">
-    Use **Claude Code** (or Antigravity, or Cursor). Developer-laptop
-    interactive coding is downstream of model + IDE investment mast does not
-    compete with. This isn't that.
-  </Card>
-  <Card title="You want one simple agent loop in Go" icon="seti:go">
-    Use **raw ADK v2** — no governance, no durability, smallest possible
-    surface. Come back when the loop must survive restarts, needs budget or
-    permission governance, needs provider switching, or stops having a human
-    watching it.
-  </Card>
   <Card title="You're a platform team" icon="rocket">
     Agents in Cloud Run, GKE, scheduled jobs, or compiled into your own
     services — incident triage, runbook automation, monitoring. **You're
     home.** Start with the quickstarts below.
+  </Card>
+  <Card title="You're embedding an agent in a Go service" icon="seti:go">
+    mast composes as a library, not just a binary — same subsystems either
+    way, with a CI-enforced slim-embed guarantee so you pay for what you
+    import.
+  </Card>
+  <Card title="You want one simple agent loop" icon="puzzle">
+    Use **raw ADK v2** — no governance, no durability, smallest possible
+    surface. Come back when the loop must survive restarts, needs budget or
+    permission governance, needs provider switching, or stops having a human
+    watching it.
   </Card>
 </CardGrid>
 
