@@ -65,6 +65,24 @@ type TaskAgentConfig struct {
 	// The zero value leaves ADK's default (transfer permitted) untouched.
 	DisallowTransferToParent bool
 	DisallowTransferToPeers  bool
+
+	// BeforeModelCallbacks and AfterModelCallbacks pass straight through to
+	// llmagent.Config, with ADK's semantics: a Before callback that returns a
+	// non-nil response short-circuits the model call — and with it every After
+	// callback — while an After callback that returns a non-nil response
+	// replaces the one the model produced.
+	//
+	// The seam is here rather than composable from outside because a Task
+	// agent cannot be wrapped. Both the coordinator's delegation-tool builder
+	// and workflow.AgentNode recognise a Task agent by type-asserting to
+	// internal/llminternal.Agent, which no package outside ADK can implement,
+	// so an agent.Agent wrapper is silently demoted to a transfer target and
+	// delegation stops working. Anything that has to intervene in a
+	// specialist's turn has to do it at the response.
+	//
+	// FinishOnStall is the reason this field exists; see stall.go.
+	BeforeModelCallbacks []llmagent.BeforeModelCallback
+	AfterModelCallbacks  []llmagent.AfterModelCallback
 }
 
 // NewTaskAgent constructs a Task-mode agent. Suitable for
@@ -88,6 +106,8 @@ func NewTaskAgent(cfg TaskAgentConfig) (adkagent.Agent, error) {
 		OutputSchema:             cfg.OutputSchema,
 		DisallowTransferToParent: cfg.DisallowTransferToParent,
 		DisallowTransferToPeers:  cfg.DisallowTransferToPeers,
+		BeforeModelCallbacks:     cfg.BeforeModelCallbacks,
+		AfterModelCallbacks:      cfg.AfterModelCallbacks,
 		Mode:                     llmagent.ModeTask,
 	})
 }
