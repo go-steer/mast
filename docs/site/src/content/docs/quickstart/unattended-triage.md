@@ -141,9 +141,14 @@ scripts/demo-spike2.sh
   only).
 - Against a real cluster the roster's shape starts to matter: the twelve
   diagnosers hold read tools only and name the remediation in their finding,
-  and the one `change-executor` specialist carries it out — parking for your
-  approval before each call that changes anything. Mast refuses to start a
-  roster that blurs that line. See [per-specialist
+  and the one `change-executor` specialist is the only one that could carry
+  it out — parking for your approval before each call that changes anything.
+  Mast refuses to start a roster that blurs that line. **Today the executor
+  is operator-invoked, not automatic:** a diagnosis names its remediation in
+  prose, and no dispatch shape hands that to the executor on its own, so an
+  incident ends in a finding. Handing it over needs the finding to carry a
+  typed proposed change, which is planned and not yet built. See
+  [per-specialist
   capability](/reference/workload-bundle/#per-specialist-capability), and
   classify any tools you add with `tool_catalog.tools[].mutating`: an
   unclassified tool counts as mutating, so an unclassified read tool will
