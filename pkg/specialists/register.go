@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 
@@ -54,6 +55,30 @@ type BuildOptions struct {
 
 	Tools    []tool.Tool
 	Toolsets []tool.Toolset
+
+	// OnStall, when non-nil, installs mastagent.FinishOnStall on every
+	// Task-mode specialist Build creates, using the payload this function
+	// returns for that spec. Returning nil selects
+	// mastagent.DefaultStallPayload.
+	//
+	// It is opt-in and it is per-spec, in that order of importance.
+	//
+	// Opt-in because the guard fabricates a tool call. Every other default in
+	// this package is a property of the wiring — which model, which toolsets,
+	// whether transfer is offered — and can be argued for without knowing what
+	// the roster does. This one puts words in a specialist's mouth on its
+	// behalf, and a roster that would rather see the delegation die should not
+	// have to discover the field to get that.
+	//
+	// Per-spec because the payload has to satisfy the spec's own
+	// output_schema, and only the roster knows what an empty value means in
+	// its own contract. Requesting the guard for a spec that declares a schema
+	// without returning a payload for it is a build error rather than a
+	// fallback, for the same reason a declared-but-unresolvable model override
+	// is: the fallback would produce a finish_task call the runtime refuses,
+	// leaving exactly the unresolved delegation the guard exists to prevent,
+	// and it would do it at run time on the one turn nobody is watching.
+	OnStall func(spec Spec) mastagent.StallPayload
 }
 
 // modelFor picks the model a Spec builds with: the resolved `model:`
@@ -79,6 +104,27 @@ func (o BuildOptions) modelFor(spec Spec) (model.LLM, error) {
 		return nil, fmt.Errorf("specialists: build %q: model resolver returned nil for override %q", spec.Name, spec.Model)
 	}
 	return m, nil
+}
+
+// stallGuard resolves BuildOptions.OnStall into the AfterModelCallbacks a
+// Task-mode spec is built with. Nil OnStall means no guard and no callbacks.
+//
+// The error case is the whole reason this is a method and not an inline
+// closure: a spec with an output_schema and no payload builder cannot be given
+// mastagent.DefaultStallPayload, whose `{"result": string}` shape ADK would
+// refuse against that schema. Refusing at build time turns a silent run-time
+// regression — the delegation stays unresolved, which is precisely the failure
+// the guard exists to prevent — into a message naming the spec.
+func (o BuildOptions) stallGuard(spec Spec) ([]llmagent.AfterModelCallback, error) {
+	if o.OnStall == nil {
+		return nil, nil
+	}
+	payload := o.OnStall(spec)
+	if payload == nil && spec.OutputSchema != nil {
+		return nil, fmt.Errorf("specialists: build %q: BuildOptions.OnStall returned no payload for a spec that declares an output_schema; "+
+			"the default {\"result\": string} payload would fail finish_task validation, which is the unresolved delegation the guard exists to prevent", spec.Name)
+	}
+	return []llmagent.AfterModelCallback{mastagent.FinishOnStall(spec.Name, payload)}, nil
 }
 
 // filterToolsets applies the specialist's MCP allowlist to the offered
@@ -131,6 +177,13 @@ func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
 // rejects a malformed call back to the model, SingleTurn through
 // validation of the reply, which fails the run — but in neither case
 // can output that violates the contract become the specialist's result.
+//
+// Task-mode specialists are always built unable to transfer, and are
+// built with the stall guard when opts.OnStall asks for it. The two are
+// the same hazard from opposite ends — a specialist that hands the
+// question back, and one that never hands anything back — and only the
+// first is safe to default, because only the first is a pure
+// subtraction. See BuildOptions.OnStall.
 func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 	if opts.Model == nil {
 		return nil, fmt.Errorf("specialists: build %q: BuildOptions.Model is required", spec.Name)
@@ -141,6 +194,10 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 	}
 	switch spec.Mode {
 	case ModeTask, "":
+		after, err := opts.stallGuard(spec)
+		if err != nil {
+			return nil, err
+		}
 		return mastagent.NewTaskAgent(mastagent.TaskAgentConfig{
 			Name:         spec.Name,
 			Description:  spec.Description,
@@ -157,6 +214,7 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 			// run. See TaskAgentConfig for the mechanism.
 			DisallowTransferToParent: true,
 			DisallowTransferToPeers:  true,
+			AfterModelCallbacks:      after,
 		})
 	case ModeSingleTurn:
 		return mastagent.NewSingleTurnAgent(mastagent.SingleTurnAgentConfig{

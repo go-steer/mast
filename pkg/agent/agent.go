@@ -37,6 +37,18 @@ type CoordinatorConfig struct {
 	SubAgents   []adkagent.Agent
 	Tools       []tool.Tool
 	Toolsets    []tool.Toolset
+
+	// BeforeModelCallbacks and AfterModelCallbacks pass straight through to
+	// llmagent.Config, with ADK's semantics: a Before callback that returns a
+	// non-nil response short-circuits the model call — and with it every After
+	// callback — while an After callback that returns a non-nil response
+	// replaces the one the model produced.
+	//
+	// Here for the same reason as TaskAgentConfig's — see the longer note
+	// there — and on both so that the two configs do not differ arbitrarily
+	// in what a caller can reach.
+	BeforeModelCallbacks []llmagent.BeforeModelCallback
+	AfterModelCallbacks  []llmagent.AfterModelCallback
 }
 
 // NewCoordinator constructs a Chat-mode LlmAgent with the given
@@ -59,6 +71,10 @@ func NewCoordinator(cfg CoordinatorConfig) (adkagent.Agent, error) {
 		SubAgents:   cfg.SubAgents,
 		Tools:       cfg.Tools,
 		Toolsets:    cfg.Toolsets,
-		Mode:        llmagent.ModeChat,
+
+		BeforeModelCallbacks: cfg.BeforeModelCallbacks,
+		AfterModelCallbacks:  cfg.AfterModelCallbacks,
+
+		Mode: llmagent.ModeChat,
 	})
 }
