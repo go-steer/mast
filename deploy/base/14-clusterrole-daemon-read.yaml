@@ -1,0 +1,84 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# The read half of the daemon's RBAC mirror (v0.3 W2.6): diagnosis is
+# cluster-wide, change is not. Everything mast's read-only specialists
+# reach — get_k8s_resource, describe_k8s_resource, list_k8s_events,
+# get_k8s_logs — is a get/list/watch on one of the resources below, in
+# any namespace. The write verbs live in a namespaced Role instead
+# (deploy/remediation-target/), so a remediation cannot leave the one
+# namespace an operator opted in.
+#
+# Two deliberate absences:
+#
+#   - secrets. Nothing in the diagnosis surface needs their contents,
+#     and a cluster-wide secret read on an agent that talks to a model
+#     is an exfiltration path, not a triage tool. An ImagePullBackOff
+#     specialist can see that a pull secret is referenced (pods,
+#     serviceaccounts) without reading it.
+#   - anything with a write verb. See deploy/rbac_test.go, which fails
+#     if one appears in a ClusterRole bound to this service account.
+#
+# metrics.k8s.io is listed even though a cluster may not run
+# metrics-server: a rule naming an absent API group is inert, and
+# OOMKilled sizing wants it where it exists.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mast-daemon-read
+  labels:
+    app.kubernetes.io/name: mast
+    app.kubernetes.io/component: daemon
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - pods/status
+      - events
+      - nodes
+      - namespaces
+      - services
+      - endpoints
+      - configmaps
+      - serviceaccounts
+      - persistentvolumeclaims
+      - persistentvolumes
+      - resourcequotas
+      - limitranges
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - deployments/status
+      - replicasets
+      - replicasets/status
+      - statefulsets
+      - statefulsets/status
+      - daemonsets
+      - daemonsets/status
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]

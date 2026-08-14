@@ -155,3 +155,8 @@ scripts/demo-spike2.sh
   shutdown interruption markers survive pod rescheduling. In-memory
   sessions (omitting `--session-db`) are a local-development opt-out,
   not a deploy default.
+- That base also grants the daemon cluster-wide **read** and nothing else;
+  the permission to change a namespace is a separate apply, once per
+  namespace. See [cluster permissions](/reference/cluster-permissions/),
+  including the GKE IAM caveat that decides whether the split bounds
+  anything.

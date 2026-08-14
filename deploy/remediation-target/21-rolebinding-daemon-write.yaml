@@ -1,0 +1,20 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Binds the namespaced write Role to the daemon's service account,
+# which lives in a DIFFERENT namespace (mast-triage). That asymmetry is
+# the grant: the subject is fixed, the namespace this lands in is the
+# operator's choice, and a namespace nobody instantiated this
+# kustomization for is one mast cannot change.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mast-daemon-write
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mast-daemon-write
+subjects:
+  - kind: ServiceAccount
+    name: mast-daemon
+    namespace: mast-triage

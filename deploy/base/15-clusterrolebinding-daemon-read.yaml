@@ -1,0 +1,18 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Binds the cluster-wide READ role to the daemon's service account.
+# The matching write grant is not here and is not cluster-scoped —
+# see deploy/remediation-target/.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mast-daemon-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mast-daemon-read
+subjects:
+  - kind: ServiceAccount
+    name: mast-daemon
+    namespace: mast-triage

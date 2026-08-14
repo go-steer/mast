@@ -1,0 +1,58 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# The write half of the daemon's RBAC mirror (v0.3 W2.6). A Role, not a
+# ClusterRole: mast may change workloads in the namespaces an operator
+# instantiates this directory for, and nowhere else.
+#
+# The verbs here are the API-server-side mirror of the workload's
+# declared write surface — patch_resource, rollout_undo, apply_manifest
+# and scale_deployment in examples/workloads/gke-triage/workload.yaml.
+# The mirror is deliberately NARROWER than the tools:
+#
+#   - apply_manifest can name any kind; this Role lets it create only
+#     workload objects and ConfigMaps, in one namespace.
+#   - nothing here can delete a Deployment/StatefulSet/DaemonSet.
+#     Deleting a workload is not a remediation mast performs
+#     unattended; the operator does it by hand.
+#   - no secrets, no serviceaccounts, no rbac.authorization.k8s.io, no
+#     namespaces, no nodes, and nothing cluster-scoped at all.
+#
+# That gap is the point. The write gate (pkg/approval) decides whether
+# an operator approved a call; this Role decides what the cluster will
+# accept even when they did. A call outside it fails at the API server
+# with a Forbidden the specialist sees as a tool error.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mast-daemon-write
+  labels:
+    app.kubernetes.io/name: mast
+    app.kubernetes.io/component: daemon
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # rollout_undo re-applies a previous ReplicaSet's pod template, and
+  # scale_deployment writes the scale subresource.
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale", "replicasets/scale"]
+    verbs: ["get", "update", "patch"]
+  # Deleting a pod is how a remediation restarts one. Creating pods
+  # directly is not granted — workloads are changed through their
+  # controller.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "update", "patch"]
