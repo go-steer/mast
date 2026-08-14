@@ -1,6 +1,6 @@
 module github.com/go-steer/mast
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.43.0
