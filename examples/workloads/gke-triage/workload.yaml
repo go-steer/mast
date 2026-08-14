@@ -19,7 +19,17 @@ tool_catalog:
   # as mutating and parks at the write gate. The writes are listed
   # explicitly rather than left to the default so that reading this
   # block tells you the workload's whole write surface.
+  #
+  # These are the 23 tools the hosted GKE MCP server
+  # (https://container.googleapis.com/mcp) offers as of 2026-08-14, and
+  # the classification mirrors each tool's own readOnlyHint annotation —
+  # verified against a live tools/list, not transcribed from docs. Names
+  # here must match the server exactly: the per-specialist allowlists
+  # below are applied with a stock ADK name predicate, which drops a
+  # name the server does not offer *silently*, so a typo reads as a
+  # specialist that simply holds fewer tools.
   tools:
+    # Kubernetes reads.
     - name: get_k8s_resource
       mutating: false
     - name: describe_k8s_resource
@@ -28,11 +38,48 @@ tool_catalog:
       mutating: false
     - name: get_k8s_logs
       mutating: false
-    - name: patch_resource
+    - name: get_k8s_rollout_status
+      mutating: false
+    - name: list_k8s_api_resources
+      mutating: false
+    - name: get_k8s_cluster_info
+      mutating: false
+    - name: get_k8s_version
+      mutating: false
+    - name: check_k8s_auth
+      mutating: false
+    # Control-plane reads.
+    - name: list_clusters
+      mutating: false
+    - name: get_cluster
+      mutating: false
+    - name: list_node_pools
+      mutating: false
+    - name: get_node_pool
+      mutating: false
+    - name: list_operations
+      mutating: false
+    - name: get_operation
+      mutating: false
+    # Kubernetes writes — the workload's actual remediation surface.
+    - name: patch_k8s_resource
       mutating: true
-    - name: rollout_undo
+    - name: apply_k8s_manifest
       mutating: true
-    - name: apply_manifest
+    - name: delete_k8s_resource
+      mutating: true
+    # Control-plane writes. No specialist allowlists these; they are
+    # declared so the block is the whole surface, and so that reaching
+    # one is a gate event rather than an unknown-tool default.
+    - name: create_cluster
+      mutating: true
+    - name: update_cluster
+      mutating: true
+    - name: create_node_pool
+      mutating: true
+    - name: update_node_pool
+      mutating: true
+    - name: cancel_operation
       mutating: true
 
 specialists:

@@ -6,12 +6,12 @@
 # instantiates this directory for, and nowhere else.
 #
 # The verbs here are the API-server-side mirror of the workload's
-# declared write surface — patch_resource, rollout_undo, apply_manifest
-# and scale_deployment in examples/workloads/gke-triage/workload.yaml.
+# declared write surface — patch_k8s_resource, apply_k8s_manifest and
+# delete_k8s_resource in examples/workloads/gke-triage/workload.yaml.
 # The mirror is deliberately NARROWER than the tools:
 #
-#   - apply_manifest can name any kind; this Role lets it create only
-#     workload objects and ConfigMaps, in one namespace.
+#   - apply_k8s_manifest can name any kind; this Role lets it create
+#     only workload objects and ConfigMaps, in one namespace.
 #   - nothing here can delete a Deployment/StatefulSet/DaemonSet.
 #     Deleting a workload is not a remediation mast performs
 #     unattended; the operator does it by hand.
@@ -33,8 +33,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
-  # rollout_undo re-applies a previous ReplicaSet's pod template, and
-  # scale_deployment writes the scale subresource.
+  # Undoing a bad deploy is a patch back to the previous pod template
+  # (the server offers no rollback tool), and scaling writes the scale
+  # subresource.
   - apiGroups: ["apps"]
     resources: ["deployments/scale", "statefulsets/scale", "replicasets/scale"]
     verbs: ["get", "update", "patch"]

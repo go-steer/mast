@@ -7,8 +7,9 @@
 # Why this is a separate bundle from gke-triage rather than another
 # --dispatch on it: the two rosters have different capabilities, not
 # just different shapes. A triage specialist carries the mutating tools
-# its remediation path needs (patch_resource, rollout_undo). A fan-out
-# analyst may not carry any, because a mutation inside a parallel branch
+# its remediation path needs (patch_k8s_resource, apply_k8s_manifest).
+# A fan-out analyst may not carry any, because a mutation inside a
+# parallel branch
 # leaves no record in the event log — ADK discards every branch-internal
 # event and keeps only the branch's Output payload. So the shipped
 # gke-triage roster cannot be a fan-out roster, and pointing

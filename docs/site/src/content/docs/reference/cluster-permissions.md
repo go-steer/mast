@@ -48,7 +48,7 @@ app.kubernetes.io/name=mast`, not a field somebody can widen in one edit.
 - **No deleting a workload.** `patch`, `update` and `create` on Deployments,
   StatefulSets, DaemonSets and their `scale` subresources; `delete` on Pods
   (that is how a restart happens) and nothing else.
-- **Narrower than the tools.** `apply_manifest` can name any kind. Under this
+- **Narrower than the tools.** `apply_k8s_manifest` can name any kind. Under this
   Role it lands only for workload objects and ConfigMaps, in one namespace.
   That gap is the point.
 

@@ -60,7 +60,7 @@
 #     tool at all. Over the shipped roster and one derived from it:
 #       A  the shipped roster starts and its startup log names the one
 #          specialist that declares write capability, and its tools
-#       B  the same roster with patch_resource handed back to a
+#       B  the same roster with patch_k8s_resource handed back to a
 #          diagnoser fails to start, naming the specialist and the tool
 #       C  the same derived roster with `capability: change_executor`
 #          on that diagnoser starts, so leg B is shown to refuse the
@@ -77,7 +77,7 @@
 #          and a report nobody contributed to does not gate at all
 #       C  the SHIPPED gke-triage roster under --dispatch=fanout is
 #          refused at construction, because its change executor holds
-#          patch_resource and every branch runs before the gate
+#          patch_k8s_resource and every branch runs before the gate
 #
 # The observation point is `mast sessions show`: with `--dispatch=graph`
 # and the roster's `hitl.require_approval`, each specialist result is
@@ -550,7 +550,7 @@ CRC=$?
 set -e
 assert_eq "startup fails" "${CRC}" 1
 CERR="$(cat "${CLOG}")"
-assert_has "the refusal names the mutating tool" "${CERR}" "patch_resource"
+assert_has "the refusal names the mutating tool" "${CERR}" "patch_k8s_resource"
 assert_has "the refusal names the analyst that holds it" "${CERR}" "fan-out analyst"
 assert_hasnt "the daemon never began serving" "${CERR}" "inject server listening"
 
@@ -567,7 +567,7 @@ assert_hasnt "the daemon never began serving" "${CERR}" "inject server listening
 #
 #   A  the shipped roster starts, and the startup log names its write
 #      surface — one specialist, and the tools it holds
-#   B  the same roster with patch_resource added back to a diagnoser
+#   B  the same roster with patch_k8s_resource added back to a diagnoser
 #      fails to start, naming the specialist and the tool
 #   C  the same derived roster, plus `capability: change_executor` on
 #      that diagnoser, starts — so leg B is a refusal of the
@@ -582,10 +582,10 @@ STRUCT_OK="${WORK}/struct-declared"
 rm -rf "${STRUCT_BAD}" "${STRUCT_OK}"
 cp -r "${WORKLOAD}" "${STRUCT_BAD}"
 # Give a diagnoser back the write tool W2.4 took away from it.
-sed 's|^        - list_k8s_events$|&\n        - patch_resource|' \
+sed 's|^        - list_k8s_events$|&\n        - patch_k8s_resource|' \
   "${WORKLOAD}/specialists/OOMKilled.tmpl" > "${STRUCT_BAD}/specialists/OOMKilled.tmpl"
-if ! grep -q 'patch_resource' "${STRUCT_BAD}/specialists/OOMKilled.tmpl"; then
-  echo "derived struct-undeclared has no patch_resource; the shipped tmpl's shape changed" >&2
+if ! grep -q 'patch_k8s_resource' "${STRUCT_BAD}/specialists/OOMKilled.tmpl"; then
+  echo "derived struct-undeclared has no patch_k8s_resource; the shipped tmpl's shape changed" >&2
   exit 1
 fi
 cp -r "${STRUCT_BAD}" "${STRUCT_OK}"
@@ -609,7 +609,7 @@ SALOG="$(cat "${LOG}")"
 assert_has "the startup log names the one specialist that can write" \
   "${SALOG}" "specialist declares write capability"
 assert_has "...by name" "${SALOG}" "change-executor"
-assert_has "...with the tools it holds" "${SALOG}" "patch_resource"
+assert_has "...with the tools it holds" "${SALOG}" "patch_k8s_resource"
 assert_log_count "exactly one specialist declares it" "${LOG}" \
   'specialist declares write capability' 1
 
@@ -624,7 +624,7 @@ set -e
 assert_eq "startup fails" "${SBRC}" 1
 SBERR="$(cat "${SBLOG}")"
 assert_has "the refusal names the specialist" "${SBERR}" "OOMKilled"
-assert_has "the refusal names the tool" "${SBERR}" "patch_resource"
+assert_has "the refusal names the tool" "${SBERR}" "patch_k8s_resource"
 assert_has "the refusal says what to do about it" "${SBERR}" "change_executor"
 assert_hasnt "the daemon never began serving" "${SBERR}" "inject server listening"
 

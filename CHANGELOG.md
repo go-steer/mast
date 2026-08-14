@@ -19,7 +19,7 @@
   *is* a grant of mutating tools. `request_operator_input` is refused too:
   every branch runs before the one approval gate, and a branch has no pause
   the outer graph could record. The shipped `gke-triage` roster is
-  deliberately one of the refused ones — it holds `patch_resource`, which is
+  deliberately one of the refused ones — it holds `patch_k8s_resource`, which is
   why fan-out ships a second example rather than converting the anchor.
 
 - **Fixed: an agent inside a parallel branch could not see its own tool
