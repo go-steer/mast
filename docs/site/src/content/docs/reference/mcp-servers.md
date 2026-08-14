@@ -152,3 +152,22 @@ an agent may call; see
 [`tool_catalog`](/reference/workload-bundle/#fields). MCP tools default to
 **mutating** for the recorded-effect outbox unless a `tool_catalog.tools[]`
 override marks them read-only.
+
+A specialist's allowlist names servers by the key they are declared under in
+`mcp.json`:
+
+```yaml
+tools:
+  mcp:
+    - server: gke              # the key in mcp.json's "servers" map
+      tools: [get_k8s_resource, get_k8s_logs]
+    - server: prometheus       # no tools: — the whole server
+```
+
+Presence is significant, per axis. **No `mcp:` key inherits every server the
+workload catalogs; `mcp: []` denies them all.** They are one character apart
+and mean opposite things, so write the empty list deliberately — it is how a
+specialist that needs no cluster access (a synthesizer, a classifier) says
+so, and since specialists are [read-only by
+default](/reference/workload-bundle/#per-specialist-capability), it is also
+how such a specialist avoids inheriting a catalog that contains write tools.

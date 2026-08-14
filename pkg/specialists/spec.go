@@ -69,6 +69,29 @@ const (
 	ModeSingleTurn Mode = "SingleTurn"
 )
 
+// Capability is what a specialist is allowed to do to the world. It is
+// the read/write half of the roster split: analysts diagnose, and a
+// separate, declared specialist carries out changes.
+//
+// The field exists because an allowlist alone cannot distinguish "this
+// specialist may write" from "somebody added a write tool to a
+// diagnoser and nobody noticed". A prompt saying *do not mutate* is not
+// a control; a declaration a loader can refuse is. See
+// docs/specialists-design.md, "Capability".
+type Capability string
+
+const (
+	// CapabilityReadOnly is a specialist that may not reach a mutating
+	// tool. Default when capability: is absent — the safe direction, and
+	// the one most specialists want.
+	CapabilityReadOnly Capability = "read_only"
+
+	// CapabilityChangeExecutor is a specialist that may. Declaring it is
+	// not an approval: every mutating call it makes still goes to the
+	// write gate (pkg/approval) like any other.
+	CapabilityChangeExecutor Capability = "change_executor"
+)
+
 // Budget captures the per-specialist runtime bounds. See
 // docs/specialists-design.md schema for field semantics, and the
 // package doc above for where each is enforced: MaxWallclockSeconds by
@@ -87,13 +110,32 @@ type MCPAllowlist struct {
 }
 
 // ToolAllowlist is the composite allowlist of built-in tools, MCP
-// tools, and skills a specialist may invoke. Enforcement is a later
-// spike step; for now these are parsed and preserved.
+// tools, and skills a specialist may invoke.
+//
+// Presence is significant per axis, per the normative table in
+// docs/specialists-design.md: an absent field inherits everything on
+// that axis, a present-but-empty field denies everything on it, and a
+// non-empty field is a whitelist. `mcp: []` is therefore not the same
+// declaration as no `mcp:` key at all — see InheritsAllMCP.
 type ToolAllowlist struct {
 	Builtin []string       `yaml:"builtin,omitempty"`
 	MCP     []MCPAllowlist `yaml:"mcp,omitempty"`
 	Skills  []string       `yaml:"skills,omitempty"`
 }
+
+// InheritsAllMCP reports whether this allowlist leaves the MCP axis
+// unrestricted — i.e. the spec declared no `mcp:` key, so the
+// specialist is offered every MCP toolset the workload has.
+//
+// It exists because the distinction it draws is a nil check that reads
+// like a typo. `mcp: []` decodes to an empty non-nil slice and means
+// *deny every MCP tool*; a missing `mcp:` decodes to nil and means
+// *grant them all*. Those are opposite outcomes one character apart, so
+// the question gets asked through a named method rather than re-derived
+// at each call site — filterToolsets enforces it, and
+// internal/compose.CheckCapabilitySplit refuses the inherit-all case for
+// a read_only specialist when the workload has a tool catalog.
+func (t ToolAllowlist) InheritsAllMCP() bool { return t.MCP == nil }
 
 // Frontmatter is the YAML block at the top of a .tmpl file.
 type Frontmatter struct {
@@ -101,6 +143,7 @@ type Frontmatter struct {
 	Description string        `yaml:"description"`
 	Mode        Mode          `yaml:"mode,omitempty"`
 	Model       string        `yaml:"model,omitempty"`
+	Capability  Capability    `yaml:"capability,omitempty"`
 	Budget      Budget        `yaml:"budget,omitempty"`
 	Tools       ToolAllowlist `yaml:"tools,omitempty"`
 
@@ -122,6 +165,7 @@ type Spec struct {
 	Description string
 	Mode        Mode
 	Model       string
+	Capability  Capability
 	Budget      Budget
 	Tools       ToolAllowlist
 

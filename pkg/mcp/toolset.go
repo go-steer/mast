@@ -44,16 +44,45 @@ func NewToolset(ctx context.Context, name string, cfg ServerConfig) (tool.Toolse
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("mcp: server %q: %w", name, err)
 	}
+	var (
+		ts  tool.Toolset
+		err error
+	)
 	switch cfg.Transport {
 	case TransportHTTP:
-		return newHTTPToolset(ctx, name, cfg, nil)
+		ts, err = newHTTPToolset(ctx, name, cfg, nil)
 	case TransportStdio:
-		return newStdioToolset(name, cfg, nil)
+		ts, err = newStdioToolset(name, cfg, nil)
 	default:
 		return nil, fmt.Errorf("mcp: server %q: unsupported transport %q (want %q or %q)",
 			name, cfg.Transport, TransportHTTP, TransportStdio)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return named{name: name, Toolset: ts}, nil
 }
+
+// named gives a toolset the catalog key its server is declared under.
+//
+// ADK's mcptoolset reports a fixed Name() — "mcp_tool_set" — for every
+// instance it builds, so without this wrapper a workload with three MCP
+// servers hands the roster three identically-named toolsets and nothing
+// downstream can tell them apart. That broke the per-specialist
+// `tools.mcp: - server: <key>` allowlist outright: the whitelist path in
+// pkg/specialists.filterToolsets matches allowlist entries to toolsets by
+// Name(), so every lookup missed and the specialist was built with no MCP
+// tools at all. Found 2026-08-14 in W2.4, when the first roster that
+// enumerated its tools (rather than inheriting the catalog) got none.
+//
+// tool.FilterToolset delegates Name() to the toolset it wraps, so the
+// narrowed toolsets filterToolsets returns keep the server key too.
+type named struct {
+	tool.Toolset
+	name string
+}
+
+func (n named) Name() string { return n.name }
 
 // newHTTPToolset wires a streamable-HTTP MCP server. When the config
 // declares Google OAuth, requests carry an ADC bearer token (fail-fast if

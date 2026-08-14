@@ -12,6 +12,29 @@ tool_catalog:
   mcp:
     - server: gke
 
+  # Every tool this workload can reach, classified. mast's predicate is
+  # default-deny-unknown, and ADK's mcptoolset drops MCP's own
+  # annotations, so this list is the only place a tool can be declared
+  # safe to run without an operator: anything absent from it is treated
+  # as mutating and parks at the write gate. The writes are listed
+  # explicitly rather than left to the default so that reading this
+  # block tells you the workload's whole write surface.
+  tools:
+    - name: get_k8s_resource
+      mutating: false
+    - name: describe_k8s_resource
+      mutating: false
+    - name: list_k8s_events
+      mutating: false
+    - name: get_k8s_logs
+      mutating: false
+    - name: patch_resource
+      mutating: true
+    - name: rollout_undo
+      mutating: true
+    - name: apply_manifest
+      mutating: true
+
 specialists:
   - triage-classifier
   - CrashLoopBackOff
@@ -26,6 +49,10 @@ specialists:
   - NodeNotReady
   - Evicted
   - _fallback
+  # The one specialist that can change the cluster. Everything above it
+  # diagnoses and stops — mast refuses to start this roster if a
+  # diagnoser holds a write tool (internal/compose.CheckCapabilitySplit).
+  - change-executor
 
 budget:
   max_wallclock_seconds: 300

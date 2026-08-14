@@ -15,6 +15,7 @@
 package specialists_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -114,14 +115,15 @@ func TestLoadDir(t *testing.T) {
 
 // TestLoadDir_ExampleWorkload pins the shipped GKE-triage roster to
 // the full shape in docs/triage-demo-plan.md: eleven per-failure-mode
-// Task specialists + the SingleTurn triage-classifier + _fallback.
+// Task specialists + the SingleTurn triage-classifier + _fallback, plus
+// the one change-executor W2.4 split the write surface out into.
 func TestLoadDir_ExampleWorkload(t *testing.T) {
 	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage", "specialists")
 	specs, err := specialists.LoadDir(dir)
 	if err != nil {
 		t.Fatalf("LoadDir(%s): %v", dir, err)
 	}
-	if got, want := len(specs), 13; got != want {
+	if got, want := len(specs), 14; got != want {
 		t.Fatalf("got %d specs, want %d", got, want)
 	}
 
@@ -138,8 +140,15 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 		"OOMKilled":         specialists.ModeTask,
 		"Unhealthy":         specialists.ModeTask,
 		"_fallback":         specialists.ModeTask,
+		"change-executor":   specialists.ModeTask,
 		"triage-classifier": specialists.ModeSingleTurn,
 	}
+	// W2.4: exactly one specialist in this roster may change the
+	// cluster, and it is the one named for it. Counted rather than
+	// spot-checked — the regression to catch is a second specialist
+	// quietly acquiring the declaration, which no per-file assertion
+	// would see.
+	var executors []string
 	// The report contract is one file, shared. Collecting the resolved
 	// paths and asserting there is exactly one is the assertion that
 	// matters: twelve specialists each with their own valid schema would
@@ -159,6 +168,9 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 		if s.Description == "" {
 			t.Errorf("%s: empty description", s.Name)
 		}
+		if s.Capability == specialists.CapabilityChangeExecutor {
+			executors = append(executors, s.Name)
+		}
 		switch s.Name {
 		case "triage-classifier":
 			// The router emits a bare token, not a report. Holding it
@@ -166,6 +178,18 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 			// a validation failure.
 			if s.OutputSchema != nil {
 				t.Errorf("%s: has an output schema; the router emits a token, not a finding", s.Name)
+			}
+		case "change-executor":
+			// A change report is not a finding: it says what was applied
+			// and how to undo it, so it is a separate contract on
+			// purpose. Sharing finding.json here is the drift that would
+			// make "proposed" and "applied" indistinguishable.
+			if s.OutputSchema == nil {
+				t.Errorf("%s: no output schema", s.Name)
+				break
+			}
+			if _, ok := s.OutputSchema.Properties["applied"]; !ok {
+				t.Errorf("%s: schema has no applied property, got %v", s.Name, s.OutputSchema.Properties)
 			}
 		default:
 			if s.OutputSchema == nil {
@@ -188,6 +212,88 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 	shared := filepath.Join("..", "..", "examples", "workloads", "gke-triage", "schemas", "finding.json")
 	if n := schemaPaths[shared]; n != 12 {
 		t.Errorf("%d diagnosers reference %s, want 12 (paths seen: %v)", n, shared, schemaPaths)
+	}
+	if len(executors) != 1 || executors[0] != "change-executor" {
+		t.Errorf("specialists declaring capability: change_executor = %v, want [change-executor] — this roster's write surface is one specialist", executors)
+	}
+}
+
+// TestLoadFile_Capability covers the W2.4 declaration: absent defaults
+// to read_only, change_executor parses, and anything else is refused at
+// load time.
+//
+// The refusal is the point. A misspelled `capability: change-executor`
+// defaulted to read_only would be a write declaration that silently did
+// not take, and the roster would fail later — at the capability check,
+// naming a tool rather than the typo, or worse, not at all if the
+// specialist happens to hold no write tools yet.
+func TestLoadFile_Capability(t *testing.T) {
+	const body = "---\ndescription: d\n%s---\nbody\n"
+	tests := []struct {
+		name    string
+		line    string
+		want    specialists.Capability
+		wantErr bool
+	}{
+		{"absent defaults to read_only", "", specialists.CapabilityReadOnly, false},
+		{"explicit read_only", "capability: read_only\n", specialists.CapabilityReadOnly, false},
+		{"change_executor", "capability: change_executor\n", specialists.CapabilityChangeExecutor, false},
+		{"a near miss is refused", "capability: change-executor\n", "", true},
+		{"an invented value is refused", "capability: admin\n", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTempTmpl(t, dir, "s.tmpl", fmt.Sprintf(body, tc.line))
+			spec, err := specialists.LoadFile(filepath.Join(dir, "s.tmpl"))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("LoadFile(%q) = nil error, want a refusal — an unrecognized capability is a declaration that did not take", tc.line)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFile: %v", err)
+			}
+			if spec.Capability != tc.want {
+				t.Fatalf("Capability = %q, want %q", spec.Capability, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadFile_EmptyMCPListIsNotAbsent pins the YAML decode the whole
+// deny-all spelling rests on: `mcp: []` must reach the Spec as a
+// present-but-empty slice, distinct from a missing `mcp:` key.
+//
+// This is a test of gopkg.in/yaml.v3's behaviour more than of mast's,
+// which is exactly why it is here — filterToolsets and
+// CheckCapabilitySplit both branch on ToolAllowlist.InheritsAllMCP, so a
+// decoder that normalized the empty sequence to nil would turn every
+// `mcp: []` in the corpus from "no tools" into "every tool" with no
+// other test noticing.
+func TestLoadFile_EmptyMCPListIsNotAbsent(t *testing.T) {
+	dir := t.TempDir()
+	writeTempTmpl(t, dir, "absent.tmpl", "---\ndescription: d\n---\nbody\n")
+	writeTempTmpl(t, dir, "empty.tmpl", "---\ndescription: d\ntools:\n  mcp: []\n---\nbody\n")
+
+	absent, err := specialists.LoadFile(filepath.Join(dir, "absent.tmpl"))
+	if err != nil {
+		t.Fatalf("LoadFile(absent): %v", err)
+	}
+	if !absent.Tools.InheritsAllMCP() {
+		t.Error("a spec with no tools: block does not read as inherit-all")
+	}
+
+	empty, err := specialists.LoadFile(filepath.Join(dir, "empty.tmpl"))
+	if err != nil {
+		t.Fatalf("LoadFile(empty): %v", err)
+	}
+	if empty.Tools.InheritsAllMCP() {
+		t.Error("`mcp: []` reads as inherit-all; the documented deny-all spelling grants every MCP tool instead of none")
+	}
+	if len(empty.Tools.MCP) != 0 {
+		t.Errorf("`mcp: []` decoded to %d entries, want 0", len(empty.Tools.MCP))
 	}
 }
 

@@ -52,6 +52,11 @@ budget:
 # (specialists are sub-agents, not coordinators).
 mode: Task                           # options: Task, SingleTurn
 
+# Capability (optional; defaults to read_only)
+# read_only specialists may not reach a mutating tool — mast refuses to
+# build a roster where one can. See "Capability" below.
+capability: read_only                # options: read_only, change_executor
+
 # Model override (optional; inherits parent if absent)
 model: gemini-2.5-flash              # full model ID; provider inferred from parent's config
 
@@ -101,6 +106,7 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | `budget.max_wallclock_seconds` | int | 60 | Hard wall-clock cap; cuts off the specialist regardless of turn count. |
 | `budget.max_cost_usd` | float | 0 | Per-invocation cost ceiling. 0 = inherit session ceiling. Useful for cheap-but-frequently-invoked specialists where bounded per-call cost matters more than session-level. |
 | `mode` | string | `Task` | ADK v2 agent mode. Options: `Task` (default; auto-installs `finish_task` — specialist returns via `finish_task` argument), `SingleTurn` (one call, no `finish_task` needed — useful for lightweight classifier specialists consumed by the LLM-as-router shape in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) and by workload-bundle classifier-first dispatch in [`./orchestration-design.md`](./orchestration-design.md)). `Chat` is deliberately not exposed — specialists are sub-agents, not coordinators. |
+| `capability` | string | `read_only` | Declares whether the specialist is allowed to change anything. `read_only` (the default, so the safe state is what you get by saying nothing) means mast refuses to build the roster if the specialist can reach a mutating tool — see [Capability](#capability-read_only-vs-change_executor-2026-08-14). `change_executor` exempts it and is logged at startup as part of the workload's write surface. The value is a closed enum: an unrecognized one (including the near-miss `change-executor`) fails the load rather than silently defaulting. |
 | `model` | string | inherit parent | Full model ID (`gemini-2.5-flash`, `claude-haiku-4-5`, etc.). Dispatched by model id, exactly like `--model`; the parent's provider alias only disambiguates the Anthropic backend, so a cross-provider override is legal (open Q#4, resolved 2026-08-12). Resolution is memoized per id, and an override that cannot be resolved fails the build rather than silently inheriting the parent's model. Under an offline-fake parent (`echo` / `scripted` / `toolactor`) every override collapses back to the parent so tiered bundles still run credential-free. Common pattern: frontier parent dispatching to cheap-tier specialists for high-volume tasks. |
 | `output_schema` | string | none | Path to a JSON-Schema document (`.json`, `.yaml`, `.yml`) **relative to the `.tmpl` file's own directory**, so a roster stays relocatable. Absent = the specialist returns free-form output. The document is read, type-normalized and checked at *load* time — a malformed contract fails the roster on startup, not on the first turn that dispatches to the specialist. Enforcement is ADK's: in `Task` mode the schema becomes the `finish_task` declaration and a non-conforming call comes back as a validation error the model can correct; in `SingleTurn` mode the reply is validated on the way out and a violation refuses the delegation. Either way the caller sees a refusal that names the offending key, and non-conforming output never becomes the specialist's result. Constraints checked at load: the top level must be an object (see below), every node needs a `type`, arrays need `items`, objects need `properties`, and every `required` name must be a declared property. Mast does not interpret the schema — there is no `Finding` Go type; the shape is a workload asset (`examples/workloads/gke-triage/schemas/finding.json`). |
 | `tools.builtin` | []string | inherit all | Allowlist (not denylist) of core-agent built-in tools. Absent = inherit all; present-but-empty = deny all builtins (see the normative table below — empty and absent are NOT equivalent, revised 2026-07-25). |
@@ -131,6 +137,29 @@ Two smaller load-time refusals are worth naming for the same reason — each is 
 Cross-axis independence: each axis resolves on its own (e.g. `mcp` listed + `builtin` absent → all builtins, only the listed MCP surface). Composition with bundles and skills is intersection, narrowest wins: skill `allowed_tools` ∩ specialist `tools` ∩ bundle `tool_catalog`.
 
 This is allowlist-by-design: enumerating the few tools a specialist *should* see is much easier than excluding the many it shouldn't.
+
+**Two enforcement corrections, both found on 2026-08-14 while building the capability split (mast W2.4).** The table above was normative and the code did not implement it:
+
+- **`mcp: []` granted the whole catalog.** The loader tested list *length*, so present-but-empty and absent took the same branch — the row that reads "deny all on that axis" was the row that inherited everything. Presence is now read as nil-vs-empty (`ToolAllowlist.InheritsAllMCP`), pinned by a test against yaml.v3's decoding, because this whole table rests on that one distinction surviving a round trip.
+- **A non-empty `mcp:` whitelist matched nothing.** Entries are matched to wired toolsets by name, and ADK's `mcptoolset` reports the same constant name for every server it builds — so a specialist that enumerated its tools got *none of them*, and the whitelist row was, in practice, a deny-all. Mast now names each toolset with its catalog key. If you write an allowlist, exercise it against a real server: this failed silently for two releases because no shipped bundle enumerated.
+
+### Capability: `read_only` vs `change_executor` (2026-08-14)
+
+A specialist's allowlist says what it *may* call. `capability:` says what it may *do*, and mast enforces the two against each other before the agent exists.
+
+`read_only` is the default. Building a roster refuses — with a message naming the specialist, the offending tools, and the fix — if a read-only specialist:
+
+- names a mutating tool in `tools.mcp[].tools` or `tools.builtin`,
+- grants itself a whole MCP server (`- server: gke` with no `tools:`), since the server's future tools are unreviewed, or
+- declares no `tools.mcp` at all while the workload ships a `tool_catalog` — inheriting the catalog inherits everything mutating in it.
+
+The escape hatches are to enumerate the read-only tools it needs, to write `mcp: []` if it needs none, or to declare `capability: change_executor` if it is genuinely meant to change things. `SingleTurn` specialists are exempt: the mode carries no tools at all.
+
+"Mutating" is not a list maintained here — it is the same default-deny predicate the effect outbox and the write gate use (built-in annotation, MCP `readOnlyHint`, and the workload's `tool_catalog.tools[].mutating` override). A tool nobody has classified is treated as mutating, so an unreviewed catalog fails the roster rather than the incident. Note the practical consequence recorded in [`./orchestration-design.md`](./orchestration-design.md): because ADK drops MCP annotations, `tool_catalog.tools[].mutating` is the *only* place a read tool can be declared safe.
+
+The check runs at roster construction, so it holds for every entry point (daemon, one-shot, library, eval rig) and both dispatch shapes. It is separate from — and weaker than — the fan-out branch check in `pkg/graph`, which refuses a mutating branch *even if it declares `change_executor`*, because every branch runs before the one synthesis gate.
+
+Why declare capability at all rather than infer it from the allowlist? Because the declaration is what makes the write surface auditable: every `change_executor` in the roster is logged at startup, so "which specialists in this workload can change the cluster" is answerable from a log line rather than by re-deriving the intersection of three files.
 
 ## Implementation shape
 

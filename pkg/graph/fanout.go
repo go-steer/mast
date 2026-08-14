@@ -390,8 +390,8 @@ func maxConcurrency(b workload.Bundle) int {
 func checkBranchTools(b workload.Bundle, analysts []Analyst, pred effects.Predicate) error {
 	hasCatalog := len(b.ToolCatalog.MCP) > 0
 	for _, a := range analysts {
-		if hasCatalog && len(a.Tools.MCP) == 0 {
-			return fmt.Errorf("graph: fan-out analyst %q declares no tools.mcp allowlist, which grants it the workload's whole tool catalog; a fan-out branch must enumerate the read-only tools it needs (every branch runs before the one approval gate)", a.Name)
+		if hasCatalog && a.Tools.InheritsAllMCP() {
+			return fmt.Errorf("graph: fan-out analyst %q declares no tools.mcp allowlist, which grants it the workload's whole tool catalog; a fan-out branch must enumerate the read-only tools it needs, or write `mcp: []` if it needs none (every branch runs before the one approval gate)", a.Name)
 		}
 		for _, al := range a.Tools.MCP {
 			if len(al.Tools) == 0 {

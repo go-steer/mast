@@ -84,17 +84,22 @@ func (o BuildOptions) modelFor(spec Spec) (model.LLM, error) {
 // filterToolsets applies the specialist's MCP allowlist to the offered
 // toolsets, matching allowlist entries to toolsets by server name.
 //
-// Spike semantics (docs/specialists-design.md's allowlist algebra is
-// contradictory across docs — this is the interpretation spike 2
-// commits to, flagged for the docs pass): an absent/empty tools.mcp
-// list inherits every offered toolset; a non-empty list is a
-// whitelist — unlisted servers are dropped, a listed server with no
-// tools[] passes whole, a listed server with tools[] is narrowed via
-// tool.FilterToolset + AllowedToolsPredicate (both stock ADK v2.1.0 —
-// per-tool MCP filtering needs no mast machinery, resolving
+// Semantics are the normative table in docs/specialists-design.md, read
+// per axis on *presence*: an absent tools.mcp inherits every offered
+// toolset; a present-but-empty one (`mcp: []`) denies them all; a
+// non-empty one is a whitelist — unlisted servers are dropped, a listed
+// server with no tools[] passes whole, a listed server with tools[] is
+// narrowed via tool.FilterToolset + AllowedToolsPredicate (both stock
+// ADK — per-tool MCP filtering needs no mast machinery, resolving
 // specialists-design open question #3).
+//
+// Corrected 2026-08-14, in W2.4: this used to treat empty as absent, so
+// the documented deny-all spelling granted the whole catalog instead.
+// Harmless while nothing read the declaration; not harmless once
+// CheckCapabilitySplit accepts `mcp: []` as proof a diagnoser holds no
+// write tools. A declaration that reads as deny must deny.
 func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
-	if len(spec.Tools.MCP) == 0 {
+	if spec.Tools.InheritsAllMCP() {
 		return offered
 	}
 	byServer := make(map[string]MCPAllowlist, len(spec.Tools.MCP))

@@ -47,9 +47,20 @@ func TestFilterToolsets(t *testing.T) {
 	slack := &staticToolset{name: "slack", tools: []tool.Tool{mkTool(t, "post_message")}}
 	offered := []tool.Toolset{gke, slack}
 
-	// Empty allowlist inherits everything.
+	// An absent allowlist inherits everything.
 	if got := filterToolsets(Spec{Name: "s"}, offered); len(got) != 2 {
-		t.Fatalf("empty allowlist: got %d toolsets, want 2", len(got))
+		t.Fatalf("absent allowlist: got %d toolsets, want 2", len(got))
+	}
+
+	// A present-but-empty one denies everything. This is the whole
+	// nil-vs-empty distinction: one character apart from the case above
+	// and the opposite outcome, which is why it is pinned here rather
+	// than left to whoever next reads filterToolsets. A specialist that
+	// writes `mcp: []` and is handed the cluster's write tools anyway is
+	// the failure this test exists to catch.
+	denyAll := Spec{Name: "s", Tools: ToolAllowlist{MCP: []MCPAllowlist{}}}
+	if got := filterToolsets(denyAll, offered); len(got) != 0 {
+		t.Fatalf("`mcp: []`: got %d toolsets, want 0 — the documented deny-all spelling granted tools", len(got))
 	}
 
 	// Non-empty allowlist drops unlisted servers and narrows listed ones.

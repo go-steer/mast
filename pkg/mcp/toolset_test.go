@@ -300,6 +300,36 @@ func TestNewToolset_StdioLazy(t *testing.T) {
 	}
 }
 
+// TestNewToolset_CarriesTheCatalogKey pins the toolset's Name() to the
+// catalog key its server is declared under, on both transports.
+//
+// This is load-bearing, not cosmetic. ADK's mcptoolset names every
+// instance "mcp_tool_set", and pkg/specialists.filterToolsets matches a
+// specialist's `tools.mcp: - server: <key>` allowlist to toolsets by
+// Name(). Without the wrapper every lookup misses, and a specialist that
+// enumerates the tools it needs is built holding none of them — the
+// allowlist reads as a grant and behaves as a total denial. Found
+// 2026-08-14 in W2.4 (docs/v0.3-plan.md findings).
+func TestNewToolset_CarriesTheCatalogKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  ServerConfig
+	}{
+		{"stdio", ServerConfig{Transport: TransportStdio, Command: "/nonexistent/not/here"}},
+		{"http", ServerConfig{Transport: TransportHTTP, URL: "https://example.invalid/mcp"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, err := NewToolset(context.Background(), "gke", tc.cfg)
+			if err != nil {
+				t.Fatalf("NewToolset: %v", err)
+			}
+			if got := ts.Name(); got != "gke" {
+				t.Errorf("Name() = %q, want %q — a specialist allowlist keyed on the catalog name cannot match this toolset", got, "gke")
+			}
+		})
+	}
+}
+
 // TestStdioRoundTrip builds the testdata mcpserver helper and lists its
 // tools over the real stdio transport, exercising the full local-process
 // path (launch, JSON handshake, ListTools) and env passthrough.

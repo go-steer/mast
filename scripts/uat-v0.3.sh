@@ -56,6 +56,16 @@
 #       scopes     an approval that asks for more than this one call is
 #                  refused, and the tool does not run (W2.3)
 #
+#   U-gate-structural (W2.4) — which specialists can reach a mutating
+#     tool at all. Over the shipped roster and one derived from it:
+#       A  the shipped roster starts and its startup log names the one
+#          specialist that declares write capability, and its tools
+#       B  the same roster with patch_resource handed back to a
+#          diagnoser fails to start, naming the specialist and the tool
+#       C  the same derived roster with `capability: change_executor`
+#          on that diagnoser starts, so leg B is shown to refuse the
+#          undeclared write rather than the tool
+#
 #   U-fanout (W3) — the roster runs concurrently over one incident and
 #     the merged report gates ONCE, after synthesis. Driven over
 #     examples/workloads/ns-audit, the read-only bundle fan-out needs:
@@ -66,7 +76,7 @@
 #          leg A's "4 of 4" is shown to be a count and not a constant,
 #          and a report nobody contributed to does not gate at all
 #       C  the SHIPPED gke-triage roster under --dispatch=fanout is
-#          refused at construction, because its specialists hold
+#          refused at construction, because its change executor holds
 #          patch_resource and every branch runs before the gate
 #
 # The observation point is `mast sessions show`: with `--dispatch=graph`
@@ -516,10 +526,12 @@ stop_term
 unset MAST_FAKE_SCHEMA_VIOLATION
 
 # ---- U-fanout leg C: a mutating roster is refused at construction ----
-# The shipped gke-triage roster is a remediation roster: its specialists
-# hold patch_resource. Fan-out runs every branch BEFORE the one approval
-# gate, so that roster is not a fan-out roster — and mast has to say so
-# at startup rather than discover it mid-incident.
+# The shipped gke-triage roster is a remediation roster: since W2.4 the
+# write tools live on one declared specialist (change-executor) instead
+# of on seven diagnosers, but a declaration is not a branch exemption.
+# Fan-out runs every branch BEFORE the one approval gate, so that roster
+# is still not a fan-out roster — and mast has to say so at startup
+# rather than discover it mid-incident.
 say "U-fanout/C: a roster that can mutate is refused before the daemon serves"
 CLOG="${WORK}/h.log"
 set +e
@@ -532,6 +544,92 @@ CERR="$(cat "${CLOG}")"
 assert_has "the refusal names the mutating tool" "${CERR}" "patch_resource"
 assert_has "the refusal names the analyst that holds it" "${CERR}" "fan-out analyst"
 assert_hasnt "the daemon never began serving" "${CERR}" "inject server listening"
+
+# ====================================================================
+# U-gate-structural (W2.4) — a diagnoser cannot hold a write tool
+# ====================================================================
+# The write gate above asks an operator per call. This asks a different
+# question: which specialists can even reach a mutating tool? Before
+# W2.4 the answer for the shipped roster was "seven diagnosers", held
+# back by the sentence "Do NOT mutate anything on your own initiative"
+# in their prompts. Three legs, over the SHIPPED bundle and one derived
+# from it, because the refusal has to be shown to depend on the
+# declaration rather than on the tool:
+#
+#   A  the shipped roster starts, and the startup log names its write
+#      surface — one specialist, and the tools it holds
+#   B  the same roster with patch_resource added back to a diagnoser
+#      fails to start, naming the specialist and the tool
+#   C  the same derived roster, plus `capability: change_executor` on
+#      that diagnoser, starts — so leg B is a refusal of the
+#      undeclared write, not of the tool
+#
+# Back to graph dispatch: the fan-out legs above set DISPATCH globally,
+# and this section is about the roster mast refuses to BUILD, on the
+# dispatch shape the bundle actually ships with.
+DISPATCH=graph
+STRUCT_BAD="${WORK}/struct-undeclared"
+STRUCT_OK="${WORK}/struct-declared"
+rm -rf "${STRUCT_BAD}" "${STRUCT_OK}"
+cp -r "${WORKLOAD}" "${STRUCT_BAD}"
+# Give a diagnoser back the write tool W2.4 took away from it.
+sed 's|^        - list_k8s_events$|&\n        - patch_resource|' \
+  "${WORKLOAD}/specialists/OOMKilled.tmpl" > "${STRUCT_BAD}/specialists/OOMKilled.tmpl"
+if ! grep -q 'patch_resource' "${STRUCT_BAD}/specialists/OOMKilled.tmpl"; then
+  echo "derived struct-undeclared has no patch_resource; the shipped tmpl's shape changed" >&2
+  exit 1
+fi
+cp -r "${STRUCT_BAD}" "${STRUCT_OK}"
+# ...and now let it say so. One line of YAML is the whole difference
+# between leg B and leg C.
+sed 's|^output_schema: ../schemas/finding.json$|&\ncapability: change_executor|' \
+  "${STRUCT_BAD}/specialists/OOMKilled.tmpl" > "${STRUCT_OK}/specialists/OOMKilled.tmpl"
+if ! grep -q 'capability: change_executor' "${STRUCT_OK}/specialists/OOMKilled.tmpl"; then
+  echo "derived struct-declared has no capability line; the shipped tmpl's shape changed" >&2
+  exit 1
+fi
+
+# ---- U-gate-structural leg A: the shipped roster declares its writes -
+say "U-gate-structural/A: the shipped roster starts and names its write surface"
+DB="${WORK}/struct-a.db"
+WL="${WORKLOAD}"
+LOG="${WORK}/struct-a.log"
+start_daemon "${LOG}"
+stop_term
+SALOG="$(cat "${LOG}")"
+assert_has "the startup log names the one specialist that can write" \
+  "${SALOG}" "specialist declares write capability"
+assert_has "...by name" "${SALOG}" "change-executor"
+assert_has "...with the tools it holds" "${SALOG}" "patch_resource"
+assert_log_count "exactly one specialist declares it" "${LOG}" \
+  'specialist declares write capability' 1
+
+# ---- U-gate-structural leg B: an undeclared write fails the roster ---
+say "U-gate-structural/B: a diagnoser holding a write tool fails to start"
+SBLOG="${WORK}/struct-b.log"
+set +e
+"${BIN}" --workload="${STRUCT_BAD}" --dispatch=graph \
+  --listen=":${PORT}" --model=echo --session-db="${WORK}/struct-b.db" >"${SBLOG}" 2>&1
+SBRC=$?
+set -e
+assert_eq "startup fails" "${SBRC}" 1
+SBERR="$(cat "${SBLOG}")"
+assert_has "the refusal names the specialist" "${SBERR}" "OOMKilled"
+assert_has "the refusal names the tool" "${SBERR}" "patch_resource"
+assert_has "the refusal says what to do about it" "${SBERR}" "change_executor"
+assert_hasnt "the daemon never began serving" "${SBERR}" "inject server listening"
+
+# ---- U-gate-structural leg C: declaring it makes the same roster run -
+say "U-gate-structural/C: the same roster starts once the write is declared"
+DB="${WORK}/struct-c.db"
+WL="${STRUCT_OK}"
+LOG="${WORK}/struct-c.log"
+start_daemon "${LOG}"
+assert_http "inject OOMKilled -> 202" "$(inject_code sc1 OOMKilled)" 202
+assert_state "the declared roster runs the incident" incident-sc1 paused
+stop_term
+assert_log_count "both write declarations are on the startup log" "${LOG}" \
+  'specialist declares write capability' 2
 
 # ====================================================================
 # U-gate (W2.1-W2.3) — a mutating call stops before it fires

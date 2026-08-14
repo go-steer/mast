@@ -81,6 +81,11 @@ func fanoutSpecs(names ...string) []specialists.Spec {
 		Name:        graph.SynthesisName,
 		Instruction: "merge",
 		Mode:        specialists.ModeTask,
+		// The merger reads its branches' findings, not the cluster, so
+		// it declares the deny-all MCP allowlist (`mcp: []` in a .tmpl).
+		// Leaving the field nil would mean "inherit the whole catalog"
+		// and CheckCapabilitySplit would refuse the roster.
+		Tools: specialists.ToolAllowlist{MCP: []specialists.MCPAllowlist{}},
 	})
 }
 
