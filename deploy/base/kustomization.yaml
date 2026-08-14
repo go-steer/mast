@@ -25,6 +25,10 @@ resources:
   - 11-serviceaccount-watcher.yaml
   - 12-clusterrole-watcher.yaml
   - 13-clusterrolebinding-watcher.yaml
+  # Cluster-wide READ for the daemon. Its write grant is namespaced and
+  # deliberately not here — see deploy/remediation-target/.
+  - 14-clusterrole-daemon-read.yaml
+  - 15-clusterrolebinding-daemon-read.yaml
   - 50-statefulset-daemon.yaml
   - 51-deployment-watcher.yaml
   - 60-service.yaml

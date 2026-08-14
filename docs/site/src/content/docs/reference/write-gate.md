@@ -137,3 +137,12 @@ Every outcome is on the daemon's audit log as well, each with a named
 outcome: `awaiting_approval`, `denied_by_policy`, `denied_by_operator`,
 `approval_scope_refused`, `edit_unattributed`, `edit_refused`,
 `edit_applied`, `apply`, `dry_run`.
+
+## The gate is not the only boundary
+
+Everything above is what mast enforces. What the *cluster* will accept from
+mast is a separate grant, and on Kubernetes it should be a narrower one: an
+approved call still has to get past the API server. See [cluster
+permissions](/reference/cluster-permissions/) for the read/write RBAC split
+that ships with the deployment manifests — and for the GKE IAM binding that
+decides whether that split bounds anything.

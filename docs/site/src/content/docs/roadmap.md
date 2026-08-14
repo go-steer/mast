@@ -197,6 +197,13 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   remediation, plus one change executor that carries it out under the write
   gate — and which specialists can change your cluster is a startup log line,
   not something you work out by reading three files.
+- **The same split, in the deployment manifests** — the kustomize base grants
+  the daemon cluster-wide read (and no secrets); permission to *change* a
+  namespace is a separate `Role` you apply once per namespace, so an approved
+  call still has to get past the API server. Deliberately narrower than the
+  tools it backs, and CI-linted from the subject side so a new cluster-scoped
+  grant cannot slip in. On GKE, read the IAM caveat before trusting it: see
+  [cluster permissions](/reference/cluster-permissions/).
 - **ADK v2.2.0** — the agent substrate is upgraded from v2.1.0. The fix that
   motivated taking it now: a workflow-graph run whose invocation context was
   cancelled from outside — an evicted attach session, a dispatch deadline, an

@@ -1,0 +1,33 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# One namespace mast is allowed to CHANGE. Apply this once per such
+# namespace, each time with a different `namespace:` value:
+#
+#   kubectl apply -k deploy/remediation-target                    # after editing below
+#   kustomize build deploy/remediation-target | \
+#     sed 's/REPLACE_ME_TARGET_NAMESPACE/team-a/' | kubectl apply -f -
+#
+# It is deliberately NOT part of deploy/base. The base pins
+# `namespace: mast-triage` on everything it renders, so a write Role
+# carried there would land in the daemon's own namespace — the one
+# namespace where a write grant is useless — and an operator editing it
+# into a real target would silently widen the base for everyone. Split
+# out, the read grant ships by default and every write grant is an
+# explicit, per-namespace act.
+#
+# The daemon's ServiceAccount is NOT created here: it lives in
+# mast-triage (deploy/base/10-serviceaccount-daemon.yaml) and the
+# RoleBinding refers to it across namespaces.
+#
+# Verify what this granted with scripts/rbac-matrix.sh.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The namespace mast may remediate. Replace before applying.
+namespace: REPLACE_ME_TARGET_NAMESPACE
+
+resources:
+  - 20-role-daemon-write.yaml
+  - 21-rolebinding-daemon-write.yaml

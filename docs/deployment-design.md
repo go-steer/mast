@@ -176,6 +176,25 @@ deployment:
 
 `examples/deploy/gke-helm/` — Helm chart. v0.2.
 
+The shipped manifests live in `deploy/` (base + `overlays/example` + `remediation-target`), not `examples/deploy/` — see "Cluster permissions" below for the RBAC layout.
+
+### Cluster permissions
+
+*(Shipped v0.3 W2.6, 2026-08-14.)* The agent's structural read/write split — read-only diagnosers, one `change-executor` (`internal/compose.CheckCapabilitySplit`) — is mirrored on the cluster side, so that what the agent will *propose* and what the cluster will *accept* are two independent boundaries rather than one:
+
+| Grant | Kind | Scope | Where |
+|---|---|---|---|
+| Diagnosis | `ClusterRole mast-daemon-read` | every namespace, `get`/`list`/`watch`, **no secrets** | `deploy/base/14-*`, `15-*` |
+| Change | `Role mast-daemon-write` | one namespace per apply | `deploy/remediation-target/` |
+
+Three properties are deliberate and are pinned by `deploy/rbac_test.go`:
+
+- **The write grant is narrower than the tools.** `apply_manifest` can name any kind; the Role lets it create workload objects and ConfigMaps only, in one namespace, and lets nothing delete a Deployment. A call outside the grant fails at the API server as a `Forbidden` the specialist sees as a tool error.
+- **The write grant is not in `base`.** The base pins `namespace: mast-triage` on everything it renders, so a Role carried there would land in the daemon's own namespace and an operator retargeting it would widen the base for everyone. As a separate kustomization, every remediable namespace is a separate, visible apply.
+- **The lint walks from the subject.** Any ClusterRoleBinding naming the daemon's ServiceAccount is checked, not just the file called "read" — because this boundary erodes by someone adding a cluster-scoped grant for one tool.
+
+**The IAM caveat, which is the load-bearing part on GKE.** GKE authorizes a Kubernetes API call if **either** IAM or Kubernetes RBAC allows it, and the daemon reaches the cluster through the GKE MCP server as its Workload Identity Federation principal — not through the pod's KSA token. While `scripts/setup-wif.sh` binds `roles/container.admin` to that principal (the default), the namespaced write Role bounds the in-cluster API path and *nothing at all* on the MCP path. `WRITE_SCOPE=namespaced ./scripts/setup-wif.sh` binds `roles/container.viewer` instead and leaves the writes to RBAC, which is the configuration the split describes; it is not the default because it depends on GKE resolving the WIF principal to the RBAC subject the RoleBinding names, and that has not been verified against a live cluster. `scripts/rbac-matrix.sh` checks both halves — the RBAC cells via `kubectl auth can-i --as=`, and, when `PROJECT_ID` is set, whether the principal still holds a cluster-write IAM role.
+
 ### Cloud Run
 
 `examples/deploy/cloud-run/` — canonical Cloud Run deployment: service YAML, terraform module, Cloud Build config for CI-driven deploys.
