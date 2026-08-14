@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"google.golang.org/genai"
@@ -106,12 +107,18 @@ func TestToolActor_CoordinatorFinishesAfterWorker(t *testing.T) {
 // The worker turn (finish_task offered) drives the reason-selected MCP
 // tool. The reason arrives as plain delegation-request text, not the JSON
 // envelope, so selection must match against that.
+// The arguments are exactly what the fixture declares — no more (an
+// undeclared property fails the MCP server's schema check) and no fewer
+// (apply_change's replicas is required). apply_change's value is also
+// what the write gate's edit legs measure against: the operator edits it
+// to something else, and the fixture records which one ran.
 func TestToolActor_WorkerDrivesSelectedTool(t *testing.T) {
 	for _, tc := range []struct {
 		name, request, wantTool string
+		wantArgs                map[string]any
 	}{
-		{"apply", "ApplyChange", "apply_change"},
-		{"read", "ReadStatus", "read_status"},
+		{"apply", "ApplyChange", "apply_change", map[string]any{"replicas": 10}},
+		{"read", "ReadStatus", "read_status", map[string]any{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewToolActorModel("test")
@@ -123,8 +130,16 @@ func TestToolActor_WorkerDrivesSelectedTool(t *testing.T) {
 			if fc == nil || fc.Name != tc.wantTool {
 				t.Fatalf("want call to %q, got %+v", tc.wantTool, fc)
 			}
-			if len(fc.Args) != 0 {
-				t.Fatalf("want empty args (closed schema), got %+v", fc.Args)
+			if !reflect.DeepEqual(fc.Args, tc.wantArgs) {
+				t.Fatalf("args = %+v, want %+v", fc.Args, tc.wantArgs)
+			}
+			// The gate rewrites a parked call's arguments in place, so a
+			// map shared with the package-level table would leak one
+			// call's edit into the next.
+			fc.Args["replicas"] = 99
+			again := firstFunctionCall(firstResponse(t, m, req))
+			if !reflect.DeepEqual(again.Args, tc.wantArgs) {
+				t.Errorf("second call's args = %+v, want %+v — the fake hands out a shared map", again.Args, tc.wantArgs)
 			}
 		})
 	}

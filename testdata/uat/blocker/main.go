@@ -34,6 +34,11 @@
 //   - If "<tool>.release" already exists on entry, the handler returns
 //     immediately — used for the "turn completes" legs where no blocking
 //     is wanted.
+//   - Every entry appends a line to "<tool>.calls" naming the arguments
+//     the handler was actually called with. The write gate's edit legs
+//     (scripts/uat-v0.3.sh) turn on that line: an operator's edit is only
+//     observable end to end if the tool records which arguments ran, and
+//     apply_change declares one (replicas) precisely so it can.
 //
 // A `kill -9` of the launching daemon is the one interruption that does NOT
 // cancel the call ctx: the crash legs SIGKILL the daemon mid-call, which
@@ -75,21 +80,46 @@ func main() {
 	go exitWhenOrphaned(os.Getppid())
 
 	srv := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "uat-blocker", Version: "0.0.1"}, nil)
-	for _, name := range []string{"read_status", "apply_change"} {
-		tool := name // capture
-		mcpsdk.AddTool(srv, &mcpsdk.Tool{Name: tool, Description: "UAT controllable blocking tool"},
-			func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
-				if err := block(ctx, dir, tool); err != nil {
-					return nil, struct{}{}, err
-				}
-				return &mcpsdk.CallToolResult{
-					Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: tool + ": ok"}},
-				}, struct{}{}, nil
-			})
-	}
+
+	// read_status takes no arguments: nothing about the read-only legs
+	// depends on what it was asked for.
+	mcpsdk.AddTool(srv, &mcpsdk.Tool{Name: "read_status", Description: "UAT controllable blocking tool (read-only)"},
+		func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
+			if err := block(ctx, dir, "read_status", ""); err != nil {
+				return nil, struct{}{}, err
+			}
+			return okResult("read_status"), struct{}{}, nil
+		})
+
+	// apply_change declares one argument so the mutating legs can tell
+	// WHICH call ran, not merely that one did. The write gate's edit
+	// verdict substitutes the operator's arguments for the model's, and
+	// the only end-to-end evidence that the substitution took effect is
+	// the value this handler receives.
+	mcpsdk.AddTool(srv, &mcpsdk.Tool{Name: "apply_change", Description: "UAT controllable blocking tool (mutating)"},
+		func(ctx context.Context, _ *mcpsdk.CallToolRequest, in changeArgs) (*mcpsdk.CallToolResult, struct{}, error) {
+			if err := block(ctx, dir, "apply_change", fmt.Sprintf("replicas=%d", in.Replicas)); err != nil {
+				return nil, struct{}{}, err
+			}
+			return okResult("apply_change"), struct{}{}, nil
+		})
 
 	if err := srv.Run(context.Background(), &mcpsdk.StdioTransport{}); err != nil {
 		os.Exit(1)
+	}
+}
+
+// changeArgs is apply_change's declared input. Required (no omitempty),
+// so a call that omits it is refused by the MCP server's own schema
+// check — which is what makes "the edit that violates the schema never
+// reached the tool" a claim the harness can test.
+type changeArgs struct {
+	Replicas int `json:"replicas" jsonschema:"the replica count to scale the workload to"`
+}
+
+func okResult(tool string) *mcpsdk.CallToolResult {
+	return &mcpsdk.CallToolResult{
+		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: tool + ": ok"}},
 	}
 }
 
@@ -112,7 +142,10 @@ func exitWhenOrphaned(orig int) {
 // "<tool>.release", honoring context cancellation. Returns ctx.Err() if
 // the call is cancelled before release — the observable an aborted or
 // drain-cancelled turn produces.
-func block(ctx context.Context, dir, tool string) error {
+//
+// detail is the rendering of the arguments this entry was called with,
+// appended to the call ledger; empty for a tool that takes none.
+func block(ctx context.Context, dir, tool, detail string) error {
 	started := filepath.Join(dir, tool+".started")
 	release := filepath.Join(dir, tool+".release")
 
@@ -128,9 +161,15 @@ func block(ctx context.Context, dir, tool string) error {
 	// truncating and so only answers "did it run at all"; the write gate's
 	// legs (scripts/uat-v0.3.sh) need "how many times", because approving
 	// a parked call twice, or re-running it on a resume, is the failure
-	// mode they exist to catch. Also best-effort, for the same reason.
+	// mode they exist to catch — and, for the edit legs, "with what", so
+	// the line carries the arguments too. Also best-effort, for the same
+	// reason.
+	line := tool
+	if detail != "" {
+		line += " " + detail
+	}
 	if f, err := os.OpenFile(filepath.Join(dir, tool+".calls"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-		_, _ = fmt.Fprintln(f, tool)
+		_, _ = fmt.Fprintln(f, line)
 		_ = f.Close()
 	} else {
 		fmt.Fprintf(os.Stderr, "blocker: %s: cannot append call marker: %v\n", tool, err)

@@ -215,12 +215,21 @@ type Summary struct {
 }
 
 // Detail is the show-view projection: Summary plus event count, the
-// full pending-interrupt records, and the active gate pause if any.
+// full pending-interrupt records, the active gate pause if any, and any
+// operator edits that were applied to a mutating call.
 type Detail struct {
 	Summary
 	EventCount int            `json:"event_count"`
 	Pending    []PendingInput `json:"pending,omitempty"`
 	GatePause  *PauseRecord   `json:"gate_pause,omitempty"`
+	// AppliedEdits are the calls an operator rewrote before they ran,
+	// oldest first. They are projected from state rather than read off
+	// the transcript because the transcript cannot answer the question:
+	// ADK re-fires a parked call verbatim, so the durable FunctionCall
+	// part records the arguments the *model* proposed while the response
+	// beside it is the result of running the *operator's*
+	// (pkg/approval.AppliedEdit).
+	AppliedEdits []approval.AppliedEdit `json:"applied_edits,omitempty"`
 }
 
 // Store wraps an ADK session.Service with the operator-facing
@@ -720,8 +729,9 @@ func project(sess adksession.Session, ops map[string]string, gate *PauseRecord) 
 			LastEventTime: sess.LastUpdateTime(),
 			State:         StateIdle,
 		},
-		EventCount: sess.Events().Len(),
-		Pending:    scanPending(sess.Events()),
+		EventCount:   sess.Events().Len(),
+		Pending:      scanPending(sess.Events()),
+		AppliedEdits: scanAppliedEdits(sess.Events()),
 	}
 
 	markerValue := func(key string) string {
@@ -870,4 +880,40 @@ func scanPending(events adksession.Events) []PendingInput {
 		}
 	}
 	return pending
+}
+
+// scanAppliedEdits walks the event log in order and returns the write
+// gate's applied-edit records, oldest first.
+//
+// They are read from the events' state deltas rather than from the
+// session's collapsed state so the order is the order the calls ran in,
+// and a record the projection cannot decode is skipped rather than
+// failing the whole show view: a malformed audit row should cost the
+// operator that row, not the session.
+func scanAppliedEdits(events adksession.Events) []approval.AppliedEdit {
+	var edits []approval.AppliedEdit
+	for ev := range events.All() {
+		delta := ev.Actions.StateDelta
+		if len(delta) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(delta))
+		for k := range delta {
+			if strings.HasPrefix(k, approval.EditStateKeyPrefix) {
+				keys = append(keys, k)
+			}
+		}
+		// One event can carry more than one record only if ADK ever
+		// batches parallel tool calls into a single event; sort so the
+		// order is at least deterministic if it does.
+		sort.Strings(keys)
+		for _, k := range keys {
+			e, err := approval.DecodeAppliedEdit(delta[k])
+			if err != nil {
+				continue
+			}
+			edits = append(edits, e)
+		}
+	}
+	return edits
 }

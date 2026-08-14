@@ -60,9 +60,18 @@ func TestRun_Deterministic(t *testing.T) {
 			t.Errorf("%s: red with no blocking workstream named", sc.ID)
 		}
 	}
-	if len(sum.ExpectedFail) == 0 {
-		t.Error("expected-fail list is empty; W0.3 left three scenarios red, so either a capability landed " +
-			"(update this test and the plan) or the allowlist stopped being reported")
+	// W0.3 left three scenarios red; W2.5 retired the last of them. An
+	// empty allowlist is now the expected state, and re-growing one is
+	// the thing to notice: a scenario may only go back to declared-Fail
+	// with a named blocking workstream, which the loop above enforces.
+	if len(sum.ExpectedFail) != 0 {
+		t.Errorf("expected-fail allowlist has re-grown to %v; shrinking it is the progress metric, so a new entry "+
+			"needs a plan row saying why (docs/v0.3-plan.md W0.4)", sum.ExpectedFail)
+	}
+	for _, sc := range sum.Scenes {
+		if sc.Observed != differentiators.Pass.String() {
+			t.Errorf("%s observed %s: %s", sc.ID, sc.Observed, sc.Reason)
+		}
 	}
 }
 

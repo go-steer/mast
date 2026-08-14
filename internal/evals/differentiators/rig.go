@@ -37,12 +37,13 @@ import (
 	"google.golang.org/adk/v2/session/database"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/evals"
+	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/permissions"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
@@ -74,39 +75,44 @@ const (
 // the same check so a fixture cannot drift into the fail-open hole.
 const specialistName = "remediator"
 
-// operator is the human in the loop, written against the interface
-// mast already has for asking one: permissions.Prompter.
+// operator is the human in the loop.
 //
-// Using the real interface rather than a fixture-local callback is the
-// point. The approval scenarios do not claim mast has no way to ask an
-// operator; they claim nothing on the tool-execution path reaches the
-// way it has. An operator that implements Prompter and is never called
-// says exactly that, and when W2.1 wires the gate this type needs no
-// change to start being consulted.
+// The shape here is the correction the first draft of these scenarios
+// needed. That draft implemented permissions.Prompter, on the assumption
+// that mast asks an operator by calling one. It does not: the write gate
+// parks the call as an ADK tool confirmation and the turn *ends*. The
+// operator answers out of band — a Slack message, a `mast sessions
+// resume`, a POST to /resume — and their verdict re-enters through a
+// fresh turn carrying a FunctionResponse. A Prompter is a synchronous
+// interface for an asynchronous boundary, and a fixture built on one
+// could only ever measure a gate mast does not have.
 //
-// Note also what the interface cannot say. AskApproval answers with a
-// permissions.Decision — deny, allow-once, allow-session, and so on —
-// and no member of that set means "allow, but with these arguments".
-// E-approval-edited's operator therefore carries its edit in a field
-// alongside the Decision, readable only by the fixture. That is the
-// W2.5 gap stated in the type system rather than only in prose.
+// So this operator is a decision function over a parked call, and the
+// rig's answerParks drives it across the same boundary the daemon does:
+// read the park out of the durable log, build the verdict, resume.
 type operator struct {
-	// decide answers one request. The second return is the operator's
-	// edited arguments, which have no channel in Decision.
-	decide func(req permissions.PromptRequest) (permissions.Decision, map[string]any)
+	// identity is the authenticated approver. The daemon stamps this
+	// from the caller's credential rather than trusting the payload
+	// (cmd/mast's verdictFor); the rig stamps it in answerParks for the
+	// same reason, so a fixture cannot invent an anonymous approval the
+	// real path would never produce.
+	identity string
+
+	// decide answers one parked call, seeing exactly what a real
+	// operator sees: the request the gate wrote into the durable log.
+	decide func(req approval.Request) approval.Verdict
 
 	mu       sync.Mutex
 	consults int
 }
 
-var _ permissions.Prompter = (*operator)(nil)
-
-func (o *operator) AskApproval(_ context.Context, req permissions.PromptRequest) (permissions.Decision, error) {
+func (o *operator) answer(req approval.Request) approval.Verdict {
 	o.mu.Lock()
 	o.consults++
 	o.mu.Unlock()
-	d, _ := o.decide(req)
-	return d, nil
+	v := o.decide(req)
+	v.Approver = o.identity
+	return v
 }
 
 func (o *operator) consulted() int {
@@ -143,14 +149,9 @@ type rigConfig struct {
 	// operator would measure the gate instead.
 	onMutation workload.OnMutation
 
-	// op is the operator the fixture offers. Nil means no approval is
-	// expected.
-	//
-	// Nothing wires it into the runtime, because no mast construction
-	// path accepts one: that is the gap E-approval-rejected and
-	// E-approval-edited measure. When W2.1 lands, this is the field
-	// that gets connected, and the two scenarios flip without their
-	// fixtures changing.
+	// op is the operator the fixture offers. Nil means the scenario
+	// expects nothing to park; a park with no operator to answer it
+	// leaves the session paused, which is itself a legible failure.
 	op *operator
 }
 
@@ -403,6 +404,80 @@ func (r *rig) turn(ctx context.Context, sessionID, text string) (stopped error, 
 		}
 	}
 	return nil, nil
+}
+
+// answerParks drives the operator across the resume boundary until the
+// session has no parked mutating calls left. How many it answered is the
+// operator's own consulted() count, which is what the scenarios assert
+// on — the operator counts questions, not resume turns.
+//
+// This is the daemon's /resume loop, minus the transport: read the
+// pending parks out of the durable log, ask the operator about each,
+// send the verdict back as the FunctionResponse ADK's confirmation
+// processor is waiting for (approval.ConfirmationResponse — the same
+// builder cmd/mast uses). Each answer is its own turn, because that is
+// what it is: the agent resumes, the tool runs or does not, and the
+// specialist may propose the *next* mutation, which parks in turn. The
+// rejection scenario needs exactly that — it asks whether the agent
+// talks its way to the same outcome through a second tool.
+//
+// maxRounds is a fixture guard, not a runtime one: a script that parks
+// forever should fail the scenario, not hang the suite.
+func (r *rig) answerParks(ctx context.Context, sessionID string) error {
+	const maxRounds = 8
+	for round := 0; round < maxRounds; round++ {
+		d, err := r.store.Get(ctx, userID, sessionID)
+		if err != nil {
+			return fmt.Errorf("rig: read parks: %w", err)
+		}
+		var parked *transcript.PendingInput
+		for i := range d.Pending {
+			if d.Pending[i].ToolName == toolconfirmation.FunctionCallName {
+				parked = &d.Pending[i]
+				break
+			}
+		}
+		if parked == nil {
+			return nil
+		}
+		if r.cfg.op == nil {
+			return fmt.Errorf("rig: session %q parked a mutating call but the fixture offers no operator", sessionID)
+		}
+		// The park's payload is what an operator would be shown; decide
+		// from that, not from the script, so the fixture answers the
+		// question mast actually asked.
+		req, err := approval.DecodeRequest(parked.Payload)
+		if err != nil {
+			return fmt.Errorf("rig: parked call %q: %w", parked.InterruptID, err)
+		}
+		v := r.cfg.op.answer(req)
+		part := genai.NewPartFromFunctionResponse(
+			toolconfirmation.FunctionCallName, approval.ConfirmationResponse(v))
+		part.FunctionResponse.ID = parked.InterruptID
+		r.model.beginTurn()
+		msg := &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{part}}
+		for _, rerr := range r.runner.Run(ctx, userID, sessionID, msg, adkagent.RunConfig{
+			StreamingMode: adkagent.StreamingModeNone,
+		}) {
+			if rerr != nil {
+				return fmt.Errorf("rig: resume turn: %w", rerr)
+			}
+		}
+	}
+	return fmt.Errorf("rig: session %q still parked after %d resume rounds", sessionID, maxRounds)
+}
+
+// appliedEdits reads back the durable record of what the operator's
+// edits actually ran, through the same projection `mast sessions show`
+// uses. The scenario asks for it because "the right arguments executed"
+// and "an operator can find out that they did" are two claims, and only
+// the second survives the process exiting.
+func (r *rig) appliedEdits(ctx context.Context, sessionID string) ([]approval.AppliedEdit, error) {
+	d, err := r.store.Get(ctx, userID, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("rig: read applied edits: %w", err)
+	}
+	return d.AppliedEdits, nil
 }
 
 // roleCalls reports how many model calls one agent in the composed

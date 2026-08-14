@@ -16,6 +16,7 @@ package approval
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,9 @@ type gateProbe struct {
 	// gate is the permissions gate the plugin consulted, so a test can
 	// read its approval log.
 	gate *permissions.Gate
+	// state is the durable session state after the run, where the
+	// applied-edit audit records live.
+	state map[string]any
 }
 
 type gateProbeConfig struct {
@@ -189,7 +193,43 @@ func runGateProbe(t *testing.T, cfg gateProbeConfig) *gateProbe {
 		run(r, cfg.respond(probe.confirmationID))
 	}
 	probe.responses = toolResponses(t, svc, "scale_deployment")
+	probe.state = sessionState(t, svc)
 	return probe
+}
+
+// sessionState reads the durable session state back. The write gate's
+// applied-edit record rides the state delta of the tool-call event, so
+// this is where an operator's substituted arguments are recorded.
+func sessionState(t *testing.T, svc adksession.Service) map[string]any {
+	t.Helper()
+	got, err := svc.Get(context.Background(), &adksession.GetRequest{
+		AppName: testApp, UserID: testUser, SessionID: sid,
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	out := map[string]any{}
+	for k, v := range got.Session.State().All() {
+		out[k] = v
+	}
+	return out
+}
+
+// appliedEdits returns every applied-edit record in the session state.
+func (p *gateProbe) appliedEdits(t *testing.T) []AppliedEdit {
+	t.Helper()
+	var out []AppliedEdit
+	for k, v := range p.state {
+		if !strings.HasPrefix(k, EditStateKeyPrefix) {
+			continue
+		}
+		e, err := DecodeAppliedEdit(v)
+		if err != nil {
+			t.Fatalf("state[%q] is not an applied-edit record: %v", k, err)
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // toolResponses collects, in log order, every FunctionResponse recorded
@@ -436,12 +476,148 @@ func TestUnknownScopeIsRefused(t *testing.T) {
 	wantField(t, p.lastResponse(t), "error", "malformed_verdict")
 }
 
-// TestEditIsRefusedUntilW25 pins the deliberate gap: the wire format
-// takes an edit today so clients need not change later, and mast says
-// plainly that it did not apply it. The seam probes show the mechanism
-// works; what W2.5 still owes is validating the operator's arguments
-// against the tool's input schema.
-func TestEditIsRefusedUntilW25(t *testing.T) {
+// editVerdict is the operator answering with arguments of their own.
+func editVerdict(args map[string]any) map[string]any {
+	return map[string]any{
+		"verdict":  "edit",
+		"approver": "user:sre-oncall",
+		"note":     "10 replicas would exhaust the node pool",
+		"args":     args,
+	}
+}
+
+// TestEditedArgumentsAreWhatExecutes is W2.5's core claim and scoreboard
+// row 6: the operator's arguments run, the model's do not, and the
+// session says so afterwards.
+func TestEditedArgumentsAreWhatExecutes(t *testing.T) {
+	p := runGateProbe(t, gateProbeConfig{
+		policy:  OnMutationRequireApproval,
+		respond: approve(editVerdict(map[string]any{"deployment": "api", "replicas": 2})),
+	})
+
+	if len(p.executions) != 1 {
+		t.Fatalf("tool executed %d time(s), want exactly 1: %+v", len(p.executions), p.executions)
+	}
+	if got := p.executions[0]; got.Deployment != "api" || got.Replicas != 2 {
+		t.Fatalf("executed with %+v, want the operator's {api 2} — the model's arguments ran instead of the edit", got)
+	}
+
+	// The grant is recorded against the call that RAN. An audit trail
+	// that logs the model's proposal as the approved call would be
+	// describing something that never happened.
+	log := p.gate.Approvals()
+	if len(log) != 1 {
+		t.Fatalf("approval log = %+v, want exactly one entry", log)
+	}
+	if want := "scale_deployment(deployment=api, replicas=2)"; log[0].Key != want {
+		t.Errorf("approval key = %q, want %q — the edited call, not the proposed one", log[0].Key, want)
+	}
+
+	// The audit gap W2.5 owed: ADK re-fires the parked call verbatim, so
+	// the durable FunctionCall part still says replicas=10. Without this
+	// record, reading the log gives a confident, wrong answer about what
+	// mast did.
+	edits := p.appliedEdits(t)
+	if len(edits) != 1 {
+		t.Fatalf("applied-edit records = %+v, want exactly one", edits)
+	}
+	e := edits[0]
+	if e.Tool != "scale_deployment" || e.Approver != "user:sre-oncall" {
+		t.Errorf("record = %+v, want scale_deployment approved by user:sre-oncall", e)
+	}
+	if want := "scale_deployment(deployment=api, replicas=10)"; e.ProposedKey != want {
+		t.Errorf("record.ProposedKey = %q, want %q", e.ProposedKey, want)
+	}
+	if want := "scale_deployment(deployment=api, replicas=2)"; e.ExecutedKey != want {
+		t.Errorf("record.ExecutedKey = %q, want %q", e.ExecutedKey, want)
+	}
+	if fmt.Sprint(e.ProposedArgs["replicas"]) != "10" || fmt.Sprint(e.ExecutedArgs["replicas"]) != "2" {
+		t.Errorf("record args = proposed %v / executed %v, want 10 / 2", e.ProposedArgs, e.ExecutedArgs)
+	}
+}
+
+// TestEditIsRefusedWhenItViolatesTheSchema: the operator is not exempt
+// from the tool's contract. A rejected edit runs nothing — not the edit,
+// and not the model's original call either.
+func TestEditIsRefusedWhenItViolatesTheSchema(t *testing.T) {
+	tests := []struct {
+		name  string
+		args  map[string]any
+		wants []string
+	}{
+		{
+			name:  "wrong type",
+			args:  map[string]any{"deployment": "api", "replicas": "as many as it takes"},
+			wants: []string{"input schema"},
+		},
+		{
+			name:  "undeclared argument",
+			args:  map[string]any{"deployment": "api", "replicas": 2, "namespace": "prod"},
+			wants: []string{"namespace", "does not declare"},
+		},
+		{
+			name:  "no arguments at all",
+			args:  map[string]any{},
+			wants: []string{"carries no arguments"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := runGateProbe(t, gateProbeConfig{
+				policy:  OnMutationRequireApproval,
+				respond: approve(editVerdict(tt.args)),
+			})
+			if len(p.executions) != 0 {
+				t.Fatalf("tool executed %d time(s) on a refused edit, want 0: %+v", len(p.executions), p.executions)
+			}
+			resp := p.lastResponse(t)
+			wantField(t, resp, "error", "edit_refused")
+			wantDetailMentions(t, resp, append(tt.wants, "NOT made")...)
+			if log := p.gate.Approvals(); len(log) != 0 {
+				t.Errorf("approval log = %+v, want empty after a refused edit", log)
+			}
+			if edits := p.appliedEdits(t); len(edits) != 0 {
+				t.Errorf("applied-edit records = %+v, want none", edits)
+			}
+		})
+	}
+}
+
+// TestEditCannotEscapeADenyPolicy is the reason the edited call is
+// re-adjudicated rather than inherited. The deny rule does not match
+// what the model proposed, so the call parks normally; it matches what
+// the operator substituted, and a policy the operator wrote precisely so
+// they would not be asked must not be defeatable by answering the
+// question they said not to ask.
+func TestEditCannotEscapeADenyPolicy(t *testing.T) {
+	policy, err := permissions.NewPolicy(nil, []string{"scale_deployment:*deployment=prod*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := runGateProbe(t, gateProbeConfig{
+		policy:      OnMutationRequireApproval,
+		gateOptions: permissions.Options{Mode: permissions.ModeYolo, Policy: policy},
+		respond:     approve(editVerdict(map[string]any{"deployment": "prod", "replicas": 2})),
+	})
+
+	if p.confirmationID == "" {
+		t.Fatal("the model's own call did not park, so this run never reached the edit")
+	}
+	if len(p.executions) != 0 {
+		t.Fatalf("tool executed %d time(s) on an edit into denied territory, want 0: %+v", len(p.executions), p.executions)
+	}
+	wantField(t, p.lastResponse(t), "error", "denied_by_policy")
+	if log := p.gate.Approvals(); len(log) != 0 {
+		t.Errorf("approval log = %+v, want empty", log)
+	}
+}
+
+// TestUnattributedEditIsRefused: an edit executes arguments no model
+// proposed and no policy pattern vetted, so the record of who wrote them
+// is the only trace there is. mast refuses to run one it cannot
+// attribute — every real resume path stamps the authenticated caller
+// (W2.3), so an unattributed edit means a caller that bypassed it.
+func TestUnattributedEditIsRefused(t *testing.T) {
 	p := runGateProbe(t, gateProbeConfig{
 		policy: OnMutationRequireApproval,
 		respond: approve(map[string]any{
@@ -450,11 +626,51 @@ func TestEditIsRefusedUntilW25(t *testing.T) {
 		}),
 	})
 	if len(p.executions) != 0 {
-		t.Fatalf("tool executed %d time(s) on an edit verdict, want 0: %+v", len(p.executions), p.executions)
+		t.Fatalf("tool executed %d time(s) on an unattributed edit, want 0: %+v", len(p.executions), p.executions)
 	}
-	resp := p.lastResponse(t)
-	wantField(t, resp, "error", "not_implemented")
-	wantDetailMentions(t, resp, "was NOT made")
+	wantField(t, p.lastResponse(t), "error", "edit_unattributed")
+	wantDetailMentions(t, p.lastResponse(t), "NOT made")
+}
+
+// TestEditWithBroadScopeIsRefused: the scope rule from W2.3 applies to
+// the edited call too, and it applies BEFORE the arguments are
+// substituted — a refused grant must leave the tool unrun, not run it
+// with the operator's arguments.
+func TestEditWithBroadScopeIsRefused(t *testing.T) {
+	v := editVerdict(map[string]any{"deployment": "api", "replicas": 2})
+	v["scope"] = string(ScopeSessionTool)
+	p := runGateProbe(t, gateProbeConfig{
+		policy:  OnMutationRequireApproval,
+		respond: approve(v),
+	})
+	if len(p.executions) != 0 {
+		t.Fatalf("tool executed %d time(s) under a refused scope, want 0: %+v", len(p.executions), p.executions)
+	}
+	wantField(t, p.lastResponse(t), "error", "approval_scope_refused")
+	if edits := p.appliedEdits(t); len(edits) != 0 {
+		t.Errorf("applied-edit records = %+v, want none — the edit was never authorized", edits)
+	}
+}
+
+// TestEditSurvivesARestart: the edit path is answered on the resume
+// turn, and the resume turn may be in a different process than the one
+// that parked the call (scoreboard row 5). Nothing but the on-disk log
+// crosses.
+func TestEditSurvivesARestart(t *testing.T) {
+	p := runGateProbe(t, gateProbeConfig{
+		policy:               OnMutationRequireApproval,
+		restartBeforeVerdict: true,
+		respond:              approve(editVerdict(map[string]any{"deployment": "api", "replicas": 2})),
+	})
+	if len(p.executions) != 1 {
+		t.Fatalf("tool executed %d time(s) across the restart, want exactly 1: %+v", len(p.executions), p.executions)
+	}
+	if got := p.executions[0]; got.Replicas != 2 {
+		t.Errorf("executed with %+v, want the operator's edit {api 2}", got)
+	}
+	if edits := p.appliedEdits(t); len(edits) != 1 {
+		t.Errorf("applied-edit records = %+v, want exactly one", edits)
+	}
 }
 
 // TestContradictoryVerdictIsRefused: a payload that says approve under

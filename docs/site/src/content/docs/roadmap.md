@@ -175,7 +175,17 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   exactly once. Approvals are recorded against an authenticated approver,
   including when a bot relays a human's decision, and an approval that tries
   to authorize more than the one call in front of it is refused rather than
-  quietly narrowed.
+  quietly narrowed. See [the write gate](/reference/write-gate/).
+- **Editing a call before it runs** — an operator answering a parked call can
+  send back different arguments, and those are the ones the tool receives.
+  They are checked first: an edit mast cannot attribute to an authenticated
+  approver is refused, so is one naming an argument the tool does not
+  declare or a value its schema rejects, and the *edited* call is
+  re-adjudicated against the permission policy — a denied production change
+  cannot be reached by editing an approved staging one. What actually ran is
+  recorded durably and printed by `mast sessions show`, because the agent
+  substrate re-fires the original call on resume and the transcript alone
+  would show the arguments the model proposed rather than the operator's.
 - **Read-only diagnosers** — a specialist now declares whether it is allowed
   to change anything, and read-only is what it gets by saying nothing. Mast
   refuses to start a workload in which a read-only specialist can reach a

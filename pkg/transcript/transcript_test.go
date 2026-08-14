@@ -16,6 +16,7 @@ package transcript
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -27,6 +28,8 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/session/database"
+
+	"github.com/go-steer/mast/pkg/approval"
 )
 
 const testApp = "mast-test"
@@ -225,6 +228,95 @@ func TestGetPendingDetail(t *testing.T) {
 			}
 			if p.RaisedAt.IsZero() {
 				t.Error("RaisedAt is zero")
+			}
+		})
+	}
+}
+
+// appliedEditEvent is the shape the write gate writes: a tool-call event
+// whose state delta carries one AppliedEdit record per function call
+// (pkg/approval, recordEdit).
+func appliedEditEvent(callID string, e approval.AppliedEdit) *adksession.Event {
+	raw, err := json.Marshal(e)
+	if err != nil {
+		panic(err)
+	}
+	ev := adksession.NewEvent(context.Background(), "inv-1")
+	ev.Author = "sre"
+	ev.Content = genai.NewContentFromText("scaled", genai.RoleModel)
+	ev.Actions.StateDelta = map[string]any{approval.EditStateKey(callID): string(raw)}
+	return ev
+}
+
+// TestGetAppliedEdits is the read half of the audit gap W2.5 closed: the
+// transcript alone reports the model's proposal, because ADK re-fires the
+// parked call verbatim, so the show view has to project what actually ran
+// from the gate's record.
+func TestGetAppliedEdits(t *testing.T) {
+	first := approval.AppliedEdit{
+		Tool:         "scale_deployment",
+		Approver:     "user:sre-oncall",
+		ProposedKey:  "scale_deployment(deployment=api, replicas=10)",
+		ExecutedKey:  "scale_deployment(deployment=api, replicas=2)",
+		ProposedArgs: map[string]any{"deployment": "api", "replicas": float64(10)},
+		ExecutedArgs: map[string]any{"deployment": "api", "replicas": float64(2)},
+		Note:         "10 replicas would exhaust the node pool",
+	}
+	second := approval.AppliedEdit{
+		Tool:        "restart_deployment",
+		Approver:    "user:sre-oncall",
+		ProposedKey: "restart_deployment(deployment=api)",
+		ExecutedKey: "restart_deployment(deployment=api-canary)",
+	}
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			seed(t, svc, "op", "s-edited",
+				textEvent("agent", "triaging"),
+				appliedEditEvent("fc-1", first),
+				// A record the projection cannot read costs that row, not
+				// the whole show view.
+				func() *adksession.Event {
+					ev := textEvent("sre", "noise")
+					ev.Actions.StateDelta = map[string]any{
+						approval.EditStateKey("fc-bad"): "{not json",
+						"mast_unrelated_marker":         "ignored",
+					}
+					return ev
+				}(),
+				appliedEditEvent("fc-2", second))
+
+			store := NewStore(svc, testApp)
+			d, err := store.Get(context.Background(), "", "s-edited")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if len(d.AppliedEdits) != 2 {
+				t.Fatalf("AppliedEdits = %+v, want the 2 decodable records", d.AppliedEdits)
+			}
+			if got := d.AppliedEdits[0]; got.ExecutedKey != first.ExecutedKey || got.ProposedKey != first.ProposedKey {
+				t.Errorf("first record = %+v, want proposed/executed from %+v", got, first)
+			}
+			if got := d.AppliedEdits[0].Approver; got != "user:sre-oncall" {
+				t.Errorf("approver = %q, want the authenticated operator", got)
+			}
+			if got := d.AppliedEdits[1].ExecutedKey; got != second.ExecutedKey {
+				t.Errorf("second record = %q, want %q — records must come back in the order they ran", got, second.ExecutedKey)
+			}
+		})
+	}
+}
+
+func TestGetNoAppliedEdits(t *testing.T) {
+	for name, svc := range services(t) {
+		t.Run(name, func(t *testing.T) {
+			seed(t, svc, "op", "s-plain", textEvent("agent", "done"))
+			store := NewStore(svc, testApp)
+			d, err := store.Get(context.Background(), "", "s-plain")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if d.AppliedEdits != nil {
+				t.Errorf("AppliedEdits = %+v, want nil so the show view prints nothing", d.AppliedEdits)
 			}
 		})
 	}

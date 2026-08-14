@@ -97,12 +97,11 @@ func (p Parked) Summary() string {
 }
 
 // VerdictSchema is the JSON schema a resume payload answering a parked
-// mutating call must satisfy. It is three-valued from W2.1 — `edit` is
-// accepted by the schema and refused at execution until W2.5 — because
-// the schema is written into the durable log at pause time, and a
-// session paused under a two-valued schema and resumed after an upgrade
-// is a migration across exactly the restart boundary the write gate
-// exists to survive.
+// mutating call must satisfy. It has been three-valued since W2.1 —
+// before `edit` was executable — because the schema is written into the
+// durable log at pause time, and a session paused under a two-valued
+// schema and resumed after an upgrade is a migration across exactly the
+// restart boundary the write gate exists to survive.
 //
 // Approver is deliberately absent: it is not the client's to state. The
 // resume boundary overwrites it with the authenticated caller.
@@ -114,7 +113,7 @@ func VerdictSchema() *jsonschema.Schema {
 			"verdict": {
 				Type:        "string",
 				Enum:        []any{string(OutcomeApprove), string(OutcomeReject), string(OutcomeEdit)},
-				Description: "approve runs the call as proposed; reject refuses it; edit runs it with the arguments in `args` (not yet implemented — mast W2.5).",
+				Description: "approve runs the call as proposed; reject refuses it; edit runs it with the arguments in `args`, which must validate against the tool's own input schema and are re-checked against policy before they run.",
 			},
 			"scope": {
 				Type:        "string",

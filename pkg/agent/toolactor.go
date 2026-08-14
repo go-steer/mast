@@ -84,10 +84,21 @@ type toolActor struct {
 func (m *toolActor) Name() string { return m.name }
 
 // uatTools are the MCP tools the fixture registers, in the order the
-// reason keyword is matched against them.
-var uatTools = []struct{ keyword, tool string }{
-	{"apply", "apply_change"},
-	{"read", "read_status"},
+// reason keyword is matched against them, with the arguments the fake
+// proposes for each.
+//
+// apply_change declares one required argument (testdata/uat/blocker), so
+// the fake has to supply it or the MCP server rejects the call before it
+// runs. The value is the MODEL's proposal, which the write gate's edit
+// legs then have an operator replace — they assert on the value the
+// blocker records, so a call that ran with 10 replicas is visibly not
+// one that ran with the operator's 2.
+var uatTools = []struct {
+	keyword, tool string
+	args          map[string]any
+}{
+	{"apply", "apply_change", map[string]any{"replicas": 10}},
+	{"read", "read_status", map[string]any{}},
 }
 
 func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
@@ -117,11 +128,9 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 					continue
 				}
 				if strings.Contains(haystack, ut.keyword) && !responded(req, ut.tool) {
-					// The blocker's tools take no arguments
-					// (parametersJsonSchema is an empty, closed object), so
-					// emit an empty arg map — an extra property would fail
-					// schema validation.
-					yield(functionCall(ut.tool, map[string]any{}, usage), nil)
+					// Exactly the arguments the fixture declares, no more: an
+					// undeclared property fails the MCP server's schema check.
+					yield(functionCall(ut.tool, copyMap(ut.args), usage), nil)
 					return
 				}
 			}
@@ -171,6 +180,18 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 			FinishReason:  genai.FinishReasonStop,
 		}, nil)
 	}
+}
+
+// copyMap hands out a fresh argument map per call. The write gate edits
+// a parked call's arguments IN PLACE (pkg/approval), so yielding the
+// package-level table's map would let one leg's operator edit leak into
+// the next call the fake makes.
+func copyMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // functionCall wraps a single FunctionCall response.

@@ -455,6 +455,18 @@ func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "\nResume with:\n  mast sessions resume --token=%s\n", g.Token)
 	}
+	for _, e := range d.AppliedEdits {
+		// The one thing the transcript above cannot tell an operator:
+		// ADK re-fires a parked call verbatim, so the logged FunctionCall
+		// is the model's proposal while what ran was this.
+		fmt.Fprintf(out, "\nOperator edit applied:\n")
+		fmt.Fprintf(out, "  Proposed: %s\n", e.ProposedKey)
+		fmt.Fprintf(out, "  Executed: %s\n", e.ExecutedKey)
+		fmt.Fprintf(out, "  Approver: %s\n", e.Approver)
+		if e.Note != "" {
+			fmt.Fprintf(out, "  Note:     %s\n", e.Note)
+		}
+	}
 	// Token records for interrupt pauses, keyed by interrupt ID, so the
 	// pending blocks below can print the token-keyed resume command.
 	intrTokens := map[string]*transcript.PauseRecord{}
