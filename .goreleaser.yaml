@@ -52,8 +52,14 @@ release:
   # v0.1.0-pre, v0.2.0-rc.1 etc. are marked Pre-release automatically.
   prerelease: auto
   # Notes are composed from CHANGELOG.md by dev/release/notes.sh and
-  # passed via --release-notes; disable goreleaser's own changelog.
+  # passed via --release-notes (see .github/workflows/release.yml).
   mode: replace
 
-changelog:
-  disable: true
+# Deliberately NOT `changelog: disable: true`, which is what this file
+# said through v0.3.0 and why both v0.2.0 and v0.3.0 published with an
+# empty release body. Loading the --release-notes file happens *inside*
+# the changelog pipe's Run() — disabling the pipe skips the load too, so
+# the notes were composed, logged, and dropped. Leaving the pipe enabled
+# is what honours the flag: the file short-circuits Run() before any
+# git-log changelog is generated or written, so nothing is generated here
+# either. The knob does not mean what it reads like it means.

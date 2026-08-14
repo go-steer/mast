@@ -65,6 +65,22 @@ jobs:
           args: release --clean --release-notes /tmp/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the published notes are not empty
+        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Every release through v0.3.0 published with an empty body: the
+        # notes were composed and passed to --release-notes, but GoReleaser
+        # loads that file inside the changelog pipe, which .goreleaser.yaml
+        # had disabled. The composed file being correct proved nothing —
+        # only the published artifact does. So assert on the artifact.
+        run: |
+          body_len=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.body | length')
+          echo "published release body: ${body_len} chars"
+          if [ "${body_len}" -lt 200 ]; then
+            echo "::error::${GITHUB_REF_NAME} published with a ${body_len}-char body; the CHANGELOG notes did not reach the release." >&2
+            exit 1
+          fi
       - name: GoReleaser (dry run)
         if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v6

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: every GitHub Release mast has ever cut published with an empty
+  body.** The notes were composed from this file by `dev/release/notes.sh`,
+  printed in full to the workflow log, and passed to GoReleaser as
+  `--release-notes` — and then dropped, because `.goreleaser.yaml` set
+  `changelog: disable: true` and GoReleaser loads the release-notes file
+  *inside* the changelog pipe it was thereby skipping. The config comment
+  said the two went together; they are mutually exclusive. Leaving the pipe
+  enabled is what honours the flag, since the file short-circuits it before
+  any git-log changelog is generated. v0.3.0's body was backfilled by hand;
+  v0.1.0-pre through v0.2.0 are still empty.
+
+  The release workflow now reads the *published* release back and fails if
+  its body is under 200 characters. Every check that existed passed on every
+  one of those releases, because each one checked the step before the one
+  that broke: the notes script was unit-tested, the compose step echoed
+  correct output, and the dry run never publishes and so never had a body to
+  look at.
+
 ## v0.3.0 (2026-08-14)
 
 - **New: the write gate — a tool call that changes anything stops and asks,
