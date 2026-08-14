@@ -23,6 +23,8 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/mast/pkg/pricing"
 )
 
 // usageEvent fakes one model call's worth of streamed usage — the
@@ -281,5 +283,216 @@ func TestNewCopiesTheScopeMap(t *testing.T) {
 	}
 	if err := m.Observe(authoredEvent("analyst", 10)); !errors.Is(err, ErrExceeded) {
 		t.Fatalf("call 2: the meter lost its scope when the caller mutated the map: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Catalog pricing: each call costed against the model it was billed to.
+
+// pricedEvent fakes a call the catalog can price: the model it was billed
+// against, plus the input/output split and the cache-read subset.
+func pricedEvent(modelVersion string, prompt, cached, out int32) *session.Event {
+	return &session.Event{
+		LLMResponse: model.LLMResponse{
+			ModelVersion: modelVersion,
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:        prompt,
+				CachedContentTokenCount: cached,
+				CandidatesTokenCount:    out,
+				TotalTokenCount:         prompt + out,
+			},
+		},
+	}
+}
+
+func builtinCatalog(t *testing.T) *pricing.Catalog {
+	t.Helper()
+	c, err := pricing.NewCatalog(pricing.Options{})
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+	return c
+}
+
+// The flat rate is the average of a model's input and output rates, so it
+// overcharges an input-heavy session — and every long-context agent is
+// input-heavy. A cost ceiling that wrong fires on the wrong sessions, which
+// is the reason the catalog path exists.
+func TestCatalogPricesAnInputHeavyCallFarBelowTheFlatRate(t *testing.T) {
+	const prompt, out = 1_000_000, 1_000
+	// (2 + 10) / 2 / 1000, the rate internal/compose derives for sonnet.
+	flatLimits := Limits{RatePer1K: (2 + 10) / 2.0 / 1000}
+	exactLimits := flatLimits
+	exactLimits.Catalog = builtinCatalog(t)
+
+	flat := NewMeter(flatLimits)
+	exact := NewMeter(exactLimits)
+	if err := flat.Observe(pricedEvent("claude-sonnet-5", prompt, 0, out)); err != nil {
+		t.Fatalf("flat: %v", err)
+	}
+	if err := exact.Observe(pricedEvent("claude-sonnet-5", prompt, 0, out)); err != nil {
+		t.Fatalf("exact: %v", err)
+	}
+	_, flatCost, _ := flat.Snapshot()
+	_, exactCost, _ := exact.Snapshot()
+	if want := 1*2.0 + 0.001*10; exactCost < want*0.99 || exactCost > want*1.01 {
+		t.Errorf("exact cost = $%.4f, want ~$%.4f", exactCost, want)
+	}
+	if flatCost <= exactCost*2 {
+		t.Errorf("flat $%.4f is not the large overcharge this exists to fix (exact $%.4f)", flatCost, exactCost)
+	}
+	if n := exact.Unpriced(); n != 0 {
+		t.Errorf("Unpriced() = %d, want 0 — the model is in the builtin catalog", n)
+	}
+}
+
+// Cached input is billed at a tenth of fresh input, and on a cache-warm agent
+// it is the majority of the prompt. TotalTokenCount cannot see that subset at
+// all, so the flat path charges the same for both of these calls.
+func TestCatalogBillsCacheReadsAtTheCacheRate(t *testing.T) {
+	cold := NewMeter(Limits{Catalog: builtinCatalog(t)})
+	warm := NewMeter(Limits{Catalog: builtinCatalog(t)})
+	if err := cold.Observe(pricedEvent("claude-sonnet-5", 1_000_000, 0, 0)); err != nil {
+		t.Fatalf("cold: %v", err)
+	}
+	if err := warm.Observe(pricedEvent("claude-sonnet-5", 1_000_000, 1_000_000, 0)); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	_, coldCost, _ := cold.Snapshot()
+	_, warmCost, _ := warm.Snapshot()
+	if warmCost >= coldCost {
+		t.Fatalf("a fully cache-served prompt cost $%.4f, no less than a fresh one at $%.4f", warmCost, coldCost)
+	}
+}
+
+// A catalog miss must fall back to the flat rate rather than silently
+// dropping the call's cost to zero — a budget that stops metering is worse
+// than one that meters approximately — and it has to be countable, or the
+// caller cannot tell an exact figure from a mixed one.
+func TestAnUnknownModelFallsBackToTheFlatRateAndIsCounted(t *testing.T) {
+	m := NewMeter(Limits{Catalog: builtinCatalog(t), RatePer1K: 0.05})
+	if err := m.Observe(pricedEvent("some-model-nobody-priced", 1000, 0, 0)); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	_, cost, _ := m.Snapshot()
+	if want := 0.05; cost != want {
+		t.Errorf("cost = $%.4f, want the flat-rate $%.4f", cost, want)
+	}
+	if n := m.Unpriced(); n != 1 {
+		t.Errorf("Unpriced() = %d, want 1", n)
+	}
+}
+
+// A provider that over-reports the cached counter must not make a call
+// cheaper than the same call fully cached.
+//
+// core-agent's usage tracker clamps the same counter for the same reason, and
+// the failure mode is one-directional: unclamped, the uncached half goes
+// negative and CostUSDWithCache bills it at the input rate as a credit, so the
+// more the provider miscounts the further away the ceiling gets. A ceiling
+// that loosens under bad data is not a ceiling.
+func TestAnOverReportedCacheCounterCannotCreditTheSession(t *testing.T) {
+	bogus := NewMeter(Limits{Catalog: builtinCatalog(t)})
+	honest := NewMeter(Limits{Catalog: builtinCatalog(t)})
+	if err := bogus.Observe(pricedEvent("claude-sonnet-5", 1_000_000, 1_500_000, 1_000)); err != nil {
+		t.Fatalf("bogus: %v", err)
+	}
+	if err := honest.Observe(pricedEvent("claude-sonnet-5", 1_000_000, 1_000_000, 1_000)); err != nil {
+		t.Fatalf("honest: %v", err)
+	}
+	_, bogusCost, _ := bogus.Snapshot()
+	_, honestCost, _ := honest.Snapshot()
+	if bogusCost <= 0 {
+		t.Fatalf("cost = $%.4f, want positive — a miscount is not a refund", bogusCost)
+	}
+	if bogusCost != honestCost {
+		t.Errorf("cost = $%.4f, want $%.4f (clamped to a fully-cached prompt)", bogusCost, honestCost)
+	}
+}
+
+// Scopes and the catalog compose: a specialist's own spend is priced
+// against the model *it* ran on, not against the session's.
+//
+// This is the pairing the two features only have together, and it is the
+// reason a per-specialist ceiling is worth anything on a tiered roster. A
+// flat session rate charges a haiku subagent at the coordinator's price,
+// so a cheap tier's ceiling trips at the wrong point — which is precisely
+// the check a tiered roster exists to make.
+func TestAScopedSpecialistIsPricedAgainstItsOwnModel(t *testing.T) {
+	cat := builtinCatalog(t)
+	m := New(Config{
+		Limits: Limits{Catalog: cat},
+		Scopes: map[string]Limits{
+			"coordinator": {Catalog: cat},
+			"analyst":     {Catalog: cat},
+		},
+	})
+
+	// The same prompt and the same output, on the two tiers. Sonnet is
+	// $2/$10 per MTok and haiku $1/$5, so the coordinator's call must
+	// cost exactly twice the analyst's.
+	big := pricedEvent("claude-sonnet-5", 1_000_000, 0, 100_000)
+	big.Author = "coordinator"
+	small := pricedEvent("claude-haiku-4-5", 1_000_000, 0, 100_000)
+	small.Author = "analyst"
+	if err := m.Observe(big); err != nil {
+		t.Fatalf("coordinator: %v", err)
+	}
+	if err := m.Observe(small); err != nil {
+		t.Fatalf("analyst: %v", err)
+	}
+
+	_, coord, _, ok := m.ScopeSnapshot("coordinator")
+	if !ok {
+		t.Fatal("no scope recorded for the coordinator")
+	}
+	_, analyst, _, ok := m.ScopeSnapshot("analyst")
+	if !ok {
+		t.Fatal("no scope recorded for the analyst")
+	}
+	if want := 2*1.0 + 0.1*10; coord < want*0.99 || coord > want*1.01 {
+		t.Errorf("coordinator spend = $%.4f, want ~$%.4f (sonnet rates)", coord, want)
+	}
+	if want := 1*1.0 + 0.1*5; analyst < want*0.99 || analyst > want*1.01 {
+		t.Errorf("analyst spend = $%.4f, want ~$%.4f (haiku rates)", analyst, want)
+	}
+	if coord <= analyst {
+		t.Errorf("the two tiers priced the same call alike: $%.4f vs $%.4f", coord, analyst)
+	}
+
+	// And the session total is the sum of the differently-priced calls,
+	// not one multiplication over the combined token count.
+	_, total, calls := m.Snapshot()
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2", calls)
+	}
+	if want := coord + analyst; total < want*0.99 || total > want*1.01 {
+		t.Errorf("session total = $%.4f, want the sum of its scopes $%.4f", total, want)
+	}
+}
+
+// A scope with no catalog of its own inherits the session's, the same
+// way a scope with no rate inherits the session's rate. Without this an
+// un-catalogued specialist would silently fall back to the flat rate and
+// its ceiling would be the only one in the meter measured differently.
+func TestAScopeInheritsTheSessionCatalog(t *testing.T) {
+	m := New(Config{
+		Limits: Limits{Catalog: builtinCatalog(t)},
+		Scopes: map[string]Limits{"analyst": {MaxCostUSD: 100}},
+	})
+	ev := pricedEvent("claude-sonnet-5", 1_000_000, 0, 0)
+	ev.Author = "analyst"
+	if err := m.Observe(ev); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	_, spend, _, ok := m.ScopeSnapshot("analyst")
+	if !ok {
+		t.Fatal("no scope recorded")
+	}
+	if want := 2.0; spend < want*0.99 || spend > want*1.01 {
+		t.Errorf("scope spend = $%.4f, want ~$%.4f — the session catalog was not inherited", spend, want)
+	}
+	if n := m.Unpriced(); n != 0 {
+		t.Errorf("Unpriced() = %d, want 0", n)
 	}
 }
