@@ -30,14 +30,17 @@ import (
 // /tools, /agents, /status endpoints end-to-end.
 type richRegistrant struct {
 	stubRegistrant
-	tools  []ToolInfo
-	agents []AgentInfo
-	status StatusInfo
+	tools     []ToolInfo
+	agents    []AgentInfo
+	subagents []SubagentCatalogInfo
+	status    StatusInfo
 }
 
 func (r *richRegistrant) AttachTools() []ToolInfo   { return r.tools }
 func (r *richRegistrant) AttachAgents() []AgentInfo { return r.agents }
 func (r *richRegistrant) AttachStatus() StatusInfo  { return r.status }
+
+func (r *richRegistrant) AttachSubagentCatalog() []SubagentCatalogInfo { return r.subagents }
 
 func TestIntegration_ToolsEndpoint(t *testing.T) {
 	t.Parallel()
@@ -142,6 +145,87 @@ func TestIntegration_AgentsEndpoint(t *testing.T) {
 	}
 	if got.Agents[0].Name != "monitor-1" || got.Agents[0].Status != "running" {
 		t.Errorf("agent 0: %+v", got.Agents[0])
+	}
+}
+
+// /subagents is the CONFIGURED roster, /agents the live instances. The
+// route comment claimed the first for two releases while only the
+// second was registered, so mast-web's specialists view 404'd against
+// every mast daemon (#134).
+func TestIntegration_SubagentsEndpoint(t *testing.T) {
+	t.Parallel()
+	reg := NewSessionRegistry()
+	ag := &richRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		subagents: []SubagentCatalogInfo{
+			{
+				Name:        "log-analyst",
+				Description: "reads pod logs",
+				Model:       "gemini-2.5-flash",
+				Root:        "specialists/log-analyst.tmpl",
+				Modes:       []string{},
+				Invocation:  InvocationFanoutBranch,
+				Capability:  "read_only",
+				AgentMode:   "Task",
+			},
+		},
+	}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	base, cleanup := startTestServer(t, reg)
+	defer cleanup()
+
+	resp, err := http.Get(base + "/sessions/core-agent/s1/subagents")
+	if err != nil {
+		t.Fatalf("GET /subagents: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+	var got struct {
+		Subagents []SubagentCatalogInfo `json:"subagents"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Subagents) != 1 {
+		t.Fatalf("len = %d, want 1", len(got.Subagents))
+	}
+	if got.Subagents[0].Name != "log-analyst" || got.Subagents[0].Invocation != InvocationFanoutBranch {
+		t.Errorf("subagent 0: %+v", got.Subagents[0])
+	}
+	// An empty roster and an unroutable specialist both have to be
+	// distinguishable from "the field is missing", so modes is
+	// non-omitempty and serializes as [].
+	if got.Subagents[0].Modes == nil {
+		t.Error("modes decoded as nil; the field must always serialize (an empty list is an answer)")
+	}
+}
+
+func TestIntegration_SubagentsEndpoint_NoProvider_EmptyList(t *testing.T) {
+	t.Parallel()
+	reg := NewSessionRegistry()
+	ag := &stubRegistrant{app: "core-agent", user: "u", sid: "s1"}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	base, cleanup := startTestServer(t, reg)
+	defer cleanup()
+
+	resp, err := http.Get(base + "/sessions/core-agent/s1/subagents")
+	if err != nil {
+		t.Fatalf("GET /subagents: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != `{"subagents":[]}`+"\n" && string(body) != `{"subagents":[]}` {
+		t.Errorf("body = %q, want empty subagents list", body)
 	}
 }
 

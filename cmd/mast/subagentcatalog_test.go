@@ -1,0 +1,243 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/pkg/graph"
+	"github.com/go-steer/mast/pkg/specialists"
+	"github.com/go-steer/mast/pkg/workload"
+)
+
+func spec(name string, mode specialists.Mode) specialists.Spec {
+	return specialists.Spec{Name: name, Mode: mode}
+}
+
+// Invocation is the field core-agent's `modes` cannot carry: which of
+// mast's four ways in reaches this specialist. Each shape routes a
+// different subset of the same roster, so the same spec list has to
+// project differently under each.
+func TestSubagentCatalogInvocationPerShape(t *testing.T) {
+	roster := []specialists.Spec{
+		spec("classifier", specialists.ModeSingleTurn),
+		spec("log-analyst", specialists.ModeTask),
+		spec(graph.SynthesisName, specialists.ModeTask),
+		spec(graph.FallbackName, specialists.ModeTask),
+	}
+
+	cases := []struct {
+		name     string
+		bundle   *workload.Bundle
+		dispatch string
+		want     map[string]string
+	}{
+		{
+			name:     "coordinator routes to everything by transfer",
+			dispatch: workload.DispatchCoordinator,
+			want: map[string]string{
+				"classifier":        attach.InvocationTransfer,
+				"log-analyst":       attach.InvocationTransfer,
+				graph.SynthesisName: attach.InvocationTransfer,
+				graph.FallbackName:  attach.InvocationTransfer,
+			},
+		},
+		{
+			name:     "graph builds every Task spec as a node, the first SingleTurn as the router",
+			dispatch: workload.DispatchGraph,
+			want: map[string]string{
+				"classifier":        attach.InvocationGraphNode,
+				"log-analyst":       attach.InvocationGraphNode,
+				graph.SynthesisName: attach.InvocationGraphNode,
+				graph.FallbackName:  attach.InvocationGraphNode,
+			},
+		},
+		{
+			// The distinction an operator reading a fanout roster
+			// wants: which members run concurrently and which one
+			// merges them. And which one nothing reaches at all —
+			// BuildFanout builds no fallback node and has no
+			// classifier, so those two are orphans under this shape.
+			name:     "fanout separates branches, merger, and orphans",
+			dispatch: workload.DispatchFanout,
+			want: map[string]string{
+				"classifier":        "",
+				"log-analyst":       attach.InvocationFanoutBranch,
+				graph.SynthesisName: attach.InvocationGraphNode,
+				graph.FallbackName:  "",
+			},
+		},
+		{
+			// planner.enabled overrides --dispatch entirely in
+			// compose, so the catalog has to as well.
+			name:     "planner overrides the dispatch flag",
+			bundle:   &workload.Bundle{Planner: workload.Planner{Enabled: true}},
+			dispatch: workload.DispatchFanout,
+			want: map[string]string{
+				"classifier":        attach.InvocationParentTool,
+				"log-analyst":       attach.InvocationParentTool,
+				graph.SynthesisName: attach.InvocationParentTool,
+				graph.FallbackName:  attach.InvocationParentTool,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := map[string]string{}
+			for _, e := range subagentCatalog(tc.bundle, roster, tc.dispatch) {
+				got[e.Name] = e.Invocation
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("invocations\n got: %v\nwant: %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// `modes` is core-agent's vocabulary, and mast may only say what is
+// true in it. Under planner dispatch a specialist really is carried as
+// a parent tool, so "sync" is earned; under every other shape it is
+// neither spawnable by reference nor a parent tool, and the list is
+// empty. Emitting "async" to make the field look populated is the
+// upstream defect (core-agent#741) this endpoint was warned about.
+func TestSubagentCatalogModesClaimOnlyWhatIsTrue(t *testing.T) {
+	roster := []specialists.Spec{spec("log-analyst", specialists.ModeTask)}
+
+	planner := subagentCatalog(&workload.Bundle{Planner: workload.Planner{Enabled: true}}, roster, "")
+	if want := []string{attach.SubagentInvocationModeSync}; !reflect.DeepEqual(planner[0].Modes, want) {
+		t.Errorf("planner modes = %v, want %v", planner[0].Modes, want)
+	}
+
+	for _, shape := range []string{workload.DispatchCoordinator, workload.DispatchGraph, workload.DispatchFanout} {
+		got := subagentCatalog(nil, roster, shape)
+		if len(got[0].Modes) != 0 {
+			t.Errorf("%s modes = %v, want empty — nothing in mast is spawnable by reference", shape, got[0].Modes)
+		}
+		// Empty, not nil: the field has no omitempty, and a client
+		// reading `"modes": null` cannot tell it from a missing field.
+		if got[0].Modes == nil {
+			t.Errorf("%s modes is nil; want an empty list", shape)
+		}
+	}
+}
+
+// `auto` is resolved by the same roster read compose uses, so the
+// catalog describes the shape that was actually built rather than the
+// word the operator typed.
+func TestSubagentCatalogResolvesAutoDispatch(t *testing.T) {
+	// A synthesis specialist present is what makes RosterShape pick
+	// fanout.
+	roster := []specialists.Spec{
+		spec("log-analyst", specialists.ModeTask),
+		spec(graph.SynthesisName, specialists.ModeTask),
+	}
+	for _, dispatch := range []string{workload.DispatchAuto, ""} {
+		got := subagentCatalog(nil, roster, dispatch)
+		if got[0].Invocation != attach.InvocationFanoutBranch {
+			t.Errorf("dispatch %q: log-analyst invocation = %q, want %q",
+				dispatch, got[0].Invocation, attach.InvocationFanoutBranch)
+		}
+	}
+}
+
+// The mast-native fields are the answer to "what can this daemon do":
+// which member can touch the cluster, and what shape of agent it is.
+func TestSubagentCatalogCarriesDeclaredFields(t *testing.T) {
+	roster := []specialists.Spec{{
+		Name:        "change-executor",
+		Description: "applies approved changes",
+		Mode:        specialists.ModeTask,
+		Model:       "gemini-2.5-pro",
+		Capability:  specialists.CapabilityChangeExecutor,
+		Filename:    "specialists/change-executor.tmpl",
+	}}
+
+	got := subagentCatalog(nil, roster, workload.DispatchCoordinator)
+	want := attach.SubagentCatalogInfo{
+		Name:        "change-executor",
+		Description: "applies approved changes",
+		Model:       "gemini-2.5-pro",
+		Root:        "specialists/change-executor.tmpl",
+		Modes:       []string{},
+		Invocation:  attach.InvocationTransfer,
+		Capability:  string(specialists.CapabilityChangeExecutor),
+		AgentMode:   string(specialists.ModeTask),
+	}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Errorf("entry\n got: %+v\nwant: %+v", got[0], want)
+	}
+
+	// And the wire form a client actually parses.
+	blob, err := json.Marshal(got[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const wantJSON = `{"name":"change-executor","description":"applies approved changes","model":"gemini-2.5-pro",` +
+		`"root":"specialists/change-executor.tmpl","modes":[],"invocation":"transfer",` +
+		`"capability":"change_executor","agent_mode":"Task"}`
+	if string(blob) != wantJSON {
+		t.Errorf("wire form\n got: %s\nwant: %s", blob, wantJSON)
+	}
+}
+
+// A spec with no `model:` override inherits the root's, and the field
+// stays empty rather than repeating the root model — a client showing
+// "gemini-2.5-flash" against a specialist that declared nothing would
+// be reporting a coincidence as a decision.
+func TestSubagentCatalogLeavesInheritedModelEmpty(t *testing.T) {
+	got := subagentCatalog(nil, []specialists.Spec{spec("log-analyst", specialists.ModeTask)}, workload.DispatchCoordinator)
+	if got[0].Model != "" {
+		t.Errorf("model = %q, want empty for a spec that declares no override", got[0].Model)
+	}
+}
+
+// End to end against a shipped bundle: the roster the daemon actually
+// loads projects with every member named and routed. The unit cases
+// above build Specs by hand; this one proves the wiring reads the same
+// roster buildRoot composed with.
+func TestSubagentCatalogFromShippedWorkload(t *testing.T) {
+	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
+	built, err := buildRoot(context.Background(), discardLogger(),
+		mastagent.NewEchoModel("echo"), "", "echo", dir, workload.DispatchCoordinator, nil)
+	if err != nil {
+		t.Fatalf("buildRoot: %v", err)
+	}
+
+	got := subagentCatalog(built.bundle, built.specs, built.dispatch)
+	if len(got) != len(built.specs) || len(got) == 0 {
+		t.Fatalf("catalog has %d entries for a %d-specialist roster", len(got), len(built.specs))
+	}
+	for i, e := range got {
+		if e.Name == "" || e.Description == "" {
+			t.Errorf("entry %d is unidentifiable: %+v", i, e)
+		}
+		if e.Invocation != attach.InvocationTransfer {
+			t.Errorf("%s: invocation = %q, want %q under coordinator dispatch", e.Name, e.Invocation, attach.InvocationTransfer)
+		}
+		if e.Root == "" {
+			t.Errorf("%s: no root; an operator cannot find the spec file", e.Name)
+		}
+		if e.Capability == "" {
+			t.Errorf("%s: no capability; the roster's read/write split is invisible", e.Name)
+		}
+	}
+}

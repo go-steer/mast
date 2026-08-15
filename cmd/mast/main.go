@@ -529,6 +529,11 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			// wired — the only place their server attribution survives
 			// (#133).
 			tools: newToolCatalog(logger, built.toolsets, effPred, bundle),
+			// GET /sessions/{sid}/subagents: the roster the daemon
+			// loaded, which is what "what can this thing do" asks for —
+			// /agents answers "what is running", and that is empty most
+			// of the time (#134).
+			subagents: subagentCatalog(bundle, specs, built.dispatch),
 			usage: func(sid string) attach.UsageInfo {
 				_, cost, calls := meters.meter(sid).Snapshot()
 				return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}

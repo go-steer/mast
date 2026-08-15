@@ -108,12 +108,26 @@ type Config struct {
 	// instead, at the cost of reporting what was declared rather than
 	// what the servers actually serve.
 	ToolsFn func() []attach.ToolInfo
+
+	// SubagentsFn, when set, supplies GET /sessions/.../subagents: the
+	// specialist roster the daemon loaded, as opposed to the live
+	// instances /agents reports. Nil reports an empty list. A daemon
+	// running a workload bundle has a roster and should set it — an
+	// empty catalog reads as "this daemon has no specialists", which is
+	// the wrong answer for every bundle mast ships (#134).
+	SubagentsFn func() []attach.SubagentCatalogInfo
 }
 
 // Adapter implements attach.Registrant plus the optional capability
 // interfaces mast's daemon can honestly serve: StatusProvider,
-// UsageProvider, ToolsProvider, InterruptProvider,
-// DescriptionProvider, and OperatorEventTarget.
+// UsageProvider, ToolsProvider, SubagentCatalogProvider,
+// InterruptProvider, DescriptionProvider, and OperatorEventTarget.
+//
+// Not AgentsProvider: /agents lists spawned background instances, and
+// mast has none to list — every dispatch shape resolves its
+// specialists inside the turn. The configured roster goes to
+// SubagentCatalogProvider instead, which is the distinction #134 was
+// filed over.
 type Adapter struct {
 	cfg Config
 
@@ -355,6 +369,15 @@ func (ad *Adapter) AttachTools() []attach.ToolInfo {
 		return nil
 	}
 	return ad.cfg.ToolsFn()
+}
+
+// AttachSubagentCatalog implements attach.SubagentCatalogProvider.
+// Empty when no SubagentsFn is wired.
+func (ad *Adapter) AttachSubagentCatalog() []attach.SubagentCatalogInfo {
+	if ad.cfg.SubagentsFn == nil {
+		return nil
+	}
+	return ad.cfg.SubagentsFn()
 }
 
 // Description implements attach.DescriptionProvider.

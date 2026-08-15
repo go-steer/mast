@@ -26,6 +26,7 @@ import (
 
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -275,6 +276,7 @@ func TestAttachWiringLeavesNoCapabilityUnwired(t *testing.T) {
 		modelName:   "echo",
 		description: "test",
 		tools:       testCatalog(t, workload.OnMutationApply),
+		subagents:   subagentCatalog(nil, []specialists.Spec{spec("log-analyst", specialists.ModeTask)}, workload.DispatchCoordinator),
 		usage:       func(string) attach.UsageInfo { return attach.UsageInfo{} },
 		runTurn:     func(context.Context, string, string) error { return nil },
 	}
