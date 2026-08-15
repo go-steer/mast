@@ -224,6 +224,8 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	}
 
 	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Logger)
+	resolveTier := NewTierResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, resolve, cfg.Logger)
+	logTierResolution(cfg.Specs, cfg.Provider, cfg.ModelName, cfg.Logger)
 
 	byName := make(map[string]adkagent.Agent, len(cfg.Specs))
 	taskOnly := make(map[string]graph.Specialist, len(cfg.Specs))
@@ -234,7 +236,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	var analysts []graph.Analyst
 	var classifier adkagent.Agent
 	for _, spec := range cfg.Specs {
-		opts := specialists.BuildOptions{Model: cfg.Model, Resolve: resolve}
+		opts := specialists.BuildOptions{Model: cfg.Model, Resolve: resolve, ResolveTier: resolveTier}
 		// Task-mode specialists get the toolsets; SingleTurn
 		// classifiers don't (they run in one shot with no tool loop).
 		// An empty Mode is Task — the same default specialists.Build
@@ -551,10 +553,14 @@ func RatePer1K(modelName string) float64 {
 
 // MeterScopes derives the per-specialist budget scopes for a roster:
 // the ceilings a spec declares (`max_turns`, `max_cost_usd`) plus, when
-// it declares a `model:` override, that model's price. Specialists that
-// declare neither get no scope — they are metered into the session
-// totals and nothing else, which is what an un-tiered, un-capped roster
-// wants.
+// it declares a `model:` override or a `tier:`, that model's price.
+// Specialists that declare neither get no scope — they are metered into
+// the session totals and nothing else, which is what an un-tiered,
+// un-capped roster wants.
+//
+// The price follows SpecModelName, so a `tier:` is priced at the model
+// the tier resolved to and not at the root's rate; that is why the
+// provider the run was started with is a parameter here.
 //
 // max_wallclock_seconds is deliberately absent: it is a node-level knob
 // (pkg/graph maps it onto workflow.NodeConfig.Timeout), not something a
@@ -570,7 +576,7 @@ func RatePer1K(modelName string) float64 {
 // because the condition that makes the tier credential-free is exactly
 // the condition that collapses the tiers. The derivation is unit-
 // testable here; the end-to-end claim needs real models.
-func MeterScopes(specs []specialists.Spec, rootModelName string) map[string]budget.Limits {
+func MeterScopes(specs []specialists.Spec, provider, rootModelName string) map[string]budget.Limits {
 	fake := IsOfflineFake(rootModelName)
 	var scopes map[string]budget.Limits
 	for _, s := range specs {
@@ -578,8 +584,8 @@ func MeterScopes(specs []specialists.Spec, rootModelName string) map[string]budg
 			MaxTurns:   s.Budget.MaxTurns,
 			MaxCostUSD: s.Budget.MaxCostUSD,
 		}
-		if s.Model != "" && !fake {
-			l.RatePer1K = RatePer1K(s.Model)
+		if name := SpecModelName(s, provider, rootModelName); name != "" && !fake {
+			l.RatePer1K = RatePer1K(name)
 		}
 		if l == (budget.Limits{}) {
 			continue

@@ -196,6 +196,79 @@ func TestBuild_HonorsSpecModel(t *testing.T) {
 	}
 }
 
+// TestBuild_HonorsSpecTier is the same exit criterion for the portable
+// spelling: a roster that declares `tier: small` runs on whatever the
+// tier resolver returns, and a spec with no tier still inherits the
+// parent's model without the tier resolver being consulted.
+func TestBuild_HonorsSpecTier(t *testing.T) {
+	parent := &countingModel{name: "parent"}
+	small := &countingModel{name: "small-tier"}
+
+	var asked []string
+	resolveTier := func(tier string) (model.LLM, error) {
+		asked = append(asked, tier)
+		if tier != "small" {
+			return nil, errors.New("unexpected tier " + tier)
+		}
+		return small, nil
+	}
+
+	specs := []specialists.Spec{
+		{Name: "pod_inspector", Description: "d", Instruction: "i", Mode: specialists.ModeTask, Tier: "small"},
+		{Name: "inheritor", Description: "d", Instruction: "i", Mode: specialists.ModeTask},
+	}
+	agents, err := specialists.BuildAll(specs, specialists.BuildOptions{Model: parent, ResolveTier: resolveTier})
+	if err != nil {
+		t.Fatalf("BuildAll: %v", err)
+	}
+	if got, want := len(asked), 1; got != want {
+		t.Errorf("tier resolver called %d times %v, want %d (the inheritor must not resolve)", got, asked, want)
+	}
+
+	runUnderCoordinator(t, agents)
+	if small.calls == 0 {
+		t.Error("small-tier model was never called: pod_inspector did not run on its declared tier")
+	}
+	if parent.calls == 0 {
+		t.Error("parent model was never called: the specialist with no tier did not inherit it")
+	}
+}
+
+// A tier that cannot be resolved fails the build, exactly as a `model:`
+// override does — a bundle whose cost story is "twelve small-tier
+// diagnosers" must not run them on the frontier model because the
+// wiring forgot a resolver. Declaring both spellings is refused here
+// too: LoadFile catches it for a bundle on disk, but a Spec built in
+// code reaches Build directly.
+func TestBuild_TierFailures(t *testing.T) {
+	parent := &countingModel{name: "parent"}
+	sentinel := errors.New("no credentials")
+	base := specialists.Spec{Name: "analyst", Description: "d", Instruction: "i", Tier: "small"}
+
+	tests := []struct {
+		name string
+		spec specialists.Spec
+		opts specialists.BuildOptions
+	}{
+		{"no resolver", base, specialists.BuildOptions{Model: parent}},
+		{"resolver error", base, specialists.BuildOptions{Model: parent,
+			ResolveTier: func(string) (model.LLM, error) { return nil, sentinel }}},
+		{"resolver returns nil", base, specialists.BuildOptions{Model: parent,
+			ResolveTier: func(string) (model.LLM, error) { return nil, nil }}},
+		{"model and tier together", specialists.Spec{Name: "analyst", Description: "d", Instruction: "i", Model: "claude-haiku-4-5", Tier: "small"},
+			specialists.BuildOptions{Model: parent,
+				Resolve:     func(string) (model.LLM, error) { return &countingModel{name: "haiku"}, nil },
+				ResolveTier: func(string) (model.LLM, error) { return &countingModel{name: "small"}, nil }}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := specialists.Build(tc.spec, tc.opts); err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+		})
+	}
+}
+
 // TestBuild_OverrideWithoutResolver pins the refusal: dropping a
 // declared override on the floor is the bug W1.1 fixes, so an override
 // that cannot be resolved must fail the build rather than quietly

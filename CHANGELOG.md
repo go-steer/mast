@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- **New: a specialist can declare how much model it is worth, not which
+  vendor's** (#132, W1.1a). `model: claude-haiku-4-5` in a specialist's
+  frontmatter says two things at once — "this step is cheap" and "this
+  bundle runs on Anthropic" — and only the first one is usually meant. A
+  spec can now say the first alone:
+
+  ```yaml
+  ---
+  description: Inspects pod state and returns a 3-bullet digest.
+  tier: small          # small | mid | frontier
+  ---
+  ```
+
+  Mast resolves the tier against the provider it is actually running —
+  the `--provider` alias when you passed one, otherwise the root model
+  id's own prefix, which is the same dispatch `--model` already makes —
+  through `pkg/taskclass.ModelForTier`. `tier: small` is
+  `gemini-2.5-flash` under a Gemini root and `claude-haiku-4-5` under an
+  Anthropic one, so the roster reads the same and costs the right thing
+  on either backend. A root model whose provider can be told from
+  neither fails startup asking for `--provider` rather than guessing a
+  vendor and billing you for the guess.
+
+  Every property `model:` overrides already had carries over: an
+  unresolvable tier fails startup instead of quietly inheriting the
+  parent's model, resolution is memoized per resolved id so twelve
+  `tier: small` analysts open one client, and the offline fakes
+  (`echo`, `scripted`, `toolactor`) collapse every tier back to the fake
+  so a tiered bundle still runs with no credentials. Startup logs each
+  tier next to the id it resolved to.
+
+  **Metering follows the tier.** A tiered specialist's tokens are priced
+  at the model it actually ran on, not the parent's rate — build and
+  pricing now go through one `SpecModelName`, because the alternative is
+  a bundle that runs cheap and bills expensive, which is the same
+  fiction in the other direction.
+
+  `model:` and `tier:` on one spec is a load error naming the file, not
+  a precedence rule. The shipped `ns-audit` bundle is the worked
+  example: four `tier: small` namespace analysts under one `tier: mid`
+  synthesis step.
+
 - **New: one answer can approve a whole change set — bounded by a clock the
   bundle sets and a re-read the bundle declares** (#132, W7). A remediation
   is usually several calls: scale two Deployments, or patch a ConfigMap and

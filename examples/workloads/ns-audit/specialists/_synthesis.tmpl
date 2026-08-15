@@ -10,16 +10,21 @@ budget:
   max_turns: 8
   max_wallclock_seconds: 120
   max_cost_usd: 1.00
-# The synthesis step is where a tiered roster spends its money: cheap
-# analysts, one capable merge. That assignment belongs in YOUR bundle,
-# not in a shipped example — a `model:` override is resolved when the
-# roster is BUILT (pkg/specialists honors spec.Model through
-# internal/compose.NewModelResolver), so naming a hosted model here
-# would make this example impossible to load without credentials, and
-# `mast --model=echo` on it would fail before the first turn. Copy this
-# bundle and uncomment:
+# The synthesis step is where a tiered roster spends its money: four
+# cheap analysts, one capable merge. Correlating findings across slices
+# is the one judgement call in this bundle, so it is the one step worth
+# a better model.
 #
-#   model: claude-sonnet-4-6
+# `tier:` and not `model:`. A tier says how much model this step is
+# worth and lets the running provider answer with a concrete id
+# (internal/compose maps it through pkg/taskclass.ModelForTier at build
+# time), so this bundle reads the same and costs the right thing whether
+# you point mast at Gemini or at Anthropic. `model: claude-sonnet-4-6`
+# would say the same thing in a way that only works on one vendor — and
+# it is still there if you want it, for a bundle that has a reason to
+# pin an exact id. Under `--model=echo` every tier collapses back to the
+# fake, so the example stays runnable with no credentials at all.
+tier: mid
 tools:
   mcp:
     - server: gke

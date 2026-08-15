@@ -62,7 +62,7 @@ func TestMeterPoolEnforcesSpecialistCeilings(t *testing.T) {
 		t.Fatalf("fixture is not discriminating: the workload declares its own ceilings (%+v)", bundle.Budget)
 	}
 
-	pool := newMeterPool(bundle, specs, "echo")
+	pool := newMeterPool(bundle, specs, "", "echo")
 
 	// 10k tokens at echo's $0.05/1K is $0.50 — twice OOMKilled's
 	// declared $0.25, and against an unbounded session.

@@ -25,6 +25,18 @@
 // and a declared override that cannot be resolved fails the build
 // rather than falling back to the parent's model.
 //
+// A spec may instead declare `tier: small | mid | frontier`, which is
+// the portable half of the same override: it names how much model the
+// step is worth, not which vendor's model it must run on, so a bundle
+// that puts its twelve diagnosers on the cheap tier still runs on
+// whichever provider the operator points mast at. It resolves through
+// BuildOptions.ResolveTier (internal/compose maps tier → model ID for
+// the running provider via pkg/taskclass.ModelForTier) and fails the
+// build the same way `model:` does when it cannot be resolved.
+// Declaring both on one spec is a load error: they are two answers to
+// one question, and picking a winner silently would mean the loser's
+// declaration was decoration.
+//
 // A spec's `output_schema:` names a JSON-Schema document relative to
 // the .tmpl file; it is read, normalized and checked at load time (see
 // schema.go) and reaches the agent as llmagent.Config.OutputSchema.
@@ -143,6 +155,7 @@ type Frontmatter struct {
 	Description string        `yaml:"description"`
 	Mode        Mode          `yaml:"mode,omitempty"`
 	Model       string        `yaml:"model,omitempty"`
+	Tier        string        `yaml:"tier,omitempty"`
 	Capability  Capability    `yaml:"capability,omitempty"`
 	Budget      Budget        `yaml:"budget,omitempty"`
 	Tools       ToolAllowlist `yaml:"tools,omitempty"`
@@ -165,6 +178,7 @@ type Spec struct {
 	Description string
 	Mode        Mode
 	Model       string
+	Tier        string
 	Capability  Capability
 	Budget      Budget
 	Tools       ToolAllowlist
