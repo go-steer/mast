@@ -53,6 +53,7 @@ func TestBuildFeatures_ReporterOverridesInterfacePresence(t *testing.T) {
 		featureMultiSession: false,
 		featureInterrupt:    true,
 		featureCostCeiling:  false,
+		featureGuardrails:   false,
 		featureObserverMode: false,
 	}
 	if !reflect.DeepEqual(got, want) {

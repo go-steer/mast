@@ -77,6 +77,11 @@ type CapabilityReport struct {
 	Specialists bool
 	// Interrupt: POST /interrupt reaches a live agent.
 	Interrupt bool
+	// Guardrails: GET /guardrails reports real state and POST
+	// /guardrails/reset takes effect (#135).
+	Guardrails bool
+	// CostCeiling: this session has a budget ceiling that can halt it.
+	CostCeiling bool
 	// SlashCommands is the set of slash names actually serviceable
 	// ("compact", "done", "btw", "subagent", "replan"). Order is
 	// irrelevant; the frame builder sorts.
@@ -99,10 +104,19 @@ type CapabilityReporter interface {
 // optional capability-interface presence otherwise. Returns a copy
 // so callers can mutate the map without racing other subscribers.
 func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool {
-	out := make(map[string]bool, len(serverFeatures)+6)
+	out := make(map[string]bool, len(serverFeatures)+7)
 	for k, v := range serverFeatures {
 		out[k] = v
 	}
+	// Reserved keys are seeded false and raised below by whatever can
+	// honestly claim them. Emitting them (rather than omitting) says
+	// "server understands the key name; the answer is no" — consumers
+	// that treat absent-key as off see the same behavior either way,
+	// and consumers that distinguish absent from false get a truthful
+	// "no". featureObserverMode has no source yet and stays false.
+	out[featureCostCeiling] = false
+	out[featureGuardrails] = false
+	out[featureObserverMode] = false
 	if entry == nil || entry.Agent == nil {
 		return out
 	}
@@ -120,6 +134,12 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		if r.Interrupt {
 			out[featureInterrupt] = true
 		}
+		if r.Guardrails {
+			out[featureGuardrails] = true
+		}
+		if r.CostCeiling {
+			out[featureCostCeiling] = true
+		}
 	} else {
 		if _, ok := entry.Agent.(PromptBrokerProvider); ok {
 			out[featurePermsStream] = true
@@ -133,15 +153,13 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		if _, ok := entry.Agent.(InterruptProvider); ok {
 			out[featureInterrupt] = true
 		}
+		// Reset, not read: the read side answers 200 for every
+		// registrant, so GuardrailProvider alone doesn't make the
+		// surface worth rendering a reset button for.
+		if _, ok := entry.Agent.(GuardrailResetter); ok {
+			out[featureGuardrails] = true
+		}
 	}
-	// featureCostCeiling + featureObserverMode are reserved keys —
-	// no capability interface for them today. Emitting them as false
-	// (rather than omitting) advertises "server understands the key
-	// name; the answer is no." Consumers that treat absent-key as
-	// off see the same behavior either way; consumers that
-	// distinguish absent from false get a truthful "no."
-	out[featureCostCeiling] = false
-	out[featureObserverMode] = false
 	return out
 }
 

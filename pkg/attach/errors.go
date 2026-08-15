@@ -67,6 +67,24 @@ func ClassifyTurnError(err error) TurnError {
 	code := extractStatusCode(msg)
 
 	switch {
+	// Budget — mast's own meter stopped the turn, not the provider.
+	// First in the switch because it is the only case whose message is
+	// authored here: pkg/budget's ErrExceeded wraps a detail string
+	// ("$0.0612 > cap $0.0500 (30600 tokens over 4 calls)") that
+	// contains numbers the later HTTP-status and "parse" patterns
+	// could otherwise pick at. Matched by string like everything else
+	// in this classifier — a pkg/attach → pkg/budget import to run
+	// errors.Is would couple the wire layer to the meter for one
+	// prefix (#135).
+	case strings.HasPrefix(lower, "budget exceeded"):
+		return TurnError{
+			Kind:      TurnErrorCostCeiling,
+			Code:      "BUDGET_EXCEEDED",
+			Message:   firstSentence(msg),
+			Retryable: false,
+			Hint:      "The session is past a budget ceiling and every further turn will stop the same way. Raise it with POST /sessions/{id}/guardrails/reset (additional_budget_usd / additional_tokens / additional_turns).",
+		}
+
 	// NotFound — typically a model name / location mismatch
 	// (e.g. global-only model requested at a regional endpoint).
 	case containsAny(lower, "not_found", "not found") || code == "404":

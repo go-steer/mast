@@ -46,11 +46,19 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	h.routeSession(mux, "GET", "mcp", auth.ActionSessionRead, h.doMCP)
 	h.routeSession(mux, "GET", "pricing", auth.ActionSessionRead, h.doPricing)
 	h.routeSession(mux, "GET", "perms", auth.ActionSessionRead, h.doPerms)
+	h.routeSession(mux, "GET", "guardrails", auth.ActionSessionRead, h.doGuardrails)
 
 	// Mutation endpoints (PR A2): blocked by the ReadOnly middleware
 	// at the auth layer when ReadOnly=true (any non-GET is gated).
 	h.routeSession(mux, "POST", "perms/allow", auth.ActionSessionWrite, h.doPermsAllow)
 	h.routeSession(mux, "POST", "perms/deny", auth.ActionSessionWrite, h.doPermsDeny)
+	// guardrails/reset is ActionSessionWrite, not ActionSessionAdmin:
+	// the operator it exists for is the one already driving the
+	// session, and a recovery path gated behind an admin role is a
+	// recovery path that isn't there at 3am. It is also deliberately
+	// NOT rate-limited — it starts no model work, and a limiter on the
+	// unwedge button would be a limiter on getting unstuck (#135).
+	h.routeSession(mux, "POST", "guardrails/reset", auth.ActionSessionWrite, h.doGuardrailsReset)
 	// pricing/refresh is cost-limited (#463): it does a network
 	// fetch + catalog rebuild per call. pricing/set, perms/*, and
 	// reload stay unlimited — they're cheap local mutations. The
@@ -245,6 +253,82 @@ func (h *handlers) doPricingSet(w http.ResponseWriter, r *http.Request, entry *E
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// doGuardrails — GET /guardrails (#135). Read-only projection, so it
+// follows the 200-with-zero-value convention: a registrant with no
+// guardrail capability reports everything off and nothing tripped,
+// which is the truthful answer for an agent that has no backstops.
+func (h *handlers) doGuardrails(w http.ResponseWriter, _ *http.Request, entry *Entry) {
+	out := GuardrailInfo{}
+	if p, ok := entry.Agent.(GuardrailProvider); ok {
+		out = p.AttachGuardrails()
+	}
+	if out.CostCeiling.Scopes == nil {
+		out.CostCeiling.Scopes = []ScopeCeilingInfo{}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// doGuardrailsReset — POST /guardrails/reset (#135).
+//
+// Status codes carry the whole contract:
+//
+//	200 — cleared (Reset lists what; Guardrails echoes the new state)
+//	400 — malformed body, unknown guardrail name, negative grant
+//	409 — the reset would provably re-trip; add budget (ErrGuardrailRetrip)
+//	501 — no reset capability wired
+func (h *handlers) doGuardrailsReset(w http.ResponseWriter, r *http.Request, entry *Entry) {
+	p, ok := entry.Agent.(GuardrailResetter)
+	if !ok {
+		http.Error(w, "guardrail reset capability not registered", http.StatusNotImplemented)
+		return
+	}
+	// An empty body is the common case — "clear whatever tripped" —
+	// so unlike the other operator POSTs this one tolerates it.
+	var body GuardrailResetRequest
+	if err := decodePOSTOptional(r, &body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	switch body.Guardrail {
+	case "", GuardrailAll, GuardrailWatchdog, GuardrailCostCeiling:
+	default:
+		http.Error(w, `guardrail: must be one of "watchdog", "cost_ceiling", "all"`, http.StatusBadRequest)
+		return
+	}
+	if body.AdditionalBudgetUSD < 0 || body.AdditionalTokens < 0 || body.AdditionalTurns < 0 {
+		http.Error(w, "additional budget: must be non-negative", http.StatusBadRequest)
+		return
+	}
+	// Attribution is stamped here, from the authenticated context —
+	// never read off the wire, where it would be a claim the caller
+	// makes about themselves.
+	if c, ok := auth.CallerFromContext(r.Context()); ok {
+		body.Caller = c.Identity
+	}
+	resp, err := p.AttachResetGuardrail(body)
+	switch {
+	case errors.Is(err, ErrCapabilityNotRegistered):
+		http.Error(w, "guardrail reset not registered on this registrant", http.StatusNotImplemented)
+		return
+	case errors.Is(err, ErrGuardrailRetrip):
+		// 409 carries the post-refusal state too, so the client can
+		// render "spent $X of $Y" without a follow-up GET.
+		writeJSON(w, http.StatusConflict, GuardrailResetResponse{
+			Reset:      []string{},
+			Guardrails: resp.Guardrails,
+			Message:    err.Error(),
+		})
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if resp.Reset == nil {
+		resp.Reset = []string{}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // doReload — POST /reload.
 
 func (h *handlers) doReload(w http.ResponseWriter, r *http.Request, entry *Entry) {
@@ -275,6 +359,23 @@ func decodePOST(r *http.Request, out any) error {
 	}
 	if len(raw) == 0 {
 		return errors.New("empty request body")
+	}
+	return json.Unmarshal(raw, out)
+}
+
+// decodePOSTOptional is decodePOST with an empty body left as the
+// zero value instead of erroring. Used by guardrails/reset, where
+// "clear whatever tripped" is the common request and demanding `{}`
+// for it would be ceremony.
+func decodePOSTOptional(r *http.Request, out any) error {
+	body := http.MaxBytesReader(nil, r.Body, operatorPostMaxBytes)
+	defer func() { _ = body.Close() }()
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if len(raw) == 0 {
+		return nil
 	}
 	return json.Unmarshal(raw, out)
 }

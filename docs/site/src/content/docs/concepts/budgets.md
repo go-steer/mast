@@ -80,6 +80,52 @@ workload budget across the roster.
 Both are deliberate, and both are the conservative reading. Neither is
 something to discover during an incident.
 
+## Getting unstuck after a trip
+
+A trip is not a one-time event. Enforcement is re-derived every priced
+event by comparing the session's accumulated usage against its ceiling —
+there is no "tripped" flag to clear — so a session that is past its cap is
+past it on the next turn too, and the one after that. Left alone, it
+refuses every prompt until the process restarts.
+
+Two attach endpoints are the way out:
+
+```bash
+# what is armed, what tripped, why
+curl $MAST/sessions/incident-abc/guardrails
+
+# hand it more runway
+curl -X POST $MAST/sessions/incident-abc/guardrails/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"additional_turns": 20}'
+```
+
+The read reports all three dimensions and each specialist's own ceilings,
+which matters because they fail differently: a session stopped by
+`max_turns: 40` has spent a fraction of a cent, and a session stopped by
+one specialist's `max_cost_usd: 0.25` has plenty of workload budget left.
+Both look like "the agent stopped answering".
+
+Three things the reset deliberately does *not* do:
+
+- **It does not zero the accumulator.** "Reset" means raising the ceiling.
+  A session that has spent $40 still reports $40 afterwards, so `/usage`,
+  the eventlog, and the post-incident review all agree on one number.
+- **It does not clear a trip it cannot clear.** Ask for $50 on a session
+  stopped by a turn cap and you get `409` with the crossed dimension named,
+  not a `200` that re-trips on your next prompt. The check runs before
+  anything changes, so a refusal costs nothing — re-issue with the right
+  dimension.
+- **It does not impose a ceiling that wasn't there.** `additional_turns` on
+  a workload that declared no `max_turns` is a no-op, not a new cap.
+
+`scope` targets one specialist's ceilings; omit it for the session's own.
+Raising a specialist above the workload's cap still buys nothing — the
+workload ceiling is enforced independently, and it is still the outer
+bound.
+
+Every reset is logged with the authenticated caller that requested it.
+
 ## Watching it
 
 ```

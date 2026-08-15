@@ -518,6 +518,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// server is up.
 	var att *attachDeps
 	if attachListen != "" {
+		grView := &guardrailView{meters: meters, wds: wds, logger: logger}
 		wiring := attachWiring{
 			appName:     appName,
 			userID:      defaultUserID,
@@ -538,6 +539,14 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 				_, cost, calls := meters.meter(sid).Snapshot()
 				return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}
 			},
+			// GET /guardrails + POST /guardrails/reset: which backstop
+			// stopped this session, and the only thing that unsticks
+			// it. A budget trip is otherwise permanent — the meter
+			// re-derives it every turn — so without the reset the
+			// recovery is a daemon restart, which takes every other
+			// session's in-flight turn with it (#135).
+			guardrails:     grView.info,
+			resetGuardrail: grView.reset,
 			runTurn: func(turnCtx context.Context, sid, message string) error {
 				// The attach surface stays up through the shutdown
 				// drain so operators can live-tail finishing turns —
@@ -1420,10 +1429,27 @@ func (mp *meterPool) meter(sessionID string) *budget.Meter {
 type watchdogPool struct {
 	mu   sync.Mutex
 	byID map[string]*watchdog.DefaultWatchdog
+	// fired retains what Check() drains. watchdog.Tap collects alerts
+	// as they trigger and hands them straight to the log, so by the
+	// time an operator asks the watchdog itself remembers nothing —
+	// and "armed, 0 alerts" is the same answer for a healthy session
+	// and one that looped six times an hour ago.
+	fired map[string]watchdogAlerts
+}
+
+// watchdogAlerts is the operator-visible residue of a session's
+// alerts: how many have fired since the last reset, and the latest
+// one's text.
+type watchdogAlerts struct {
+	count int
+	last  string
 }
 
 func newWatchdogPool() *watchdogPool {
-	return &watchdogPool{byID: map[string]*watchdog.DefaultWatchdog{}}
+	return &watchdogPool{
+		byID:  map[string]*watchdog.DefaultWatchdog{},
+		fired: map[string]watchdogAlerts{},
+	}
 }
 
 func (wp *watchdogPool) watchdog(sessionID string) *watchdog.DefaultWatchdog {
@@ -1435,6 +1461,32 @@ func (wp *watchdogPool) watchdog(sessionID string) *watchdog.DefaultWatchdog {
 		wp.byID[sessionID] = w
 	}
 	return w
+}
+
+// note records one fired alert for the guardrail projection.
+func (wp *watchdogPool) note(sessionID string, a watchdog.Alert) {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	f := wp.fired[sessionID]
+	f.count++
+	f.last = a.Reason
+	wp.fired[sessionID] = f
+}
+
+// alerts reports the session's accumulated alerts.
+func (wp *watchdogPool) alerts(sessionID string) watchdogAlerts {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	return wp.fired[sessionID]
+}
+
+// reset clears the session's signal state and its alert residue —
+// what POST /guardrails/reset does to the watchdog half.
+func (wp *watchdogPool) reset(sessionID string) {
+	wp.watchdog(sessionID).Reset()
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	delete(wp.fired, sessionID)
 }
 
 // toolPolicies converts the bundle's tool_catalog per-tool overrides
@@ -1698,6 +1750,10 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// #363). Alerts are logged, not routed into model context — the
 	// #159-style routing is bucket-3 work per docs/fork-design.md.
 	onAlert := func(a watchdog.Alert) {
+		// Retained as well as logged: GET /guardrails answers "has this
+		// session been misbehaving?", and the alert is gone from the
+		// watchdog the moment Tap hands it here.
+		wds.note(sessionID, a)
 		logger.Warn("watchdog alert",
 			"turn", label, "session", sessionID,
 			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
