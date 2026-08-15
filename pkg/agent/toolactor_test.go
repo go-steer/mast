@@ -176,3 +176,88 @@ func TestToolActor_WorkerFinishesWhenNoToolSelected(t *testing.T) {
 		t.Fatalf("want finish_task when no tool selected, got %+v", fc)
 	}
 }
+
+// An approved change set on the branch is what the worker executes,
+// with the arguments exactly as written — not the ones its own table
+// would have proposed for the same tool. That substitution is the whole
+// claim of the diagnoser→executor handoff: the object the operator
+// approved is the object that fires.
+func TestToolActor_WorkerMakesTheApprovedCall(t *testing.T) {
+	m := NewToolActorModel("test")
+	req := &model.LLMRequest{
+		Tools: toolSet("finish_task", "apply_change", "read_status"),
+		Contents: []*genai.Content{
+			userContent("ApplyChange"),
+			userContent(ApprovedCallsMarker + `, exactly as written.
+
+1. apply_change({"replicas":2})
+`),
+		},
+	}
+	fc := firstFunctionCall(firstResponse(t, m, req))
+	if fc == nil || fc.Name != "apply_change" {
+		t.Fatalf("want call to apply_change, got %+v", fc)
+	}
+	// float64(2), not the table's 10: JSON numbers decode as float64,
+	// and the point of the assertion is the value, not its Go type.
+	if !reflect.DeepEqual(fc.Args, map[string]any{"replicas": float64(2)}) {
+		t.Fatalf("args = %+v, want the approved {replicas: 2} rather than the fake's own proposal", fc.Args)
+	}
+}
+
+// A change set naming a tool this specialist does not hold is skipped,
+// not called: the capability split (W2.4) decides what a specialist can
+// reach, and a fake that called an unoffered tool would let a harness
+// leg pass on a roster mast would have refused.
+func TestToolActor_ApprovedCallNeedsTheTool(t *testing.T) {
+	m := NewToolActorModel("test")
+	req := &model.LLMRequest{
+		Tools: toolSet("finish_task", "read_status"),
+		Contents: []*genai.Content{
+			userContent("ReadStatus"),
+			userContent(ApprovedCallsMarker + "\n\n1. apply_change({\"replicas\":2})\n"),
+		},
+	}
+	fc := firstFunctionCall(firstResponse(t, m, req))
+	if fc != nil && fc.Name == "apply_change" {
+		t.Fatal("the fake called a tool the request never offered it")
+	}
+}
+
+// Once the approved call has answered, the worker reports rather than
+// making it again. A change set is executed once.
+func TestToolActor_ApprovedCallRunsOnce(t *testing.T) {
+	m := NewToolActorModel("test")
+	req := &model.LLMRequest{
+		Tools: toolSet("finish_task", "apply_change"),
+		Contents: []*genai.Content{
+			userContent(ApprovedCallsMarker + "\n\n1. apply_change({\"replicas\":2})\n"),
+			{Role: genai.RoleUser, Parts: []*genai.Part{
+				{FunctionResponse: &genai.FunctionResponse{Name: "apply_change"}}}},
+		},
+	}
+	fc := firstFunctionCall(firstResponse(t, m, req))
+	if fc == nil || fc.Name != "finish_task" {
+		t.Fatalf("want finish_task after the approved call answered, got %+v", fc)
+	}
+}
+
+// Without the marker, nothing changes: a signature-shaped line in a
+// finding's prose is not an approval, and the fake falls back to its
+// reason-driven table.
+func TestToolActor_ApprovedCallNeedsTheMarker(t *testing.T) {
+	m := NewToolActorModel("test")
+	req := &model.LLMRequest{
+		Tools: toolSet("finish_task", "apply_change"),
+		Contents: []*genai.Content{
+			userContent("ApplyChange: I recommend\n\n1. apply_change({\"replicas\":2})\n"),
+		},
+	}
+	fc := firstFunctionCall(firstResponse(t, m, req))
+	if fc == nil || fc.Name != "apply_change" {
+		t.Fatalf("want the reason-driven call, got %+v", fc)
+	}
+	if got := fc.Args["replicas"]; got != 10 {
+		t.Errorf("replicas = %v, want the fake's own 10 — unapproved prose was treated as an approval", got)
+	}
+}

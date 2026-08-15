@@ -82,6 +82,41 @@ The specialist was not re-invoked on resume.
   recommends UUID-fresh IDs when a session may raise the same logical
   interrupt more than once.
 
+**Later additions (verified against v2.2.0 while building W7.0, 2026-08-15).**
+Same standard as the rest of this file: each was found by a failing run,
+not by reading.
+
+- **A user-authored event emitted mid-turn disables ADK's confirmation
+  resume.** `llminternal.RequestConfirmationRequestProcessor` walks the
+  session backwards to the most recent event authored `user` and gives
+  up entirely if that event carries no `FunctionResponse` — so anything
+  the graph emits with `Content.Role == user` after the operator's
+  confirmation shadows it, and the parked call is never re-dispatched.
+  The failure is silent and reads exactly like success: the run finishes
+  `idle`, no error is logged, and nothing was applied. ADK authors an
+  event `user` purely from its content role (`agent.getAuthorForEvent`),
+  so the fix is to emit graph-authored narration as `RoleModel`; the
+  receiving specialist still sees the text, as
+  `"[<agent>] said: …"` (`ConvertForeignEvent`). This is what made the
+  diagnoser→executor handoff's approved call vanish under graph
+  dispatch (`pkg/graph/graph.go` `routeChange`,
+  `scripts/uat-v0.4.sh` U-handoff/A).
+- **A mid-turn `StateDelta` is not visible to a later node in the same
+  turn.** State reads resolve against the turn's starting snapshot, so a
+  node cannot hand a value to a downstream node by writing session
+  state — the carrier has to be the node's output or a session event.
+- **A Task-mode `LlmAgent` reached via `workflow.RunNode` ignores the
+  node input** and assembles its prompt from session history
+  (`llmagent.RunLLMAgentAsNode` seeds a wrapped session only for
+  `ModeSingleTurn`). Anything a Task specialist must read has to be on
+  the transcript before its node runs.
+- **A confirmation resume re-enters the graph at START**, so routing
+  predicates re-derive from a classifier reply that is now the
+  operator's answer rather than an incident. The route has to be durable
+  (`pkg/graph`'s `mast_route`) or the resume lands on a different
+  specialist than the one that parked — which surfaces as
+  `no function call event found for function responses ids`.
+
 ## Q3 — budget/cost substrate? Usage data YES, pricing+enforcement are mast's
 
 - **`session.Event` embeds `model.LLMResponse`, so every model call's

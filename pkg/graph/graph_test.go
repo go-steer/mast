@@ -173,3 +173,35 @@ func TestGraphRunSurfacesExternalCancellation(t *testing.T) {
 		t.Fatalf("run error = %v, want it to wrap context.Canceled", runErr)
 	}
 }
+
+// TestRouteKeyStickyOnResume pins the resume asymmetry. A confirmation
+// resume re-enters the graph at START, so the classifier runs again on
+// the operator's answer ("yes"), which classifies as nothing. Believing
+// that reply sends the answer to _fallback while the specialist that
+// parked waits on a turn it never sees — the failure the v0.4 handoff
+// UAT hit as `no function call event found for function responses ids`.
+func TestRouteKeyStickyOnResume(t *testing.T) {
+	known := map[string]string{"oomkilled": "OOMKilled", "_fallback": FallbackName}
+	for _, tc := range []struct {
+		name  string
+		reply any
+		prior string
+		want  string
+	}{
+		{"a named specialist wins", "OOMKilled", FallbackName, "OOMKilled"},
+		{"case and a trailing period are tolerated", "oomkilled.", "", "OOMKilled"},
+		{"an unrecognized reply keeps the recorded route", "yes", "OOMKilled", "OOMKilled"},
+		{"a blank reply keeps the recorded route", "  ", "OOMKilled", "OOMKilled"},
+		// Nothing recorded yet: the first pass must still be free to
+		// reach the Default edge, or an incident with no specialist
+		// stops routing to _fallback.
+		{"a first pass with nothing recorded routes as-is", "NoSuchReason", "", "NoSuchReason"},
+		{"a blank prior is not a route", "NoSuchReason", "   ", "NoSuchReason"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := routeKey(tc.reply, known, tc.prior); got != tc.want {
+				t.Errorf("routeKey(%q, prior=%q) = %q, want %q", tc.reply, tc.prior, got, tc.want)
+			}
+		})
+	}
+}

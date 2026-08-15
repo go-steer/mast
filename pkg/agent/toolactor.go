@@ -21,6 +21,7 @@ import (
 	"iter"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -55,12 +56,15 @@ import (
 //     response in the history, call it once (delegate to the worker);
 //     otherwise emit a short final text (the worker's result has come
 //     back — the turn is done).
-//   - Worker turn (Task mode: finish_task is offered): if the incident
+//   - Worker turn (Task mode: finish_task is offered): if an operator's
+//     approved change set is on this branch, make its calls as written
+//     (v0.4 W7.0 — see nextApprovedCall). Otherwise, if the incident
 //     envelope's reason selects a UAT tool (apply -> apply_change,
 //     read -> read_status) that is registered and not yet answered in the
 //     history, call it once; otherwise call finish_task. Its arguments
 //     satisfy the declared output schema when the specialist declares
-//     one (schemafill.go).
+//     one (schemafill.go), including the change set it proposes
+//     (MAST_FAKE_PROPOSED_CHANGE).
 //   - Classifier turn (SingleTurn mode: no tools at all): reply with the
 //     bare incident reason, so graph dispatch routes to the real
 //     per-failure-mode specialist rather than the Default edge.
@@ -117,8 +121,16 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 
 		_, hasFinish := req.Tools["finish_task"]
 		if hasFinish {
-			// Worker (Task) turn: call the reason-selected UAT tool once,
-			// else finish. The reason arrives here as the delegation tool's
+			// Worker (Task) turn. An approved change set in the prompt
+			// outranks everything else: this turn belongs to the change
+			// executor, and its job is to make the calls an operator
+			// already approved rather than to pick one of its own.
+			if call, args, ok := nextApprovedCall(req); ok {
+				yield(functionCall(call, args, usage), nil)
+				return
+			}
+			// Otherwise: call the reason-selected UAT tool once, else
+			// finish. The reason arrives here as the delegation tool's
 			// "request" arg (plain text, not the JSON incident envelope), so
 			// the keyword is matched against ALL request text — reasonAcross's
 			// JSON regex does not see it on this turn.
@@ -180,6 +192,59 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 			FinishReason:  genai.FinishReasonStop,
 		}, nil)
 	}
+}
+
+// ApprovedCallsMarker introduces the calls an operator approved, in the
+// event pkg/graph puts on the change executor's branch (v0.4 W7.0).
+//
+// Spelled here rather than imported, because pkg/graph's own tests
+// import this package and the dependency can only run one way.
+// TestApprovalPreambleCarriesTheMarker (pkg/graph) is what keeps the two
+// strings one string: a fake that never matches would silently stop
+// executing approved calls and every leg would still pass, just testing
+// the reason-driven path twice.
+const ApprovedCallsMarker = "An operator has APPROVED the following calls"
+
+// approvedCallRe matches one rendered call signature —
+// "1. apply_change({"replicas":2})" — as DescribeChangeSet writes them
+// (pkg/approval).
+var approvedCallRe = regexp.MustCompile(`(?m)^\s*\d+\.\s+([A-Za-z0-9_.:-]+)\((\{.*\})\)\s*$`)
+
+// nextApprovedCall returns the first approved call in the request's
+// history that this turn can still make: one the request offers as a
+// tool and that has no response yet.
+//
+// This is the fake standing in for what change-executor.tmpl instructs a
+// real model to do — make the approved calls as written, in order — and
+// it is deliberately the *only* thing the fake does with them, so the
+// arguments the write gate parks are byte-identical to the ones the
+// diagnoser proposed, or the harness sees it.
+//
+// One call per tool name: `responded` matches on the name, so a change
+// set naming the same tool twice makes the second call look already
+// answered. Real change sets in the fixture are one call, and a fake
+// that tracked argument-level identity would be re-implementing the
+// runtime it is standing in for.
+func nextApprovedCall(req *model.LLMRequest) (string, map[string]any, bool) {
+	text := allText(req)
+	if !strings.Contains(text, ApprovedCallsMarker) {
+		return "", nil, false
+	}
+	for _, m := range approvedCallRe.FindAllStringSubmatch(text, -1) {
+		name := m[1]
+		if _, offered := req.Tools[name]; !offered {
+			continue
+		}
+		if responded(req, name) {
+			continue
+		}
+		var args map[string]any
+		if err := json.Unmarshal([]byte(m[2]), &args); err != nil {
+			continue
+		}
+		return name, args, true
+	}
+	return "", nil, false
 }
 
 // copyMap hands out a fresh argument map per call. The write gate edits

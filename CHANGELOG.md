@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **New: a finding carries the call it recommends, and that is the call the
+  operator approves** (#132, W7.0). Until now a diagnosis recommended a
+  remediation in prose — "scale the api Deployment back to 2 replicas" — an
+  operator agreed with the prose, and the change executor composed a tool
+  call from it on a later turn. What reached the cluster was a call nobody
+  had looked at. Prose cannot be approved, only agreed with.
+
+  A workload's report schema can now declare `proposed_change`: a
+  possibly-empty list of `{tool, arguments}` entries. Every entry has to
+  name a tool the workload actually declares and carry arguments that fit
+  *that tool's own* input schema, and both are checked at the moment the
+  report is returned — a report that names an unknown tool, or arguments the
+  tool would reject, comes back to the specialist as an error it can correct
+  rather than failing the run. The check is the same code that validates an
+  operator's edit at the gate, so the two cannot drift apart on what
+  "schema-valid arguments" means. `examples/workloads/gke-triage` declares
+  the field on all twelve diagnosers; `recommended_actions` stays, because
+  "what should happen" and "what call makes it happen" are different
+  questions and an empty proposal still needs prose.
+
+  **Empty is a first-class answer.** "Raise the memory limit, but I don't
+  know to what" is an honest diagnosis, and a specialist that cannot name an
+  exact call says so in `escalate` instead of inventing a plausible one to
+  fill a field. Nothing changes for a roster that does not declare the
+  field.
+
+  Under graph dispatch the diagnoser→executor edge becomes structural: a
+  finding with a non-empty change set that the operator approved routes to
+  the change executor, which receives those calls verbatim. The record is
+  durable per specialist, because a confirmation resume re-enters the graph
+  at START and re-runs the nodes above it. A roster with two change
+  executors logs an error and leaves the edge unwired rather than guessing.
+
+  End to end, offline, in `scripts/uat-v0.4.sh`: the parked question quotes
+  `replicas=2` — not the `replicas=10` the same model proposes when it picks
+  a call for itself — and approving it runs `apply_change` exactly once,
+  with `replicas=2` in the tool's own ledger.
+
 - **New: `GET /sessions/{id}/guardrails` + `POST /guardrails/reset` — and a
   way out of a budget trip that didn't exist before** (#135). mast's cost
   ceilings are real: `budget:` in the bundle bounds the session, `budget:`

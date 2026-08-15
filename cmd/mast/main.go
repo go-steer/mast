@@ -460,10 +460,16 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// the outbox: a replayed result performs no new effect and needs no
 	// fresh approval (resolved-decision row 144).
 	plugins := []*plugin.Plugin{outboxPlugin}
+	// Name → input schema over the same wired toolsets /tools reports
+	// from, so the producer contract checks a proposed change against
+	// the tool that would actually run it (v0.4 W7.0).
+	toolSchemas := newToolSchemas(logger, built.toolsets)
 	writeGate, err := compose.WriteGate(compose.WriteGateConfig{
-		Bundle:    bundle,
-		Predicate: effPred,
-		Logger:    logger,
+		Bundle:      bundle,
+		Predicate:   effPred,
+		Specs:       specs,
+		ToolSchemas: toolSchemas.lookup,
+		Logger:      logger,
 	})
 	if err != nil {
 		logger.Error("failed to construct write gate", "error", err.Error())

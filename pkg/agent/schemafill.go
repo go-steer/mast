@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -60,6 +61,57 @@ import (
 const fakeSchemaViolationEnv = "MAST_FAKE_SCHEMA_VIOLATION"
 
 func violateSchemaEnabled() bool { return os.Getenv(fakeSchemaViolationEnv) != "" }
+
+// fakeProposedChangeEnv seeds the change-set field (W7.0) of a
+// synthesized report.
+//
+// The default is an empty list, and that default is load-bearing rather
+// than lazy: the change set is the one report field whose values are
+// checked against the world outside the schema — each entry has to name
+// a tool the workload declares and carry arguments that fit that tool's
+// input schema. A synthesized entry names a synthesized tool, which the
+// producer contract correctly refuses, which would leave the fake
+// retrying a report it cannot fix until the specialist's turn cap
+// killed the run. An empty list is the honest answer for a model that
+// diagnosed nothing: no call to propose.
+//
+// A harness that wants a non-empty one says which. Two spellings:
+//
+//	MAST_FAKE_PROPOSED_CHANGE='[{"tool":"x","arguments":"{\"a\":1}"}]'
+//	MAST_FAKE_PROPOSED_CHANGE=x     // shorthand for tool x, no arguments
+//
+// The shorthand exists for the refusal legs, where the point is a tool
+// name mast will not recognize and the arguments are beside the point.
+const fakeProposedChangeEnv = "MAST_FAKE_PROPOSED_CHANGE"
+
+// changeSetProperty is the report property that carries the change set.
+//
+// Spelled here rather than imported from pkg/approval, which owns it:
+// this package's offline fakes are reached from that package's own
+// tests, and importing back would be a cycle. TestChangeSetPropertyName
+// (schemafill_test.go, which may import approval — the cycle only bites
+// non-test code) is what keeps the two spellings one name, because a
+// fake filling a field nothing reads looks exactly like a passing run.
+const changeSetProperty = "proposed_change"
+
+// proposedChange returns the value the fakes put in the change-set
+// field.
+func proposedChange() []any {
+	spec := strings.TrimSpace(os.Getenv(fakeProposedChangeEnv))
+	if spec == "" {
+		return []any{}
+	}
+	if strings.HasPrefix(spec, "[") {
+		var out []any
+		if err := json.Unmarshal([]byte(spec), &out); err == nil {
+			return out
+		}
+		// Fall through: a malformed JSON array is a harness bug, and
+		// silently sending an empty list would report it as a passing
+		// run. Sending the raw text as a tool name fails loudly instead.
+	}
+	return []any{map[string]any{"tool": spec, "arguments": "{}"}}
+}
 
 // finishTaskParams digs the finish_task parameter schema out of the
 // request config — the declaration as it goes on the wire, which is
@@ -135,6 +187,10 @@ func finishTaskArgs(req *model.LLMRequest, seed, fallbackResult string) map[stri
 func conformingArgs(s *genai.Schema, seed string) map[string]any {
 	out := make(map[string]any, len(s.Properties))
 	for name, prop := range s.Properties {
+		if name == changeSetProperty && schemaType(prop) == genai.TypeArray {
+			out[name] = proposedChange()
+			continue
+		}
 		out[name] = sampleValue(prop, seed, name)
 	}
 	return out

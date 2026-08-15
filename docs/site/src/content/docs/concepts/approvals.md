@@ -124,22 +124,52 @@ That is the layer to lean on hardest, because it holds when the others are
 wrong. See [cluster permissions](/reference/cluster-permissions/) for the
 manifests and the current caveat on narrowing the GKE IAM binding.
 
-## Today: the executor is operator-invoked
+## The change set — approving the call, not the prose
 
-An honest limitation, because you will hit it in the first ten minutes.
+The three layers above stop a call. This one decides *which call* the
+operator is being shown.
 
-The diagnosers find the problem, and the change executor can fix it — but a
-diagnosis does not currently hand itself to the executor. Under `graph`
-dispatch, specialist nodes are terminal: the graph routes, the specialist
-reports, the graph ends. An operator reads the finding and injects a
-follow-up naming the change executor, which then parks for approval like
-any other mutating call.
+A finding that says "scale the api Deployment back to 2 replicas" is prose,
+and prose cannot be approved, only agreed with. If the change executor
+composes the actual tool call afterwards, from that sentence, on its own
+turn, then the thing that reached your cluster is not the thing anybody read.
 
-So the loop is *diagnose → operator → remediate-with-approval*, not
-diagnose → remediate. Closing it needs the diagnosers to emit a typed,
-machine-readable proposed change rather than prose an executor has to
-re-derive; that work is scoped and blocking, and lands in v0.4. See the
-[roadmap](/roadmap/).
+So a report can carry the call. A workload's report schema declares
+`proposed_change`, and a finding fills it with entries naming a tool from
+the workload's own catalog:
+
+```json
+"proposed_change": [
+  {"tool": "apply_change", "arguments": "{\"namespace\":\"prod\",\"replicas\":2}"}
+]
+```
+
+Two checks run the moment the report is returned, before it becomes the
+specialist's answer: the tool has to be one this workload declares, and the
+arguments have to fit **that tool's own** input schema. A report that fails
+either comes back to the specialist as an error it can correct, rather than
+travelling on to an operator who has no way to tell. It is the same code
+that validates an operator's `edit` at the gate, so the two cannot drift
+apart on what "valid arguments" means.
+
+**An empty list is a right answer.** "Raise the memory limit, but I don't
+know to what" is an honest diagnosis; a specialist that cannot name an exact
+call returns nothing and escalates, instead of inventing a plausible number
+to fill a field.
+
+Under `graph` dispatch this closes the loop the first three layers left
+open. A finding with a non-empty change set that the operator approved is
+routed to the roster's change executor, which is handed those calls
+verbatim — the edge is a structural rule about the finding, not an
+instruction in a prompt. Everything else about the gate is unchanged: each
+call still parks, still names its arguments, still needs one authenticated
+answer. A roster that declares no `proposed_change`, or a finding that
+proposes nothing, behaves exactly as it did before; and a roster carrying
+two change executors logs an error and leaves the edge unwired rather than
+guessing which was meant.
+
+Field reference: [the report
+contract](/reference/workload-bundle/#the-one-property-mast-reads-proposed_change).
 
 ## Composing the four
 

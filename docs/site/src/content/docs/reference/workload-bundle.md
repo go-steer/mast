@@ -275,8 +275,56 @@ before it consults the schema at all, so a scalar contract can never
 validate there. Rather than let one document mean two things, mast
 requires an object. A report contract is an object anyway.
 
-Mast does not interpret the schema. There is no built-in report type; the
-shape belongs to the workload.
+Mast does not interpret the schema, with exactly one exception. There is no
+built-in report type; the shape belongs to the workload.
+
+### The one property mast reads: `proposed_change`
+
+A report can carry the calls it recommends, not just prose describing them.
+Declare a `proposed_change` array and mast will check it:
+
+```json
+"proposed_change": {
+  "type": "array",
+  "description": "The executable form of your recommendation …",
+  "items": {
+    "type": "object",
+    "properties": {
+      "tool":      {"type": "string"},
+      "arguments": {"type": "string"}
+    },
+    "required": ["tool", "arguments"]
+  }
+}
+```
+
+Every entry has to name a tool the workload declares in its `tool_catalog`
+and carry arguments that fit **that tool's own** input schema. Both are
+checked at the moment the report is returned, before it becomes the
+specialist's answer. A report naming an unknown tool, or arguments the tool
+would reject, comes back to the specialist as an error it can correct —
+the same refusal shape as a schema violation, not a failed run.
+
+`arguments` is a JSON object **encoded in a string** —
+`"{\"namespace\":\"prod\",\"replicas\":2}"`, or `"{}"` for a tool that takes
+none. It has to be, because its keys are whichever tool the entry names and
+no report schema can declare them in advance; an object property with no
+declared properties is refused at load time (above) for exactly the reason
+that it would accept anything. Mast parses the string and validates it
+against the real tool's real schema, which is a stronger check than the
+report schema could have made.
+
+**An empty list is a complete report.** A specialist that cannot name an
+exact call — the fix needs a human decision, or a tool the workload was not
+given — returns `[]` and says why in its own escalation field. Nothing is
+recorded and nothing is refused. A roster that does not declare the property
+at all is unaffected.
+
+What the property buys: under [`graph`
+dispatch](/concepts/specialists-and-dispatch/#graph--a-classifier-routing-to-a-node)
+a finding whose change set the operator approved is handed to the roster's
+change executor verbatim, so the call that fires is the call that was on
+screen. See [approvals](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose).
 
 ## Budget fields
 

@@ -21,6 +21,8 @@ import (
 	"google.golang.org/genai"
 
 	"google.golang.org/adk/v2/model"
+
+	"github.com/go-steer/mast/pkg/approval"
 )
 
 // reqWithFinishTask builds a request whose config declares finish_task
@@ -65,6 +67,14 @@ func findingSchema() *genai.Schema {
 			"reason":              {Type: genai.TypeString},
 			"recommended_actions": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
 			"escalate":            {Type: genai.TypeBoolean},
+			changeSetProperty: {Type: genai.TypeArray, Items: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"tool":      {Type: genai.TypeString},
+					"arguments": {Type: genai.TypeString},
+				},
+				Required: []string{"tool", "arguments"},
+			}},
 		},
 		Required: []string{"severity", "title", "detail", "reason"},
 	}
@@ -183,6 +193,96 @@ func TestFinishTaskArgs_ViolationSparesTheDefaultWrapper(t *testing.T) {
 	if got["result"] != "text" {
 		t.Errorf("args = %v, want the unschema'd path untouched by violation mode", got)
 	}
+}
+
+// TestChangeSetPropertyName keeps this package's spelling of the
+// change-set field and pkg/approval's one name. They cannot be one
+// constant — pkg/approval's tests drive these fakes, so importing it
+// here would be a cycle — and a fake filling a field the producer
+// contract does not read would pass every assertion while exercising
+// nothing.
+func TestChangeSetPropertyName(t *testing.T) {
+	if changeSetProperty != approval.ChangeSetField {
+		t.Fatalf("the fakes fill %q but the producer contract reads %q", changeSetProperty, approval.ChangeSetField)
+	}
+}
+
+// TestFinishTaskArgs_ChangeSetIsEmptyByDefault pins the one property the
+// generic filler must NOT synthesize a value for.
+//
+// Every other field is checked against the report schema alone, which a
+// synthesized value satisfies by construction. A change set is checked
+// against the world: each entry has to name a tool the workload declares
+// and carry arguments that fit that tool's schema. "[fake] proposed_
+// change" is neither, so a synthesized entry would be refused, and the
+// fake — which cannot fix it — would re-report until the specialist's
+// turn cap killed the run. Offline runs of the shipped roster would
+// break exactly the way W1.3's did.
+func TestFinishTaskArgs_ChangeSetIsEmptyByDefault(t *testing.T) {
+	got := finishTaskArgs(reqWithFinishTask(findingSchema()), "OOMKilled", "unused")
+
+	changes, ok := got[changeSetProperty].([]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want a list", changeSetProperty, got[changeSetProperty])
+	}
+	if len(changes) != 0 {
+		t.Fatalf("%s = %v, want it empty — a synthesized change names a synthesized tool, which the producer contract refuses", changeSetProperty, changes)
+	}
+	// The property is still present: an absent one would be a different
+	// report shape, and the U-report leg asserts every declared property
+	// appears.
+	if _, present := got[changeSetProperty]; !present {
+		t.Errorf("%s is missing entirely from %v", changeSetProperty, got)
+	}
+}
+
+// TestFinishTaskArgs_ChangeSetFromEnv covers the harness hook: the v0.4
+// UAT needs a fake that proposes a real call, one that proposes a tool
+// mast will refuse, and one that proposes arguments mast will refuse.
+func TestFinishTaskArgs_ChangeSetFromEnv(t *testing.T) {
+	t.Run("a full JSON list is used verbatim", func(t *testing.T) {
+		t.Setenv(fakeProposedChangeEnv, `[{"tool":"patch_k8s_resource","arguments":"{\"name\":\"api\"}"}]`)
+		got := finishTaskArgs(reqWithFinishTask(findingSchema()), "OOMKilled", "unused")
+
+		changes, err := approval.ParseChangeSet(got)
+		if err != nil {
+			t.Fatalf("ParseChangeSet: %v", err)
+		}
+		if len(changes) != 1 || changes[0].Tool != "patch_k8s_resource" {
+			t.Fatalf("change set = %+v, want the one the harness asked for", changes)
+		}
+		if changes[0].Arguments["name"] != "api" {
+			t.Errorf("arguments = %v, want the harness's own", changes[0].Arguments)
+		}
+	})
+
+	t.Run("a bare name is a tool with no arguments", func(t *testing.T) {
+		t.Setenv(fakeProposedChangeEnv, "no_such_tool")
+		got := finishTaskArgs(reqWithFinishTask(findingSchema()), "OOMKilled", "unused")
+
+		changes, err := approval.ParseChangeSet(got)
+		if err != nil {
+			t.Fatalf("ParseChangeSet: %v", err)
+		}
+		if len(changes) != 1 || changes[0].Tool != "no_such_tool" || len(changes[0].Arguments) != 0 {
+			t.Fatalf("change set = %+v, want one entry naming no_such_tool with no arguments", changes)
+		}
+	})
+
+	t.Run("a malformed list fails loudly, not quietly", func(t *testing.T) {
+		t.Setenv(fakeProposedChangeEnv, `[{"tool":`)
+		got := finishTaskArgs(reqWithFinishTask(findingSchema()), "OOMKilled", "unused")
+
+		changes, err := approval.ParseChangeSet(got)
+		if err != nil {
+			t.Fatalf("ParseChangeSet: %v", err)
+		}
+		// An empty list here would report a harness typo as a passing
+		// run, since "no change proposed" is a legal report.
+		if len(changes) != 1 {
+			t.Fatalf("change set = %+v, want one unrunnable entry so the typo surfaces", changes)
+		}
+	})
 }
 
 // refusedRequest is a history in which finish_task came back with an

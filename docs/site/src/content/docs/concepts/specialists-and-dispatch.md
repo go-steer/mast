@@ -107,10 +107,13 @@ than a conversation:
 
 - **Interrupt ids are deterministic per specialist** (`approve-OOMKilled`),
   so an operator tool can construct one without reading the session.
-- **Specialist nodes are terminal.** A node runs and the graph ends. That
-  is what makes the shape predictable, and it is also why a diagnosis does
-  not currently hand itself to the change executor — see [the honest
-  limitation](/concepts/approvals/#today-the-executor-is-operator-invoked).
+- **Specialist nodes are terminal, with one structural exception.** A node
+  runs and the graph ends — that is what makes the shape predictable. The
+  exception is the remediation edge: a finding that carried a
+  `proposed_change` the operator approved is routed on to the roster's
+  change executor, which receives those exact calls. The condition is a
+  property of the finding, not an instruction in a prompt. See [the change
+  set](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose).
 
 A roster needs a classifier and a `_fallback` specialist to be routable
 this way; an incident the classifier cannot place goes to `_fallback`

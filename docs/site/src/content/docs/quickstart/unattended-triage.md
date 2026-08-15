@@ -143,12 +143,14 @@ scripts/demo-spike2.sh
   diagnosers hold read tools only and name the remediation in their finding,
   and the one `change-executor` specialist is the only one that could carry
   it out — parking for your approval before each call that changes anything.
-  Mast refuses to start a roster that blurs that line. **Today the executor
-  is operator-invoked, not automatic:** a diagnosis names its remediation in
-  prose, and no dispatch shape hands that to the executor on its own, so an
-  incident ends in a finding. Handing it over needs the finding to carry a
-  typed proposed change, which is planned and not yet built. See
-  [per-specialist
+  Mast refuses to start a roster that blurs that line. A diagnosis reaches
+  the executor by carrying the call itself: the finding's `proposed_change`
+  names a tool from the catalog with arguments checked against that tool's
+  schema, and once you approve it, those exact calls are what the executor
+  runs. A diagnosis that cannot name an exact call proposes nothing and the
+  incident ends at the finding. See [the change
+  set](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose)
+  and [per-specialist
   capability](/reference/workload-bundle/#per-specialist-capability), and
   classify any tools you add with `tool_catalog.tools[].mutating`: an
   unclassified tool counts as mutating, so an unclassified read tool will

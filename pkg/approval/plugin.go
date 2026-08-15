@@ -84,6 +84,19 @@ type Config struct {
 	// OnMutationRequireApproval; unused otherwise.
 	Gate *permissions.Gate
 
+	// ChangeSet, when non-nil, enforces the change-set producer
+	// contract (W7.0): a specialist's report may only carry a
+	// proposed_change naming a tool this workload declares, with
+	// arguments that satisfy that tool's declared input schema.
+	//
+	// It rides the write gate rather than being a plugin of its own
+	// for the reason W2.4 paid for: every runner construction path
+	// already registers this one, and a check that only some paths
+	// install is a check with a hole in it. Nil is "this composition
+	// has no catalog to check against" — a library embed with no
+	// bundle — and leaves reports untouched.
+	ChangeSet *ChangeSetChecker
+
 	// Logger receives the audit trail. Defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -97,6 +110,21 @@ type Config struct {
 // and asking an operator to approve it again would invite them to
 // approve doing it twice (resolved-decision row 144).
 func New(cfg Config) (*plugin.Plugin, error) {
+	g, err := newWriteGate(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return plugin.New(plugin.Config{
+		Name:               PluginName,
+		BeforeToolCallback: g.beforeTool,
+	})
+}
+
+// newWriteGate validates the config and builds the gate. Separate from
+// New so a test can drive the real callback inside an agent tree it
+// builds itself, rather than a hand-written stand-in that could diverge
+// from what a daemon registers.
+func newWriteGate(cfg Config) (*writeGate, error) {
 	if !cfg.Policy.Valid() {
 		return nil, fmt.Errorf("approval: Config.Policy %q is not one of %s, %s, %s", cfg.Policy,
 			OnMutationRequireApproval, OnMutationApply, OnMutationDryRun)
@@ -111,10 +139,7 @@ func New(cfg Config) (*plugin.Plugin, error) {
 	if g.cfg.Logger == nil {
 		g.cfg.Logger = slog.Default()
 	}
-	return plugin.New(plugin.Config{
-		Name:               PluginName,
-		BeforeToolCallback: g.beforeTool,
-	})
+	return g, nil
 }
 
 type writeGate struct {
@@ -127,6 +152,13 @@ type writeGate struct {
 // Returning nil runs the tool with args exactly as they stand, including
 // any in-place edit made here.
 func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+	// The producer contract runs first and on a different tool: a
+	// report is not a mutation, and the check has to happen before the
+	// report becomes the specialist's result rather than before the
+	// change is executed.
+	if refusal := g.checkChangeSet(ctx, t, args); refusal != nil {
+		return refusal, nil
+	}
 	if !g.cfg.Mutating(t.Name()) {
 		return nil, nil
 	}
@@ -362,10 +394,19 @@ func copyArgs(m map[string]any) map[string]any {
 }
 
 func (g *writeGate) audit(ctx agent.Context, t tool.Tool, key, outcome, detail string) {
-	g.cfg.Logger.Info("write gate",
-		"outcome", outcome, "tool", t.Name(), "call", key, "detail", detail,
-		"agent", ctx.AgentName(), "session", ctx.SessionID(),
-		"invocation", ctx.InvocationID(), "function_call_id", ctx.FunctionCallID())
+	attrs := []any{"outcome", outcome, "tool", t.Name(), "call", key, "detail", detail}
+	// The invocation identifiers are what make the record findable
+	// later, and they are also the only part that can be absent: a
+	// caller driving the callback outside a turn has no invocation to
+	// name. Log the decision without them rather than taking the turn
+	// down over a log line — an audit record is a side effect of the
+	// gate's job, never a reason it fails.
+	if ctx != nil {
+		attrs = append(attrs,
+			"agent", ctx.AgentName(), "session", ctx.SessionID(),
+			"invocation", ctx.InvocationID(), "function_call_id", ctx.FunctionCallID())
+	}
+	g.cfg.Logger.Info("write gate", attrs...)
 }
 
 // Request is the payload of the parked confirmation: everything an

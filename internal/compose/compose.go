@@ -252,7 +252,13 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 		if isTask {
 			// The spec's budget rides along so graph.Build can map
 			// max_wallclock_seconds onto the node's Timeout.
-			taskOnly[spec.Name] = graph.Specialist{Agent: a, Budget: spec.Budget}
+			taskOnly[spec.Name] = graph.Specialist{
+				Agent:  a,
+				Budget: spec.Budget,
+				// And the capability, which is how graph.Build finds
+				// the node an approved change is routed to.
+				Capability: spec.Capability,
+			}
 			if spec.Name != graph.SynthesisName && spec.Name != graph.FallbackName {
 				// The allowlist rides along too: BuildFanout checks it,
 				// and the built agent no longer carries it.
@@ -306,9 +312,11 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 			return nil, fmt.Errorf("--dispatch=graph requires a SingleTurn classifier specialist in the roster")
 		}
 		return graph.Build(graph.Config{
-			Bundle:      cfg.Bundle,
-			Classifier:  classifier,
-			Specialists: taskOnly,
+			Bundle:            cfg.Bundle,
+			Classifier:        classifier,
+			Specialists:       taskOnly,
+			ApprovedChangeSet: ApprovedChangeSet(cfg.Logger),
+			Logger:            cfg.Logger,
 		})
 	}
 
