@@ -98,8 +98,15 @@ type Config struct {
 	// core-agent registrant with an empty tracker.
 	UsageFn func() attach.UsageInfo
 
-	// ToolsFn, when set, supplies GET /sessions/.../tools (typically
-	// the workload bundle's tool catalog). Nil reports an empty list.
+	// ToolsFn, when set, supplies GET /sessions/.../tools. Nil reports
+	// an empty list — which reads to an operator exactly like a daemon
+	// that holds no tools, so a caller with tools to report should set
+	// it. The daemon builds it from the MCP toolsets it wired, because
+	// that is where the per-server attribution the endpoint reports
+	// still exists (cmd/mast's toolCatalog; #133). Callers that only
+	// have the workload bundle's declared tool_catalog can project that
+	// instead, at the cost of reporting what was declared rather than
+	// what the servers actually serve.
 	ToolsFn func() []attach.ToolInfo
 }
 

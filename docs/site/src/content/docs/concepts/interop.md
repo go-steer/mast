@@ -34,6 +34,16 @@ running turn, read a session's transcript, inject an operator message,
 answer a parked approval. It needs `--session-db`, since the live tail
 pumps from the event log.
 
+`GET /sessions/{id}/tools` lists the tools the daemon actually holds, each
+with the MCP server it came from and a `gate_state` — what the
+[write gate](/concepts/approvals/) would do to a call of it: `allowed`,
+`prompted` (it parks for approval), or `denied` (`on_mutation: dry_run`, so
+it will never run). The list is read from the live MCP servers, not from
+the bundle's declaration, and refreshed at most every 30 seconds; a server
+that fails to answer is left out and logged rather than blanking the rest.
+Tools registered outside MCP — the planner's own dispatch calls — are not
+listed yet.
+
 Attach can read transcripts and drive turns, so it gets its own token
 (`MAST_ATTACH_TOKEN`) and a hard rule: a non-loopback bind without auth is
 **refused**, not warned about. It also stays up through a shutdown drain,
