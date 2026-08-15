@@ -230,16 +230,31 @@ func (u *usage) add(tokens int64, cost float64) {
 // check reports the first ceiling in l that u has crossed, as the
 // detail half of an ErrExceeded message.
 func check(l Limits, u *usage) error {
-	if l.MaxTurns > 0 && u.calls > l.MaxTurns {
-		return fmt.Errorf("%d model calls (turns) > cap %d", u.calls, l.MaxTurns)
-	}
-	if l.MaxTokens > 0 && u.tokens > l.MaxTokens {
-		return fmt.Errorf("%d tokens > cap %d", u.tokens, l.MaxTokens)
-	}
-	if l.MaxCostUSD > 0 && u.cost > l.MaxCostUSD {
-		return fmt.Errorf("$%.4f > cap $%.4f (%d tokens over %d calls)", u.cost, l.MaxCostUSD, u.tokens, u.calls)
+	if t := crossed("", l, u); len(t) > 0 {
+		return errors.New(t[0].Reason)
 	}
 	return nil
+}
+
+// crossed lists every ceiling in l that u is already past, in the
+// order check reports them. Enforcement and reporting read the same
+// comparisons from here: a projection that decided "tripped" any other
+// way could disagree with the meter that actually stops the run.
+func crossed(scope string, l Limits, u *usage) []Trip {
+	var out []Trip
+	if l.MaxTurns > 0 && u.calls > l.MaxTurns {
+		out = append(out, Trip{Scope: scope, Dimension: DimensionTurns,
+			Reason: fmt.Sprintf("%d model calls (turns) > cap %d", u.calls, l.MaxTurns)})
+	}
+	if l.MaxTokens > 0 && u.tokens > l.MaxTokens {
+		out = append(out, Trip{Scope: scope, Dimension: DimensionTokens,
+			Reason: fmt.Sprintf("%d tokens > cap %d", u.tokens, l.MaxTokens)})
+	}
+	if l.MaxCostUSD > 0 && u.cost > l.MaxCostUSD {
+		out = append(out, Trip{Scope: scope, Dimension: DimensionCostUSD,
+			Reason: fmt.Sprintf("$%.4f > cap $%.4f (%d tokens over %d calls)", u.cost, l.MaxCostUSD, u.tokens, u.calls)})
+	}
+	return out
 }
 
 // priceOf costs one model call, against cat where it can and the flat

@@ -108,12 +108,47 @@ type Config struct {
 	// instead, at the cost of reporting what was declared rather than
 	// what the servers actually serve.
 	ToolsFn func() []attach.ToolInfo
+
+	// SubagentsFn, when set, supplies GET /sessions/.../subagents: the
+	// specialist roster the daemon loaded, as opposed to the live
+	// instances /agents reports. Nil reports an empty list. A daemon
+	// running a workload bundle has a roster and should set it — an
+	// empty catalog reads as "this daemon has no specialists", which is
+	// the wrong answer for every bundle mast ships (#134).
+	SubagentsFn func() []attach.SubagentCatalogInfo
+
+	// GuardrailsFn, when set, supplies GET /sessions/.../guardrails:
+	// which backstops are armed, which have tripped, and the spend
+	// behind that. Nil reports everything off — the truthful answer
+	// for a caller with no budget meter, and the wrong one for a
+	// daemon running a bundle that declares `budget:` (#135).
+	GuardrailsFn func() attach.GuardrailInfo
+
+	// ResetGuardrailFn, when set, services POST
+	// /sessions/.../guardrails/reset. Nil is a 501 rather than a
+	// silent no-op: a session wedged past its ceiling stays wedged for
+	// the daemon's lifetime, so an operator has to learn immediately
+	// that this daemon can't hand it more runway.
+	ResetGuardrailFn func(req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error)
 }
 
 // Adapter implements attach.Registrant plus the optional capability
 // interfaces mast's daemon can honestly serve: StatusProvider,
-// UsageProvider, ToolsProvider, InterruptProvider,
+// UsageProvider, ToolsProvider, SubagentCatalogProvider,
+// GuardrailProvider, GuardrailResetter, InterruptProvider,
 // DescriptionProvider, and OperatorEventTarget.
+//
+// It also implements CapabilityReporter, because satisfying an
+// interface is not the same as being wired: the guardrail methods
+// exist on every Adapter and answer with real data only where the
+// daemon set the corresponding Config func. The report is what the
+// capabilities frame advertises.
+//
+// Not AgentsProvider: /agents lists spawned background instances, and
+// mast has none to list — every dispatch shape resolves its
+// specialists inside the turn. The configured roster goes to
+// SubagentCatalogProvider instead, which is the distinction #134 was
+// filed over.
 type Adapter struct {
 	cfg Config
 
@@ -355,6 +390,52 @@ func (ad *Adapter) AttachTools() []attach.ToolInfo {
 		return nil
 	}
 	return ad.cfg.ToolsFn()
+}
+
+// AttachSubagentCatalog implements attach.SubagentCatalogProvider.
+// Empty when no SubagentsFn is wired.
+func (ad *Adapter) AttachSubagentCatalog() []attach.SubagentCatalogInfo {
+	if ad.cfg.SubagentsFn == nil {
+		return nil
+	}
+	return ad.cfg.SubagentsFn()
+}
+
+// AttachGuardrails implements attach.GuardrailProvider. Zero state —
+// nothing armed, nothing tripped — when no GuardrailsFn is wired.
+func (ad *Adapter) AttachGuardrails() attach.GuardrailInfo {
+	if ad.cfg.GuardrailsFn == nil {
+		return attach.GuardrailInfo{}
+	}
+	return ad.cfg.GuardrailsFn()
+}
+
+// AttachResetGuardrail implements attach.GuardrailResetter. Without a
+// ResetGuardrailFn it returns attach.ErrCapabilityNotRegistered, which
+// the handler renders as 501.
+func (ad *Adapter) AttachResetGuardrail(req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
+	if ad.cfg.ResetGuardrailFn == nil {
+		return attach.GuardrailResetResponse{}, attach.ErrCapabilityNotRegistered
+	}
+	return ad.cfg.ResetGuardrailFn(req)
+}
+
+// AttachCapabilities implements attach.CapabilityReporter: what this
+// adapter is actually wired for, as opposed to what its method set
+// happens to satisfy. Interrupt is unconditional (the adapter owns the
+// turn's cancel func); the guardrail keys follow the Config funcs.
+//
+// CostCeiling asks the projection rather than assuming: a daemon
+// serving a bundle with no `budget:` block has the guardrail surface
+// wired and no ceiling to trip, and advertising a spend cap there
+// would have a client render a limit that does not exist.
+func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
+	rep := attach.CapabilityReport{Interrupt: true}
+	if ad.cfg.GuardrailsFn != nil {
+		rep.Guardrails = ad.cfg.ResetGuardrailFn != nil
+		rep.CostCeiling = ad.cfg.GuardrailsFn().CostCeiling.Configured()
+	}
+	return rep
 }
 
 // Description implements attach.DescriptionProvider.

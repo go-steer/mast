@@ -52,10 +52,18 @@ type attachWiring struct {
 	// with no MCP servers) and reports an empty catalog.
 	tools *toolCatalog
 
-	// usage and runTurn take the session ID because they close over
-	// per-session daemon state (the meter pool, the turn locks).
-	usage   func(sid string) attach.UsageInfo
-	runTurn func(ctx context.Context, sid, message string) error
+	// subagents is the loaded specialist roster, resolved once at
+	// startup: the composition does not change while the daemon runs,
+	// so unlike the tool catalog there is nothing to refresh.
+	subagents []attach.SubagentCatalogInfo
+
+	// usage, guardrails, resetGuardrail and runTurn take the session
+	// ID because they close over per-session daemon state (the meter
+	// pool, the watchdog pool, the turn locks).
+	usage          func(sid string) attach.UsageInfo
+	guardrails     func(sid string) attach.GuardrailInfo
+	resetGuardrail func(sid string, req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error)
+	runTurn        func(ctx context.Context, sid, message string) error
 }
 
 // config renders the wiring for one session.
@@ -80,6 +88,11 @@ func (w attachWiring) config(sid string) attachadapter.Config {
 			// takes the base context because ToolsFn carries none and
 			// a tools/list must not outlive the daemon.
 			return w.tools.snapshot(w.contextOrBackground())
+		},
+		SubagentsFn:  func() []attach.SubagentCatalogInfo { return w.subagents },
+		GuardrailsFn: func() attach.GuardrailInfo { return w.guardrails(sid) },
+		ResetGuardrailFn: func(req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
+			return w.resetGuardrail(sid, req)
 		},
 	}
 }

@@ -44,6 +44,38 @@ that fails to answer is left out and logged rather than blanking the rest.
 Tools registered outside MCP — the planner's own dispatch calls — are not
 listed yet.
 
+`GET /sessions/{id}/subagents` lists the roster the daemon **loaded** —
+what this thing can do. (`/agents` lists what has been *spawned*, which for
+mast is always empty: every dispatch shape resolves its specialists inside
+the turn.) Each entry carries the specialist's description, its `model:`
+override if it declared one, its declared `capability` (`read_only` or
+`change_executor`), its `agent_mode` (`Task` or `SingleTurn`), and an
+`invocation` — how the composed root actually reaches it:
+
+| `invocation` | means |
+|---|---|
+| `parent_tool` | the planner calls it via `invoke_specialist` |
+| `transfer` | coordinator dispatch hands the turn to it |
+| `graph_node` | a node in a graph, or fan-out's synthesis merger |
+| `fanout_branch` | one of fan-out's concurrent analysts |
+| *(empty)* | **nothing in this shape reaches it** |
+
+That last row is the useful one. A roster can carry a member the composed
+shape never routes to — a `_fallback` under fan-out dispatch, a second
+`SingleTurn` spec under graph dispatch — and an empty `invocation` is how
+you see it without reading the composition code.
+
+`GET /sessions/{id}/guardrails` answers the question an operator actually
+has when a session stops responding: *what stopped it, and what do I do?*
+It reports the budget ceilings in force and the usage against them across
+all three dimensions plus each specialist's own, and the watchdog's posture
+(`advisory: true` — mast's watchdog logs, it does not halt).
+`POST /sessions/{id}/guardrails/reset` is the way out: a budget trip is
+otherwise permanent, since enforcement is re-derived from usage against the
+ceiling on every priced event. See
+[getting unstuck after a trip](/concepts/budgets/#getting-unstuck-after-a-trip)
+for what a reset does and the three things it deliberately refuses to do.
+
 Attach can read transcripts and drive turns, so it gets its own token
 (`MAST_ATTACH_TOKEN`) and a hard rule: a non-loopback bind without auth is
 **refused**, not warned about. It also stays up through a shutdown drain,

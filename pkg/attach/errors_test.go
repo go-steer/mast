@@ -19,8 +19,11 @@ package attach
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/go-steer/mast/pkg/budget"
 )
 
 func TestClassifyTurnError_Kinds(t *testing.T) {
@@ -109,6 +112,19 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 			wantRetry: true,
 		},
 		{
+			name:        "cost_ceiling from a session budget trip",
+			err:         errors.New("budget exceeded: $0.0512 > cap $0.0500 (25600 tokens over 4 calls)"),
+			wantKind:    TurnErrorCostCeiling,
+			wantRetry:   false,
+			wantHintHas: "guardrails/reset",
+		},
+		{
+			name:      "cost_ceiling from a specialist budget trip",
+			err:       errors.New(`budget exceeded: specialist "log-analyst": 6 model calls (turns) > cap 5`),
+			wantKind:  TurnErrorCostCeiling,
+			wantRetry: false,
+		},
+		{
 			name:      "unknown for novel errors",
 			err:       errors.New("something nobody planned for"),
 			wantKind:  TurnErrorUnknown,
@@ -139,6 +155,19 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 				t.Errorf("Message should be non-empty for classified errors; got %+v", got)
 			}
 		})
+	}
+}
+
+// The budget trip is classified by string prefix, because pkg/attach
+// must not import pkg/budget — so the sentinel's text is a contract,
+// and this is the only thing that notices when it drifts. A miss here
+// is silent: the turn still fails, it just reports as "unknown" and
+// the operator never learns a reset would fix it.
+func TestClassifyTurnError_MatchesTheRealBudgetSentinel(t *testing.T) {
+	t.Parallel()
+	err := fmt.Errorf("%w: $0.0512 > cap $0.0500 (25600 tokens over 4 calls)", budget.ErrExceeded)
+	if got := ClassifyTurnError(err); got.Kind != TurnErrorCostCeiling {
+		t.Errorf("Kind = %q for %v, want %q", got.Kind, err, TurnErrorCostCeiling)
 	}
 }
 
