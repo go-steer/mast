@@ -229,7 +229,7 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	for _, s := range specs {
 		names = append(names, s.Name)
 	}
-	r.meter.Scopes = compose.MeterScopes(specs, rigModel)
+	r.meter.Scopes = compose.MeterScopes(specs, "", rigModel)
 	bundle := workload.Bundle{
 		Name:        "differentiators",
 		Description: "v0.3 differentiator eval fixture",

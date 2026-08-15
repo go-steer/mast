@@ -24,6 +24,8 @@ import (
 
 	"google.golang.org/genai"
 	"gopkg.in/yaml.v3"
+
+	"github.com/go-steer/mast/pkg/taskclass"
 )
 
 // LoadDir reads every *.tmpl file in dir non-recursively and parses each
@@ -87,6 +89,22 @@ func LoadFile(path string) (Spec, error) {
 		// read_only would fail the roster somewhere far from the typo.
 		return Spec{}, fmt.Errorf("specialists: %q: unknown capability %q (want read_only or change_executor)", path, capability)
 	}
+	if fm.Tier != "" {
+		// Same reasoning as the capability refusal above: a misspelled
+		// tier is a model choice that did not take. Defaulting it to
+		// the parent's model would run twelve diagnosers on the
+		// frontier model and only show up on the bill.
+		switch fm.Tier {
+		case taskclass.TierSmall, taskclass.TierMid, taskclass.TierFrontier:
+		default:
+			return Spec{}, fmt.Errorf("specialists: %q: unknown tier %q (want %s, %s or %s)",
+				path, fm.Tier, taskclass.TierSmall, taskclass.TierMid, taskclass.TierFrontier)
+		}
+		if fm.Model != "" {
+			return Spec{}, fmt.Errorf("specialists: %q: declares both model %q and tier %q (use one: model: pins an exact ID, tier: resolves per provider)",
+				path, fm.Model, fm.Tier)
+		}
+	}
 	var schema *genai.Schema
 	var schemaPath string
 	if fm.OutputSchema != "" {
@@ -106,6 +124,7 @@ func LoadFile(path string) (Spec, error) {
 		Description:      fm.Description,
 		Mode:             mode,
 		Model:            fm.Model,
+		Tier:             fm.Tier,
 		Capability:       capability,
 		Budget:           fm.Budget,
 		Tools:            fm.Tools,

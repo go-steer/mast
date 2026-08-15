@@ -37,6 +37,17 @@ import (
 // through the same BuildModel path the root model came from.
 type ModelResolver func(name string) (model.LLM, error)
 
+// TierResolver is the same seam for a specialist's `tier:` frontmatter:
+// it turns "small" into whatever the running provider's small model is.
+// The mapping lives outside this package for the same reason
+// ModelResolver's does, and for one more — the answer depends on which
+// provider the operator started mast with, which is a composition fact,
+// not a roster fact. internal/compose.BuildRoot supplies the one mast
+// ships; it goes through pkg/taskclass.ModelForTier and then through
+// the same memoized ModelResolver, so a roster of twelve small-tier
+// diagnosers still opens one client.
+type TierResolver func(tier string) (model.LLM, error)
+
 // BuildOptions carries the runtime bindings a Spec needs to become a
 // concrete ADK agent. The model is required. Toolsets are offered to
 // every built specialist but filtered through Spec.Tools.MCP first —
@@ -52,6 +63,12 @@ type BuildOptions struct {
 	// silently running the specialist on the parent's model (the bug
 	// this field fixes — see docs/v0.3-plan.md W1.1).
 	Resolve ModelResolver
+
+	// ResolveTier resolves per-specialist `tier:` declarations. Nil is
+	// legal only when no Spec in the roster declares one; a declared
+	// tier with no resolver is a build error for the same reason a
+	// declared `model:` with no Resolve is.
+	ResolveTier TierResolver
 
 	Tools    []tool.Tool
 	Toolsets []tool.Toolset
@@ -82,7 +99,8 @@ type BuildOptions struct {
 }
 
 // modelFor picks the model a Spec builds with: the resolved `model:`
-// override when the spec declares one, the parent's model otherwise.
+// override or `tier:` when the spec declares one, the parent's model
+// otherwise.
 //
 // A declared-but-unresolvable override is a build error, never a
 // fallback. Falling back would reproduce exactly the failure mode W1.1
@@ -90,6 +108,14 @@ type BuildOptions struct {
 // synthesis" while every specialist quietly runs on the parent's model
 // and the cost story is a fiction.
 func (o BuildOptions) modelFor(spec Spec) (model.LLM, error) {
+	if spec.Model != "" && spec.Tier != "" {
+		// LoadFile refuses this shape; a Spec built in code can still
+		// reach here, and guessing which one wins is the fiction above.
+		return nil, fmt.Errorf("specialists: build %q: declares both model %q and tier %q (use one)", spec.Name, spec.Model, spec.Tier)
+	}
+	if spec.Tier != "" {
+		return o.modelForTier(spec)
+	}
 	if spec.Model == "" {
 		return o.Model, nil
 	}
@@ -102,6 +128,21 @@ func (o BuildOptions) modelFor(spec Spec) (model.LLM, error) {
 	}
 	if m == nil {
 		return nil, fmt.Errorf("specialists: build %q: model resolver returned nil for override %q", spec.Name, spec.Model)
+	}
+	return m, nil
+}
+
+// modelForTier is modelFor's `tier:` half, split out only for length.
+func (o BuildOptions) modelForTier(spec Spec) (model.LLM, error) {
+	if o.ResolveTier == nil {
+		return nil, fmt.Errorf("specialists: build %q: tier %q declared but BuildOptions.ResolveTier is nil", spec.Name, spec.Tier)
+	}
+	m, err := o.ResolveTier(spec.Tier)
+	if err != nil {
+		return nil, fmt.Errorf("specialists: build %q: resolve tier %q: %w", spec.Name, spec.Tier, err)
+	}
+	if m == nil {
+		return nil, fmt.Errorf("specialists: build %q: tier resolver returned nil for tier %q", spec.Name, spec.Tier)
 	}
 	return m, nil
 }
@@ -169,8 +210,8 @@ func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
 
 // Build turns a Spec into an ADK agent, dispatching to Task or
 // SingleTurn constructors based on Spec.Mode. The agent runs on
-// spec.Model when the spec declares one, opts.Model otherwise — see
-// modelFor.
+// spec.Model or spec.Tier when the spec declares one, opts.Model
+// otherwise — see modelFor.
 //
 // A spec's OutputSchema reaches both modes. The two enforce it
 // differently — Task mode through the finish_task declaration, which

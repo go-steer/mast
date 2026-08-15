@@ -445,7 +445,7 @@ func limits(cfg Config, bundle *workload.Bundle, modelName string) budget.Limits
 func meterConfig(cfg Config, bundle *workload.Bundle, specs []specialists.Spec, modelName string) budget.Config {
 	return budget.Config{
 		Limits: limits(cfg, bundle, modelName),
-		Scopes: compose.MeterScopes(specs, modelName),
+		Scopes: compose.MeterScopes(specs, "", modelName),
 	}
 }
 

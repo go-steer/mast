@@ -65,8 +65,10 @@ Five of those lines are worth understanding as concepts rather than fields:
   is enforced at construction, not by the prompt; see
   [approvals](/concepts/approvals/).
 - **`model`** — a per-specialist override, which may name a *different
-  provider* than the rest of the roster. See
-  [providers](/concepts/providers/).
+  provider* than the rest of the roster. Its portable alternative is
+  **`tier`** (`small` / `mid` / `frontier`), which says how much model the
+  step is worth and lets the running provider name the id. A spec declares
+  one or the other, never both. See [providers](/concepts/providers/).
 - **`output_schema`** — a JSON-Schema file the specialist's report has to
   satisfy. A violation is refused and comes back to the model as a named
   error, so malformed output never becomes the answer.
@@ -163,7 +165,9 @@ error naming the file rather than an incident that behaves oddly:
 - a `read_only` specialist that can reach a mutating tool → refused
 - a fan-out roster with a mutating analyst, or an analyst with no tool
   allowlist, or no `_synthesis` → refused
-- a `model:` override whose credentials do not resolve → refused
+- a `model:` override whose credentials do not resolve, or a `tier:` the
+  running provider cannot answer → refused
+- a spec declaring both `model:` and `tier:` → refused, with the file named
 - a malformed `output_schema` document → refused, with the file named
 - a graph roster with no classifier or no `_fallback` → not routable
 

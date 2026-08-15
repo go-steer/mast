@@ -493,7 +493,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		return err
 	}
 
-	meters := newMeterPool(bundle, specs, modelName)
+	meters := newMeterPool(bundle, specs, providerName, modelName)
 	wds := newWatchdogPool()
 
 	// Fixed metric registry (pkg/observability owns every family name;
@@ -1400,7 +1400,7 @@ type meterPool struct {
 	byID map[string]*budget.Meter
 }
 
-func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, modelName string) *meterPool {
+func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, provider, modelName string) *meterPool {
 	// Pricing lives in the shared core (internal/compose.RatePer1K)
 	// so the daemon and mast.RunWorkload derive identical costs.
 	limits := budget.Limits{RatePer1K: compose.RatePer1K(modelName)}
@@ -1413,7 +1413,7 @@ func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, modelName s
 	// Per-specialist ceilings compose under the workload's; a
 	// specialist that declares a tighter cap stops the run on its own
 	// (pkg/budget, "Scopes").
-	cfg := budget.Config{Limits: limits, Scopes: compose.MeterScopes(specs, modelName)}
+	cfg := budget.Config{Limits: limits, Scopes: compose.MeterScopes(specs, provider, modelName)}
 	return &meterPool{cfg: cfg, byID: map[string]*budget.Meter{}}
 }
 

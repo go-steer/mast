@@ -262,6 +262,51 @@ func TestLoadFile_Capability(t *testing.T) {
 	}
 }
 
+// A tier is refused on the same grounds a capability is: `tier: cheap`
+// defaulted to the parent's model would run the whole roster on the
+// frontier model and show up on the bill, not in a log.
+//
+// `model:` and `tier:` together are refused too. They are two answers
+// to one question and there is no reading of the file that tells you
+// which one lost.
+func TestLoadFile_Tier(t *testing.T) {
+	const body = "---\ndescription: d\n%s---\nbody\n"
+	tests := []struct {
+		name    string
+		line    string
+		want    string
+		wantErr bool
+	}{
+		{"absent", "", "", false},
+		{"small", "tier: small\n", "small", false},
+		{"mid", "tier: mid\n", "mid", false},
+		{"frontier", "tier: frontier\n", "frontier", false},
+		{"a near miss is refused", "tier: cheap\n", "", true},
+		{"case matters", "tier: Small\n", "", true},
+		{"a model id is not a tier", "tier: claude-haiku-4-5\n", "", true},
+		{"model and tier together are refused", "model: claude-haiku-4-5\ntier: small\n", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTempTmpl(t, dir, "s.tmpl", fmt.Sprintf(body, tc.line))
+			spec, err := specialists.LoadFile(filepath.Join(dir, "s.tmpl"))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("LoadFile(%q) = nil error, want a refusal", tc.line)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFile: %v", err)
+			}
+			if spec.Tier != tc.want {
+				t.Fatalf("Tier = %q, want %q", spec.Tier, tc.want)
+			}
+		})
+	}
+}
+
 // TestLoadFile_EmptyMCPListIsNotAbsent pins the YAML decode the whole
 // deny-all spelling rests on: `mcp: []` must reach the Spec as a
 // present-but-empty slice, distinct from a missing `mcp:` key.

@@ -193,7 +193,7 @@ This is a stronger guarantee than prompt wording. A diagnoser told "do not
 mutate anything" is one persuasive incident away from doing it; a diagnoser
 that holds no mutating tool has nowhere to go.
 
-## Per-specialist model override
+## Per-specialist model: `model:` and `tier:`
 
 A specialist `.tmpl` may declare its own model in frontmatter, so a roster
 can run cheap analysts under a frontier synthesizer instead of billing
@@ -225,8 +225,52 @@ Two behaviors worth knowing before you tier a roster:
   so a tiered bundle still runs credential-free in smoke and acceptance
   runs.
 
-Naming a concrete model id binds the bundle to that provider — worth
-weighing before putting an override in a bundle other deployments fork.
+Naming a concrete model id binds the bundle to that provider. When what
+you mean is "this step is not worth the frontier model" rather than "this
+step needs Haiku specifically", declare a tier instead.
+
+### `tier:` — the portable spelling
+
+A specialist may declare how much model it is worth and let the running
+provider answer with a concrete id:
+
+```yaml
+---
+description: Inspects pod state and returns a 3-bullet digest.
+tier: small
+---
+```
+
+The values are `small`, `mid`, and `frontier`. Mast resolves the tier
+against the provider it is actually running (`pkg/taskclass.ModelForTier`),
+so the same bundle reads the same and costs the right thing on either
+backend:
+
+| tier | Gemini | Anthropic |
+|---|---|---|
+| `small` | `gemini-2.5-flash` | `claude-haiku-4-5` |
+| `mid` | `gemini-3.5-flash` | `claude-sonnet-4-6` |
+| `frontier` | `gemini-3.6-flash` | `claude-opus-4-7` |
+
+Which provider a tier resolves against is the one mast dispatches on: the
+`--provider` alias when you passed it, otherwise the root model id's own
+prefix. A root model whose provider cannot be told from either — say a
+custom id under no known prefix — fails startup asking for `--provider`,
+rather than guessing a vendor and billing you for the guess.
+
+Everything above holds for tiers too: an unresolvable tier fails startup
+instead of falling back to the parent's model, resolution is memoized per
+resolved id (twelve `tier: small` analysts share one client), and offline
+fakes collapse every tier back to the fake so the bundle still runs
+credential-free. Each resolution is logged at startup with the tier and
+the id it became.
+
+**A spec may declare `model:` or `tier:`, not both** — that is a load
+error naming the file, not a precedence rule. The two say different
+things, and a bundle that says both has not decided which it means.
+
+The shipped `ns-audit` bundle is the worked example: four `tier: small`
+namespace analysts under one `tier: mid` synthesis step.
 
 ## Per-specialist report contract
 
@@ -427,9 +471,10 @@ workload's ceilings is by construction rather than arithmetic: each call
 is measured against the specialist's ceiling and the workload's, and
 whichever is crossed first stops the run. When one call crosses both, the
 error names the specialist — the more specific fact, and the one an
-operator acts on. A specialist that declares a `model:` override is priced
-at that model's rate, so a cheap analyst's tokens are not billed at the
-synthesizer's.
+operator acts on. A specialist that declares a `model:` override or a
+`tier:` is priced at the rate of the model it actually runs on — a tier is
+priced off what it resolved to — so a cheap analyst's tokens are not billed
+at the synthesizer's.
 
 Two limits are worth knowing. Metering reads the event stream, so a
 ceiling is crossed *by* the call that reports it: the cap bounds total

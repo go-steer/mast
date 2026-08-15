@@ -74,9 +74,42 @@ Two behaviours to know before you tier a roster:
   `toolactor`, every override resolves back to the fake — so a tiered
   bundle still runs credential-free in smoke and acceptance runs.
 
-One trade-off worth weighing: naming a concrete model id binds the bundle
-to that provider. If other deployments fork your bundle, leaving the model
-unset and letting `--model` decide keeps it portable.
+## Tiers: the portable way to say the same thing
+
+Naming a concrete model id binds the bundle to that provider, which is a
+real cost for a bundle other deployments fork. Usually what the bundle
+means is not "this step needs Haiku" but "this step is not worth the
+frontier model" — so say that:
+
+```yaml
+# specialists/triage-classifier.tmpl
+tier: small                       # one cheap classifying turn
+
+# specialists/OOMKilled.tmpl
+tier: mid                         # the one that has to reason
+```
+
+`small`, `mid`, `frontier`. Mast resolves the tier against whichever
+provider it is actually running — the `--provider` alias if you passed
+one, otherwise the root model id's own prefix — so the roster reads the
+same and costs the right thing on either backend:
+
+| tier | Gemini | Anthropic |
+|---|---|---|
+| `small` | `gemini-2.5-flash` | `claude-haiku-4-5` |
+| `mid` | `gemini-3.5-flash` | `claude-sonnet-4-6` |
+| `frontier` | `gemini-3.6-flash` | `claude-opus-4-7` |
+
+Both behaviours above carry over unchanged: an unresolvable tier fails
+startup, and the offline fakes collapse tiers back to the fake. Startup
+logs each tier next to the id it became, so what a roster is spending is
+readable without knowing the table. A root model whose provider cannot be
+told from the alias or the id fails startup asking for `--provider`
+instead of guessing a vendor.
+
+A spec declares `model:` or `tier:`, never both — that is a load error,
+not a precedence rule. Pin an id when the bundle has a reason to care
+which vendor answers; declare a tier the rest of the time.
 
 ## Cost
 
@@ -88,4 +121,5 @@ actually used, so a cross-provider roster still rolls up to one
 
 - [CLI](/reference/cli/) — `--model`, `--provider`, and the environment
   variables each backend reads.
-- [Workload bundle](/reference/workload-bundle/) — per-specialist `model:`.
+- [Workload bundle](/reference/workload-bundle/) — per-specialist `model:`
+  and `tier:`.

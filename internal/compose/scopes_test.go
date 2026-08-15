@@ -32,7 +32,7 @@ func TestMeterScopes_OnlyForSpecialistsThatDeclareSomething(t *testing.T) {
 		{Name: "wallclock-only", Budget: specialists.Budget{MaxWallclockSeconds: 30}},
 		{Name: "capped", Budget: specialists.Budget{MaxCostUSD: 2.50}},
 	}
-	scopes := MeterScopes(specs, "gemini-3.5-flash")
+	scopes := MeterScopes(specs, "", "gemini-3.5-flash")
 	if len(scopes) != 1 {
 		t.Fatalf("scopes = %v, want just the capped specialist", scopes)
 	}
@@ -56,7 +56,7 @@ func TestMeterScopes_CarriesTurnsAndCost(t *testing.T) {
 	scopes := MeterScopes([]specialists.Spec{{
 		Name:   "OOMKilled",
 		Budget: specialists.Budget{MaxTurns: 4, MaxCostUSD: 2.50, MaxWallclockSeconds: 60},
-	}}, "gemini-3.5-flash")
+	}}, "", "gemini-3.5-flash")
 	want := budget.Limits{MaxTurns: 4, MaxCostUSD: 2.50}
 	if got := scopes["OOMKilled"]; got != want {
 		t.Errorf("scope = %+v, want %+v", got, want)
@@ -70,7 +70,7 @@ func TestMeterScopes_OverridePricesAtItsOwnTier(t *testing.T) {
 	const root = "claude-opus-4-7"
 	scopes := MeterScopes([]specialists.Spec{
 		{Name: "analyst", Model: "claude-haiku-4-5"},
-	}, root)
+	}, "", root)
 	got, ok := scopes["analyst"]
 	if !ok {
 		t.Fatal("a model override alone should mint a scope: it changes the price")
@@ -84,6 +84,43 @@ func TestMeterScopes_OverridePricesAtItsOwnTier(t *testing.T) {
 	}
 }
 
+// The same attribution for the portable spelling. This is the half
+// that is easy to ship broken: `tier:` resolves at build time, so the
+// specialist really does run on the cheap model, and a meter that
+// priced off `model:` alone would keep billing it at the root's rate
+// while the audit log shows the cheap one. The bundle would be right,
+// the run would be right, and the number would be wrong.
+func TestMeterScopes_TierPricesAtItsResolvedModel(t *testing.T) {
+	const root = "claude-opus-4-7"
+	scopes := MeterScopes([]specialists.Spec{
+		{Name: "diagnoser", Tier: "small"},
+	}, "", root)
+	got, ok := scopes["diagnoser"]
+	if !ok {
+		t.Fatal("a tier alone should mint a scope: it changes the price")
+	}
+	want := RatePer1K("claude-haiku-4-5") // the small tier for a claude root
+	if math.Abs(got.RatePer1K-want) > 1e-12 {
+		t.Errorf("diagnoser rate = %v, want the small tier's %v", got.RatePer1K, want)
+	}
+	if parent := RatePer1K(root); math.Abs(got.RatePer1K-parent) < 1e-12 {
+		t.Fatalf("fixture is not discriminating: the small tier and %s price identically at %v", root, parent)
+	}
+}
+
+// A tier that cannot be resolved for the running provider does not
+// invent a price. BuildRoot has already refused such a roster by the
+// time anything is metered; if that ever stops being true, an inherited
+// rate is the honest answer, not a guess at what the tier meant.
+func TestMeterScopes_UnresolvableTierInheritsTheRate(t *testing.T) {
+	scopes := MeterScopes([]specialists.Spec{
+		{Name: "diagnoser", Tier: "small", Budget: specialists.Budget{MaxCostUSD: 1}},
+	}, "", "some-unrecognized-model")
+	if got := scopes["diagnoser"].RatePer1K; got != 0 {
+		t.Errorf("rate = %v, want 0 (inherit the session's)", got)
+	}
+}
+
 // A specialist with no override inherits the session rate, which the
 // meter spells as a zero rate on the scope. Writing the parent's rate
 // in would work today and break the moment the session rate is
@@ -91,7 +128,7 @@ func TestMeterScopes_OverridePricesAtItsOwnTier(t *testing.T) {
 func TestMeterScopes_NoOverrideLeavesTheRateInherited(t *testing.T) {
 	scopes := MeterScopes([]specialists.Spec{
 		{Name: "capped", Budget: specialists.Budget{MaxCostUSD: 1}},
-	}, "claude-opus-4-7")
+	}, "", "claude-opus-4-7")
 	if got := scopes["capped"].RatePer1K; got != 0 {
 		t.Errorf("rate = %v, want 0 (inherit the session's)", got)
 	}
@@ -107,26 +144,32 @@ func TestMeterScopes_OfflineFakeRootCollapsesPricing(t *testing.T) {
 		Name:   "analyst",
 		Model:  "claude-haiku-4-5",
 		Budget: specialists.Budget{MaxCostUSD: 2.50},
+	}, {
+		Name:   "diagnoser",
+		Tier:   "small",
+		Budget: specialists.Budget{MaxCostUSD: 2.50},
 	}}
 	for _, root := range []string{"echo", "mast-echo", "scripted", "toolactor", "mast-toolactor"} {
 		t.Run(root, func(t *testing.T) {
-			scopes := MeterScopes(specs, root)
-			if got := scopes["analyst"].RatePer1K; got != 0 {
-				t.Errorf("rate = %v under fake root %q, want 0 (inherit the fake's rate)", got, root)
-			}
-			// The ceiling still applies: only the price collapses.
-			if got := scopes["analyst"].MaxCostUSD; got != 2.50 {
-				t.Errorf("MaxCostUSD = %v, want the declared 2.50 — a fake root collapses pricing, not ceilings", got)
+			scopes := MeterScopes(specs, "", root)
+			for _, name := range []string{"analyst", "diagnoser"} {
+				if got := scopes[name].RatePer1K; got != 0 {
+					t.Errorf("%s rate = %v under fake root %q, want 0 (inherit the fake's rate)", name, got, root)
+				}
+				// The ceiling still applies: only the price collapses.
+				if got := scopes[name].MaxCostUSD; got != 2.50 {
+					t.Errorf("%s MaxCostUSD = %v, want the declared 2.50 — a fake root collapses pricing, not ceilings", name, got)
+				}
 			}
 		})
 	}
 }
 
 func TestMeterScopes_EmptyRosterIsNil(t *testing.T) {
-	if got := MeterScopes(nil, "echo"); got != nil {
+	if got := MeterScopes(nil, "", "echo"); got != nil {
 		t.Errorf("MeterScopes(nil) = %v, want nil", got)
 	}
-	if got := MeterScopes([]specialists.Spec{{Name: "plain"}}, "echo"); got != nil {
+	if got := MeterScopes([]specialists.Spec{{Name: "plain"}}, "", "echo"); got != nil {
 		t.Errorf("a roster with nothing to declare should mint no map, got %v", got)
 	}
 }
