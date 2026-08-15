@@ -15,11 +15,15 @@
 package compose
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/effects"
@@ -305,5 +309,176 @@ func TestWriteGate_InstallsTheProducerContract(t *testing.T) {
 	}
 	if len(asked) != 0 {
 		t.Errorf("the resolver was consulted for %v, but the catalog check should have refused first", asked)
+	}
+}
+
+// The change-set grant half of the translation (v0.4 W7): what a bundle
+// says about how long one operator answer lasts, and what each granted
+// call is re-checked against before it fires.
+
+// preconditionBundle is a workload where scaling declares a freshness
+// check against a read, which is the shape W7 exists for.
+func preconditionBundle(read string, readMutating bool) *workload.Bundle {
+	writes := true
+	return &workload.Bundle{
+		Name: "b",
+		ToolCatalog: workload.ToolCatalog{Tools: []workload.ToolPolicy{
+			{
+				Name:     "scale_deployment",
+				Mutating: &writes,
+				Precondition: &workload.Precondition{
+					Read:     read,
+					ArgsFrom: map[string]string{"name": "deployment"},
+					Fields:   []string{"spec.replicas"},
+				},
+			},
+			{Name: read, Mutating: &readMutating},
+		}},
+	}
+}
+
+// TestChangeSetGrants_MutatingReadRefusesToStart: a freshness check that
+// is itself a mutation would change the cluster once at approval time
+// and again before every granted call — unapproved, unrecorded, and in
+// the name of safety. There is no version of that worth running, so it
+// fails the daemon rather than warning.
+func TestChangeSetGrants_MutatingReadRefusesToStart(t *testing.T) {
+	_, err := WriteGate(WriteGateConfig{Bundle: preconditionBundle("restart_deployment", true)})
+	if err == nil {
+		t.Fatal("WriteGate started with a mutating precondition read; every granted call would silently restart the deployment it was checking")
+	}
+	for _, want := range []string{"scale_deployment", "restart_deployment", "mutating"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("startup error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// TestChangeSetGrants_UnclassifiedReadIsMutating: the predicate calls an
+// unlisted tool mutating, so a precondition pointing at a tool the
+// catalog never declares is refused too. That is the fail-closed default
+// doing its job rather than an oversight — and the refusal says how to
+// fix it, because "declare the read in tool_catalog" is not something an
+// operator would guess from "is mutating".
+func TestChangeSetGrants_UnclassifiedReadIsMutating(t *testing.T) {
+	b := preconditionBundle("get_deployment", false)
+	b.ToolCatalog.Tools = b.ToolCatalog.Tools[:1] // drop the read's own entry
+	_, err := WriteGate(WriteGateConfig{Bundle: b})
+	if err == nil {
+		t.Fatal("WriteGate accepted a precondition reading a tool the catalog never classifies")
+	}
+	if !strings.Contains(err.Error(), "mutating: false") {
+		t.Errorf("refusal does not say how to declare the read: %v", err)
+	}
+}
+
+// TestChangeSetGrants_DeclarationsReachTheFreshnessRules: a precondition
+// parsed out of the bundle and then not handed to the gate is a check
+// that never runs.
+func TestChangeSetGrants_DeclarationsReachTheFreshnessRules(t *testing.T) {
+	b := preconditionBundle("get_deployment", false)
+	b.HITL.ChangeSetTTL = "45m"
+	var read []string
+	f, err := changeSetGrants(WriteGateConfig{
+		Bundle: b,
+		ToolRead: func(_ adkagent.Context, name string, _ map[string]any) (map[string]any, error) {
+			read = append(read, name)
+			return map[string]any{"ok": true}, nil
+		},
+	}, MutationPredicate(*b, nil))
+	if err != nil {
+		t.Fatalf("changeSetGrants: %v", err)
+	}
+	if f.TTL != 45*time.Minute {
+		t.Errorf("TTL = %v, want the bundle's 45m", f.TTL)
+	}
+	pre, err := f.Precondition("scale_deployment")
+	if err != nil {
+		t.Fatalf("Precondition: %v", err)
+	}
+	if pre == nil {
+		t.Fatal("scale_deployment has no precondition at the gate, so its grants would be bounded by the clock alone")
+	}
+	if pre.Read != "get_deployment" || pre.ArgsFrom["name"] != "deployment" || len(pre.Fields) != 1 {
+		t.Errorf("precondition = %+v, want the bundle's declaration carried across whole", pre)
+	}
+	// A tool that declares nothing gets nothing — not an empty
+	// declaration, which would read as a check that always passes.
+	other, err := f.Precondition("get_deployment")
+	if err != nil || other != nil {
+		t.Errorf("Precondition(get_deployment) = %+v, %v; want nil, nil", other, err)
+	}
+	if _, err := f.Read(nil, "get_deployment", nil); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(read) != 1 || read[0] != "get_deployment" {
+		t.Errorf("reads = %v, want the supplied ToolRead to be the one wired in", read)
+	}
+}
+
+// TestChangeSetGrants_BadTTLIsAStartupError is the loader's duration
+// check reaching the paths that build a Bundle in code and never go
+// through Load.
+func TestChangeSetGrants_BadTTLIsAStartupError(t *testing.T) {
+	b := &workload.Bundle{Name: "b"}
+	b.HITL.ChangeSetTTL = "10 minutes"
+	if _, err := WriteGate(WriteGateConfig{Bundle: b}); err == nil {
+		t.Fatal("WriteGate started with an unparseable change_set_ttl, so the window would silently be the default")
+	}
+}
+
+// TestChangeSetGrants_WarnsWhenItCannotRead: a deployment with no way to
+// run a read still starts — the calls just park one at a time — but it
+// must say so. The failure mode this closes is a bundle author writing
+// preconditions, seeing a clean startup, and believing they are checked.
+func TestChangeSetGrants_WarnsWhenItCannotRead(t *testing.T) {
+	b := preconditionBundle("get_deployment", false)
+	pred := MutationPredicate(*b, nil)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	if _, err := changeSetGrants(WriteGateConfig{Bundle: b, Logger: logger}, pred); err != nil {
+		t.Fatalf("changeSetGrants: %v", err)
+	}
+	if !strings.Contains(buf.String(), "cannot run a read on its own behalf") {
+		t.Errorf("no warning that the declared preconditions will not be checked:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "scale_deployment") {
+		t.Errorf("the warning does not name the affected tool:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	_, err := changeSetGrants(WriteGateConfig{
+		Bundle: b, Logger: logger,
+		ToolRead: func(adkagent.Context, string, map[string]any) (map[string]any, error) { return nil, nil },
+	}, pred)
+	if err != nil {
+		t.Fatalf("changeSetGrants: %v", err)
+	}
+	if strings.Contains(buf.String(), "cannot run a read") {
+		t.Errorf("warned about reads on a deployment that can run them:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "can_read=true") {
+		t.Errorf("startup log does not record that preconditions are live:\n%s", buf.String())
+	}
+}
+
+// TestChangeSetGrants_NoPreconditionsIsStillGrantable: a bundle that
+// declares no freshness check still gets grants, bounded by the TTL.
+// Turning them off there would mean `scope: change_set` was refused for
+// every workload that had not opted into preconditions, which is not
+// what the verdict schema promises.
+func TestChangeSetGrants_NoPreconditionsIsStillGrantable(t *testing.T) {
+	b := &workload.Bundle{Name: "b"}
+	f, err := changeSetGrants(WriteGateConfig{Bundle: b}, MutationPredicate(*b, nil))
+	if err != nil {
+		t.Fatalf("changeSetGrants: %v", err)
+	}
+	if f == nil {
+		t.Fatal("no freshness rules, so scope: change_set would be refused for every workload without preconditions")
+	}
+	pre, err := f.Precondition("scale_deployment")
+	if err != nil || pre != nil {
+		t.Errorf("Precondition = %+v, %v; want nil, nil", pre, err)
 	}
 }

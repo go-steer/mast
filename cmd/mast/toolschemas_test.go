@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
@@ -174,5 +175,115 @@ func TestToolSchemasRefusesAToolThatDeclaresNothing(t *testing.T) {
 
 	if _, err := ts.lookup("scale_deployment"); err == nil {
 		t.Fatal("a tool that declares no arguments resolved, so any arguments at all would have passed")
+	}
+}
+
+// The precondition read (v0.4 W7): the one place mast calls a tool no
+// model asked for.
+
+// runnableTool satisfies ADK's unexported runnable-tool interface, which
+// is what mast asserts against because tool.Tool itself is name and
+// description only.
+type runnableTool struct {
+	catalogTool
+	sawArgs any
+	result  map[string]any
+	err     error
+}
+
+func (r *runnableTool) Run(_ adkagent.Context, args any) (map[string]any, error) {
+	r.sawArgs = args
+	return r.result, r.err
+}
+
+func TestToolSchemasReadRunsTheTool(t *testing.T) {
+	get := &runnableTool{
+		catalogTool: catalogTool{name: "get_deployment", desc: "read a deployment"},
+		result:      map[string]any{"spec": map[string]any{"replicas": float64(3)}},
+	}
+	ts := testSchemas(&catalogToolset{name: "gke", tools: []tool.Tool{get}})
+
+	got, err := ts.read(nil, "get_deployment", map[string]any{"name": "api"})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if spec, _ := got["spec"].(map[string]any); spec == nil || spec["replicas"] != float64(3) {
+		t.Errorf("read = %v, want the tool's own result carried back whole", got)
+	}
+	args, _ := get.sawArgs.(map[string]any)
+	if args == nil || args["name"] != "api" {
+		t.Errorf("the tool saw %v, want the arguments the gate passed", get.sawArgs)
+	}
+}
+
+// TestToolSchemasReadPassesAnEmptyMapNotNil: a read whose arguments all
+// come from the bundle's literals — or from nothing at all — still has
+// to reach the tool as an object, because an MCP tool unmarshalling nil
+// is a failure that would read as "the cluster moved".
+func TestToolSchemasReadPassesAnEmptyMapNotNil(t *testing.T) {
+	get := &runnableTool{catalogTool: catalogTool{name: "get_nodes"}, result: map[string]any{}}
+	ts := testSchemas(&catalogToolset{name: "gke", tools: []tool.Tool{get}})
+
+	if _, err := ts.read(nil, "get_nodes", nil); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	args, ok := get.sawArgs.(map[string]any)
+	if !ok || args == nil {
+		t.Errorf("the tool saw %#v, want an empty map", get.sawArgs)
+	}
+}
+
+// TestToolSchemasReadRefusesAToolItCannotRun: mast asserts its way to a
+// handle it can call, and a tool that does not satisfy the interface is
+// said to be unrunnable rather than silently returning nothing — which
+// the gate would compare against the snapshot and read as unchanged.
+func TestToolSchemasReadRefusesAToolItCannotRun(t *testing.T) {
+	ts := testSchemas(&catalogToolset{name: "gke", tools: []tool.Tool{
+		catalogTool{name: "get_deployment", desc: "read a deployment"},
+	}})
+
+	_, err := ts.read(nil, "get_deployment", nil)
+	if err == nil {
+		t.Fatal("a tool mast cannot run served as a precondition read")
+	}
+	if !strings.Contains(err.Error(), "cannot be run by mast directly") {
+		t.Errorf("error does not say why the read is impossible: %v", err)
+	}
+}
+
+func TestToolSchemasReadRefusesAnUnwiredTool(t *testing.T) {
+	ts := testSchemas(&catalogToolset{name: "gke", tools: []tool.Tool{scaleTool()}})
+
+	_, err := ts.read(nil, "get_deployment", nil)
+	if err == nil {
+		t.Fatal("a tool nothing wired served as a precondition read")
+	}
+	if !strings.Contains(err.Error(), "get_deployment") {
+		t.Errorf("error does not name the tool: %v", err)
+	}
+}
+
+// TestToolSchemasReadReportsTheToolsFailure: the gate voids a grant when
+// the read fails, so the failure has to arrive as an error naming the
+// read — an empty result would compare equal to nothing and let the call
+// through on a check that never ran.
+func TestToolSchemasReadReportsTheToolsFailure(t *testing.T) {
+	get := &runnableTool{
+		catalogTool: catalogTool{name: "get_deployment"},
+		err:         errors.New("connection refused"),
+	}
+	ts := testSchemas(&catalogToolset{name: "gke", tools: []tool.Tool{get}})
+
+	got, err := ts.read(nil, "get_deployment", nil)
+	if err == nil {
+		t.Fatal("a failed read returned no error")
+	}
+	if got != nil {
+		t.Errorf("a failed read returned %v, want nil", got)
+	}
+	for _, want := range []string{"precondition read", "get_deployment", "connection refused"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
 	}
 }

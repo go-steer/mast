@@ -1,0 +1,45 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# The two Deployments the v0.4 live tier operates on. Two rather than
+# one, because a change set whose calls all target the same object is
+# self-invalidating: call 1 moves the field call 2's precondition was
+# snapshotted against. Real remediations touch several objects; so does
+# this fixture.
+#
+# The image is the pause container, which every kind node already has:
+# nothing here needs to serve traffic, and a pull at eval time would
+# turn a network blip into a failed leg. Only .spec.replicas matters.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels: {app: api}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: api}
+  template:
+    metadata:
+      labels: {app: api}
+    spec:
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels: {app: worker}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: worker}
+  template:
+    metadata:
+      labels: {app: worker}
+    spec:
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10

@@ -242,6 +242,39 @@ func TestToolActor_ApprovedCallRunsOnce(t *testing.T) {
 	}
 }
 
+// A set naming the same tool twice makes BOTH calls, in order: that is
+// the shape v0.4 W7's grants exist for, and a fake that stopped after
+// the first would let "one answer authorized the rest of the set" pass
+// on a set of one.
+func TestToolActor_ApprovedSetRunsInOrder(t *testing.T) {
+	m := NewToolActorModel("test")
+	approved := userContent(ApprovedCallsMarker +
+		"\n\n1. apply_change({\"replicas\":2})\n2. apply_change({\"replicas\":3})\n")
+
+	fc := firstFunctionCall(firstResponse(t, m, &model.LLMRequest{
+		Tools:    toolSet("finish_task", "apply_change"),
+		Contents: []*genai.Content{approved},
+	}))
+	if fc == nil || fc.Args["replicas"] != float64(2) {
+		t.Fatalf("first call = %+v, want apply_change({replicas: 2})", fc)
+	}
+
+	// The first call has fired and answered; the second is what is left.
+	fc = firstFunctionCall(firstResponse(t, m, &model.LLMRequest{
+		Tools: toolSet("finish_task", "apply_change"),
+		Contents: []*genai.Content{
+			approved,
+			{Role: genai.RoleModel, Parts: []*genai.Part{
+				genai.NewPartFromFunctionCall("apply_change", map[string]any{"replicas": 2})}},
+			{Role: genai.RoleUser, Parts: []*genai.Part{
+				{FunctionResponse: &genai.FunctionResponse{Name: "apply_change"}}}},
+		},
+	}))
+	if fc == nil || fc.Name != "apply_change" || fc.Args["replicas"] != float64(3) {
+		t.Fatalf("second call = %+v, want apply_change({replicas: 3})", fc)
+	}
+}
+
 // Without the marker, nothing changes: a signature-shaped line in a
 // finding's prose is not an approval, and the fake falls back to its
 // reason-driven table.

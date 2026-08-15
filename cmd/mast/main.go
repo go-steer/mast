@@ -469,6 +469,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		Predicate:   effPred,
 		Specs:       specs,
 		ToolSchemas: toolSchemas.lookup,
+		ToolRead:    toolSchemas.read,
 		Logger:      logger,
 	})
 	if err != nil {

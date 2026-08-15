@@ -79,12 +79,18 @@ agui:
 | `tool_catalog.mcp[].server` | string | MCP server references, by name from the deployment's [`mcp.json`](/reference/mcp-servers/) (HTTP or local stdio). Intersected against per-specialist tool allowlists at dispatch time. |
 | `tool_catalog.tools[].name` | string | Tool name a per-tool policy override applies to. Names must be unique. |
 | `tool_catalog.tools[].mutating` | bool | Overrides the tool's mutation classification for the recorded-effect outbox. Unknown tools — MCP tools included — default to **mutating** (annotations are advisory, and ADK drops MCP `readOnlyHint` before mast can see it); `mutating: false` un-gates a known-read-only tool. Omitted means no override. Every applied override is audit-logged at startup. |
+| `tool_catalog.tools[].precondition` | block | Optional. The re-read that decides whether an approval of this tool's call is still fresh when the call finally fires — see [`precondition:`](#precondition--what-makes-an-approval-stale) below. Only consulted for calls covered by a `change_set` grant; a call the operator is answering right now needs no freshness check. |
+| `tool_catalog.tools[].precondition.read` | string | Required in the block. The tool to re-read with. It must be declared `mutating: false` in the same catalog — a freshness check that changes the cluster is not a check — and since an unlisted tool is mutating by default, an undeclared read fails at startup rather than at the incident. |
+| `tool_catalog.tools[].precondition.args` | map | Fixed arguments for the read, e.g. `{namespace: prod}`. |
+| `tool_catalog.tools[].precondition.args_from` | map | Arguments taken from the change itself: `{name: deployment}` reads *the read's* `name` from *this call's* `deployment`. This is what lets each call in a set be checked against its own object. |
+| `tool_catalog.tools[].precondition.fields` | list of strings | Dotted paths into the read's result that must not have moved. Omitted means the whole result is digested. For an MCP tool every path starts `output.` — that is how a structured MCP result arrives. |
 | `specialists[]` | list of strings | Specialist names; resolve against the config root's `specialists/*.tmpl`. A roster with a SingleTurn classifier plus a `_fallback` Task specialist enables graph dispatch. |
 | `dispatch` | string | The root shape this roster is built for: `coordinator`, `graph`, `fanout`, or `auto`. Empty leaves the choice to the caller. A shape is a property of the roster, not of how the daemon happened to be launched, so the bundle is where it belongs — `--dispatch` overrides it only when an operator actually typed the flag. |
 | `fanout.max_concurrency` | int | Under `dispatch: fanout`, how many analyst branches run at once. `0` (omitted) means the default, **4**; a negative value means unbounded. Ignored under any other dispatch. |
 | `budget` | block | See below. |
 | `hitl.require_approval` | bool | When true, every specialist result pauses on a durable RequestInput interrupt until an operator resumes with a verdict. |
 | `hitl.on_mutation` | string | What happens before a call that would change something: `require_approval` (**the default** — the call parks on a durable interrupt, with its arguments, and fires only once an operator approves it), `apply` (run it, unattended), or `dry_run` (never run it; report what would have happened). Because this defaults to gating, a bundle that says nothing about mutation does not get to write; unattended writes have to be asked for. The block may also be spelled `hitl_policy:`; setting both is an error. See [the write gate](/reference/write-gate/) for the verdict an operator sends back. |
+| `hitl.change_set_ttl` | duration | How long an approval given with `scope: change_set` authorizes the set's remaining calls for. Default `10m` — far longer than an approve-then-execute round trip, far shorter than the span over which an operator forgets what they approved. It is the backstop, not the check: what an approval is really bounded by is the [`precondition:`](#precondition--what-makes-an-approval-stale) the tool declares. |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
 | `edge_trigger.http.path`, `.auth` | strings | Informational in v0.1 — the inject server declares its routes globally; per-workload path prefixes come later. |
 | `a2a.expose` | bool | Opt this workload into the [A2A server](/mast/reference/cli/#a2a-server) surface (`--a2a-listen`). Default false — A2A exposure is an external contract, so it is never automatic. |
@@ -325,6 +331,67 @@ dispatch](/concepts/specialists-and-dispatch/#graph--a-classifier-routing-to-a-n
 a finding whose change set the operator approved is handed to the roster's
 change executor verbatim, so the call that fires is the call that was on
 screen. See [approvals](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose).
+
+## `precondition:` — what makes an approval stale
+
+An operator answering `scope: change_set` authorizes calls that have not
+fired yet. What should void that authorization is the cluster changing
+underneath it — not a clock running out. But mast cannot work that out on
+its own: a tool is opaque to it, so it does not know which tool reads the
+object a write is about, or which of the write's arguments names that
+object. The bundle knows both, so the bundle declares it:
+
+```yaml
+tool_catalog:
+  tools:
+    - name: get_deployment
+      mutating: false            # required: the read must be read-only
+    - name: scale_deployment
+      mutating: true
+      precondition:
+        read: get_deployment
+        args_from: {name: deployment}   # the read's "name" <- this call's "deployment"
+        args: {namespace: prod}         # …plus anything fixed
+        fields: [output.replicas]
+```
+
+The read runs twice: once when the operator answers, to snapshot the world
+they answered about, and once immediately before each granted call fires. If
+a declared field moved in between, the grant is voided and the call is
+re-parked with a question that names the field and both values —
+`output.replicas was 1 at approval and is 5 now`. Every field is reported,
+not the first, because an operator re-reading the question needs the whole
+delta.
+
+Four things to know before writing one:
+
+- **A precondition over the field the set itself rewrites invalidates its
+  own set.** The snapshot is taken once, at approval. So a two-call set that
+  scales the *same* object to 2 and then to 3 has call 1 move what call 2 was
+  checked against, and call 2 goes back to the operator. The fix is
+  `args_from`: check each call against **its own** object, and a set that
+  touches two Deployments works while a set that touches one twice, by
+  design, does not.
+- **The read must be declared `mutating: false`.** An unlisted tool is
+  mutating by default ([default-deny-unknown](/concepts/tools-and-mcp/)), so
+  a catalog that simply forgot to list the read fails at startup with the
+  declaration named — not at 3am with a "freshness check" that was writing
+  to the cluster.
+- **`fields:` paths start `output.` for MCP tools.** A structured MCP result
+  arrives wrapped in an `output` property. A path that misses the wrapper
+  matches nothing, every read digests identically, and the check silently
+  compares nothing to nothing — which looks exactly like "the cluster never
+  moves".
+- **Omitting `fields:` digests the whole result.** That is right for a narrow
+  read and wrong for a chatty one, where a timestamp or a `resourceVersion`
+  in the payload makes every re-read look like drift. Narrow the read rather
+  than filtering a wide one here.
+
+A tool that declares no precondition is bounded by `hitl.change_set_ttl`
+alone, and the parked question says so in those words. If mast cannot
+evaluate a declared precondition at all, the set is not grantable: the
+question says the calls must be approved one at a time, and `scope:
+change_set` is refused rather than granted on a check that is not running.
 
 ## Budget fields
 

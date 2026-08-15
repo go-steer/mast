@@ -60,6 +60,23 @@
 #          runs and the write tool is never called, so leg A's handoff
 #          is shown to be the change set's doing and not the roster's
 #
+#   U-changeset (W7, the grant) — the same roster over a two-call set,
+#     with a change-set TTL and a declared precondition. One operator
+#     answer, N calls, and every way that could become "N calls nobody
+#     approved" closed:
+#       A  `scope: change_set` runs both calls off ONE question
+#       B  the default `scope: once` still asks per call — the control
+#          that keeps leg A from passing on a runtime that stopped
+#          parking altogether
+#       C  the cluster moves while the first approved call is held open
+#          at the blocker: the second call's grant is voided and it
+#          parks again, which is the check a wall clock cannot make
+#       D  the window runs out with the cluster unchanged: the same
+#          re-park, on the other clock
+#       E  the daemon is SIGKILLed while the question is open; the
+#          approval arrives at a process that never saw the diagnoser,
+#          and still covers the whole set
+#
 # The observation points are the two an operator already has: `mast
 # sessions show`, which reads the parked question back out of SQLite,
 # and the blocker's own call ledger, which records the arguments each
@@ -106,13 +123,20 @@ BLOCKDIR="${WORK}/blockdir"
 export MAST_UAT_BLOCKER="${BLOCKER}"
 export UAT_BLOCKER_DIR="${BLOCKDIR}"
 
+# reset_blocker [hold-tool] — fresh ledger and, by default, both tools
+# pre-released: most legs are about which call fires, not about holding
+# one open. Naming a tool holds it blocked instead, which is how the
+# freshness and crash legs get a deterministic window between the calls
+# one approval authorized.
 reset_blocker() {
+  local hold="${1:-}"
   rm -rf "${BLOCKDIR}"
   mkdir -p "${BLOCKDIR}"
-  # These legs are about which call fires, not about holding one open.
-  : > "${BLOCKDIR}/apply_change.release"
-  : > "${BLOCKDIR}/read_status.release"
+  [ "${hold}" = "apply_change" ] || : > "${BLOCKDIR}/apply_change.release"
+  [ "${hold}" = "read_status" ]  || : > "${BLOCKDIR}/read_status.release"
 }
+
+release() { : > "${BLOCKDIR}/$1.release"; }
 
 calls_count() {
   local f="${BLOCKDIR}/$1.calls"
@@ -152,6 +176,26 @@ stop_term() {
   PID=""
 }
 
+# kill9 — the crash the change-set legs need: no drain, no flush, and
+# nothing written on the way out that a restart could lean on.
+kill9() {
+  kill -9 "${PID}" 2>/dev/null || true
+  wait "${PID}" 2>/dev/null || true
+  PID=""
+}
+
+# wait_started <tool> — block until the blocker reports the tool has
+# dispatched. The change-set legs move the world (or kill the daemon)
+# while a call is in flight, and a sleep would make that a race.
+wait_started() {
+  local marker="${BLOCKDIR}/$1.started" i
+  for ((i = 0; i < 300; i++)); do
+    [ -f "${marker}" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 # ---- drivers --------------------------------------------------------
 inject_uat() {
   curl -s -m 90 -o /dev/null -w '%{http_code}' \
@@ -166,6 +210,34 @@ resume_verdict() {
     -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
     -d "{\"session_id\":\"$1\",\"interrupt_id\":\"$2\",\"response\":$3}"
 }
+
+# resume_bg — the same answer, posted in the background. /resume runs
+# the turn synchronously, so a leg that has to act WHILE the approved
+# calls are running (move the world, kill the daemon) cannot wait for
+# the response first. The code lands in ${RESUME_CODE_FILE}.
+RESUME_BG_PID=""
+resume_bg() {
+  RESUME_CODE_FILE="${WORK}/resume-code.$$"
+  rm -f "${RESUME_CODE_FILE}"
+  ( resume_verdict "$1" "$2" "$3" > "${RESUME_CODE_FILE}" ) &
+  RESUME_BG_PID=$!
+}
+
+# resume_bg_wait sets ${RESUME_CODE}. It is a STATEMENT, not something to
+# call in `$(...)`: a command substitution runs in a subshell, where the
+# background post is not a child, so `wait` there returns instantly and
+# reads the code file before curl has written it.
+RESUME_CODE=""
+resume_bg_wait() {
+  wait "${RESUME_BG_PID}" 2>/dev/null || true
+  RESUME_BG_PID=""
+  RESUME_CODE="$(cat "${RESUME_CODE_FILE}" 2>/dev/null || true)"
+}
+
+# move_cluster <state> — write what read_status will report from now on.
+# This is the whole mechanism behind the freshness legs: the grant's
+# snapshot was taken against the previous answer.
+move_cluster() { printf '%s\n' "$1" > "${BLOCKDIR}/state"; }
 
 # show_field <session-id> <label> — one labelled line from `mast sessions
 # show`. awk reads to EOF rather than exiting early: an early exit
@@ -407,6 +479,71 @@ tools:
 Report what you were given.
 TMPL
 
+# ---- the change-set fixture: the handoff roster + freshness rules ---
+# Same three specialists and the same two tools; the workload adds what
+# W7 needs an operator to be able to answer for: a freshness window and
+# a declared precondition for the write.
+CHANGESET="${WORK}/changeset"
+cp -r "${HANDOFF}" "${CHANGESET}"
+
+# mk_changeset_workload <path> <ttl> — the fixture's workload with the
+# change-set TTL as a parameter, so the expiry leg differs from the
+# others in exactly one line.
+mk_changeset_workload() {
+  cat > "$1" <<YAML
+# Harness fixture for scripts/uat-v0.4.sh's U-changeset legs. The
+# U-handoff roster plus the two things a change-set grant is bounded by:
+# a wall-clock window, and a read that says whether the world an
+# operator approved against is still the world.
+name: uat-changeset
+description: Fixture workload for the mast v0.4 change-set grant legs.
+mode: single_session
+
+tool_catalog:
+  mcp:
+    - server: uat-blocker
+  tools:
+    - name: read_status
+      mutating: false
+    - name: apply_change
+      mutating: true
+      precondition:
+        # No args and no args_from: read_status takes none. The declared
+        # field is where the blocker reports the harness-controlled state
+        # file (ADK wraps an MCP server's structured result under
+        # "output"), which is how a leg moves the world between an
+        # operator's approval and the calls it covers.
+        read: read_status
+        fields:
+          - output.state
+
+specialists:
+  - classify
+  - ApplyChange
+  - _fallback
+  - change-executor
+
+budget:
+  max_wallclock_seconds: 300
+
+hitl:
+  require_approval: false
+  change_set_ttl: $2
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer
+YAML
+}
+mk_changeset_workload "${CHANGESET}/workload.yaml" 10m
+
+# The expiry leg's copy: identical but for a window shorter than the
+# time the harness holds the first call open.
+EXPIRING="${WORK}/expiring"
+cp -r "${CHANGESET}" "${EXPIRING}"
+mk_changeset_workload "${EXPIRING}/workload.yaml" 1s
+
 # ====================================================================
 # U-proposed-change (W7.0) — the producer contract
 # ====================================================================
@@ -569,6 +706,207 @@ assert_state "the run ends on the finding" incident-hb1 idle
 assert_eq "the write tool was never called" "$(calls_count apply_change)" 0
 assert_no_log "nothing was recorded" "${LOG}" 'change set proposed'
 stop_term
+
+# ====================================================================
+# U-changeset (W7) — one answer authorizes the rest of the set
+# ====================================================================
+# Everything above parks one call at a time, which is W7.0's contract
+# and an operator's night at 03:00: a five-call remediation is five
+# questions, and the fifth arrives after the world has moved. W7 lets
+# one answer carry the whole set — bounded by a clock AND by the cluster
+# itself, because a wall-clock window cannot tell that a Deployment was
+# scaled by someone else in the meantime.
+#
+# The set is two calls to the same tool with different arguments
+# (replicas 2 then 3), which is the smallest thing "the REST of the set"
+# can mean. The blocker's ledger distinguishes them, so every leg below
+# can say which calls fired, not merely how many.
+WL="${CHANGESET}"
+DISPATCH=graph
+SET_CHANGE='[{"tool":"apply_change","arguments":"{\"replicas\":2}"},{"tool":"apply_change","arguments":"{\"replicas\":3}"}]'
+
+# ---- leg A: one question, the whole set -----------------------------
+say "U-changeset/A: approving with scope=change_set authorizes the rest of the set"
+DB="${WORK}/c-a.db"
+LOG="${WORK}/c-a.log"
+reset_blocker
+export MAST_FAKE_PROPOSED_CHANGE="${SET_CHANGE}"
+start_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat ca1 ApplyChange)" 202
+assert_state "the first call parked" incident-ca1 paused
+
+CAMSG="$(show_field incident-ca1 Message)"
+note "the operator's question: ${CAMSG}"
+# The question has to disclose what a change_set answer would cover.
+# Approving a set whose extent the question never stated is the failure
+# this leg's assertion exists to prevent.
+assert_has "the question names the whole set" "${CAMSG}" "2 calls"
+assert_has "and says how to answer for all of it" "${CAMSG}" "scope=change_set"
+
+CAINT="$(show_field incident-ca1 Interrupt)"
+assert_http "the operator approves the SET -> 202" \
+  "$(resume_verdict incident-ca1 "${CAINT}" '{"verdict":"approve","scope":"change_set","note":"uat"}')" 202
+assert_state "the run finishes" incident-ca1 idle
+
+# The headline: both calls ran, and the operator was asked once.
+assert_eq "both calls fired" "$(calls_count apply_change)" 2
+CACALLS="$(calls_args apply_change)"
+assert_has "the approved first call" "${CACALLS}" "replicas=2"
+assert_has "and the one the grant authorized" "${CACALLS}" "replicas=3"
+assert_log_count "the operator was asked exactly once" "${LOG}" 'awaiting_approval' 1
+assert_log_count "one grant was minted" "${LOG}" 'change-set grants minted' 1
+assert_log_count "the second call ran on that grant" "${LOG}" \
+  'mutating tool call authorized by an approved change set' 1
+# A grant is not a bypass: the policy check still runs in front of it,
+# and spending one is recorded like any other authorized mutation.
+assert_log_count "the grant spend is on the audit trail" "${LOG}" 'approved_by_change_set' 1
+stop_term
+
+# ---- leg B: the control — scope=once still asks per call ------------
+# Same fixture, same set, one word different in the verdict. Without
+# this leg, leg A could pass on a runtime that had simply stopped
+# parking the second call for everyone.
+say "U-changeset/B: the default scope still asks per call"
+DB="${WORK}/c-b.db"
+LOG="${WORK}/c-b.log"
+reset_blocker
+start_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat cb1 ApplyChange)" 202
+assert_state "the first call parked" incident-cb1 paused
+CBINT="$(show_field incident-cb1 Interrupt)"
+assert_http "the operator approves just this call -> 202" \
+  "$(resume_verdict incident-cb1 "${CBINT}" '{"verdict":"approve","note":"uat"}')" 202
+
+assert_state "the second call parks in its own right" incident-cb1 paused
+assert_eq "only the approved call fired" "$(calls_count apply_change)" 1
+assert_has "and it was the first one" "$(calls_args apply_change)" "replicas=2"
+assert_log_count "the operator was asked twice" "${LOG}" 'awaiting_approval' 2
+assert_no_log "no grant was minted" "${LOG}" 'change-set grants minted'
+stop_term
+
+# ---- leg C: the world moves, the grant is void ----------------------
+# The claim a TTL cannot make. The harness holds the first approved call
+# open at the blocker, moves the cluster underneath it, and releases:
+# the second call's precondition re-read no longer matches the snapshot
+# taken when the operator answered, so mast re-asks instead of firing a
+# call whose premise is gone.
+say "U-changeset/C: a grant is void once the cluster moves"
+DB="${WORK}/c-c.db"
+LOG="${WORK}/c-c.log"
+reset_blocker apply_change
+start_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat cc1 ApplyChange)" 202
+assert_state "the first call parked" incident-cc1 paused
+CCINT="$(show_field incident-cc1 Interrupt)"
+# Posted in the background: /resume runs the approved calls, and this
+# leg has to act while they are running.
+resume_bg incident-cc1 "${CCINT}" '{"verdict":"approve","scope":"change_set","note":"uat"}'
+if wait_started apply_change; then
+  ok "the approved call reached the tool"
+else
+  bad "the approved call never dispatched"
+fi
+move_cluster moved
+release apply_change
+resume_bg_wait
+assert_http "the operator's answer was accepted -> 202" "${RESUME_CODE}" 202
+
+assert_state "the rest of the set parked again" incident-cc1 paused
+assert_eq "only the approved call fired" "$(calls_count apply_change)" 1
+assert_has "and it was the first one" "$(calls_args apply_change)" "replicas=2"
+assert_hasnt "the stale call never ran" "$(calls_args apply_change)" "replicas=3"
+assert_log_count "the grant was voided" "${LOG}" \
+  'a change-set grant was voided and its call re-parked' 1
+assert_log_count "the operator was asked again" "${LOG}" 'awaiting_approval' 2
+# The re-park says what moved, in the declared field's own terms. A
+# question that just said "re-approve this" would leave an operator
+# re-deciding with no more information than the first time.
+CCMSG="$(show_field incident-cc1 Message)"
+note "the second question: ${CCMSG}"
+assert_has "the question says the approval stopped covering it" "${CCMSG}" "change set"
+assert_has "and names the field that moved" "${CCMSG}" 'output.state was "steady"'
+stop_term
+
+# ---- leg D: the wall-clock backstop ---------------------------------
+# The other clock. Same shape as leg C, except the world does NOT move —
+# the window simply runs out while the first call is held open. A tool
+# with no precondition has only this bound, so it has to work on its
+# own, not merely as a second opinion on the read.
+say "U-changeset/D: a grant expires on its own clock"
+WL="${EXPIRING}"
+DB="${WORK}/c-d.db"
+LOG="${WORK}/c-d.log"
+reset_blocker apply_change
+start_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat cd1 ApplyChange)" 202
+assert_state "the first call parked" incident-cd1 paused
+CDINT="$(show_field incident-cd1 Interrupt)"
+resume_bg incident-cd1 "${CDINT}" '{"verdict":"approve","scope":"change_set","note":"uat"}'
+if wait_started apply_change; then
+  ok "the approved call reached the tool"
+else
+  bad "the approved call never dispatched"
+fi
+# Outlast the fixture's 1s window while the first call is held.
+sleep 2
+release apply_change
+resume_bg_wait
+assert_http "the operator's answer was accepted -> 202" "${RESUME_CODE}" 202
+
+assert_state "the expired call parked again" incident-cd1 paused
+assert_eq "only the approved call fired" "$(calls_count apply_change)" 1
+assert_log_count "the operator was asked again" "${LOG}" 'awaiting_approval' 2
+assert_log_count "the grant was voided" "${LOG}" \
+  'a change-set grant was voided and its call re-parked' 1
+# Both bounds void a grant through the same path, so the leg is only
+# about the clock if the RECORDED REASON is the clock. The cluster never
+# moved here; a void blamed on the read would mean the TTL never fired
+# and this leg was passing on leg C's mechanism.
+assert_log_atleast "on its own clock" "${LOG}" 'that approval expired at' 1
+assert_no_log "and not because the cluster moved" "${LOG}" \
+  'the cluster moved since this was approved'
+CDMSG="$(show_field incident-cd1 Message)"
+note "the second question: ${CDMSG}"
+assert_has "the question says the window ran out" "${CDMSG}" "expired at"
+stop_term
+
+# ---- leg E: the approval outlives the process -----------------------
+# mast's whole shape is unattended: the daemon that asked the question
+# is not necessarily the one that hears the answer. The crash window
+# here is the park itself — nothing is in flight, the session is durable
+# — so what has to survive is the recorded change set and the operator's
+# ability to authorize all of it on a process that never saw the
+# diagnoser's turn.
+#
+# (A crash BETWEEN two granted calls is a different subject: it leaves a
+# dangling mutating intent, which the recorded-effect outbox declines to
+# replay — scripts/uat-v0.2.sh S1.)
+say "U-changeset/E: an approval that arrives after a restart still covers the set"
+WL="${CHANGESET}"
+DB="${WORK}/c-e.db"
+LOG="${WORK}/c-e.log"
+reset_blocker
+start_daemon "${WORK}/c-e-boot.log"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat ce1 ApplyChange)" 202
+assert_state "the first call parked" incident-ce1 paused
+kill9
+
+start_daemon "${LOG}"
+assert_state "the park survived the crash" incident-ce1 paused
+CEINT="$(show_field incident-ce1 Interrupt)"
+assert_http "the new process accepts the SET approval -> 202" \
+  "$(resume_verdict incident-ce1 "${CEINT}" '{"verdict":"approve","scope":"change_set","note":"uat"}')" 202
+assert_state "the run finishes" incident-ce1 idle
+assert_eq "both calls fired" "$(calls_count apply_change)" 2
+assert_has "including the one only the grant authorized" "$(calls_args apply_change)" "replicas=3"
+assert_log_count "the restarted process asked nothing new" "${LOG}" 'awaiting_approval' 0
+stop_term
+unset MAST_FAKE_PROPOSED_CHANGE
 
 # ====================================================================
 say "Summary"

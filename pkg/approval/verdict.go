@@ -62,6 +62,19 @@ const (
 	ScopeSessionTool Scope = "session_tool"
 	// ScopeAlways asks to persist a standing allowlist entry.
 	ScopeAlways Scope = "always"
+
+	// ScopeChangeSet authorizes this call and the other calls in the
+	// change set it belongs to — the set the parked question showed
+	// (W7). It is not a broader grant in the sense the scopes above
+	// are: it names no tool and no pattern, only a finite list of exact
+	// (tool, arguments) signatures the operator was shown, each of
+	// which expires and is re-checked against the cluster before it
+	// fires. Every one of them still passes the deny policy.
+	//
+	// mast refuses it rather than narrowing it when the set cannot be
+	// granted — an unrecorded set, an edited verdict, an argument too
+	// large to have been read. See writeGate.planGrants.
+	ScopeChangeSet Scope = "change_set"
 )
 
 var scopeDecisions = map[Scope]permissions.Decision{
@@ -69,6 +82,13 @@ var scopeDecisions = map[Scope]permissions.Decision{
 	ScopeSession:     permissions.DecisionAllowSession,
 	ScopeSessionTool: permissions.DecisionAllowSessionTool,
 	ScopeAlways:      permissions.DecisionAllowAlways,
+
+	// Allow-once, deliberately: as far as the permissions gate is
+	// concerned a change-set verdict authorizes the one call in hand,
+	// which is the only call it is adjudicating. The set's other calls
+	// are authorized by grants the write gate mints, and each of those
+	// is adjudicated by this same gate when it fires.
+	ScopeChangeSet: permissions.DecisionAllowOnce,
 }
 
 // Verdict is the operator's answer, carried in the Payload of the ADK

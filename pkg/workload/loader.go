@@ -17,6 +17,7 @@ package workload
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -89,6 +90,9 @@ func (b *Bundle) validate() error {
 		}
 		seen[name] = true
 	}
+	if _, err := b.HITL.EffectiveChangeSetTTL(); err != nil {
+		return err
+	}
 	seenTools := make(map[string]bool, len(b.ToolCatalog.Tools))
 	for _, p := range b.ToolCatalog.Tools {
 		if p.Name == "" {
@@ -98,6 +102,38 @@ func (b *Bundle) validate() error {
 			return fmt.Errorf("tool_catalog.tools contains duplicate %q", p.Name)
 		}
 		seenTools[p.Name] = true
+		if err := validatePrecondition(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validatePrecondition checks what the bundle alone can check about a
+// change-set freshness declaration (v0.4 W7). Whether the named read is
+// classified read-only is checked at composition, where the mutation
+// predicate exists; whether it is wired at all is checked at the moment
+// it is used, where the toolsets do.
+func validatePrecondition(p ToolPolicy) error {
+	pre := p.Precondition
+	if pre == nil {
+		return nil
+	}
+	if strings.TrimSpace(pre.Read) == "" {
+		return fmt.Errorf("tool_catalog.tools[%q].precondition names no read tool", p.Name)
+	}
+	if pre.Read == p.Name {
+		return fmt.Errorf("tool_catalog.tools[%q].precondition reads %q, which is the tool being checked; a change cannot be its own precondition", p.Name, pre.Read)
+	}
+	for _, f := range pre.Fields {
+		if strings.TrimSpace(f) == "" {
+			return fmt.Errorf("tool_catalog.tools[%q].precondition.fields contains an empty path", p.Name)
+		}
+	}
+	for readArg, changeArg := range pre.ArgsFrom {
+		if strings.TrimSpace(readArg) == "" || strings.TrimSpace(changeArg) == "" {
+			return fmt.Errorf("tool_catalog.tools[%q].precondition.args_from maps %q to %q; both sides name an argument", p.Name, readArg, changeArg)
+		}
 	}
 	return nil
 }

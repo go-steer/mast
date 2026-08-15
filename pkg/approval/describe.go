@@ -117,8 +117,8 @@ func VerdictSchema() *jsonschema.Schema {
 			},
 			"scope": {
 				Type:        "string",
-				Enum:        []any{string(ScopeOnce)},
-				Description: "How far the approval reaches. Only `once` is admissible for a mutating tool; a broader scope is refused, not narrowed.",
+				Enum:        []any{string(ScopeOnce), string(ScopeChangeSet)},
+				Description: "How far the approval reaches. `once` authorizes this call. `change_set` additionally authorizes the other calls listed under the request's `change_set`, each bound to its exact arguments, expiring, and re-checked against the cluster before it fires; it is admissible only when the request carries one. Anything else is refused, not narrowed.",
 			},
 			"args": {
 				Type:        "object",

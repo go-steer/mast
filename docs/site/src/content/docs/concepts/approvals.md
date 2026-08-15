@@ -85,10 +85,13 @@ operator answers with one of three verdicts:
 Three properties are worth calling out, because each closes a hole that
 looks small on paper:
 
-- **Scope is `once`, and only `once`.** A verdict approves the single call
-  in front of the operator. A request for anything wider is refused and
-  audited as `approval_scope_refused` — "approve all scale operations for
-  this session" is exactly the blanket consent the gate exists to prevent.
+- **Scope is `once`, unless the operator is looking at the whole set.** A
+  verdict approves the single call in front of them. The one exception is
+  `change_set`, below: it authorizes the *specific other calls quoted in the
+  same question*, and nothing else. Anything wider — "approve all scale
+  operations for this session" — is refused and audited as
+  `approval_scope_refused`, because that is the blanket consent the gate
+  exists to prevent.
 - **The approver is the authenticated caller, not the payload.** Whatever
   name arrives in the request body is overwritten by the identity that
   actually authenticated. An audit trail an agent could write into is not
@@ -101,7 +104,9 @@ looks small on paper:
 Every outcome lands in the audit log under a fixed vocabulary:
 `awaiting_approval`, `denied_by_policy`, `denied_by_operator`,
 `approval_scope_refused`, `edit_unattributed`, `edit_refused`,
-`edit_applied`, `apply`, `dry_run`.
+`edit_applied`, `apply`, `dry_run`, and the change-set outcomes
+`change_set_approved`, `approved_by_change_set`, `change_set_scope_refused`,
+`change_set_refused`.
 
 The other two modes exist for real situations, not as escape hatches:
 `dry_run` runs the whole loop and reports what *would* have happened, which
@@ -170,6 +175,64 @@ guessing which was meant.
 
 Field reference: [the report
 contract](/reference/workload-bundle/#the-one-property-mast-reads-proposed_change).
+
+## One answer for a set of calls — and what makes it go stale
+
+A remediation is often several calls: scale two Deployments, or patch a
+ConfigMap and restart what reads it. Parking each one separately means the
+operator who has already read the plan answers the same question three
+times, and the third answer is not a decision, it is a reflex.
+
+So when a parked call belongs to a change set, the question says so and
+quotes the rest of the set. Answering with `scope: change_set` mints a
+**grant for each remaining call**:
+
+```
+Message:   Approve mutating call scale_deployment(deployment=api, replicas=2)?
+           It is one of 2 calls in the change set ScaleUp proposed;
+           answer with scope=change_set to authorize all 2.
+  Change set: 2 call(s) proposed by ScaleUp
+    1. scale_deployment(deployment=api, replicas=2)
+    2. scale_deployment(deployment=worker, replicas=2)
+    freshness of scale_deployment: re-checked against get_deployment before the call fires
+    Approve all with: --response='{"verdict":"approve","scope":"change_set"}' (valid for 600s)
+```
+
+A grant is deliberately narrow:
+
+- it authorizes **one exact `(tool, arguments)` pair** — not the tool, not
+  the verb, not "scaling" — so a call the model composes afterwards, however
+  similar, still parks;
+- it is **single-use** and **durable**, so a restart between the answer and
+  the call changes nothing, and a second identical call needs its own
+  approval;
+- the **deny policy still runs first**, and spending a grant is still
+  recorded as an allow-once decision in the audit log. A grant removes the
+  question, never the accounting;
+- if any call in the set cannot be granted — an argument too large to render
+  in the question, a precondition mast cannot evaluate — the whole verdict is
+  **refused with a reason** rather than covering the part that fits. A
+  partial "approve all of this" is the one outcome nobody chose.
+
+**What makes an approval stale is the cluster, not the clock.** A set
+approved twenty seconds ago against a Deployment somebody has since scaled
+by hand is stale. One approved an hour ago against an untouched object is
+not. mast cannot work out which read tells it that — it does not know which
+tool reads the object a write is about, or which of the write's arguments
+names it — so the bundle declares it, per tool, and mast runs it twice: once
+when the operator answers, once just before each granted call fires. If a
+watched field moved in between, the grant is voided and the call goes back
+to the operator with a question naming the field and both values.
+
+`hitl.change_set_ttl` (default 10 minutes) is the backstop for everything a
+precondition cannot see. A tool that declares no precondition gets the TTL
+and nothing else — and its question **says so**, in those words, rather than
+implying a check mast is not making.
+
+How to declare one, and the mistake to avoid on your first try (a
+precondition watching the field the set itself rewrites invalidates its own
+set): [`precondition:` in the workload
+bundle](/reference/workload-bundle/#precondition--what-makes-an-approval-stale).
 
 ## Composing the four
 

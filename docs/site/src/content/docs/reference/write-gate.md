@@ -51,7 +51,7 @@ curl -s -X POST http://localhost:7777/resume \
 | Field | Values | Meaning |
 |---|---|---|
 | `verdict` | `approve`, `reject`, `edit` | Required. `approve` runs the call as proposed; `reject` refuses it; `edit` runs it with the arguments in `args` instead. |
-| `scope` | `once` | Optional, and `once` is the only scope a mutating call accepts. Anything wider is **refused**, not narrowed. |
+| `scope` | `once`, `change_set` | Optional; `once` is the default. `change_set` is accepted **only** when this question carries a change set, and authorizes the other calls quoted in it — see [below](#approving-a-whole-change-set). Anything wider is **refused**, not narrowed. |
 | `args` | object | `edit` only: the arguments to run instead of the model's. |
 | `note` | string | Optional; shown to the agent, and kept in the audit record. |
 
@@ -67,6 +67,83 @@ does not approve the session. It is refused, audited as
 `approval_scope_refused`, and the operator is told to re-issue for the
 single call. Silently narrowing it would leave someone believing they had
 a standing grant they did not have.
+
+## Approving a whole change set
+
+When the parked call is one of several the specialist proposed together,
+`sessions show` prints the rest of them and how to authorize them in one
+answer:
+
+```
+State:     paused
+Interrupt: adk-8f3c...-a41b
+Message:   Approve mutating call scale_deployment(deployment=api, replicas=2)?
+           It is one of 2 calls in the change set ScaleUp proposed;
+           answer with scope=change_set to authorize all 2.
+  Change set: 2 call(s) proposed by ScaleUp
+    1. scale_deployment(deployment=api, replicas=2)
+    2. scale_deployment(deployment=worker, replicas=2)
+    freshness of scale_deployment: re-checked against get_deployment before the call fires
+    Approve all with: --response='{"verdict":"approve","scope":"change_set"}' (valid for 600s)
+```
+
+That answer mints one **grant** per remaining call. A grant:
+
+- authorizes one exact `(tool, arguments)` pair — a similar call the model
+  composes later still parks;
+- is **single-use** (a second identical call needs its own approval) and
+  **durable** (a restart between the answer and the call changes nothing);
+- is still adjudicated by the deny policy, and still recorded as an
+  allow-once decision when it is spent, audited `approved_by_change_set`;
+- is re-checked for freshness immediately before the call fires.
+
+Some verdicts cannot mint anything, and each **refuses the whole verdict**
+rather than executing the call in front of you and silently dropping the
+rest (audited `change_set_scope_refused`, with the reason in the refusal
+the agent is told to report):
+
+- `scope: change_set` on a question that carries no change set;
+- an `edit` verdict — an edit speaks only for the call it edits, and the
+  rest of the set is still what the specialist proposed;
+- a set with an argument too large to render in the question — an operator
+  cannot approve what they cannot read;
+- a set whose declared freshness check mast cannot evaluate.
+
+### What voids a grant
+
+Two bounds, and the question you get back says which one fired.
+
+**The cluster moved.** If the tool declares a
+[`precondition:`](/reference/workload-bundle/#precondition--what-makes-an-approval-stale),
+mast re-runs that read just before the granted call fires and compares it to
+the snapshot taken when the operator answered. Any declared field that moved
+voids the grant and re-parks the call:
+
+```
+Message:   Approve mutating call scale_deployment(deployment=worker, replicas=2)?
+           (you approved this as part of a change set, and mast is asking again:
+           the cluster moved since this was approved: output.replicas was 1 at
+           approval and is 5 now (precondition read get_deployment(deployment=worker)))
+```
+
+A voided grant stays voided. A precondition that fails now and happens to
+match again ten seconds later — a Deployment scaled away and back — must not
+silently re-authorize a call the operator has already been asked about again.
+
+**The window ran out.** `hitl.change_set_ttl` (default 10 minutes) bounds
+every grant, precondition or not, and its expiry re-parks the call the same
+way:
+
+```
+Message:   Approve mutating call scale_deployment(deployment=worker, replicas=2)?
+           (you approved this as part of a change set, and mast is asking again:
+           the change set was approved at 14:02:11Z and that approval expired
+           at 14:12:11Z)
+```
+
+A tool with no precondition is bounded by the clock alone, and the question
+it parks with says exactly that rather than implying a check mast is not
+making.
 
 ### Rejection stops the agent
 
@@ -136,7 +213,12 @@ same terms the pause does, and it is there for an aborted session too.
 Every outcome is on the daemon's audit log as well, each with a named
 outcome: `awaiting_approval`, `denied_by_policy`, `denied_by_operator`,
 `approval_scope_refused`, `edit_unattributed`, `edit_refused`,
-`edit_applied`, `apply`, `dry_run`.
+`edit_applied`, `apply`, `dry_run` — plus, for change sets,
+`change_set_approved` (the answer that minted the grants),
+`approved_by_change_set` (a granted call firing),
+`change_set_scope_refused` (the verdict mast would not honor as a set) and
+`change_set_refused` (a proposed change the specialist's own report failed
+validation on).
 
 ## The gate is not the only boundary
 

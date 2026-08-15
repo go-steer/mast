@@ -39,6 +39,11 @@
 //     (scripts/uat-v0.3.sh) turn on that line: an operator's edit is only
 //     observable end to end if the tool records which arguments ran, and
 //     apply_change declares one (replicas) precisely so it can.
+//   - read_status reports the contents of "state" (default "steady"), so
+//     a leg can move the world between an operator's approval and the
+//     calls it authorized. The change-set freshness legs
+//     (scripts/uat-v0.4.sh) turn on that: a grant is re-checked against
+//     this read, and a changed answer voids it.
 //
 // A `kill -9` of the launching daemon is the one interruption that does NOT
 // cancel the call ctx: the crash legs SIGKILL the daemon mid-call, which
@@ -57,6 +62,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -82,13 +88,17 @@ func main() {
 	srv := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "uat-blocker", Version: "0.0.1"}, nil)
 
 	// read_status takes no arguments: nothing about the read-only legs
-	// depends on what it was asked for.
+	// depends on what it was asked for. What it RETURNS is
+	// harness-controlled (see clusterState), because the change-set
+	// freshness legs (scripts/uat-v0.4.sh) need a world that can move
+	// between an operator's approval and the calls it authorized.
 	mcpsdk.AddTool(srv, &mcpsdk.Tool{Name: "read_status", Description: "UAT controllable blocking tool (read-only)"},
-		func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
-			if err := block(ctx, dir, "read_status", ""); err != nil {
-				return nil, struct{}{}, err
+		func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, statusOut, error) {
+			state := clusterState(dir)
+			if err := block(ctx, dir, "read_status", "state="+state); err != nil {
+				return nil, statusOut{}, err
 			}
-			return okResult("read_status"), struct{}{}, nil
+			return textResult("read_status: ok state=" + state), statusOut{State: state}, nil
 		})
 
 	// apply_change declares one argument so the mutating legs can tell
@@ -117,10 +127,40 @@ type changeArgs struct {
 	Replicas int `json:"replicas" jsonschema:"the replica count to scale the workload to"`
 }
 
-func okResult(tool string) *mcpsdk.CallToolResult {
+// statusOut is read_status's STRUCTURED result, which is the half a
+// precondition can be declared against: ADK's MCP tool returns
+// {"output": <structured content>} when a server sends one and falls
+// back to the text otherwise, so a fixture whose state lived only in
+// the text would compare equal on every read and no freshness check
+// could ever fail.
+type statusOut struct {
+	State string `json:"state" jsonschema:"the fixture's current cluster state"`
+}
+
+func okResult(tool string) *mcpsdk.CallToolResult { return textResult(tool + ": ok") }
+
+func textResult(text string) *mcpsdk.CallToolResult {
 	return &mcpsdk.CallToolResult{
-		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: tool + ": ok"}},
+		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: text}},
 	}
+}
+
+// clusterState is the fixture's stand-in for the piece of the world a
+// change-set precondition watches: the contents of "<dir>/state", or
+// "steady" when the harness has not written one.
+//
+// It exists so a leg can move the world between an operator's approval
+// and the calls that approval authorized — the case a wall-clock TTL
+// cannot catch, and the reason a grant is re-checked against a read
+// rather than against a timer alone. Writing the file is the whole
+// mechanism: the next read returns different bytes, the digest differs,
+// and the remaining calls park again.
+func clusterState(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "state")) // #nosec G304 -- harness fixture, path from the harness's own env
+	if err != nil {
+		return "steady"
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // exitWhenOrphaned terminates the process once its parent pid changes from

@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- **New: one answer can approve a whole change set — bounded by a clock the
+  bundle sets and a re-read the bundle declares** (#132, W7). A remediation
+  is usually several calls: scale two Deployments, or patch a ConfigMap and
+  restart what reads it. Until now each one parked on its own, so a
+  three-call fix was three questions, and an operator who had already read
+  the plan answered the same question three times.
+
+  Answering a parked call with `{"verdict":"approve","scope":"change_set"}`
+  now mints a grant for **each remaining call in that finding's proposed
+  change set**. The per-call gate spends them silently. A grant authorizes
+  one exact `(tool, arguments)` pair — not the tool, not the verb — and is
+  single-use, durable across a restart, and re-checked before it fires. A
+  deny policy still adjudicates first, and a spent grant is still recorded
+  as an allow-once decision in the audit log: the grant removes the
+  *question*, never the accounting. If any call in the set cannot be granted
+  the whole verdict is refused with a reason, rather than quietly covering
+  the part that fits — a partial "approve all of this" is the one outcome
+  the operator did not choose.
+
+  **What makes an approval go stale is the cluster, not the clock.** A set
+  approved twenty seconds ago against a Deployment somebody has since scaled
+  by hand is stale; one approved an hour ago against an untouched object is
+  not. So a tool in `tool_catalog` can declare its own freshness re-read:
+
+  ```yaml
+  - name: scale_deployment
+    mutating: true
+    precondition:
+      read: get_deployment            # must be declared mutating: false
+      args_from: {name: deployment}   # the read's "name" <- this call's "deployment"
+      fields: [output.replicas]
+  ```
+
+  The read runs at approval time and again just before the granted call
+  fires. If a watched field moved, the grant is voided and the call goes
+  back to the operator with a question that names the field and both values
+  — `output.replicas was 1 at approval and is 5 now`. `hitl.change_set_ttl` (default `10m`)
+  is the backstop for everything a precondition cannot see. A tool that
+  declares no precondition gets the TTL and nothing else, and its parked
+  question says so rather than implying a check mast is not making.
+
+  Two things worth knowing before writing your first `precondition:`. Each
+  call is checked against **its own** object — that is what `args_from` is
+  for; a precondition watching the field the set itself rewrites would have
+  call 1 invalidate call 2 by succeeding. And `fields:` paths start
+  `output.` for MCP tools, because that is how the structured result of an
+  MCP tool arrives.
+
+  Proven offline in `scripts/uat-v0.4.sh` (`U-changeset`, five legs: the
+  set, a `scope: once` control, cluster drift, the expiring window, and a
+  SIGKILL between the question and the answer), and against a real API
+  server by the new opt-in live tier below.
+
+- **New: an opt-in live acceptance tier over a throwaway kind cluster**
+  (#132, W7). `MAST_LIVE_KIND=1 ./scripts/live-kind-v0.4.sh` runs the
+  change-set legs against a real Kubernetes API server: one approval scales
+  two Deployments, and a second leg has a person run `kubectl scale` out of
+  band while an approved call is held open, which voids the next grant and
+  re-parks it. Two claims need this — that a declared `fields:` path is
+  right about a real tool's real JSON, and that "the cluster moved" means
+  somebody else moved it — and neither can be staged by a harness writing
+  its own fixture file.
+
+  It creates its own cluster, refuses to adopt or delete one it did not
+  create, writes a single-context kubeconfig under `/tmp`, and never
+  resolves the ambient `current-context`; the MCP fixture behind it repeats
+  those checks itself before it will start. It needs a container runtime and
+  takes minutes, so it is **not** part of `dev/ci/presubmits/e2e.sh` and does
+  not gate the build.
+
 - **New: a finding carries the call it recommends, and that is the call the
   operator approves** (#132, W7.0). Until now a diagnosis recommended a
   remediation in prose — "scale the api Deployment back to 2 replicas" — an
