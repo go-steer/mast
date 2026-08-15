@@ -15,11 +15,15 @@
 package compose
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
+
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -154,3 +158,152 @@ type stubTool string
 func (s stubTool) Name() string        { return string(s) }
 func (s stubTool) Description() string { return "stub" }
 func (s stubTool) IsLongRunning() bool { return false }
+
+// The producer contract's half of the translation (v0.4 W7.0): which
+// tools a proposed change may name, and what happens when the
+// composition cannot answer that.
+
+func execSpec(name string, tools ...string) specialists.Spec {
+	s := specialists.Spec{Name: name, Capability: specialists.CapabilityChangeExecutor}
+	s.Tools.MCP = []specialists.MCPAllowlist{{Server: "gke", Tools: tools}}
+	return s
+}
+
+func diagSpec(name string, tools ...string) specialists.Spec {
+	s := specialists.Spec{Name: name, Capability: specialists.CapabilityReadOnly}
+	s.Tools.MCP = []specialists.MCPAllowlist{{Server: "gke", Tools: tools}}
+	return s
+}
+
+// TestChangeSurfaceIsTheExecutorsAllowlist: a diagnoser may propose only
+// what a change executor in the same roster could carry out. Proposing
+// a tool no executor holds is a proposal that dies after the operator
+// approves it, which is the worst place to find out.
+func TestChangeSurfaceIsTheExecutorsAllowlist(t *testing.T) {
+	specs := []specialists.Spec{
+		diagSpec("workload-diagnoser", "get_k8s_resource"),
+		execSpec("change-executor", "patch_k8s_resource", "apply_k8s_manifest"),
+	}
+	surface, exhaustive := changeSurface(specs)
+	if !exhaustive {
+		t.Fatal("a fully enumerated roster reported a non-exhaustive surface, so the contract fell back to accepting any wired tool")
+	}
+	if !surface["patch_k8s_resource"] || !surface["apply_k8s_manifest"] {
+		t.Errorf("surface = %v, want the executor's two tools", sortedKeys(surface))
+	}
+	// The diagnoser's read tools are not remediation. A change set
+	// naming get_k8s_resource is a specialist that misread the field.
+	if surface["get_k8s_resource"] {
+		t.Errorf("surface = %v, want no read-only tool from a non-executor spec", sortedKeys(surface))
+	}
+}
+
+// TestChangeSurfaceUnenumeratedGrantsAreNotASurface: CheckCapabilitySplit
+// lets a change executor inherit a whole server. No finite name list
+// describes that, so the contract must say so rather than invent one —
+// a surface built from an inherit-all executor would be empty, and an
+// empty surface refuses everything.
+func TestChangeSurfaceUnenumeratedGrantsAreNotASurface(t *testing.T) {
+	inheritAll := specialists.Spec{Name: "e", Capability: specialists.CapabilityChangeExecutor}
+	wholeServer := specialists.Spec{Name: "e", Capability: specialists.CapabilityChangeExecutor}
+	wholeServer.Tools.MCP = []specialists.MCPAllowlist{{Server: "gke"}}
+
+	for _, tc := range []struct {
+		name  string
+		specs []specialists.Spec
+	}{
+		{"no tools.mcp key at all", []specialists.Spec{inheritAll}},
+		{"a server with no tools list", []specialists.Spec{wholeServer}},
+		{"no change executor in the roster", []specialists.Spec{diagSpec("d", "get_k8s_resource")}},
+		{"no roster at all", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, exhaustive := changeSurface(tc.specs); exhaustive {
+				t.Error("reported an exhaustive surface it cannot know")
+			}
+		})
+	}
+}
+
+// TestChangeSetCheckerNarrowsToTheSurface drives the built checker,
+// because a surface computed and then not consulted is not enforcement.
+func TestChangeSetCheckerNarrowsToTheSurface(t *testing.T) {
+	c := changeSetChecker(WriteGateConfig{
+		Bundle: &workload.Bundle{Name: "b"},
+		Specs:  []specialists.Spec{execSpec("change-executor", "patch_k8s_resource")},
+		ToolSchemas: func(string) (*jsonschema.Schema, error) {
+			return &jsonschema.Schema{Type: "object"}, nil
+		},
+	})
+	if !c.Declares("patch_k8s_resource") {
+		t.Error("the executor's own tool was refused")
+	}
+	if c.Declares("delete_k8s_resource") {
+		t.Error("a tool no executor in this roster holds was accepted; an operator would approve a change nothing can run")
+	}
+}
+
+// TestChangeSetCheckerWithoutASurfaceStillNeedsARealTool: with no
+// enumerable executor surface the contract falls back to the resolver,
+// which is a weaker check but not no check.
+func TestChangeSetCheckerWithoutASurfaceStillNeedsARealTool(t *testing.T) {
+	c := changeSetChecker(WriteGateConfig{
+		Bundle: &workload.Bundle{Name: "b"},
+		ToolSchemas: func(name string) (*jsonschema.Schema, error) {
+			if name != "patch_k8s_resource" {
+				return nil, fmt.Errorf("no tool named %q is wired", name)
+			}
+			return &jsonschema.Schema{Type: "object"}, nil
+		},
+	})
+	if !c.Declares("kubectl_scale") {
+		t.Fatal("Declares narrowed with no surface to narrow to")
+	}
+	if _, err := c.Check([]approval.ProposedChange{{Tool: "kubectl_scale"}}); err == nil {
+		t.Error("an invented tool passed a composition with no executor allowlist; the resolver is the last check there and it did not run")
+	}
+}
+
+// TestChangeSetCheckerFailsClosedWithNoResolver is the fail-closed rule
+// written down as behaviour: a deployment that cannot look up a tool's
+// arguments refuses proposals rather than passing unverified ones to an
+// operator.
+func TestChangeSetCheckerFailsClosedWithNoResolver(t *testing.T) {
+	c := changeSetChecker(WriteGateConfig{Bundle: &workload.Bundle{Name: "b"}})
+	_, err := c.Check([]approval.ProposedChange{{Tool: "patch_k8s_resource"}})
+	if err == nil {
+		t.Fatal("a change was accepted by a deployment that cannot check its arguments")
+	}
+	if !strings.Contains(err.Error(), "patch_k8s_resource") {
+		t.Errorf("refusal does not name the tool: %v", err)
+	}
+}
+
+// TestWriteGate_InstallsTheProducerContract: the checker has to reach
+// the plugin the daemon registers, not just exist in this package.
+func TestWriteGate_InstallsTheProducerContract(t *testing.T) {
+	var asked []string
+	p, err := WriteGate(WriteGateConfig{
+		Bundle: &workload.Bundle{Name: "b"},
+		Specs:  []specialists.Spec{execSpec("change-executor", "patch_k8s_resource")},
+		ToolSchemas: func(name string) (*jsonschema.Schema, error) {
+			asked = append(asked, name)
+			return &jsonschema.Schema{Type: "object"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("WriteGate: %v", err)
+	}
+	out, err := p.BeforeToolCallback()(nil, stubTool(approval.FinishTaskToolName), map[string]any{
+		approval.ChangeSetField: []any{map[string]any{"tool": "kubectl_scale", "arguments": "{}"}},
+	})
+	if err != nil {
+		t.Fatalf("BeforeToolCallback: %v", err)
+	}
+	if out == nil || out["error"] != "invalid_proposed_change" {
+		t.Fatalf("finish_task response = %v, want the producer contract's refusal — the checker never reached the registered plugin", out)
+	}
+	if len(asked) != 0 {
+		t.Errorf("the resolver was consulted for %v, but the catalog check should have refused first", asked)
+	}
+}

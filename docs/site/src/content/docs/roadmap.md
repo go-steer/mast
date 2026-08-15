@@ -196,11 +196,11 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   GKE triage bundle is now twelve read-only diagnosers that name the
   remediation, plus one change executor that carries it out under the write
   gate — and which specialists can change your cluster is a startup log line,
-  not something you work out by reading three files. **The executor is
-  operator-invoked, not automatic:** a diagnosis names its remediation in
-  prose and no dispatch shape hands that to the executor on its own, so an
-  incident ends at a finding. Closing that needs the finding to carry a typed
-  proposed change, which is the next slice rather than a prompt tweak.
+  not something you work out by reading three files. **As shipped in v0.3.0
+  the executor was operator-invoked, not automatic:** a diagnosis named its
+  remediation in prose and no dispatch shape handed that to the executor on
+  its own, so an incident ended at a finding. That is closed on `main` by the
+  change-set producer below, unreleased at the time of writing.
 - **The same split, in the deployment manifests** — the kustomize base grants
   the daemon cluster-wide read (and no secrets); permission to *change* a
   namespace is a separate `Role` you apply once per namespace, so an approved
@@ -225,14 +225,17 @@ The claim it adds up to: *an operator approves the exact call that will fire,
 the loop runs on a schedule without an orchestrator, and every verdict becomes
 a labelled eval row.*
 
-- **The change-set producer** — the missing half of the write gate. A finding
-  carries a typed proposed change rather than a sentence, drawn from the
-  workload's own tool catalog and checked against that tool's input schema
-  when the finding is returned. The executor becomes reachable from a
+- **The change-set producer** — *landed on `main`, unreleased.* The missing
+  half of the write gate. A finding carries a typed proposed change rather
+  than a sentence, drawn from the workload's own tool catalog and checked
+  against that tool's input schema when the finding is returned; a proposal
+  naming a tool the workload does not have, or arguments it would reject,
+  comes back to the specialist to fix. The executor is reachable from a
   diagnosis through a structural rule rather than a prompt, and an operator
   approves the object that actually fires instead of a paragraph describing
-  it. This is what closes the honest gap v0.3 shipped with: a remediation
-  call cannot fire without an operator, and today nothing generates one.
+  it. An empty proposal stays a complete, valid report. This closes the
+  honest gap v0.3 shipped with. See [the change
+  set](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose).
 - **Change-set approvals** — approve N mutations once, bound to exact
   `(tool, arguments)` signatures rather than to a tool name, with a freshness
   check before each one fires. A crash after call 3 of 5 resumes knowing

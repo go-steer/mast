@@ -24,10 +24,14 @@
 #   scripts/uat-v0.3.sh — the v0.3 parity work against the SHIPPED
 #     examples/workloads/gke-triage bundle: what an operator actually
 #     receives at the end of a run (docs/v0.3-plan.md §2, tier U).
+#   scripts/uat-v0.4.sh — the v0.4 change-set work: a finding carries
+#     the executable call, checked against the named tool's own input
+#     schema, and the call an operator approves is the call that fires
+#     (docs/v0.4-plan.md §3, W7.0).
 #
-# Both run, in order, and a failure in either fails the presubmit. The
-# v0.2 harness is the spine and stays exactly as it is; v0.3 additions
-# go in their own script rather than growing that one, so a release's
+# All three run, in order, and a failure in any fails the presubmit. The
+# v0.2 harness is the spine and stays exactly as it is; each release's
+# additions go in their own script rather than growing that one, so an
 # acceptance pass can be read and re-run on its own.
 #
 # These scripts are exactly what CI runs (.github/workflows/ci.yml →
@@ -38,3 +42,4 @@ cd "$(dirname "$0")/../../.."
 
 scripts/uat-v0.2.sh
 scripts/uat-v0.3.sh
+scripts/uat-v0.4.sh

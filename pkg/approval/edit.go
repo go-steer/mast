@@ -112,53 +112,92 @@ type declarer interface {
 // argument the tool does not declare, and a value the schema rejects are
 // all cases where mast would be executing an argument set nobody — not
 // the model, not the schema, not a policy pattern — has vetted.
+//
+// The check itself is NormalizeArgs, which this shares with the change-set
+// producer (W7.0). Deliberately shared: an operator's edit and a
+// specialist's proposed change are the same object — arguments about to
+// be executed against someone's cluster — and two validators that could
+// disagree about what "schema-valid" means is a hole in whichever one is
+// laxer.
 func normalizeEdit(t tool.Tool, edited map[string]any) (map[string]any, error) {
 	if len(edited) == 0 {
 		return nil, fmt.Errorf("the verdict is %q but carries no arguments", OutcomeEdit)
 	}
-	schema, err := inputSchema(t)
+	schema, err := InputSchema(t)
 	if err != nil {
 		return nil, err
 	}
-	// One JSON round trip puts the operator's values in the same shape a
-	// model's would arrive in — numbers as float64, structs as maps — so
-	// that what the schema validates is exactly what the tool receives.
-	raw, err := json.Marshal(edited)
+	norm, err := NormalizeArgs(t.Name(), schema, edited)
 	if err != nil {
-		return nil, fmt.Errorf("edited arguments are not JSON: %w", err)
-	}
-	var norm map[string]any
-	if err := json.Unmarshal(raw, &norm); err != nil {
-		return nil, fmt.Errorf("edited arguments are not a JSON object: %w", err)
-	}
-	if err := checkDeclaredKeys(schema, norm); err != nil {
-		return nil, err
-	}
-	resolved, err := schema.Resolve(nil)
-	if err != nil {
-		return nil, fmt.Errorf("tool %q input schema does not resolve: %w", t.Name(), err)
-	}
-	if err := resolved.Validate(norm); err != nil {
-		return nil, fmt.Errorf("edited arguments do not satisfy tool %q's input schema: %w", t.Name(), err)
+		return nil, fmt.Errorf("edited %w", err)
 	}
 	return norm, nil
 }
 
-// inputSchema reads a tool's declared parameters as a JSON Schema.
+// NormalizeArgs validates one call's arguments against the tool's
+// declared input schema and returns them in the shape the tool will
+// receive.
+//
+// Tool-instance-free on purpose. W2.5 only ever needed to check an
+// operator's edit against the tool ADK was about to run, so the check
+// took a live tool.Tool and read the schema off it. W7.0 needs the same
+// check one step earlier — keyed by tool name, at the moment a
+// specialist returns a finding, with no instance in hand — and the one
+// thing that must not happen is a second implementation of "schema-valid
+// arguments" that the two paths can disagree about. So the schema is a
+// parameter and the caller says where it came from: InputSchema for a
+// live tool, a catalog lookup for a proposed change.
+//
+// Empty arguments are legal here (a tool may declare none, and the
+// schema's own `required` is what says otherwise). The edit path refuses
+// them before calling in, because an edit verdict carrying no arguments
+// is a different thing: an operator who meant to approve.
+func NormalizeArgs(toolName string, schema *jsonschema.Schema, args map[string]any) (map[string]any, error) {
+	if schema == nil {
+		return nil, fmt.Errorf("tool %q has no input schema here, so its arguments cannot be checked against anything", toolName)
+	}
+	// One JSON round trip puts the caller's values in the same shape a
+	// model's would arrive in — numbers as float64, structs as maps — so
+	// that what the schema validates is exactly what the tool receives.
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil, fmt.Errorf("arguments for tool %q are not JSON: %w", toolName, err)
+	}
+	var norm map[string]any
+	if err := json.Unmarshal(raw, &norm); err != nil {
+		return nil, fmt.Errorf("arguments for tool %q are not a JSON object: %w", toolName, err)
+	}
+	if norm == nil {
+		norm = map[string]any{}
+	}
+	if err := checkDeclaredKeys(schema, norm); err != nil {
+		return nil, fmt.Errorf("arguments %w", err)
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		return nil, fmt.Errorf("tool %q input schema does not resolve: %w", toolName, err)
+	}
+	if err := resolved.Validate(norm); err != nil {
+		return nil, fmt.Errorf("arguments do not satisfy tool %q's input schema: %w", toolName, err)
+	}
+	return norm, nil
+}
+
+// InputSchema reads a tool's declared parameters as a JSON Schema.
 //
 // ADK carries the schema in two mutually exclusive fields: MCP tools and
 // function tools set ParametersJsonSchema (a *jsonschema.Schema), while
 // a declaration built by hand may use the genai.Schema in Parameters.
 // Both are re-marshalled rather than type-asserted, because the field is
 // typed `any` and its dynamic type is the provider's business.
-func inputSchema(t tool.Tool) (*jsonschema.Schema, error) {
+func InputSchema(t tool.Tool) (*jsonschema.Schema, error) {
 	d, ok := t.(declarer)
 	if !ok {
-		return nil, fmt.Errorf("tool %q does not declare its arguments, so an edit cannot be checked against anything", t.Name())
+		return nil, fmt.Errorf("tool %q does not declare its arguments, so its arguments cannot be checked against anything", t.Name())
 	}
 	decl := d.Declaration()
 	if decl == nil {
-		return nil, fmt.Errorf("tool %q has no declaration, so an edit cannot be checked against anything", t.Name())
+		return nil, fmt.Errorf("tool %q has no declaration, so its arguments cannot be checked against anything", t.Name())
 	}
 	var src any
 	switch {
@@ -167,7 +206,7 @@ func inputSchema(t tool.Tool) (*jsonschema.Schema, error) {
 	case decl.Parameters != nil:
 		src = decl.Parameters
 	default:
-		return nil, fmt.Errorf("tool %q declares no input schema, so an edit cannot be checked against anything", t.Name())
+		return nil, fmt.Errorf("tool %q declares no input schema, so its arguments cannot be checked against anything", t.Name())
 	}
 	raw, err := json.Marshal(src)
 	if err != nil {
@@ -180,12 +219,15 @@ func inputSchema(t tool.Tool) (*jsonschema.Schema, error) {
 	return schema, nil
 }
 
-// checkDeclaredKeys refuses an argument the tool does not declare.
+// checkDeclaredKeys refuses an argument the tool does not declare. The
+// message is a fragment ("name x, y, which...") that NormalizeArgs
+// prefixes, so that the edit path can say "edited arguments name ..."
+// and the producer path can name the change-set entry instead.
 //
 // JSON Schema only rejects those on its own when the author wrote
 // additionalProperties:false, and an MCP server's schema usually did
-// not. The rule mast wants is narrower than the schema's: the operator
-// is editing a named call, so every key they send has to be one the tool
+// not. The rule mast wants is narrower than the schema's: the caller is
+// naming a specific call, so every key they send has to be one the tool
 // named. A schema with no declared properties is treated as free-form
 // and left to the validator.
 func checkDeclaredKeys(schema *jsonschema.Schema, args map[string]any) error {
@@ -207,7 +249,7 @@ func checkDeclaredKeys(schema *jsonschema.Schema, args map[string]any) error {
 		declared = append(declared, k)
 	}
 	sort.Strings(declared)
-	return fmt.Errorf("edited arguments name %s, which the tool does not declare (it declares %s)",
+	return fmt.Errorf("name %s, which the tool does not declare (it declares %s)",
 		strings.Join(unknown, ", "), strings.Join(declared, ", "))
 }
 
