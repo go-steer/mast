@@ -43,6 +43,23 @@ const (
 	ToolSourceOther   = "other"
 )
 
+// Tool gate states surfaced in ToolInfo.GateState. Same three values
+// core-agent's permissions.Gate.ToolGateState projects, so a client
+// that already reads one daemon's /tools reads the other's — mast
+// derives them from the write gate instead (effects.Predicate plus
+// hitl.on_mutation; see cmd/mast/toolcatalog.go). Bare strings for the
+// same reason the source constants are.
+const (
+	// ToolGateAllowed: the tool runs without operator involvement —
+	// read-only, or mutating under on_mutation: apply.
+	ToolGateAllowed = "allowed"
+	// ToolGatePrompted: calling it parks the turn for approval.
+	ToolGatePrompted = "prompted"
+	// ToolGateDenied: the call will not reach the tool — mutating
+	// under on_mutation: dry_run.
+	ToolGateDenied = "denied"
+)
+
 // Agent run-states surfaced via GET /sessions/.../status. "running"
 // covers any active turn; "deferred" means the scheduler is sleeping
 // the agent until NextWakeAt; "paused" means the autonomous loop was

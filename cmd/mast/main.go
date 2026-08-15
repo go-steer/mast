@@ -54,7 +54,6 @@ import (
 	"github.com/go-steer/mast/pkg/agui"
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/attachadapter"
 	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/config"
@@ -416,11 +415,12 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// needs the runner, which needs the root).
 	pauseRec := &daemonPauseRecorder{store: store}
 
-	root, bundle, specs, dispatchMode, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode, pauseRec)
+	built, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode, pauseRec)
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		return err
 	}
+	root, bundle, specs, dispatchMode := built.agent, built.bundle, built.specs, built.dispatch
 	logger.Info("root agent constructed",
 		"name", root.Name(),
 		"sub_agents", len(root.SubAgents()),
@@ -518,44 +518,42 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// server is up.
 	var att *attachDeps
 	if attachListen != "" {
-		adapterFor := func(sid string) (attach.Registrant, error) {
-			return attachadapter.New(attachadapter.Config{
-				AppName:     appName,
-				UserID:      defaultUserID,
-				SessionID:   sid,
-				EventLog:    elHandle,
-				BaseContext: turnCtx,
-				ModelName:   llm.Name(),
-				Description: attachDescription(bundle),
-				RunTurn: func(turnCtx context.Context, message string) (attachadapter.TurnResult, error) {
-					// The attach surface stays up through the shutdown
-					// drain so operators can live-tail finishing turns —
-					// but NEW work is refused once draining (#48), or an
-					// operator could burn the whole grace period.
-					if tracker.isDraining() {
-						return attachadapter.TurnResult{}, errors.New("daemon is shutting down; not accepting new turns")
-					}
-					// Same wallclock ceiling as the inject dispatch
-					// path — operator turns are not budget-exempt.
-					if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
-						var cancel context.CancelFunc
-						turnCtx, cancel = context.WithTimeout(turnCtx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
-						defer cancel()
-					}
-					msg := genai.NewContentFromText(message, genai.RoleUser)
-					err := runTurn(turnCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sid, msg, "attach:inject")
-					// Token split is unknown at this layer (the meter
-					// folds totals only); cost rides the usage snapshot.
-					return attachadapter.TurnResult{}, err
-				},
-				UsageFn: func() attach.UsageInfo {
-					_, cost, calls := meters.meter(sid).Snapshot()
-					return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}
-				},
-			})
+		wiring := attachWiring{
+			appName:     appName,
+			userID:      defaultUserID,
+			eventLog:    elHandle,
+			baseContext: turnCtx,
+			modelName:   llm.Name(),
+			description: attachDescription(bundle),
+			// GET /sessions/{sid}/tools, off the MCP toolsets buildRoot
+			// wired — the only place their server attribution survives
+			// (#133).
+			tools: newToolCatalog(logger, built.toolsets, effPred, bundle),
+			usage: func(sid string) attach.UsageInfo {
+				_, cost, calls := meters.meter(sid).Snapshot()
+				return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}
+			},
+			runTurn: func(turnCtx context.Context, sid, message string) error {
+				// The attach surface stays up through the shutdown
+				// drain so operators can live-tail finishing turns —
+				// but NEW work is refused once draining (#48), or an
+				// operator could burn the whole grace period.
+				if tracker.isDraining() {
+					return errors.New("daemon is shutting down; not accepting new turns")
+				}
+				// Same wallclock ceiling as the inject dispatch
+				// path — operator turns are not budget-exempt.
+				if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
+					var cancel context.CancelFunc
+					turnCtx, cancel = context.WithTimeout(turnCtx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
+					defer cancel()
+				}
+				msg := genai.NewContentFromText(message, genai.RoleUser)
+				return runTurn(turnCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sid, msg, "attach:inject")
+			},
 		}
 		var err error
-		att, err = buildAttach(logger, attachListen, os.Getenv("MAST_ATTACH_TOKEN"), store, adapterFor)
+		att, err = buildAttach(logger, attachListen, os.Getenv("MAST_ATTACH_TOKEN"), store, wiring.adapterFor)
 		if err != nil {
 			logger.Error("failed to construct attach surface", "error", err.Error())
 			return err
@@ -1192,9 +1190,9 @@ func workloadNames(cfg *config.Config) []string {
 // It is returned alongside the agent because callers act on it too (the
 // boot-time auto-resume pass only runs under coordinator dispatch), and
 // one resolution shared beats two that can drift.
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (adkagent.Agent, *workload.Bundle, []specialists.Spec, string, error) {
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (rootBuild, error) {
 	if err := validateDispatch(dispatch); err != nil {
-		return nil, nil, nil, "", err
+		return rootBuild{}, err
 	}
 	if workloadArg == "" {
 		logger.Warn("no --workload supplied; running trivial single-agent coordinator")
@@ -1204,12 +1202,12 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 			Instruction: "Acknowledge the incident briefly.",
 			Model:       llm,
 		})
-		return a, nil, nil, resolveDispatch(dispatch, nil), err
+		return rootBuild{agent: a, dispatch: resolveDispatch(dispatch, nil)}, err
 	}
 
 	bundle, loaded, cfgDir, err := resolveWorkload(logger, workloadArg)
 	if err != nil {
-		return nil, nil, nil, "", err
+		return rootBuild{}, err
 	}
 	resolved := resolveDispatch(dispatch, &bundle)
 	if resolved == workload.DispatchAuto {
@@ -1229,7 +1227,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 
 	toolsets, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName)
 	if err != nil {
-		return nil, nil, nil, "", err
+		return rootBuild{}, err
 	}
 
 	a, err := compose.BuildRoot(ctx, compose.RootConfig{
@@ -1244,9 +1242,29 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		PauseRecorder: pauseRec,
 	})
 	if err != nil {
-		return nil, nil, nil, "", err
+		return rootBuild{}, err
 	}
-	return a, &bundle, loaded, resolved, nil
+	return rootBuild{
+		agent:    a,
+		bundle:   &bundle,
+		specs:    loaded,
+		toolsets: toolsets,
+		dispatch: resolved,
+	}, nil
+}
+
+// rootBuild is what buildRoot resolved: the composed root agent plus the
+// facts the rest of serve acts on. A struct rather than a fifth and sixth
+// return value because the operator surfaces need the wired MCP toolsets
+// too — GET /sessions/.../tools projects them, with the server each tool
+// came from (#133) — and ADK exposes no tool accessor on a built agent,
+// so the wiring site is the only place that attribution still exists.
+type rootBuild struct {
+	agent    adkagent.Agent
+	bundle   *workload.Bundle
+	specs    []specialists.Spec
+	toolsets []tool.Toolset
+	dispatch string
 }
 
 // validateDispatch rejects a --dispatch value the binary cannot build.

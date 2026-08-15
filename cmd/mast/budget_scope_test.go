@@ -49,11 +49,12 @@ func spend(author string, tokens int32) *session.Event {
 // that can stop this run is the specialist's own $0.25.
 func TestMeterPoolEnforcesSpecialistCeilings(t *testing.T) {
 	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
-	_, bundle, specs, _, err := buildRoot(context.Background(), discardLogger(),
+	built, err := buildRoot(context.Background(), discardLogger(),
 		mastagent.NewEchoModel("echo"), "", "echo", dir, "coordinator", nil)
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
 	}
+	bundle, specs := built.bundle, built.specs
 	if len(specs) == 0 {
 		t.Fatal("buildRoot returned no roster; the meter pool has nothing to scope")
 	}

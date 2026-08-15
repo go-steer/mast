@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **Fixed: `GET /sessions/{id}/tools` answered "200, no tools" on every mast
+  daemon** (#133). `attachadapter.Config` has carried a `ToolsFn` since the
+  attach surface landed; `cmd/mast` never set it, so the endpoint took the
+  nil-means-empty path and returned a well-formed empty list — a read that
+  looks like an answer. Any operator client asking a mast daemon what tools
+  it holds got told: none.
+
+  The daemon now projects the MCP toolsets it wired at composition time,
+  which is the only place the per-server attribution survives — ADK exposes
+  no accessor for a built agent's tools, so by the time the adapter holds an
+  agent, "which server did this come from" is already gone. Each entry
+  carries `source: "mcp"`, the server name, and a `gate_state` derived from
+  the mutation predicate and `hitl.on_mutation`: `allowed` for a read (or a
+  write under `apply`), `prompted` under `require_approval`, `denied` under
+  `dry_run`. Listings are cached for 30s and bounded at 5s per refresh; one
+  unreachable server is omitted and logged rather than blanking the catalog,
+  and an outage that takes down every server serves the last good answer
+  instead of caching the emptiness.
+
+  Not yet listed: mast's non-MCP tools (the planner's dispatch calls), which
+  are registered inside `internal/compose` with no handle surviving the call.
+  A second hand-maintained list would drift, and a wrong catalog is worse
+  than a partial one.
+
+  The regression guard is a reflection test over the rendered
+  `attachadapter.Config`: a new func field on it fails `cmd/mast`'s tests
+  until serve either wires it or records why it can't. The bug was not a
+  broken projection — it was an assignment nobody made, and nothing asserted
+  on the served artifact.
+
 - **Fixed: every GitHub Release mast has ever cut published with an empty
   body.** The notes were composed from this file by `dev/release/notes.sh`,
   printed in full to the workflow log, and passed to GoReleaser as

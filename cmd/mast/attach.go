@@ -22,10 +22,79 @@ import (
 	"sync"
 
 	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/pkg/attachadapter"
 	"github.com/go-steer/mast/pkg/auth"
+	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
+
+// attachWiring is everything serve hands each per-session attach
+// adapter, gathered into one named value instead of a closure over
+// runServe's locals.
+//
+// The shape is the fix for a class of bug, not a style preference:
+// attachadapter.Config grew ToolsFn, cmd/mast never set it, and GET
+// /sessions/{sid}/tools answered "200 with an empty list" on every
+// mast daemon for two releases — a read that looks like an answer
+// (#133). A closure buried mid-function has nothing a test can hold;
+// this struct does, so TestAttachWiringLeavesNoCapabilityUnwired can
+// assert the daemon fills in every capability it can actually serve.
+type attachWiring struct {
+	appName     string
+	userID      string
+	eventLog    *eventlog.Handle
+	baseContext context.Context
+	modelName   string
+	description string
+
+	// tools projects the wired MCP toolsets; nil is legal (a daemon
+	// with no MCP servers) and reports an empty catalog.
+	tools *toolCatalog
+
+	// usage and runTurn take the session ID because they close over
+	// per-session daemon state (the meter pool, the turn locks).
+	usage   func(sid string) attach.UsageInfo
+	runTurn func(ctx context.Context, sid, message string) error
+}
+
+// config renders the wiring for one session.
+func (w attachWiring) config(sid string) attachadapter.Config {
+	return attachadapter.Config{
+		AppName:     w.appName,
+		UserID:      w.userID,
+		SessionID:   sid,
+		EventLog:    w.eventLog,
+		BaseContext: w.baseContext,
+		ModelName:   w.modelName,
+		Description: w.description,
+		RunTurn: func(ctx context.Context, message string) (attachadapter.TurnResult, error) {
+			// Token split is unknown at this layer (the meter folds
+			// totals only); cost rides the usage snapshot.
+			return attachadapter.TurnResult{}, w.runTurn(ctx, sid, message)
+		},
+		UsageFn: func() attach.UsageInfo { return w.usage(sid) },
+		ToolsFn: func() []attach.ToolInfo {
+			// The catalog is daemon-wide, not per-session: every
+			// session on this daemon runs the same composition. It
+			// takes the base context because ToolsFn carries none and
+			// a tools/list must not outlive the daemon.
+			return w.tools.snapshot(w.contextOrBackground())
+		},
+	}
+}
+
+func (w attachWiring) contextOrBackground() context.Context {
+	if w.baseContext != nil {
+		return w.baseContext
+	}
+	return context.Background()
+}
+
+// adapterFor is the factory buildAttach and the resumer call.
+func (w attachWiring) adapterFor(sid string) (attach.Registrant, error) {
+	return attachadapter.New(w.config(sid))
+}
 
 // attachDeps bundles the operator attach surface serve wires when
 // --attach-listen is set: the session registry, the HTTP server, and
