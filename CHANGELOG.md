@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **New: `GET /sessions/{id}/subagents` — the roster the daemon loaded**
+  (#134). The route block in `pkg/attach/handlers.go` has advertised this
+  endpoint in a comment since the attach surface landed and never registered
+  it, so mast-web's specialists view 404'd against every mast daemon.
+  `/agents` was the only roster read available, and it lists *spawned*
+  instances — always empty on mast, since every dispatch shape resolves its
+  specialists inside the turn. "What is running" is the wrong answer to
+  "what can this thing do".
+
+  Entries are wire-compatible with core-agent's `SubagentCatalogInfo`
+  (`name`, `description`, `model`, `root`, `modes`) plus three mast-native
+  fields. `modes` carries only what is true in core-agent's vocabulary —
+  `["sync"]` under planner dispatch, where `invoke_specialist` really is a
+  parent tool, and empty otherwise; mast has nothing spawnable by reference,
+  so `"async"` is never emitted. Claiming a mode to make the field look
+  populated is the upstream defect the issue warned about (core-agent#741).
+
+  What `modes` cannot say, `invocation` does: `parent_tool`, `transfer`,
+  `graph_node`, or `fanout_branch` — how the composed root actually reaches
+  this specialist. **Empty means nothing in this shape reaches it**, which
+  is how a roster orphan becomes visible without reading `internal/compose`
+  (the `change-executor` orphan the first live GKE run found was exactly
+  this). `capability` and `agent_mode` carry the declared read/write half
+  and the ADK mode, spelled as the frontmatter spells them.
+
 - **Fixed: `GET /sessions/{id}/tools` answered "200, no tools" on every mast
   daemon** (#133). `attachadapter.Config` has carried a `ToolsFn` since the
   attach surface landed; `cmd/mast` never set it, so the endpoint took the

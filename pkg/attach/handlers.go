@@ -254,6 +254,7 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// safe for ReadOnly mode (the read-only flag gates POSTs only).
 	h.routeSession(mux, "GET", "tools", auth.ActionSessionRead, h.doTools)
 	h.routeSession(mux, "GET", "agents", auth.ActionSessionRead, h.doAgents)
+	h.routeSession(mux, "GET", "subagents", auth.ActionSessionRead, h.doSubagents)
 	h.routeSession(mux, "GET", "status", auth.ActionSessionRead, h.doStatus)
 
 	// Operator-state read endpoints (usage / context / memory /
@@ -669,6 +670,21 @@ func (h *handlers) doAgents(w http.ResponseWriter, _ *http.Request, entry *Entry
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
+}
+
+// doSubagents projects the CONFIGURED specialist roster the daemon
+// loaded, as opposed to doAgents' live instances. The route block above
+// has claimed this endpoint since the attach surface landed and never
+// registered it (#134); mast-web's /specialists view was 404ing against
+// every mast daemon as a result.
+func (h *handlers) doSubagents(w http.ResponseWriter, _ *http.Request, entry *Entry) {
+	out := []SubagentCatalogInfo{}
+	if p, ok := entry.Agent.(SubagentCatalogProvider); ok {
+		if list := p.AttachSubagentCatalog(); list != nil {
+			out = list
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subagents": out})
 }
 
 func (h *handlers) doStatus(w http.ResponseWriter, _ *http.Request, entry *Entry) {

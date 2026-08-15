@@ -99,6 +99,76 @@ type AgentInfo struct {
 	LastReport      string    `json:"last_report,omitempty"` // most recent report body, truncated
 }
 
+// SubagentCatalogInfo is one CONFIGURED specialist in the roster,
+// surfaced via GET /sessions/.../subagents — what the daemon LOADED,
+// as opposed to what it has spawned (AgentInfo / GET .../agents).
+// The distinction matters because mast's live-instance list is empty
+// most of the time, so "what is running" is the wrong answer to "what
+// can this daemon do".
+//
+// The first five fields are wire-compatible with core-agent's shape of
+// the same name, so a client that reads one daemon reads the other.
+// The last three are mast-native and describe things core-agent's
+// vocabulary has no word for; a client that doesn't know them ignores
+// them.
+type SubagentCatalogInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Model       string `json:"model,omitempty"` // the specialist's `model:` override; empty when it inherits the root's
+	Root        string `json:"root,omitempty"`  // the spec file this was loaded from
+
+	// Modes is how this specialist can be invoked ON THIS SESSION,
+	// in core-agent's vocabulary: "async" for spawn-by-reference,
+	// "sync" for carried-as-a-parent-tool.
+	//
+	// mast emits ["sync"] under planner dispatch, where specialists
+	// really are parent tools (invoke_specialist), and an empty list
+	// otherwise. Nothing in mast is spawnable by reference — every
+	// dispatch shape resolves its specialists inside the turn — so
+	// "async" is never emitted, and the empty list is the honest
+	// answer rather than a shrug: under coordinator, graph, and
+	// fanout dispatch a specialist is not invocable by the operator
+	// at all, only reachable by the root's own routing. Which
+	// routing is what Invocation says.
+	Modes []string `json:"modes"`
+
+	// Invocation is how this daemon's root reaches the specialist:
+	// "parent_tool" (planner's invoke_specialist), "transfer"
+	// (coordinator dispatch), "graph_node" (graph dispatch, and
+	// fanout's synthesis merger), or "fanout_branch" (one of fanout's
+	// concurrent analysts). It is the field Modes cannot carry: mast
+	// has four ways in and core-agent's two-word vocabulary describes
+	// none of them.
+	Invocation string `json:"invocation,omitempty"`
+
+	// Capability is the specialist's declared read/write half —
+	// "read_only" or "change_executor" (pkg/specialists.Capability).
+	// An operator looking at a roster wants to know which member can
+	// touch the cluster before it does.
+	Capability string `json:"capability,omitempty"`
+
+	// AgentMode is the ADK agent mode the spec declares: "Task" (runs
+	// to a finish_task) or "SingleTurn" (exactly one model call, the
+	// shape behind a graph classifier). Spelled as the frontmatter
+	// spells it, so an operator can grep the bundle for what they see
+	// here.
+	AgentMode string `json:"agent_mode,omitempty"`
+}
+
+// Invocation values for SubagentCatalogInfo.Invocation. See the field
+// doc; these mirror internal/compose's dispatch shapes rather than
+// anything in the core-agent protocol.
+const (
+	InvocationParentTool   = "parent_tool"
+	InvocationTransfer     = "transfer"
+	InvocationGraphNode    = "graph_node"
+	InvocationFanoutBranch = "fanout_branch"
+)
+
+// SubagentInvocationModeSync is the one core-agent mode string mast
+// can truthfully emit: the specialist is carried as a parent tool.
+const SubagentInvocationModeSync = "sync"
+
 // StatusInfo is the response shape of GET /sessions/.../status.
 // ModelName is what the TUI's usage panel labels with; the rest is
 // agent-loop introspection useful for the /status slash command.
@@ -127,6 +197,15 @@ type ToolsProvider interface {
 // BackgroundAgentManager (if any).
 type AgentsProvider interface {
 	AttachAgents() []AgentInfo
+}
+
+// SubagentCatalogProvider is the optional capability for
+// GET /sessions/.../subagents. Returns the CONFIGURED specialist
+// roster — distinct from AgentsProvider, which returns live instances.
+// Absence reports an empty list rather than 501, matching the other
+// read-only projections.
+type SubagentCatalogProvider interface {
+	AttachSubagentCatalog() []SubagentCatalogInfo
 }
 
 // StatusProvider is the optional capability for GET /sessions/.../status.

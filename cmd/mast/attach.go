@@ -52,6 +52,11 @@ type attachWiring struct {
 	// with no MCP servers) and reports an empty catalog.
 	tools *toolCatalog
 
+	// subagents is the loaded specialist roster, resolved once at
+	// startup: the composition does not change while the daemon runs,
+	// so unlike the tool catalog there is nothing to refresh.
+	subagents []attach.SubagentCatalogInfo
+
 	// usage and runTurn take the session ID because they close over
 	// per-session daemon state (the meter pool, the turn locks).
 	usage   func(sid string) attach.UsageInfo
@@ -81,6 +86,7 @@ func (w attachWiring) config(sid string) attachadapter.Config {
 			// a tools/list must not outlive the daemon.
 			return w.tools.snapshot(w.contextOrBackground())
 		},
+		SubagentsFn: func() []attach.SubagentCatalogInfo { return w.subagents },
 	}
 }
 
