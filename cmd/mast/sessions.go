@@ -49,10 +49,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 )
@@ -486,6 +488,7 @@ func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
 		if p.LongRunning {
 			fmt.Fprintf(out, "  Kind:      long-running park (%s)\n", p.ToolName)
 		}
+		printChangeSet(out, p.Payload)
 		if p.ResponseSchema != nil {
 			schema, err := json.Marshal(p.ResponseSchema)
 			if err != nil {
@@ -508,6 +511,52 @@ func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
 			d.ID, p.InterruptID)
 	}
 	return nil
+}
+
+// printChangeSet renders the change set a parked call belongs to, when
+// it belongs to one (v0.4 W7).
+//
+// An operator answering `scope: change_set` is authorizing calls other
+// than the one in the question, so this is the difference between an
+// informed answer and a blind one — and `sessions show` is the surface
+// an operator has when there is no UI. Anything unreadable is left out
+// rather than guessed at, the same rule DescribeConfirmation follows.
+func printChangeSet(out io.Writer, payload any) {
+	if payload == nil {
+		return
+	}
+	req, err := approval.DecodeRequest(payload)
+	if err != nil {
+		return
+	}
+	if req.Stale != "" {
+		fmt.Fprintf(out, "  Stale:     %s\n", req.Stale)
+	}
+	set := req.ChangeSet
+	if set == nil || len(set.Changes) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "  Change set: %d call(s) proposed by %s\n", len(set.Changes), set.Specialist)
+	for _, line := range strings.Split(approval.DescribeChangeSet(set.Changes), "\n") {
+		fmt.Fprintf(out, "    %s\n", line)
+	}
+	for _, name := range sortedMapKeys(set.Preconditions) {
+		fmt.Fprintf(out, "    freshness of %s: %s\n", name, set.Preconditions[name])
+	}
+	if set.Grantable {
+		fmt.Fprintf(out, "    Approve all with: --response='{\"verdict\":\"approve\",\"scope\":\"change_set\"}' (valid for %ds)\n", set.TTLSeconds)
+	} else {
+		fmt.Fprintf(out, "    One at a time: %s\n", set.Ungrantable)
+	}
+}
+
+func sortedMapKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // post sends a JSON body to the daemon at addr+path, authenticating

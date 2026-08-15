@@ -1,0 +1,57 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# Fixture workload for the v0.4 LIVE acceptance tier
+# (scripts/live-kind-v0.4.sh). Same roster shape as the offline
+# change-set legs — a classifier, a diagnoser that cannot write, and a
+# change executor that can — over a throwaway kind cluster instead of a
+# file the harness writes.
+#
+# The one thing this fixture has that the offline one cannot: a
+# precondition whose ARGUMENTS come from the change itself, so each call
+# in a set is checked against its own object. That is what makes a
+# multi-call set possible at all — a precondition over the field a set
+# rewrites would have call 1 invalidate call 2 by doing its job.
+
+name: mast-live
+description: Live-cluster fixture workload for the mast v0.4 change-set grant legs.
+mode: single_session
+
+tool_catalog:
+  mcp:
+    - server: live-kube
+  tools:
+    - name: get_deployment
+      mutating: false
+    - name: scale_deployment
+      mutating: true
+      precondition:
+        # Re-read the Deployment this call is about, by name, and compare
+        # its declared replica count. "output" is ADK's wrapper around an
+        # MCP server's structured result; "replicas" is kubemcp's field.
+        read: get_deployment
+        args_from:
+          deployment: deployment
+        fields:
+          - output.replicas
+
+specialists:
+  - classify
+  - ScaleUp
+  - _fallback
+  - change-executor
+
+budget:
+  max_wallclock_seconds: 300
+
+hitl:
+  # Per-specialist approval off, write gate on: these legs are about the
+  # EXECUTOR's calls parking (and not parking), which a specialist-level
+  # pause in front of the diagnoser would pre-empt.
+  require_approval: false
+  change_set_ttl: 10m
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer

@@ -220,22 +220,35 @@ var approvedCallRe = regexp.MustCompile(`(?m)^\s*\d+\.\s+([A-Za-z0-9_.:-]+)\((\{
 // arguments the write gate parks are byte-identical to the ones the
 // diagnoser proposed, or the harness sees it.
 //
-// One call per tool name: `responded` matches on the name, so a change
-// set naming the same tool twice makes the second call look already
-// answered. Real change sets in the fixture are one call, and a fake
-// that tracked argument-level identity would be re-implementing the
-// runtime it is standing in for.
+// Calls are matched to history positionally, not by name: a change set
+// that scales two deployments names the same tool twice with different
+// arguments, and that is the shape v0.4 W7's grants exist for — one
+// operator answer authorizing the rest of the set. So the Nth approved
+// call to a tool is skipped once the history already accounts for N
+// calls to it (see handled). Positional rather than argument-matched,
+// because an operator who edits a parked call has consumed that slot
+// with different arguments, and a fake that re-issued the original
+// would be re-proposing what the operator just replaced.
 func nextApprovedCall(req *model.LLMRequest) (string, map[string]any, bool) {
 	text := allText(req)
-	if !strings.Contains(text, ApprovedCallsMarker) {
+	marker := strings.LastIndex(text, ApprovedCallsMarker)
+	if marker < 0 {
 		return "", nil, false
 	}
+	// From the LAST announcement only. A resumed turn carries the
+	// preamble more than once — the branch keeps the original and the
+	// resume re-announces it — and reading them all would make a
+	// two-call set look like four, so the fake would loop back to call
+	// one after finishing the set and park a call nobody proposed.
+	text = text[marker:]
+	done := handled(req)
 	for _, m := range approvedCallRe.FindAllStringSubmatch(text, -1) {
 		name := m[1]
 		if _, offered := req.Tools[name]; !offered {
 			continue
 		}
-		if responded(req, name) {
+		if done[name] > 0 {
+			done[name]--
 			continue
 		}
 		var args map[string]any
@@ -283,6 +296,39 @@ func delegationTool(names []string) string {
 		}
 	}
 	return ""
+}
+
+// handled counts, per tool name, how many calls to it the history
+// already accounts for: calls the model has issued, or responses that
+// have come back, whichever is more. Both are counted because the two
+// halves do not always travel together — a call parked at the write
+// gate is issued long before it is answered, and a resumed turn can
+// carry a response whose call sits on a branch this request does not.
+func handled(req *model.LLMRequest) map[string]int {
+	calls, responses := map[string]int{}, map[string]int{}
+	if req == nil {
+		return calls
+	}
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			switch {
+			case p == nil:
+			case p.FunctionCall != nil:
+				calls[p.FunctionCall.Name]++
+			case p.FunctionResponse != nil:
+				responses[p.FunctionResponse.Name]++
+			}
+		}
+	}
+	for name, n := range responses {
+		if n > calls[name] {
+			calls[name] = n
+		}
+	}
+	return calls
 }
 
 // responded reports whether a FunctionResponse for tool already appears in

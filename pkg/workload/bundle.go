@@ -26,6 +26,12 @@
 // land.
 package workload
 
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
 // Mode is the session mode a workload runs in.
 type Mode string
 
@@ -71,6 +77,58 @@ type ToolPolicy struct {
 	// true forces the check for a tool the defaults would miss. Nil
 	// (omitted) means no override. Applications are audit-logged.
 	Mutating *bool `yaml:"mutating,omitempty"`
+
+	// Precondition declares what a call to this tool assumes about the
+	// cluster, as a read this workload can make (v0.4 W7). It is what
+	// an approved change set is re-checked against before each of its
+	// remaining calls fires: mast takes the read at approval time and
+	// again at fire time, and asks the operator afresh if the answer
+	// moved.
+	//
+	// Declaring it is the workload's job because mast cannot derive
+	// it. mast is Kubernetes-agnostic and an MCP tool's arguments are
+	// opaque to it, so it has no way to know which tool reads the
+	// object a write call is about, or which argument names it. A tool
+	// with no precondition is bounded by hitl.change_set_ttl alone —
+	// which is a real bound, but a clock is not a fact about the
+	// cluster, and mast says so in the approval question rather than
+	// implying a check it is not making.
+	Precondition *Precondition `yaml:"precondition,omitempty"`
+}
+
+// Precondition is the bundle spelling of a change-set freshness check
+// (approval.Precondition, which this is converted into by
+// internal/compose — pkg/approval does not import pkg/workload, the
+// same separation MutationPredicate keeps).
+//
+//	tools:
+//	  - name: scale_deployment
+//	    mutating: true
+//	    precondition:
+//	      read: get_deployment
+//	      args_from: {name: deployment, namespace: namespace}
+//	      fields: [spec.replicas, metadata.generation]
+type Precondition struct {
+	// Read names the read-only tool that re-establishes the fact. It
+	// must be classified read-only: a freshness check that changes the
+	// cluster is not a check, and mast refuses to start rather than
+	// run one.
+	Read string `yaml:"read"`
+
+	// Args are literal arguments for the read.
+	Args map[string]any `yaml:"args,omitempty"`
+
+	// ArgsFrom maps a read argument name to the argument of the change
+	// being checked that supplies it, so one declaration covers every
+	// call to the tool.
+	ArgsFrom map[string]string `yaml:"args_from,omitempty"`
+
+	// Fields are dot-separated paths into the read's result to compare
+	// individually, so a drifted approval can say what moved. Empty
+	// compares the whole result, which is the right default for a
+	// narrow read and the wrong one for a chatty read — narrow the
+	// read rather than filtering it here.
+	Fields []string `yaml:"fields,omitempty"`
 }
 
 // Budget is the workload-level runtime budget ceiling. Composes over
@@ -132,6 +190,19 @@ type HITL struct {
 	// no channel to answer a park on, so it gets no write gate unless
 	// it asks for one; see internal/compose.WriteGate.
 	OnMutation OnMutation `yaml:"on_mutation,omitempty"`
+
+	// ChangeSetTTL bounds how long an operator's approval of a change
+	// set authorizes that set's remaining calls (v0.4 W7). A Go
+	// duration string: "10m", "45s". Empty means
+	// approval.DefaultGrantTTL.
+	//
+	// Tune it up rather than down. The TTL is a backstop against an
+	// approval executing in a world nobody looked at — a daemon that
+	// comes back tomorrow — and not the freshness check itself; that is
+	// tool_catalog.tools[].precondition. A TTL short enough to fire
+	// during normal operation trains operators to re-approve without
+	// reading, which costs more safety than it buys.
+	ChangeSetTTL string `yaml:"change_set_ttl,omitempty"`
 }
 
 // EffectiveOnMutation resolves the empty value to the documented
@@ -141,6 +212,28 @@ func (h HITL) EffectiveOnMutation() OnMutation {
 		return OnMutationRequireApproval
 	}
 	return h.OnMutation
+}
+
+// EffectiveChangeSetTTL parses hitl.change_set_ttl. A zero duration
+// means "unset, use the package default" — the caller resolves it,
+// because the default belongs to the write gate rather than to the
+// bundle schema.
+//
+// The parse error is returned rather than swallowed: a typo'd duration
+// silently becoming the default is how a workload ends up with a
+// freshness window nobody chose. Load refuses the bundle instead.
+func (h HITL) EffectiveChangeSetTTL() (time.Duration, error) {
+	if strings.TrimSpace(h.ChangeSetTTL) == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(h.ChangeSetTTL)
+	if err != nil {
+		return 0, fmt.Errorf("hitl.change_set_ttl %q is not a duration (want something like \"10m\"): %w", h.ChangeSetTTL, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("hitl.change_set_ttl %q is not positive; omit it for the default, or set a window an operator's approval should survive", h.ChangeSetTTL)
+	}
+	return d, nil
 }
 
 // Dispatch names the root shape a workload wants assembled. The values

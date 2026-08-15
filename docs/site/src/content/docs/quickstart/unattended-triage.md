@@ -148,8 +148,14 @@ scripts/demo-spike2.sh
   names a tool from the catalog with arguments checked against that tool's
   schema, and once you approve it, those exact calls are what the executor
   runs. A diagnosis that cannot name an exact call proposes nothing and the
-  incident ends at the finding. See [the change
-  set](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose)
+  incident ends at the finding. When a fix is several calls, one
+  `{"verdict":"approve","scope":"change_set"}` authorizes the rest of *that*
+  set — re-checked against the cluster before each one fires, so an approval
+  stops covering a call the moment somebody else moves the object it is
+  about. See [the change
+  set](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose),
+  [one answer for a set of
+  calls](/concepts/approvals/#one-answer-for-a-set-of-calls--and-what-makes-it-stale)
   and [per-specialist
   capability](/reference/workload-bundle/#per-specialist-capability), and
   classify any tools you add with `tool_catalog.tools[].mutating`: an

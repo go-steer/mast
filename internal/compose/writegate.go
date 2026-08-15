@@ -66,6 +66,19 @@ type WriteGateConfig struct {
 	// schema has no proposed_change field is unaffected either way.
 	ToolSchemas func(toolName string) (*jsonschema.Schema, error)
 
+	// ToolRead runs a read-only tool on mast's own behalf and returns
+	// its result, for change-set freshness preconditions (v0.4 W7).
+	// It is mast reading the cluster, not the agent: the call is not in
+	// the model's transcript and its result is not shown to the model,
+	// because its only consumer is the comparison between what the
+	// world looked like when an operator approved a change set and what
+	// it looks like now.
+	//
+	// Optional, and fail-closed in the same direction as ToolSchemas: a
+	// tool that declares a precondition and a deployment that cannot
+	// run reads simply mints no grant, so its calls park one at a time.
+	ToolRead func(ctx adkagent.Context, toolName string, args map[string]any) (map[string]any, error)
+
 	Logger *slog.Logger
 }
 
@@ -109,17 +122,93 @@ func WriteGate(cfg WriteGateConfig) (*plugin.Plugin, error) {
 		// caller supplies a configured gate.
 		gate = permissions.New(permissions.Options{})
 	}
+	grants, err := changeSetGrants(cfg, pred)
+	if err != nil {
+		return nil, err
+	}
 	p, err := approval.New(approval.Config{
 		Policy:    policy,
 		Mutating:  func(name string) bool { return pred(name) == effects.ClassMutating },
 		Gate:      gate,
 		ChangeSet: changeSetChecker(cfg),
+		Grants:    grants,
 		Logger:    cfg.Logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose: build write gate: %w", err)
 	}
 	return p, nil
+}
+
+// changeSetGrants builds the freshness rules for change-set approvals
+// (v0.4 W7): how long one operator answer authorizes the rest of an
+// approved set, and what each of those calls is re-checked against
+// before it fires.
+//
+// Always installed alongside a bundle, because it changes nothing until
+// an operator asks for it — a verdict with the default `scope: once`
+// behaves exactly as it did in W7.0. What it does change is that
+// `scope: change_set` becomes answerable at all.
+func changeSetGrants(cfg WriteGateConfig, pred effects.Predicate) (*approval.Freshness, error) {
+	ttl, err := cfg.Bundle.HITL.EffectiveChangeSetTTL()
+	if err != nil {
+		return nil, fmt.Errorf("compose: %w", err)
+	}
+	declared := map[string]approval.Precondition{}
+	for _, p := range cfg.Bundle.ToolCatalog.Tools {
+		if p.Precondition == nil {
+			continue
+		}
+		// Refuse to start. A "freshness check" that is itself a
+		// mutation would write to the cluster once at approval time and
+		// again before every granted call, unapproved and unrecorded —
+		// and it would be doing it in the name of safety. There is no
+		// version of this worth running, so it is a startup failure
+		// rather than a log line, in the same spirit as the sub-agent /
+		// tool name-collision check.
+		if pred(p.Precondition.Read) == effects.ClassMutating {
+			return nil, fmt.Errorf("compose: tool_catalog.tools[%q].precondition reads %q, which this workload classifies as mutating; a freshness check must not change the cluster — name a read-only tool, or mark %q mutating: false if that is what it is",
+				p.Name, p.Precondition.Read, p.Precondition.Read)
+		}
+		declared[p.Name] = approval.Precondition{
+			Read:     p.Precondition.Read,
+			Args:     p.Precondition.Args,
+			ArgsFrom: p.Precondition.ArgsFrom,
+			Fields:   p.Precondition.Fields,
+		}
+	}
+	if cfg.Logger != nil {
+		effective := ttl
+		if effective == 0 {
+			effective = approval.DefaultGrantTTL
+		}
+		cfg.Logger.Info("change-set approvals active",
+			"ttl", effective, "preconditions", sortedKeys(presentKeys(declared)),
+			"can_read", cfg.ToolRead != nil)
+		if len(declared) > 0 && cfg.ToolRead == nil {
+			cfg.Logger.Warn("tools declare change-set preconditions but this deployment cannot run a read on its own behalf; their calls will be approved one at a time",
+				"tools", sortedKeys(presentKeys(declared)))
+		}
+	}
+	return &approval.Freshness{
+		TTL:  ttl,
+		Read: cfg.ToolRead,
+		Precondition: func(name string) (*approval.Precondition, error) {
+			pre, ok := declared[name]
+			if !ok {
+				return nil, nil
+			}
+			return &pre, nil
+		},
+	}, nil
+}
+
+func presentKeys(m map[string]approval.Precondition) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
 }
 
 // changeSetChecker builds the producer contract's validator for a

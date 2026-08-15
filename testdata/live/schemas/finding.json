@@ -1,0 +1,25 @@
+{
+  "title": "Finding",
+  "type": "object",
+  "description": "A live-tier finding. See scripts/live-kind-v0.4.sh — this is a harness fixture, not a shipped contract.",
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "One line naming what was found."
+    },
+    "proposed_change": {
+      "type": "array",
+      "description": "The executable form of the recommendation: the exact calls an operator would approve.",
+      "items": {
+        "type": "object",
+        "description": "One executable call.",
+        "properties": {
+          "tool": {"type": "string", "description": "Name of the tool to call."},
+          "arguments": {"type": "string", "description": "That tool's arguments as a JSON object, encoded in a string."}
+        },
+        "required": ["tool", "arguments"]
+      }
+    }
+  },
+  "required": ["summary"]
+}

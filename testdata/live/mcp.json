@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "servers": {
+    "live-kube": {
+      "transport": "stdio",
+      "command": "${MAST_LIVE_KUBEMCP}",
+      "env": {
+        "MAST_LIVE_KUBECONFIG": "${MAST_LIVE_KUBECONFIG}",
+        "MAST_LIVE_CONTEXT": "${MAST_LIVE_CONTEXT}",
+        "MAST_LIVE_NAMESPACE": "${MAST_LIVE_NAMESPACE}",
+        "MAST_LIVE_DIR": "${MAST_LIVE_DIR}"
+      }
+    }
+  }
+}

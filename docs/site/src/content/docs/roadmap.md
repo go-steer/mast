@@ -236,10 +236,19 @@ a labelled eval row.*
   it. An empty proposal stays a complete, valid report. This closes the
   honest gap v0.3 shipped with. See [the change
   set](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose).
-- **Change-set approvals** — approve N mutations once, bound to exact
-  `(tool, arguments)` signatures rather than to a tool name, with a freshness
-  check before each one fires. A crash after call 3 of 5 resumes knowing
-  which fired and re-fires none.
+- **Change-set approvals** — *landed on `main`, unreleased.* Approving one
+  parked call with `scope: change_set` mints a grant for each remaining call
+  in that set, bound to an exact `(tool, arguments)` signature rather than to
+  a tool name: single-use, durable across a restart, and still adjudicated
+  and audited like any other allow-once decision. A crash between the answer
+  and the calls resumes knowing which fired and re-fires none. What voids the
+  approval is the cluster changing, not just a clock running out — a tool
+  declares its own freshness re-read, mast runs it when the operator answers
+  and again before each granted call, and a field that moved sends the call
+  back to the operator naming what moved. A wall-clock TTL (default 10
+  minutes) is the backstop for what a re-read cannot see. See [one answer for
+  a set of
+  calls](/concepts/approvals/#one-answer-for-a-set-of-calls--and-what-makes-it-stale).
 - **Decisions become training data** — every approve, reject and edit is
   logged as a labelled eval example. *"The operator edited 10 replicas down to
   4"* is the highest-signal thing the system produces, and it is free now

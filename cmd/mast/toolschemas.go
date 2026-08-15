@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/mast/pkg/approval"
@@ -78,13 +79,24 @@ func (ts *toolSchemas) clock() time.Time {
 	return time.Now()
 }
 
-// lookup is the resolver handed to compose.WriteGate.
+// lookup is the schema resolver handed to compose.WriteGate: it
+// answers both "does this daemon hold a tool by that name" and "what
+// arguments does it take".
+func (ts *toolSchemas) lookup(name string) (*jsonschema.Schema, error) {
+	t, err := ts.resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	return approval.InputSchema(t)
+}
+
+// resolve finds a wired tool by name.
 //
 // A miss forces one refresh before it is reported as a miss: the cache
 // can be older than a server that has just come up, and the cost of
 // being wrong is refusing a legitimate remediation during an incident.
 // A second miss is an answer — this daemon holds no tool by that name.
-func (ts *toolSchemas) lookup(name string) (*jsonschema.Schema, error) {
+func (ts *toolSchemas) resolve(name string) (tool.Tool, error) {
 	if ts == nil {
 		return nil, fmt.Errorf("this deployment has no tools wired, so tool %q cannot be called", name)
 	}
@@ -104,7 +116,45 @@ func (ts *toolSchemas) lookup(name string) (*jsonschema.Schema, error) {
 	if !ok {
 		return nil, fmt.Errorf("no tool named %q is wired into this deployment; name one from the tool_catalog, or return an empty change set", name)
 	}
-	return approval.InputSchema(t)
+	return t, nil
+}
+
+// read runs a read-only tool on mast's own behalf and returns its
+// result, for change-set freshness preconditions (v0.4 W7).
+//
+// This is the one place mast calls a tool that no model asked for. It
+// is deliberately narrow: the tool comes from the same wired toolsets
+// everything else here resolves against, the caller (the write gate)
+// only ever passes a tool the bundle declared as a precondition read,
+// and internal/compose refuses to start if that tool is classified
+// mutating. The result goes into a digest and a handful of declared
+// fields, and never into the transcript — the model is not told what
+// mast checked, because the check is about the operator's approval and
+// not about the agent's reasoning.
+//
+// ADK's runnable-tool interface is unexported (tool.Tool is name and
+// description only), so the handle is asserted rather than imported;
+// a tool that does not satisfy it cannot be a precondition read, which
+// is reported as such rather than treated as "nothing changed".
+func (ts *toolSchemas) read(ctx adkagent.Context, name string, args map[string]any) (map[string]any, error) {
+	t, err := ts.resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	runner, ok := t.(interface {
+		Run(ctx adkagent.Context, args any) (map[string]any, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("tool %q cannot be run by mast directly, so it cannot serve as a precondition read", name)
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	result, err := runner.Run(ctx, args)
+	if err != nil {
+		return nil, fmt.Errorf("precondition read %s: %w", name, err)
+	}
+	return result, nil
 }
 
 // refresh re-lists every wired toolset. Called with ts.mu held, which

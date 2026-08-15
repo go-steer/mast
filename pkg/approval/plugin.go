@@ -97,6 +97,19 @@ type Config struct {
 	// bundle — and leaves reports untouched.
 	ChangeSet *ChangeSetChecker
 
+	// Grants, when non-nil, lets one operator answer authorize a whole
+	// change set (W7): approving a call that belongs to a recorded set
+	// with `scope: change_set` mints a grant for each of the set's
+	// other calls, bound to that call's exact signature, and this gate
+	// consumes them instead of parking again.
+	//
+	// The value configures how long such an approval speaks for and
+	// how mast re-checks the world before each granted call fires. Nil
+	// is W7.0 behaviour: every mutating call is parked on its own, and
+	// `scope: change_set` is refused rather than quietly treated as
+	// `once` — see grant.go.
+	Grants *Freshness
+
 	// Logger receives the audit trail. Defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -187,7 +200,9 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 	}
 
 	// require_approval. Policy adjudicates first: a configured deny is
-	// not a question worth putting to an operator.
+	// not a question worth putting to an operator — and it is not
+	// something an earlier approval overrides either, which is why this
+	// runs in front of the grant check and not behind it.
 	err := g.cfg.Gate.CheckMutatingToolCall(ctx, t.Name(), key)
 	if !errors.Is(err, permissions.ErrApprovalRequired) {
 		g.audit(ctx, t, key, "denied_by_policy", err.Error())
@@ -198,21 +213,46 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 		}, nil
 	}
 
+	// An operator may already have answered this exact call, by
+	// approving the change set it belongs to (W7). A live grant runs
+	// it; a grant that no longer holds is voided and the reason travels
+	// with the question below, so the operator is never silently asked
+	// twice without being told why.
+	grant, stale := g.checkGrant(ctx, t, args)
+	if grant != nil {
+		return g.spendGrant(ctx, t, key, grant)
+	}
+	if stale != "" {
+		g.voidGrant(ctx, t, args, stale)
+		g.audit(ctx, t, key, "grant_stale", stale)
+	}
+
 	// Park. RequestConfirmation writes the question into the session
 	// event log as a long-running function call, which is what makes the
 	// pause outlive this process (scoreboard row 5).
-	hint := fmt.Sprintf("Approve mutating call %s?", key)
-	if err := ctx.RequestConfirmation(hint, Request{
-		Tool:    t.Name(),
-		Args:    args,
-		Key:     key,
-		Policy:  string(g.cfg.Policy),
-		Agent:   ctx.AgentName(),
-		Verdict: verdictHelp,
+	set := g.changeSetContextFor(ctx, t, args)
+	if err := ctx.RequestConfirmation(parkHint(key, set, stale), Request{
+		Tool:      t.Name(),
+		Args:      args,
+		Key:       key,
+		Policy:    string(g.cfg.Policy),
+		Agent:     ctx.AgentName(),
+		Verdict:   verdictHelp,
+		ChangeSet: set,
+		Stale:     stale,
 	}); err != nil {
 		return nil, fmt.Errorf("approval: requesting confirmation for %s: %w", t.Name(), err)
 	}
 	g.audit(ctx, t, key, "awaiting_approval", "parked for operator approval")
+	if stale != "" {
+		return map[string]any{
+			"status": "awaiting_operator_approval",
+			"detail": "An operator had approved this call as part of a change set, but that approval no longer covers it: " + stale + " " +
+				"The call has NOT been made and is parked for a fresh operator decision. " +
+				"Do not retry it, do not attempt the same change by another route, and do not treat this as a failure. " +
+				"Finish any read-only work, report that the change awaits re-approval, and stop.",
+		}, nil
+	}
 	return map[string]any{
 		"status": "awaiting_operator_approval",
 		"detail": "This mutating call is parked pending operator approval and has NOT been made. " +
@@ -220,6 +260,31 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 			"Do not retry this call, do not attempt the same change by another route, and do not treat this as a failure. " +
 			"Finish any read-only work, report that the change awaits approval, and stop.",
 	}, nil
+}
+
+// parkHint is the one line an operator sees first — in `mast sessions
+// show`, in a notification, in a UI's list of pending questions. It
+// carries the two things that change what the answer should be: that
+// this call is part of a set they can authorize in one go, and that an
+// answer they already gave has stopped covering it.
+//
+// Both belong in the hint rather than only in the payload, because the
+// payload is what a client renders when it knows to and the hint is
+// what everything renders always.
+func parkHint(key string, set *ChangeSetContext, stale string) string {
+	hint := fmt.Sprintf("Approve mutating call %s?", key)
+	if stale != "" {
+		return hint + " (you approved this as part of a change set, and mast is asking again: " + stale + ")"
+	}
+	if set == nil {
+		return hint
+	}
+	if !set.Grantable {
+		return fmt.Sprintf("%s It is 1 of %d calls %s proposed, but they must be approved one at a time: %s",
+			hint, len(set.Changes), set.Specialist, set.Ungrantable)
+	}
+	return fmt.Sprintf("%s It is one of %d calls in the change set %s proposed; answer with scope=change_set to authorize all %d.",
+		hint, len(set.Changes), set.Specialist, len(set.Changes))
 }
 
 // honorVerdict runs on the resumed call, with the operator's answer
@@ -263,6 +328,20 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 		}, nil
 	}
 
+	// A change-set verdict authorizes more than the call in hand, so it
+	// is adjudicated before anything is authorized at all: if the set
+	// cannot be granted, neither is this call, and the operator is told
+	// to answer one call at a time (W7). Planning only reads — nothing
+	// is written until the verdict itself has cleared policy below.
+	var pending []Grant
+	if v.Verdict != OutcomeReject && v.Scope == ScopeChangeSet {
+		p, refusal := g.planGrants(ctx, t, effKey, args, v)
+		if refusal != nil {
+			return refusal, nil
+		}
+		pending = p
+	}
+
 	if err := g.cfg.Gate.RecordMutationVerdict(ctx, t.Name(), effKey, d); err != nil {
 		code := "denied_by_operator"
 		detail := "The operator refused this call. Do not retry it and do not attempt the same change by another route. " +
@@ -281,6 +360,10 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 			out["approver"] = v.Approver
 		}
 		return out, nil
+	}
+
+	if v.Scope == ScopeChangeSet {
+		g.commitGrants(ctx, t, effKey, v, pending)
 	}
 
 	if edited != nil {
@@ -419,6 +502,21 @@ type Request struct {
 	Policy  string         `json:"policy"`
 	Agent   string         `json:"agent"`
 	Verdict map[string]any `json:"verdict_format"`
+
+	// ChangeSet describes the approved-as-a-unit set this call belongs
+	// to, when it belongs to one (W7). Present means `scope:
+	// change_set` is on the table: the operator is being asked about
+	// one call and can authorize the rest with the same answer, and
+	// they can only make that trade if they are shown what the rest
+	// are.
+	ChangeSet *ChangeSetContext `json:"change_set,omitempty"`
+
+	// Stale is why an approval this operator already gave no longer
+	// covers this call. Its presence is the difference between "please
+	// approve this" and "you approved this, and mast is asking again
+	// because the ground moved" — which is the whole point of checking
+	// freshness rather than trusting a clock.
+	Stale string `json:"stale,omitempty"`
 }
 
 // DecodeRequest reads the parked confirmation's payload back into the
@@ -442,7 +540,7 @@ func DecodeRequest(v any) (Request, error) {
 // the answer in the question.
 var verdictHelp = map[string]any{
 	"verdict": "approve | reject | edit",
-	"scope":   "once (default; the only scope a mutating call accepts)",
+	"scope":   "once (default) | change_set (only when this question carries a change_set: authorizes every call listed there, each bound to its exact arguments)",
 	"args":    "edit only: the arguments to run instead of the agent's",
 	"note":    "optional; shown to the agent",
 }
