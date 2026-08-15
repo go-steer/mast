@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **New: `GET /sessions/{id}/guardrails` + `POST /guardrails/reset` — and a
+  way out of a budget trip that didn't exist before** (#135). mast's cost
+  ceilings are real: `budget:` in the bundle bounds the session, `budget:`
+  on a specialist bounds that specialist, and the meter cancels the run
+  context the moment either is crossed. What was missing was any recovery.
+  Enforcement is re-derived from accumulator-vs-ceiling on every priced
+  event, with no flag in between — so a session past its cap crossed it
+  again on the first event of the next turn, forever. The only cure was
+  restarting the daemon, which drops every *other* session's in-flight turn
+  with it. Unattended is exactly where nobody is watching for that.
+
+  The read answers "what is armed, what tripped, why" in all three of mast's
+  dimensions — cost, tokens, and model calls — plus a per-specialist
+  breakdown, because a session halted by `max_turns: 40` has spent six
+  tenths of a cent and a dollars-only view sends the operator looking for
+  the wrong cause. Wire names and status codes are core-agent's so one
+  client speaks both daemons.
+
+  "Reset" means raising the ceiling, never zeroing the accumulator: /usage,
+  the eventlog-derived cost, and the ceiling check keep counting the same
+  dollars, so a post-incident review of a session that spent $40 doesn't
+  find it reporting $10. A reset that provably wouldn't survive the next
+  turn is refused with 409 and the numbers rather than performed — and the
+  check runs before anything is mutated, so a refusal costs the operator
+  nothing. A grant never *imposes* a ceiling: "+5 turns" on a session with
+  no turn cap would otherwise cap it at 5 and wedge it four calls later.
+
+  Turn errors now classify as `cost_ceiling` with the reset endpoint in the
+  hint; the watchdog is reported `advisory: true`, because mast's only logs.
+
 - **New: `GET /sessions/{id}/subagents` — the roster the daemon loaded**
   (#134). The route block in `pkg/attach/handlers.go` has advertised this
   endpoint in a comment since the attach surface landed and never registered

@@ -332,3 +332,163 @@ func TestStatusReflectsTurnState(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// The capability report is a statement about what is WIRED, not about
+// what the Go type structurally satisfies (core-agent #490): the
+// adapter implements every optional interface unconditionally, so
+// interface probing would advertise a guardrail surface on a daemon
+// that passed no guardrail funcs, and the operator's reset would come
+// back 200-with-nothing-reset.
+func TestAttachCapabilitiesReportsOnlyWiredFuncs(t *testing.T) {
+	run := func(context.Context, string) (TurnResult, error) { return TurnResult{}, nil }
+
+	bare, err := New(baseConfig(t, run))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := bare.AttachCapabilities()
+	if !got.Interrupt {
+		t.Error("Interrupt = false; the adapter always services it")
+	}
+	if got.Guardrails || got.CostCeiling {
+		t.Errorf("unwired adapter reports %+v", got)
+	}
+
+	// A read without a reset is not a guardrail surface: the flag gates
+	// whether a client offers the button.
+	cfg := baseConfig(t, run)
+	cfg.GuardrailsFn = func() attach.GuardrailInfo { return attach.GuardrailInfo{} }
+	readOnly, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readOnly.AttachCapabilities(); got.Guardrails {
+		t.Errorf("guardrails advertised with no reset func: %+v", got)
+	}
+
+	// cost_ceiling is a claim about this session's configuration, not
+	// about the endpoint — a workload with no `budget:` block has the
+	// surface wired and no ceiling to trip.
+	cfg = baseConfig(t, run)
+	cfg.GuardrailsFn = func() attach.GuardrailInfo { return attach.GuardrailInfo{} }
+	cfg.ResetGuardrailFn = func(attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
+		return attach.GuardrailResetResponse{}, nil
+	}
+	unbounded, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unbounded.AttachCapabilities(); !got.Guardrails || got.CostCeiling {
+		t.Errorf("unbounded session reports %+v, want guardrails wired and no ceiling", got)
+	}
+
+	cfg.GuardrailsFn = func() attach.GuardrailInfo {
+		return attach.GuardrailInfo{CostCeiling: attach.CostCeilingInfo{MaxTurns: 40}}
+	}
+	bounded, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A turn cap is a ceiling: a dollars-only reading of Configured
+	// would report "no cost guardrail" on a session that halts at 40
+	// model calls.
+	if got := bounded.AttachCapabilities(); !got.CostCeiling {
+		t.Errorf("turn-capped session reports no cost ceiling: %+v", got)
+	}
+}
+
+// Absence has to be distinguishable at the call site: the read answers
+// zero-value (the handler renders 200), the write reports the sentinel
+// the handler turns into 501.
+func TestGuardrailCallsWithoutWiring(t *testing.T) {
+	ad, err := New(baseConfig(t, func(context.Context, string) (TurnResult, error) {
+		return TurnResult{}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ad.AttachGuardrails(); got.Halted {
+		t.Errorf("unwired read = %+v, want zero value", got)
+	}
+	if _, err := ad.AttachResetGuardrail(attach.GuardrailResetRequest{}); !errors.Is(err, attach.ErrCapabilityNotRegistered) {
+		t.Errorf("unwired reset error = %v, want ErrCapabilityNotRegistered", err)
+	}
+}
+
+// The request the daemon services must be the one the operator sent —
+// including the caller the handler stamped, which is the whole audit
+// trail for "who handed this session more runway?".
+func TestResetGuardrailPassesTheRequestThrough(t *testing.T) {
+	var got attach.GuardrailResetRequest
+	cfg := baseConfig(t, func(context.Context, string) (TurnResult, error) { return TurnResult{}, nil })
+	cfg.ResetGuardrailFn = func(req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
+		got = req
+		return attach.GuardrailResetResponse{Reset: []string{attach.GuardrailCostCeiling}}, nil
+	}
+	ad, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := attach.GuardrailResetRequest{
+		Guardrail:        attach.GuardrailCostCeiling,
+		AdditionalTurns:  10,
+		AdditionalTokens: 5000,
+		Scope:            "log-analyst",
+		Caller:           "op@example.com",
+	}
+	resp, err := ad.AttachResetGuardrail(want)
+	if err != nil {
+		t.Fatalf("AttachResetGuardrail: %v", err)
+	}
+	if got != want {
+		t.Errorf("daemon saw %+v, want %+v", got, want)
+	}
+	if len(resp.Reset) != 1 {
+		t.Errorf("response not returned verbatim: %+v", resp)
+	}
+}
+
+// A guardrail reset arrives mid-incident, which is exactly when a turn
+// is running — it must not queue behind the turn it exists to unwedge.
+func TestResetGuardrailRunsDuringATurn(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	cfg := baseConfig(t, func(context.Context, string) (TurnResult, error) {
+		close(started)
+		<-release
+		return TurnResult{}, nil
+	})
+	cfg.ResetGuardrailFn = func(attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
+		return attach.GuardrailResetResponse{Message: "raised"}, nil
+	}
+	ad, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ad.Inject("x"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	done := make(chan error, 1)
+	go func() {
+		_, err := ad.AttachResetGuardrail(attach.GuardrailResetRequest{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("reset during a turn: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("reset blocked behind the running turn")
+	}
+	close(release)
+	// Let the turn land before the eventlog handle is torn down.
+	deadline := time.Now().Add(5 * time.Second)
+	for ad.AttachStatus().State != "idle" {
+		if time.Now().After(deadline) {
+			t.Fatal("turn never completed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

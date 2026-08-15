@@ -65,6 +65,17 @@ shape never routes to — a `_fallback` under fan-out dispatch, a second
 `SingleTurn` spec under graph dispatch — and an empty `invocation` is how
 you see it without reading the composition code.
 
+`GET /sessions/{id}/guardrails` answers the question an operator actually
+has when a session stops responding: *what stopped it, and what do I do?*
+It reports the budget ceilings in force and the usage against them across
+all three dimensions plus each specialist's own, and the watchdog's posture
+(`advisory: true` — mast's watchdog logs, it does not halt).
+`POST /sessions/{id}/guardrails/reset` is the way out: a budget trip is
+otherwise permanent, since enforcement is re-derived from usage against the
+ceiling on every priced event. See
+[getting unstuck after a trip](/concepts/budgets/#getting-unstuck-after-a-trip)
+for what a reset does and the three things it deliberately refuses to do.
+
 Attach can read transcripts and drive turns, so it gets its own token
 (`MAST_ATTACH_TOKEN`) and a hard rule: a non-loopback bind without auth is
 **refused**, not warned about. It also stays up through a shutdown drain,

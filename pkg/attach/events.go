@@ -166,11 +166,19 @@ const (
 	// PromptBrokerProvider capability — clients gate the
 	// /perms/stream + /perms/respond wiring on it.
 	featurePermsStream = "perms_stream"
-	// featureCostCeiling is true when the agent has a per-turn or
-	// per-session cost ceiling wired. Absent today (no capability
-	// interface); reserved for the follow-up that surfaces the
-	// setting to the client.
+	// featureCostCeiling is true when the session has a budget ceiling
+	// in force — cost, tokens, or model calls — and can therefore be
+	// halted for spend. Sourced from the guardrail capability
+	// (CapabilityReport.CostCeiling), so it tracks what the workload
+	// bundle actually declared rather than what the daemon could in
+	// principle enforce.
 	featureCostCeiling = "cost_ceiling"
+	// featureGuardrails is true when GET /guardrails and POST
+	// /guardrails/reset are serviceable — the client can show a
+	// tripped-guardrail banner and offer the reset (#135). Distinct
+	// from cost_ceiling, which says a spend cap exists; a session can
+	// carry no budget at all and still answer the guardrail surface.
+	featureGuardrails = "guardrails"
 	// featureObserverMode is true when the producer exposes a
 	// LiveAgent observer surface. Reserved for the observer-mode
 	// integration; absent today.
