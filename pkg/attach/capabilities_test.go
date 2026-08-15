@@ -82,6 +82,7 @@ func TestBuildFeatures_ServerAndEntryFlags(t *testing.T) {
 		// Reserved keys advertised as false so consumers see an
 		// explicit "no" rather than key absence.
 		featureCostCeiling:  false,
+		featureGuardrails:   false,
 		featureObserverMode: false,
 	}
 	if !reflect.DeepEqual(got, want) {
