@@ -132,6 +132,7 @@ func WriteGate(cfg WriteGateConfig) (*plugin.Plugin, error) {
 		Gate:      gate,
 		ChangeSet: changeSetChecker(cfg),
 		Grants:    grants,
+		Workload:  cfg.Bundle.Name,
 		Logger:    cfg.Logger,
 	})
 	if err != nil {

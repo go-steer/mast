@@ -195,6 +195,39 @@ func TestParseSessionsArgs(t *testing.T) {
 			},
 		},
 		{
+			// The default is redacted, and it is the default because it
+			// is what an operator gets without thinking about it.
+			name: "export-decisions defaults to a redacted whole-store export",
+			args: []string{"export-decisions", "--session-db=/tmp/s.db"},
+			want: sessionsCmd{verb: "export-decisions", db: "/tmp/s.db", app: appName},
+		},
+		{
+			name: "export-decisions scoped",
+			args: []string{
+				"export-decisions", "incident-123", "--session-db=/tmp/s.db",
+				"--workload=gke-triage", "--since=2026-08-01T00:00:00Z",
+				"--until=2026-09-01T00:00:00Z", "--include-approver", "--out=/tmp/d.jsonl",
+			},
+			want: sessionsCmd{
+				verb: "export-decisions", sessionID: "incident-123", db: "/tmp/s.db", app: appName,
+				workload: "gke-triage", since: "2026-08-01T00:00:00Z", until: "2026-09-01T00:00:00Z",
+				includeApprover: true, out: "/tmp/d.jsonl",
+			},
+		},
+		{
+			name:    "export-decisions requires session-db",
+			args:    []string{"export-decisions"},
+			wantErr: "--session-db is required",
+		},
+		{
+			// Refused at parse time rather than silently ignored: a
+			// window nobody applied would produce an export that quietly
+			// covers more than the operator asked for.
+			name:    "export-decisions rejects an unparseable window",
+			args:    []string{"export-decisions", "--session-db=/tmp/s.db", "--since=yesterday"},
+			wantErr: "--since \"yesterday\" is not an RFC3339 time",
+		},
+		{
 			name:    "no command",
 			args:    nil,
 			wantErr: "usage: mast sessions",

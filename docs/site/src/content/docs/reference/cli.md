@@ -51,6 +51,8 @@ mast sessions pause  <session-id> --reason=<enum> [--message=...] [--resume-at=R
 mast sessions extend-token <mrt_...> --ttl=<duration> [--addr=...]
 mast sessions abort  <session-id> [--reason=...] [--addr=...]
 mast sessions ack-effects <session-id> [--reason=...] [--addr=... | --session-db=...]
+mast sessions export-decisions [<session-id>] --session-db=... [--workload=...]
+                     [--since=RFC3339] [--until=RFC3339] [--include-approver] [--out=file.jsonl]
 ```
 
 The split is deliberate:
@@ -69,6 +71,15 @@ The split is deliberate:
   and the `--response` that approves them all at once; if the call is being
   asked about a second time because an earlier approval stopped covering it,
   a `Stale:` line says why.
+- **`export-decisions` reads the session DB directly too**, and writes one
+  JSON Lines record per operator adjudication — approve, reject, edit — with
+  a `_meta` provenance header. Naming a session exports that session;
+  omitting it exports every session in the store. Approver identities are
+  digested unless you pass `--include-approver`, and the header records
+  which mode produced the file. **Tool arguments are exported verbatim**, so
+  an export is as sensitive as the arguments your tools take; `--out` writes
+  `0600`, and without it the rows go to stdout for piping. See [exporting
+  decisions](/reference/write-gate/#exporting-what-was-decided).
 - **`resume` / `abort` go through a running daemon** (`--addr`, default
   `http://127.0.0.1:7777`) — resume must be executed by the runner that
   owns the workflow, and routing abort through the daemon keeps a single

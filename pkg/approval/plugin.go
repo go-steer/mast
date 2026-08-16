@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/plugin"
@@ -109,6 +110,14 @@ type Config struct {
 	// `scope: change_set` is refused rather than quietly treated as
 	// `once` — see grant.go.
 	Grants *Freshness
+
+	// Workload names the workload whose bundle composed this gate, and
+	// is stamped onto every Decision record so an exported adjudication
+	// is legible without the session it came from (v0.4 W8). Optional:
+	// a library embed that registers this plugin itself has no bundle to
+	// name, and an unnamed workload is a thinner row rather than a
+	// missing one.
+	Workload string
 
 	// Logger receives the audit trail. Defaults to slog.Default().
 	Logger *slog.Logger
@@ -220,7 +229,7 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 	// twice without being told why.
 	grant, stale := g.checkGrant(ctx, t, args)
 	if grant != nil {
-		return g.spendGrant(ctx, t, key, grant)
+		return g.spendGrant(ctx, t, key, args, grant)
 	}
 	if stale != "" {
 		g.voidGrant(ctx, t, args, stale)
@@ -297,7 +306,18 @@ func parkHint(key string, set *ChangeSetContext, stale string) string {
 // deny policy, the grant scope, the audit record — is adjudicated
 // against the arguments that will actually run, never the ones the model
 // proposed.
-func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, args map[string]any, c *toolconfirmation.ToolConfirmation) (map[string]any, error) {
+//
+// Every path out of here writes a Decision record, including the ones
+// that refuse. That is the deferred call at the top and not a line at
+// each return, deliberately: this function has nine exits today and will
+// grow more, and a feedback dataset that silently omits whichever
+// refusal a later change forgot to instrument is worse than no dataset,
+// because nothing about it looks wrong (v0.4 W8).
+func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, args map[string]any, c *toolconfirmation.ToolConfirmation) (out map[string]any, err error) {
+	// Snapshotted here, before anything can rewrite args in place.
+	rec := g.newDecision(ctx, t, key, args)
+	defer func() { g.recordDecision(ctx, t, &rec, out, err) }()
+
 	v, err := DecodeVerdict(c)
 	if err != nil {
 		g.audit(ctx, t, key, "malformed_verdict", err.Error())
@@ -306,6 +326,8 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 			"detail": err.Error() + " The call was not made. Report this to the operator; do not retry.",
 		}, nil
 	}
+	rec.Outcome, rec.Scope = v.Verdict, v.Scope
+	rec.Approver, rec.Note = v.Approver, v.Note
 
 	// The call under adjudication. An edit replaces it wholesale: from
 	// here on, key and edited are what the gate is deciding about.
@@ -317,6 +339,7 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 		}
 		edited = norm
 		effKey = CallKey(t.Name(), norm)
+		rec.ExecutedKey, rec.ExecutedArgs = effKey, copyArgs(norm)
 	}
 
 	d, err := v.Decision()
@@ -464,6 +487,95 @@ func (g *writeGate) recordEdit(ctx agent.Context, t tool.Tool, e AppliedEdit) {
 		"approver", e.Approver, "agent", ctx.AgentName(),
 		"session", ctx.SessionID(), "invocation", ctx.InvocationID(),
 		"function_call_id", ctx.FunctionCallID())
+}
+
+// newDecision opens the record for one adjudication, capturing the call
+// as proposed before anything downstream can rewrite it in place.
+func (g *writeGate) newDecision(ctx agent.Context, t tool.Tool, key string, args map[string]any) Decision {
+	d := Decision{
+		DecidedAt:    time.Now().UTC(),
+		Workload:     g.cfg.Workload,
+		Tool:         t.Name(),
+		Authority:    AuthorityVerdict,
+		ProposedKey:  key,
+		ProposedArgs: copyArgs(args),
+	}
+	if ctx != nil {
+		d.Session = ctx.SessionID()
+		d.Specialist = ctx.AgentName()
+		d.Invocation = ctx.InvocationID()
+		d.FunctionCallID = ctx.FunctionCallID()
+	}
+	return d
+}
+
+// recordDecision closes the record and writes it, deriving what the gate
+// did from what the gate returned.
+//
+// Reading the disposition off the response rather than tracking it at
+// each exit is what keeps the two honest: the response map IS what the
+// model was told, so a record derived from it cannot claim the call was
+// authorized while the model was told it was refused.
+//
+// A reject is attributed to the operator regardless of the code the
+// model saw, because the operator's answer is the cause; everything else
+// that produced a response is mast declining to honor a verdict.
+func (g *writeGate) recordDecision(ctx agent.Context, t tool.Tool, d *Decision, out map[string]any, err error) {
+	switch {
+	case err != nil:
+		// No path returns one today. If one ever does, the call did not
+		// run and the dataset should say why rather than skip the row.
+		d.Disposition, d.Refusal = DispositionRefusedByMast, "gate_error"
+	case out == nil:
+		d.Disposition = DispositionAuthorized
+	case d.Outcome == OutcomeReject:
+		d.Disposition, d.Refusal = DispositionRefusedByOperator, refusalCode(out)
+	default:
+		d.Disposition, d.Refusal = DispositionRefusedByMast, refusalCode(out)
+	}
+	g.writeDecision(ctx, t, *d)
+}
+
+func refusalCode(out map[string]any) string {
+	code, _ := out["error"].(string)
+	return code
+}
+
+// writeDecision persists one Decision on the state delta of the event
+// ADK is already appending for this tool call — the same discipline
+// recordEdit and writeGrant follow, and for the same reason: the runner
+// owns that row's write lease, so a second writer would invalidate its
+// handle and kill the turn (mast #45/#46).
+//
+// This is why the record does NOT ride the `:mast-ops` companion row the
+// pause and abort markers use. That mechanism exists for writers
+// OUTSIDE the turn (an operator's `mast sessions abort` landing while a
+// runner holds the lease). The write gate is inside the turn; using the
+// ops row here would need a transcript.Store the gate has no way to
+// obtain — pkg/transcript imports pkg/approval, so the dependency cannot
+// run the other way — and would trade a safe write for a racy one.
+//
+// A record that cannot be encoded is logged and dropped. The call has
+// already been adjudicated at this point; failing it to protect a
+// dataset would let the feedback loop veto the cluster.
+func (g *writeGate) writeDecision(ctx agent.Context, t tool.Tool, d Decision) {
+	if ctx == nil {
+		return
+	}
+	raw, err := EncodeDecision(d)
+	if err != nil {
+		g.cfg.Logger.Error("write gate: adjudicated a call but could not encode its decision record",
+			"tool", t.Name(), "call", d.ProposedKey, "error", err.Error())
+		return
+	}
+	a := ctx.Actions()
+	if a == nil {
+		return
+	}
+	if a.StateDelta == nil {
+		a.StateDelta = map[string]any{}
+	}
+	a.StateDelta[DecisionStateKey(ctx.FunctionCallID())] = raw
 }
 
 // copyArgs snapshots an argument map for the audit record, so the record

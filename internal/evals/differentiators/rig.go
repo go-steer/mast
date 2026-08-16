@@ -15,7 +15,10 @@
 package differentiators
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
 	"os"
@@ -478,6 +481,56 @@ func (r *rig) appliedEdits(ctx context.Context, sessionID string) ([]approval.Ap
 		return nil, fmt.Errorf("rig: read applied edits: %w", err)
 	}
 	return d.AppliedEdits, nil
+}
+
+// exportDecisions runs the shipped harvest path — the same
+// Store.ExportDecisions that `mast sessions export-decisions` calls —
+// and reads the JSONL back into its header and its rows.
+//
+// The scenario asks for the file rather than for the in-process
+// projection because the claim W8 makes is about an artifact somebody
+// else can load. A record that only exists inside the process that
+// wrote it is not evaluation data, and reading the export back through
+// a strict line-by-line decode is the only way the fixture can tell the
+// difference.
+func (r *rig) exportDecisions(ctx context.Context, sessionID string) (transcript.ExportMeta, []approval.Decision, error) {
+	var buf bytes.Buffer
+	if _, err := r.store.ExportDecisions(ctx, &buf, transcript.ExportOptions{
+		UserID:    userID,
+		SessionID: sessionID,
+		Source:    filepath.Join(r.cfg.dir, "sessions.db"),
+	}); err != nil {
+		return transcript.ExportMeta{}, nil, fmt.Errorf("rig: export decisions: %w", err)
+	}
+	var header struct {
+		Meta transcript.ExportMeta `json:"_meta"`
+	}
+	var rows []approval.Decision
+	sc := bufio.NewScanner(&buf)
+	for line := 0; sc.Scan(); line++ {
+		if line == 0 {
+			if err := json.Unmarshal(sc.Bytes(), &header); err != nil {
+				return transcript.ExportMeta{}, nil, fmt.Errorf("rig: export header: %w", err)
+			}
+			if header.Meta.Schema == "" {
+				return transcript.ExportMeta{}, nil, fmt.Errorf("rig: export line 1 carries no _meta object: %s", sc.Text())
+			}
+			continue
+		}
+		var d approval.Decision
+		if err := json.Unmarshal(sc.Bytes(), &d); err != nil {
+			return transcript.ExportMeta{}, nil, fmt.Errorf("rig: export row %d: %w", line, err)
+		}
+		rows = append(rows, d)
+	}
+	if err := sc.Err(); err != nil {
+		return transcript.ExportMeta{}, nil, fmt.Errorf("rig: read export: %w", err)
+	}
+	if header.Meta.Records != len(rows) {
+		return transcript.ExportMeta{}, nil, fmt.Errorf("rig: export header promises %d rows but the file holds %d",
+			header.Meta.Records, len(rows))
+	}
+	return header.Meta, rows, nil
 }
 
 // roleCalls reports how many model calls one agent in the composed

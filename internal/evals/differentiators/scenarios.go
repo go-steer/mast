@@ -24,6 +24,7 @@ import (
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -503,6 +504,233 @@ func approvalEdited() Scenario {
 			}, nil
 		},
 	}
+}
+
+// feedbackCapture is the scoreboard's last unbuilt claim: that the
+// judgement an operator spends on one call survives as data. Every
+// other approval scenario asks whether mast obeyed the verdict; this
+// one asks whether anyone can still read the verdict a week later,
+// somewhere other than a log line, in a shape an evaluation harness
+// loads.
+//
+// The three verdicts run in one session on purpose. An export that only
+// carries approvals is a biased dataset and worse than none — a refusal
+// is the most informative label a fleet produces, because it is the one
+// case where the model's proposal and the right answer are known to
+// differ. So the fixture rejects one call, edits a second and approves a
+// third, and the invariant is that all three come back out, with the
+// edit's proposed→executed diff intact and nobody named.
+func feedbackCapture() Scenario {
+	return Scenario{
+		ID:        "E-feedback-capture",
+		Invariant: "approve, reject and edit against a live session each export as one labelled record, carrying the edit's proposed→executed diff and no approver identity",
+		Expect:    Pass,
+		Rows:      []string{"19"},
+		Run: func(ctx context.Context, env Env) (Result, error) {
+			const editedReplicas = 2
+			op := &operator{
+				identity: "user:sre-oncall",
+				decide: func(req approval.Request) approval.Verdict {
+					switch {
+					case req.Tool == toolRestart:
+						return approval.Verdict{
+							Verdict: approval.OutcomeReject,
+							Note:    "restarting loses the heap dump we need",
+						}
+					case req.Tool == toolScale && argIs(req.Args, "deployment", "api"):
+						return approval.Verdict{
+							Verdict: approval.OutcomeEdit,
+							Args:    map[string]any{"deployment": "api", "replicas": editedReplicas},
+							Note:    "10 replicas would exhaust the node pool",
+						}
+					default:
+						return approval.Verdict{Verdict: approval.OutcomeApprove}
+					}
+				},
+			}
+			r, err := newRig(ctx, rigConfig{
+				dir:        env.Dir,
+				limits:     looseLimits(),
+				op:         op,
+				onMutation: workload.OnMutationRequireApproval,
+				steps: []step{
+					delegate("remediate the api deployment"),
+					specialistStep(callTo(toolScale, map[string]any{"deployment": "api", "replicas": 10})),
+					// Each later call is scripted onto the resume turn that
+					// follows the verdict before it, because that is the only
+					// turn on which the specialist has learned the answer.
+					onTurn(2, specialistStep(callTo(toolRestart, map[string]any{"deployment": "api"}))),
+					onTurn(3, specialistStep(callTo(toolScale, map[string]any{"deployment": "web", "replicas": 4}))),
+				},
+			})
+			if err != nil {
+				return Result{}, err
+			}
+			const sid = "feedback-capture"
+			if stopped, err := r.turn(ctx, sid, "api is OOMKilling; fix it"); err != nil {
+				return Result{}, err
+			} else if stopped != nil {
+				return Result{}, fmt.Errorf("fixture stopped on budget: %w", stopped)
+			}
+			if err := r.answerParks(ctx, sid); err != nil {
+				return Result{}, err
+			}
+
+			tr, err := r.trace(ctx, sid)
+			if err != nil {
+				return Result{}, err
+			}
+			consults := r.operatorConsults()
+			if consults != 3 {
+				// Not a capability claim: the fixture did not produce the
+				// three adjudications it exists to harvest, so anything the
+				// export says is about the script.
+				return Result{}, fmt.Errorf("fixture asked the operator %d time(s), want the 3 adjudications the scenario scripts", consults)
+			}
+
+			meta, rows, err := r.exportDecisions(ctx, sid)
+			if err != nil {
+				return Result{}, err
+			}
+			if len(rows) != 3 {
+				return Result{
+					Held: false,
+					Reason: fmt.Sprintf("the operator adjudicated %d call(s) but the export carries %d record(s) (%s) — "+
+						"a decision that is not in the file is a decision nobody can learn from",
+						consults, len(rows), describeDecisions(rows)),
+					Trace: tr,
+				}, nil
+			}
+
+			edited := findDecision(rows, toolScale, "api")
+			rejected := findDecision(rows, toolRestart, "api")
+			approved := findDecision(rows, toolScale, "web")
+			switch {
+			case edited == nil || rejected == nil || approved == nil:
+				return Result{
+					Held:   false,
+					Reason: fmt.Sprintf("the export is missing one of the three adjudications: %s", describeDecisions(rows)),
+					Trace:  tr,
+				}, nil
+			case rejected.Disposition != approval.DispositionRefusedByOperator || rejected.Outcome != approval.OutcomeReject:
+				// The one that is easy to lose. A refused call never
+				// reaches the tool, so nothing downstream of the gate can
+				// record it; if it is missing here, the dataset is all
+				// approvals and reads as a model that never proposes
+				// anything wrong.
+				return Result{
+					Held: false,
+					Reason: fmt.Sprintf("the refusal exported as outcome %q/%q, want reject/%s — an export that drops rejections is a biased dataset",
+						rejected.Outcome, rejected.Disposition, approval.DispositionRefusedByOperator),
+					Trace: tr,
+				}, nil
+			case !edited.Edited() || !argIs(edited.ExecutedArgs, "replicas", float64(editedReplicas)) || !argIs(edited.ProposedArgs, "replicas", float64(10)):
+				return Result{
+					Held: false,
+					Reason: fmt.Sprintf("the edit exported proposed %v → executed %v, want the model's {replicas: 10} corrected to the operator's {replicas: %d} — the diff is the label",
+						edited.ProposedArgs, edited.ExecutedArgs, editedReplicas),
+					Trace: tr,
+				}, nil
+			case approved.Disposition != approval.DispositionAuthorized || approved.Outcome != approval.OutcomeApprove:
+				return Result{
+					Held: false,
+					Reason: fmt.Sprintf("the plain approval exported as outcome %q/%q, want approve/%s",
+						approved.Outcome, approved.Disposition, approval.DispositionAuthorized),
+					Trace: tr,
+				}, nil
+			}
+
+			// Redaction is checked on the artifact, not on the option that
+			// asks for it: the failure this guards against is an operator
+			// who exports a quarter of fleet decisions and only then finds
+			// out the file names the on-call rota.
+			want := approval.RedactApprover(op.identity)
+			for _, d := range rows {
+				if d.Approver == op.identity {
+					return Result{
+						Held: false,
+						Reason: fmt.Sprintf("the default export named the approver %q on the %s record; redaction is supposed to be what an operator gets without asking",
+							d.Approver, d.Tool),
+						Trace: tr,
+					}, nil
+				}
+				if d.Approver != want {
+					return Result{
+						Held: false,
+						Reason: fmt.Sprintf("the %s record's approver is %q, want the stable digest %q — a dataset that cannot tell two approvers apart cannot be grouped by approver",
+							d.Tool, d.Approver, want),
+						Trace: tr,
+					}, nil
+				}
+			}
+			if meta.Redaction != transcript.RedactionApproverDigest || meta.Schema != approval.DecisionSchema {
+				return Result{
+					Held: false,
+					Reason: fmt.Sprintf("the export's provenance header says redaction=%q schema=%q; a consumer that cannot tell a redacted file from a raw one will mistake one for the other",
+						meta.Redaction, meta.Schema),
+					Trace: tr,
+				}, nil
+			}
+
+			return Result{
+				Held: true,
+				Reason: fmt.Sprintf("three adjudications on one session exported as %d labelled records under schema %s: %s; approvers digested (redaction=%s)",
+					meta.Records, meta.Schema, describeDecisions(rows), meta.Redaction),
+				Trace: tr,
+			}, nil
+		},
+	}
+}
+
+// findDecision picks the exported record for one tool acting on one
+// deployment. Matching on the proposed arguments rather than on
+// position is what keeps the scenario honest about which adjudication
+// it is reading.
+func findDecision(rows []approval.Decision, tool, deployment string) *approval.Decision {
+	for i := range rows {
+		if rows[i].Tool == tool && argIs(rows[i].ProposedArgs, "deployment", deployment) {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+func describeDecisions(rows []approval.Decision) string {
+	if len(rows) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, d := range rows {
+		parts = append(parts, fmt.Sprintf("%s=%s/%s", d.Tool, d.Outcome, d.Disposition))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// argIs compares one argument against a want, tolerating the numeric
+// widening a JSON round-trip does: the same replicas count is an int on
+// the way in and a float64 on the way back out of an export.
+func argIs(args map[string]any, key string, want any) bool {
+	got, ok := args[key]
+	if !ok {
+		return false
+	}
+	if gn, ok := toFloat(got); ok {
+		wn, ok := toFloat(want)
+		return ok && gn == wn
+	}
+	return got == want
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
 }
 
 func replicasAre(c executedCall, want int) bool {
