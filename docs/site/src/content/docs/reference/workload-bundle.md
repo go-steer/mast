@@ -52,6 +52,10 @@ edge_trigger:
   http:
     path: /inject
     auth: bearer
+  scheduled:
+    interval: 15m
+    jitter: 45s
+    prompt: Sweep every namespace for pods in CrashLoopBackOff and report what you find.
 
 a2a:
   expose: true
@@ -93,6 +97,9 @@ agui:
 | `hitl.change_set_ttl` | duration | How long an approval given with `scope: change_set` authorizes the set's remaining calls for. Default `10m` — far longer than an approve-then-execute round trip, far shorter than the span over which an operator forgets what they approved. It is the backstop, not the check: what an approval is really bounded by is the [`precondition:`](#precondition--what-makes-an-approval-stale) the tool declares. |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
 | `edge_trigger.http.path`, `.auth` | strings | Informational in v0.1 — the inject server declares its routes globally; per-workload path prefixes come later. |
+| `edge_trigger.scheduled.interval` | duration | Required in the block. How often the workload wakes itself, with nothing calling in — `15m`, `1h`, `24h`. Minimum `1s`. A malformed or missing value is a load error naming the file, because a cadence that fails to parse at runtime is a workload you believe is running and that never wakes up. See [`scheduled:`](#scheduled--a-workload-that-wakes-itself) below. |
+| `edge_trigger.scheduled.jitter` | duration | Optional random offset added to each fire, drawn afresh every time. Defaults to a tenth of the interval, capped at `30s`; `0s` is honored as a declaration. Must be shorter than the interval. It is not decoration: N replicas started by one rollout otherwise wake on the same second. |
+| `edge_trigger.scheduled.prompt` | string | What the workload is being woken up to do. Delivered as prose after the wake-up envelope, so it reaches the roster as you wrote it. A schedule with no prompt runs the roster against the envelope alone, which is a workload guessing at its own job. |
 | `a2a.expose` | bool | Opt this workload into the [A2A server](/mast/reference/cli/#a2a-server) surface (`--a2a-listen`). Default false — A2A exposure is an external contract, so it is never automatic. |
 | `a2a.skill_name`, `a2a.skill_description` | strings | The skill id/name and human-readable summary published on the agent card. `skill_name` defaults to the workload name; `skill_description` to the workload description. |
 | `a2a.input_schema`, `a2a.output_schema` | maps | A **mast-side** convention only: mast may validate inbound task inputs against them and fold them into the skill description. Spec `AgentSkill` has no schema fields, so they do **not** round-trip through the agent card as machine-readable schema. |
@@ -485,6 +492,53 @@ alone, and the parked question says so in those words. If mast cannot
 evaluate a declared precondition at all, the set is not grantable: the
 question says the calls must be approved one at a time, and `scope:
 change_set` is refused rather than granted on a check that is not running.
+
+## `scheduled:` — a workload that wakes itself
+
+Every other way into a mast daemon needs something outside it: an inbound
+POST, an operator, or a cron entry holding your schedule on mast's behalf.
+`edge_trigger.scheduled` lets the bundle hold it:
+
+```yaml
+edge_trigger:
+  scheduled:
+    interval: 15m
+    jitter: 45s
+    prompt: Sweep every namespace for pods in CrashLoopBackOff and report what you find.
+```
+
+Four things to know before declaring one:
+
+- **The cadence is anchored, not restarted.** Fires land on
+  `anchor + k×interval`, and the anchor is written to the session store the
+  first time the trigger comes up. A daemon that is redeployed twice a day
+  resumes the phase it had rather than quietly moving a 02:00 sweep into the
+  afternoon — the failure where a schedule keeps working and stops meaning
+  what it said. (The anchor lives on a bookkeeping row, not a session; it
+  never appears in `mast sessions list`.)
+- **A tick the daemon was down for is skipped, not caught up.** Coming back
+  from an outage that spanned three ticks fires none of them and logs one
+  line naming how many were dropped and over what window. A periodic run
+  samples the *current* state of the world, so a sample nobody took is owed
+  to nobody — and catching up means a crash-looping daemon buys a fresh
+  backlog of model runs at every restart, about the crash. If you need every
+  occurrence to run, a schedule is the wrong shape: post them.
+- **Every fire is a fresh session, and it runs as `mast:scheduler`.** The
+  session is named for its tick and listed like any other, so a scheduled run
+  is as readable after the fact as an injected one. The identity is
+  namespaced, so no human login can produce it and no audit row can be
+  misread as somebody's. A mutating call inside a scheduled run still parks
+  for a real approver under `hitl.on_mutation` — unattended is not
+  unsupervised — and the run is bounded by the same `budget:` block as
+  everything else.
+- **One daemon per session store.** As everywhere else in mast, there is no
+  leader election: two replicas of a scheduled workload each keep their own
+  cadence and both fire.
+
+Fires are counted by `mast_scheduled_fires_total{workload,outcome}` —
+`ran`, `skipped` (a tick that came due during a drain), `error`, and
+`missed` (one per tick coalesced away after an outage). A run that fails is
+not retried: the next tick is the retry, and it samples a fresher world.
 
 ## Budget fields
 

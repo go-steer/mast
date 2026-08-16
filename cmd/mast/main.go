@@ -859,6 +859,51 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		}
 	}
 
+	// Scheduled trigger (v0.4 W4.1): a workload that declares a cadence
+	// wakes itself, with no inbound POST. Same drain discipline as the
+	// boot pass — schedDone lets the shutdown path stop the loop and
+	// wait for it, so a tick cannot start a turn after the drain has
+	// sampled "all turns finished" (closed immediately when the
+	// workload declares no cadence).
+	schedDone := make(chan struct{})
+	stopScheduled := func() {}
+	if sched := bundle.EdgeTrigger.Scheduled; sched != nil {
+		// Both already validated at load; re-resolved here because the
+		// daemon reads the cadence from the bundle, not from its own
+		// durable record — editing the bundle is how an operator
+		// changes the schedule.
+		interval, ierr := sched.EffectiveInterval()
+		jitter, jerr := sched.EffectiveJitter()
+		if ierr != nil || jerr != nil {
+			close(schedDone)
+			logger.Error("scheduled trigger not armed; its cadence does not parse",
+				"error", errors.Join(ierr, jerr).Error())
+		} else {
+			st := newScheduledTrigger(store, logger, obs, tracker, workloadName, defaultUserID, interval, jitter,
+				newScheduledFireCallback(r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, att.ensure))
+			if sessionDB == "" {
+				// The anchor lands in an in-memory store that dies with
+				// the process, so the cadence re-phases on every restart.
+				// Worth saying out loud: "the schedule survives a restart"
+				// is the claim W4.1 makes, and without --session-db it
+				// does not hold.
+				logger.Warn("scheduled trigger has no durable store (--session-db is empty); its cadence will re-anchor on every restart",
+					"workload", workloadName, "interval", interval.String())
+			}
+			if err := st.seed(turnCtx); err != nil {
+				logger.Error("scheduled trigger could not persist its anchor; the cadence runs but will re-phase if this process restarts",
+					"workload", workloadName, "error", err.Error())
+			}
+			stopScheduled = st.stop
+			go func() {
+				defer close(schedDone)
+				st.run(turnCtx)
+			}()
+		}
+	} else {
+		close(schedDone)
+	}
+
 	pauseHandler := func(reqCtx context.Context, req inject.PauseRequest) (inject.PauseResult, error) {
 		// No drain gate, like abort: a gate pause is a marker write,
 		// and pausing during a drain is a legitimate operator move.
@@ -1005,6 +1050,16 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// deadline is handled as a survivor like any other.
 		select {
 		case <-bootDone:
+		case <-drainCtx.Done():
+		}
+		// And the scheduled trigger, for the same reason and with the
+		// same bound. Its loop can be parked on a timer measured in
+		// hours, so it is told to stop rather than merely asked to
+		// notice: the fire path's drain check would not run until the
+		// tick came due, which may be long after the process is gone.
+		stopScheduled()
+		select {
+		case <-schedDone:
 		case <-drainCtx.Done():
 		}
 		remaining := tracker.wait(drainCtx)

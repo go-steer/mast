@@ -270,8 +270,17 @@ a labelled eval row.*
   describes. Capture and export only — nothing scores or retrains on the rows.
   See [exporting
   decisions](/reference/write-gate/#exporting-what-was-decided).
-- **Scheduled triggers** — a bundle wakes on an interval, with jitter, and the
-  schedule survives a daemon restart. Today the only trigger is HTTP.
+- **Scheduled triggers** — *landed on `main`, unreleased.* A bundle wakes
+  itself on an interval, with jitter, and the cadence survives the daemon
+  rather than merely restarting with it: the anchor is durable, so fires land
+  on the same phase after a redeploy instead of drifting a 02:00 sweep into
+  the afternoon. A tick the daemon was down for is **skipped, not caught up**
+  — a periodic run samples the current state of the world, and catching up
+  would have a crash-looping daemon buy a backlog of model runs about the
+  crash. Each fire is its own session, running as `mast:scheduler`, through
+  the same path every other kind of turn takes: a mutating call in a scheduled
+  run still parks for a real approver. See
+  [`scheduled:`](/reference/workload-bundle/#scheduled--a-workload-that-wakes-itself).
 - **A bounded analysis path** — *landed on `main`, unreleased.*
   `dispatch: bounded` is a fourth shape: a roster of exactly one `SingleTurn`
   specialist, built as a single node with no orchestrator above it, so the

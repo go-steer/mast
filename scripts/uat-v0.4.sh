@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# uat-v0.4.sh — end-to-end acceptance pass for the mast v0.4 change-set
-# work (docs/v0.4-plan.md §3, W7.0). Its subject is one claim:
+# uat-v0.4.sh — end-to-end acceptance pass for mast v0.4
+# (docs/v0.4-plan.md §3). Most of it has one subject:
 #
 #   the call an operator approves is the call that fires.
 #
@@ -25,6 +25,11 @@
 # finding carry the executable call, checked against the named tool's
 # own input schema before the report is accepted, and handed to the
 # executor verbatim once approved.
+#
+# The last leg subject is W4.1's, and it is a different claim:
+#
+#   a workload that wakes itself up keeps its cadence across a crash,
+#   and does not pay for the ticks it was down for.
 #
 # Legs (all offline: no credentials, no network):
 #
@@ -98,6 +103,24 @@
 #     by default, and --include-approver naming them with the file
 #     saying which mode produced it.
 #
+#   U-scheduled (W4.1, the cadence) — the v0.2 coordinator fixture with
+#     `edge_trigger.scheduled` on a 3s interval, which is the whole of
+#     what the workload declares: nothing posts to this daemon and no
+#     external cron exists.
+#       A  two ticks fire, the daemon is SIGKILLed, and it comes back
+#          after a gap spanning two more. The restarted process resumes
+#          the ORIGINAL anchor rather than re-anchoring on boot, reports
+#          the ticks it was down for in one line, and never runs them —
+#          the sessions those ticks would have owned do not exist. That
+#          pairing is the leg: catch-up on boot would show up here as a
+#          crash-looping daemon buying a backlog of model runs, and a
+#          reset clock would show up as a nightly sweep that drifts into
+#          the afternoon.
+#       B  a mutating call inside a scheduled run still parks for a real
+#          approver, and the run says who it ran as (mast:scheduler).
+#          Unattended is not unsupervised: the write gate does not know
+#          or care that nobody asked for this turn.
+#
 # The observation points are the two an operator already has: `mast
 # sessions show`, which reads the parked question back out of SQLite,
 # and the blocker's own call ledger, which records the arguments each
@@ -106,7 +129,10 @@
 # on /metrics. Step count is read there and nowhere else — wallclock and
 # token totals move with the model, the prompt and the machine, so a
 # cost claim inferred from either is a claim about the afternoon it was
-# measured.
+# measured. The scheduled legs read a fourth the daemon already emits —
+# its own JSON log — because a cadence's evidence is when things
+# happened, and a counter kept by the harness could drift from what the
+# daemon did.
 #
 # Usage: scripts/uat-v0.4.sh
 # State goes under ${TMPDIR:-/tmp}/mast-uat-v04 (house rule #5); port 7790.
@@ -318,6 +344,38 @@ model_calls() {
 # second, independently computed view of the same number.
 metric_value() {
   curl -sf -m 5 "${BASE}/metrics" 2>/dev/null | awk -v k="$1" '$1 == k { print $2 }'
+}
+
+# log_field <logfile> <message> <field> — one field off the FIRST JSON
+# log line carrying <message>. The daemon logs JSON, so the cadence's
+# own record — its anchor, the ticks it dropped, who it ran as — is
+# readable straight out of the log; a fire counter kept by the harness
+# would be a second account of the same events, free to disagree with
+# the daemon's.
+log_field() {
+  { grep -F -- "$2" "$1" || true; } \
+    | sed -n "1s/.*\"$3\":\"\{0,1\}\([^\",}]*\).*/\1/p"
+}
+
+# sched_ticks <logfile> — the cadence points a process actually fired,
+# sorted, one per line, so two logs can be compared as sets.
+sched_ticks() {
+  { grep -F -- 'scheduled trigger fired' "$1" || true; } \
+    | sed -n 's/.*"tick":"\([^"]*\)".*/\1/p' | sort -u
+}
+
+sched_fires_atleast() {
+  local n
+  n="$(grep -c -- 'scheduled trigger fired' "$1" || true)"
+  [ "${n}" -ge "$2" ]
+}
+
+# sched_session <workload> <tick> — the session ID a tick's run owns,
+# composed here by the same rule cmd/mast composes it with. A tick the
+# daemon skipped has no session, which is how the harness asks `mast
+# sessions list` whether a missed tick was quietly caught up.
+sched_session() {
+  printf 'scheduled-%s-%s\n' "$1" "$(printf '%s' "$2" | sed 's/[-:]//g; s/\.[0-9]*Z$/Z/')"
 }
 
 wait_for() {
@@ -613,6 +671,76 @@ mk_changeset_workload "${CHANGESET}/workload.yaml" 10m
 # time the harness holds the first call open.
 EXPIRING="${WORK}/expiring"
 cp -r "${CHANGESET}" "${EXPIRING}"
+
+# ---- the scheduled fixture: the v0.2 roster, on a cadence -----------
+# Deliberately the plainest roster in the file — one coordinator, one
+# worker, the same two blocker tools. W4.1 is about what wakes the
+# workload, so anything else the roster did would be noise in the one
+# leg that measures time.
+SCHEDNAME=uat-sched
+SCHED="${WORK}/scheduled"
+cp -r "${FIXTURE}" "${SCHED}"
+
+# mk_scheduled_workload <path> <on_mutation> <reason> — testdata/uat's
+# workload with a cadence declared and nothing else changed.
+#
+# The prompt carries an incident-shaped reason because that is the lever
+# the offline fake reads to pick a tool (pkg/agent/toolactor.go), the
+# same one inject_uat pulls from the other side. It doubles as a check
+# on the wake-up message itself: the prompt reaches the model as the
+# author wrote it, braces and quotes intact, rather than escaped into a
+# field of the envelope.
+mk_scheduled_workload() {
+  cat > "$1" <<YAML
+# Harness fixture for scripts/uat-v0.4.sh's U-scheduled legs.
+name: ${SCHEDNAME}
+description: Fixture workload for the mast v0.4 scheduled-trigger legs.
+mode: single_session
+
+tool_catalog:
+  mcp:
+    - server: uat-blocker
+  tools:
+    - name: read_status
+      mutating: false
+    - name: apply_change
+      mutating: true
+
+specialists:
+  - uat-worker
+
+budget:
+  max_wallclock_seconds: 300
+
+hitl:
+  on_mutation: $2
+
+edge_trigger:
+  # The HTTP door stays open alongside the cadence: a scheduled workload
+  # is still injectable, and a fixture that dropped the trigger could
+  # not show it.
+  http:
+    path: /inject
+    auth: bearer
+  scheduled:
+    interval: 3s
+    # Zero, so a tick is predictable to the nanosecond. A real bundle
+    # leaves this unset and gets a tenth of its interval; that the
+    # offset is bounded and never accumulates into drift is a unit
+    # test's claim (cmd/mast/schedtrigger_test.go), because a harness
+    # that waited out a random delay would only be measuring the delay.
+    jitter: 0s
+    prompt: 'Sweep the fixture cluster: {"reason":"$3"} and remediate what you find.'
+YAML
+}
+mk_scheduled_workload "${SCHED}/workload.yaml" apply ReadStatus
+
+# The write-gate leg's copy: the same cadence, with the write gate on.
+# require_approval is mast's default for a workload that says nothing;
+# it is spelled out here because it is what the leg varies.
+SCHEDGATE="${WORK}/scheduled-gate"
+cp -r "${SCHED}" "${SCHEDGATE}"
+mk_scheduled_workload "${SCHEDGATE}/workload.yaml" require_approval ApplyChange
 mk_changeset_workload "${EXPIRING}/workload.yaml" 1s
 
 # ====================================================================
@@ -1105,6 +1233,133 @@ note "SKIPPED: nothing gathers cluster data without a model call yet."
 note "  When W4.2 lands this leg asserts the collection step's own count"
 note "  is ZERO on the same two meter surfaces /steps reads. It flips"
 note "  scoreboard row 9 (docs/v0.3-plan.md §1); /steps flips row 10."
+
+# ====================================================================
+# U-scheduled (W4.1) — the workload wakes itself, and keeps its phase
+# ====================================================================
+# Every leg above needs something to call the daemon. This one needs
+# nothing to: the bundle declares an interval, and the runs happen
+# because time passed. What has to survive a restart is therefore not a
+# session but a CADENCE — the anchor the ticks are counted from — and
+# the two ways to get that wrong are opposites. Re-anchoring on boot
+# re-phases the schedule (a 02:00 sweep becomes a 14:00 sweep after an
+# afternoon rollout); catching up on boot fires every tick the outage
+# spanned, which is a crash-looping daemon buying a backlog of model
+# runs about the crash.
+WL="${SCHED}"
+DISPATCH=coordinator
+
+# ---- leg A: the cadence survives a crash, the missed ticks do not ---
+say "U-scheduled/A: a restarted daemon resumes the cadence and skips what it missed"
+DB="${WORK}/s-a.db"
+LOG="${WORK}/s-a-boot.log"
+LOG2="${WORK}/s-a.log"
+reset_blocker
+start_daemon "${LOG}"
+
+if wait_for 60 sched_fires_atleast "${LOG}" 2; then
+  ok "the workload woke itself twice with nothing calling it"
+else
+  bad "the cadence did not fire twice (got $(grep -c 'scheduled trigger fired' "${LOG}" || true))"
+fi
+ANCHOR="$(log_field "${LOG}" 'scheduled trigger anchored' anchor)"
+if [ -n "${ANCHOR}" ]; then ok "the first process anchored the cadence (${ANCHOR})"; else bad "no anchor was logged"; fi
+kill9
+
+# Down across two ticks, at least. The gap is what leg A is about: a
+# crash the schedule has to be read back out of SQLite to survive, with
+# ticks coming due while nothing is running.
+sleep 7
+start_daemon "${LOG2}"
+
+assert_no_log "the restart did not re-anchor" "${LOG2}" 'scheduled trigger anchored'
+assert_eq "it resumed the original anchor" \
+  "$(log_field "${LOG2}" 'resumed its persisted cadence' anchor)" "${ANCHOR}"
+assert_log_count "the missed ticks are reported once, not once each" "${LOG2}" \
+  'scheduled ticks skipped rather than caught up' 1
+
+SKIPPED="$(log_field "${LOG2}" 'ticks skipped rather than caught up' ticks)"
+if [ "${SKIPPED:-0}" -ge 2 ]; then
+  ok "the outage's ticks were counted (${SKIPPED})"
+else
+  bad "the daemon reported ${SKIPPED:-no} skipped ticks over an outage spanning at least 2"
+fi
+
+# The claim the count alone cannot make: a skipped tick has no run. Each
+# fire owns a session named for its tick, so the ticks the daemon says
+# it dropped must be absent from the session list — a catch-up would put
+# them there, backdated and all.
+SKIPFROM="$(log_field "${LOG2}" 'ticks skipped rather than caught up' from)"
+SKIPTHRU="$(log_field "${LOG2}" 'ticks skipped rather than caught up' through)"
+SESSIONS="$("${BIN}" sessions list --session-db="${DB}" 2>/dev/null || true)"
+if [ -z "${SKIPFROM}" ] || [ -z "${SKIPTHRU}" ]; then
+  # Fail closed: with no window to name, the two assertions below would
+  # be searching the session list for a bare prefix.
+  bad "the daemon did not say which ticks it skipped"
+else
+  assert_hasnt "the first missed tick never ran" "${SESSIONS}" "$(sched_session "${SCHEDNAME}" "${SKIPFROM}")"
+  assert_hasnt "nor the last one" "${SESSIONS}" "$(sched_session "${SCHEDNAME}" "${SKIPTHRU}")"
+fi
+
+if wait_for 60 sched_fires_atleast "${LOG2}" 1; then
+  ok "the restarted process fires again on its own"
+else
+  bad "the cadence never resumed after the restart"
+fi
+
+# On the ORIGINAL lattice, not a new one. Ticks are anchor + k×interval
+# exactly, so every fire carries the anchor's sub-second remainder; a
+# daemon that had re-anchored would be firing on a fresh wall-clock
+# instant whose nanoseconds are its own.
+FRAC="${ANCHOR##*.}"
+sched_ticks "${LOG2}" > "${WORK}/s-a-ticks2"
+assert_eq "every fire after the restart lands on the original lattice" \
+  "$(grep -vc -- "\.${FRAC}\$" "${WORK}/s-a-ticks2" || true)" 0
+
+# And no tick was run twice. This is the assertion two separate log
+# files exist for: the restarted process's fires can be compared as a
+# set against the dead process's.
+sched_ticks "${LOG}" > "${WORK}/s-a-ticks1"
+assert_eq "no tick fired in both processes" \
+  "$(comm -12 "${WORK}/s-a-ticks1" "${WORK}/s-a-ticks2" | wc -l | tr -d ' ')" 0
+stop_term
+
+# ---- leg B: unattended is not unsupervised --------------------------
+say "U-scheduled/B: a mutating call in a scheduled run still parks"
+WL="${SCHEDGATE}"
+DB="${WORK}/s-b.db"
+LOG="${WORK}/s-b.log"
+reset_blocker
+start_daemon "${LOG}"
+
+if wait_for 60 sched_fires_atleast "${LOG}" 1; then
+  ok "the cadence fired"
+else
+  bad "the cadence never fired"
+fi
+# Who the run belongs to, in the daemon's own words. A scheduled turn
+# has no request to take a caller from, and "mast:scheduler" is a name
+# no human identity can take — so an approval attributed to it could
+# never be read as somebody's.
+assert_eq "the run identified itself as the scheduler" \
+  "$(log_field "${LOG}" 'scheduled trigger fired' caller)" 'mast:scheduler'
+
+SBSID="$(log_field "${LOG}" 'scheduled trigger fired' session)"
+assert_state "the scheduled run's write parked for an operator" "${SBSID}" paused
+assert_eq "nothing was applied on the scheduler's own authority" "$(calls_count apply_change)" 0
+SBMSG="$(show_field "${SBSID}" Message)"
+note "the operator's question: ${SBMSG}"
+assert_has "the question is the write itself" "${SBMSG}" "apply_change"
+
+# The other half: a scheduled run is an ordinary citizen, so a real
+# operator can answer it and the call then fires, exactly as it would
+# have from an injected run.
+SBINT="$(show_field "${SBSID}" Interrupt)"
+assert_http "an operator can approve it -> 202" \
+  "$(resume_verdict "${SBSID}" "${SBINT}" '{"verdict":"approve","note":"uat"}')" 202
+assert_state "the answered run finishes" "${SBSID}" idle
+assert_eq "the approved call fired, exactly once" "$(calls_count apply_change)" 1
+stop_term
 
 # ====================================================================
 say "Summary"

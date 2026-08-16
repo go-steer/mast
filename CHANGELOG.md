@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- **New: a workload can wake itself up, and the cadence survives the
+  daemon** (#132, W4.1). Until now every run started with somebody
+  calling in — an inbound POST, an operator, an external cron holding
+  the schedule on mast's behalf. A bundle can now hold its own:
+
+  ```yaml
+  edge_trigger:
+    scheduled:
+      interval: 15m
+      jitter: 45s        # optional; defaults to a tenth of the interval, capped at 30s
+      prompt: Sweep every namespace for pods in CrashLoopBackOff and report what you find.
+  ```
+
+  The cadence is **anchored, not restarted**: fires land on
+  `anchor + k×interval`, and the anchor is written to the session store
+  the first time the trigger comes up. A daemon that is redeployed twice
+  a day therefore resumes the phase it had, instead of quietly moving a
+  02:00 sweep to the middle of the afternoon — the failure mode where
+  the schedule keeps working and stops meaning what it said. Jitter
+  applies to each fire and is re-drawn every time, so it cannot
+  accumulate into drift; it exists because N replicas started by one
+  rollout waking on the same second is a self-inflicted thundering herd
+  against one API server.
+
+  **A tick the daemon was down for is skipped, not caught up.** Coming
+  back after an outage that spanned three ticks fires none of them and
+  logs one line naming how many were dropped and over what window. A
+  periodic run samples the *current* state of the world, so a sample
+  nobody took is owed to nobody; the alternative is a crash-looping
+  daemon that buys a fresh backlog of model runs at every restart, about
+  the crash. (mast's timed-pause scheduler still catches up, deliberately:
+  a pause is a promise about one specific parked session that nobody else
+  will keep.)
+
+  Each fire opens its own session, named for its tick and listed by
+  `mast sessions list` like any other, and runs as
+  **`mast:scheduler`** — a namespaced identity no human login can take,
+  so an audit row can never read a scheduled run as somebody's. It goes
+  through the same chokepoint every other turn kind uses, which is the
+  point: a mutating call inside a scheduled run still parks for a real
+  approver, still burns the workload's budget, still refuses to start
+  while the daemon is draining. Unattended is not unsupervised.
+
+  Fires are counted by `mast_scheduled_fires_total{workload,outcome}`
+  (`ran`, `skipped`, `error`, `missed`). A malformed `interval:` or
+  `jitter:` is a load error naming the bundle file, not a trigger that
+  silently never fires. One daemon per session store, as everywhere
+  else in mast — there is no leader election, and two replicas of a
+  scheduled workload each keep their own cadence.
+
 - **New: the judgement an operator spends on one call survives as data**
   (#132, W8). Approving, rejecting or correcting a mutating call used to
   leave a log line and a transcript entry — legible to whoever was

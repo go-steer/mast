@@ -93,6 +93,16 @@ func (b *Bundle) validate() error {
 	if _, err := b.HITL.EffectiveChangeSetTTL(); err != nil {
 		return err
 	}
+	// The cadence is resolved at load so a typo'd interval is a refused
+	// bundle naming the file, not a trigger that quietly never fires.
+	// Jitter is resolved too: it is validated against the interval, and
+	// the daemon should never be the first thing to discover that the
+	// two do not go together.
+	if b.EdgeTrigger.Scheduled != nil {
+		if _, err := b.EdgeTrigger.Scheduled.EffectiveJitter(); err != nil {
+			return err
+		}
+	}
 	seenTools := make(map[string]bool, len(b.ToolCatalog.Tools))
 	for _, p := range b.ToolCatalog.Tools {
 		if p.Name == "" {

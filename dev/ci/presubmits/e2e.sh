@@ -27,7 +27,9 @@
 #   scripts/uat-v0.4.sh — the v0.4 change-set work: a finding carries
 #     the executable call, checked against the named tool's own input
 #     schema, and the call an operator approves is the call that fires
-#     (docs/v0.4-plan.md §3, W7.0).
+#     (docs/v0.4-plan.md §3, W7.0). Plus W4.1's cadence: a workload
+#     that wakes itself keeps its phase across a crash and does not pay
+#     for the ticks it was down for.
 #
 # All three run, in order, and a failure in any fails the presubmit. The
 # v0.2 harness is the spine and stays exactly as it is; each release's

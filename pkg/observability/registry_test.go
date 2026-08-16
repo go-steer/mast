@@ -143,6 +143,9 @@ func TestV02DurableExecutionCounters(t *testing.T) {
 	r.TimedPauseFire(wl, TimedPauseResumed)
 	r.TimedPauseFire(wl, TimedPauseSkipped)
 	r.TimedPauseFire(wl, TimedPauseError)
+	r.ScheduledFire(wl, ScheduledFireRan)
+	r.ScheduledFire(wl, ScheduledFireMissed)
+	r.ScheduledFire(wl, ScheduledFireMissed)
 
 	if got := testutil.ToFloat64(r.markerFailures.WithLabelValues(wl, MarkerOpMark)); got != 2 {
 		t.Errorf("mast_marker_write_failures_total{operation=mark} = %v, want 2", got)
@@ -171,6 +174,18 @@ func TestV02DurableExecutionCounters(t *testing.T) {
 	if got := testutil.ToFloat64(r.timedPauseFires.WithLabelValues(wl, TimedPauseError)); got != 1 {
 		t.Errorf("mast_timed_pause_fires_total{outcome=error} = %v, want 1", got)
 	}
+	if got := testutil.ToFloat64(r.scheduledFires.WithLabelValues(wl, ScheduledFireRan)); got != 1 {
+		t.Errorf("mast_scheduled_fires_total{outcome=ran} = %v, want 1", got)
+	}
+	// A tick nobody ran is counted per tick, not per outage: a daemon
+	// down across a weekend has to be visibly worse than one down for
+	// an hour.
+	if got := testutil.ToFloat64(r.scheduledFires.WithLabelValues(wl, ScheduledFireMissed)); got != 2 {
+		t.Errorf("mast_scheduled_fires_total{outcome=missed} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(r.scheduledFires.WithLabelValues(wl, ScheduledFireError)); got != 0 {
+		t.Errorf("mast_scheduled_fires_total{outcome=error} = %v, want 0", got)
+	}
 }
 
 func TestNilRegistryIsSafe(t *testing.T) {
@@ -186,6 +201,7 @@ func TestNilRegistryIsSafe(t *testing.T) {
 	r.Abort("wl")
 	r.GatePause("wl", GatePauseOperator)
 	r.TimedPauseFire("wl", TimedPauseResumed)
+	r.ScheduledFire("wl", ScheduledFireRan)
 }
 
 func TestPrimeMaterializesAllFamiliesAtZero(t *testing.T) {
@@ -215,6 +231,10 @@ func TestPrimeMaterializesAllFamiliesAtZero(t *testing.T) {
 		`mast_timed_pause_fires_total{outcome="resumed",workload="gke-triage"} 0`,
 		`mast_timed_pause_fires_total{outcome="skipped",workload="gke-triage"} 0`,
 		`mast_timed_pause_fires_total{outcome="error",workload="gke-triage"} 0`,
+		`mast_scheduled_fires_total{outcome="ran",workload="gke-triage"} 0`,
+		`mast_scheduled_fires_total{outcome="skipped",workload="gke-triage"} 0`,
+		`mast_scheduled_fires_total{outcome="error",workload="gke-triage"} 0`,
+		`mast_scheduled_fires_total{outcome="missed",workload="gke-triage"} 0`,
 		`mast_a2a_server_tasks_total{outcome="submitted",workload="gke-triage"} 0`,
 		`mast_a2a_server_tasks_total{outcome="working",workload="gke-triage"} 0`,
 		`mast_a2a_server_tasks_total{outcome="input-required",workload="gke-triage"} 0`,
