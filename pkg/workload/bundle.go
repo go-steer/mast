@@ -297,11 +297,122 @@ type HTTPTrigger struct {
 	Auth string `yaml:"auth,omitempty"`
 }
 
-// EdgeTrigger declares how external signals reach this workload. The
-// spike supports HTTP only; other transports (message queue,
-// scheduled) will join here.
+// ScheduledTrigger declares that the workload wakes itself on a fixed
+// cadence (v0.4 W4.1) — the trigger for periodic work nobody POSTs to:
+// a nightly cost sweep, a drift check, a five-minute look at a cluster
+// that is not currently on fire.
+//
+// The cadence is ANCHORED, not reset: fires land on anchor + k×interval,
+// where the anchor is the moment mast first saw this schedule and is
+// persisted with it. A daemon restart therefore resumes the original
+// phase instead of re-phasing to whenever the process happened to come
+// back. Ticks that passed while the daemon was down are skipped rather
+// than caught up; the reasoning for that lives next to the code that
+// acts on it, in cmd/mast/schedtrigger.go.
+//
+// A workload may declare this alongside `http:` — the two triggers are
+// independent, and an operator can still inject into a scheduled
+// workload.
+type ScheduledTrigger struct {
+	// Interval is the cadence as a Go duration string: "15m", "1h",
+	// "24h". Required whenever the block is present, because there is
+	// no defensible default period for "how often should this cost
+	// money".
+	Interval string `yaml:"interval,omitempty"`
+
+	// Jitter bounds a random offset added to each individual fire:
+	// a fire lands somewhere in [tick, tick+jitter).
+	//
+	// Non-zero by default (a tenth of the interval, capped at
+	// defaultMaxJitter) because the failure mode it prevents is one
+	// nobody declares their way into: N replicas of one deployment,
+	// started by one rollout, all waking on the same second and
+	// arriving at the same API server together. The offset applies to
+	// the fire and never to the anchor, so it cannot accumulate into
+	// drift — a jittered cadence is still the cadence that was asked
+	// for, sampled a little late. Set "0s" for an exactly-on-the-tick
+	// schedule.
+	Jitter string `yaml:"jitter,omitempty"`
+
+	// Prompt is the text each scheduled run opens with — what the
+	// workload is being woken up to do ("Sweep every namespace for
+	// pods in CrashLoopBackOff and report what you find").
+	//
+	// Optional, but a scheduled run that says nothing is a workload
+	// re-reading its own system instruction and guessing; the envelope
+	// mast supplies on its own carries only the tick.
+	Prompt string `yaml:"prompt,omitempty"`
+}
+
+// Cadence bounds. The floor is not a performance guard: every fire is a
+// model run with a budget attached, so a sub-second interval is a typo
+// that spends money, and refusing it at load is cheaper than noticing it
+// on the bill.
+const (
+	minScheduledInterval = time.Second
+	defaultMaxJitter     = 30 * time.Second
+)
+
+// EffectiveInterval parses edge_trigger.scheduled.interval. A nil
+// trigger (no scheduled block) has no cadence and reports zero.
+//
+// Like EffectiveChangeSetTTL the parse error is returned rather than
+// swallowed: a schedule that silently failed to parse is a workload an
+// operator believes is running and that has never once woken up.
+func (s *ScheduledTrigger) EffectiveInterval() (time.Duration, error) {
+	if s == nil {
+		return 0, nil
+	}
+	raw := strings.TrimSpace(s.Interval)
+	if raw == "" {
+		return 0, fmt.Errorf("edge_trigger.scheduled names no interval (want something like \"15m\"); a schedule without a cadence never fires")
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("edge_trigger.scheduled.interval %q is not a duration (want something like \"15m\"): %w", s.Interval, err)
+	}
+	if d < minScheduledInterval {
+		return 0, fmt.Errorf("edge_trigger.scheduled.interval %q is under %s; every fire is a full model run, so this is a bill, not a cadence", s.Interval, minScheduledInterval)
+	}
+	return d, nil
+}
+
+// EffectiveJitter resolves edge_trigger.scheduled.jitter against the
+// interval, which is why the default is computed here and not left to
+// the caller: it is a fraction of a value the same block declares.
+//
+// An omitted jitter means the default; an explicit "0s" means the
+// operator asked for an exact cadence and gets one.
+func (s *ScheduledTrigger) EffectiveJitter() (time.Duration, error) {
+	if s == nil {
+		return 0, nil
+	}
+	interval, err := s.EffectiveInterval()
+	if err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(s.Jitter) == "" {
+		return min(interval/10, defaultMaxJitter), nil
+	}
+	d, err := time.ParseDuration(s.Jitter)
+	if err != nil {
+		return 0, fmt.Errorf("edge_trigger.scheduled.jitter %q is not a duration (want something like \"30s\"): %w", s.Jitter, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("edge_trigger.scheduled.jitter %q is negative; jitter delays a fire, it cannot pull one earlier", s.Jitter)
+	}
+	if d >= interval {
+		return 0, fmt.Errorf("edge_trigger.scheduled.jitter %q is not smaller than the interval %q; a fire that can slip past the next tick has no cadence left to keep", s.Jitter, s.Interval)
+	}
+	return d, nil
+}
+
+// EdgeTrigger declares how external signals reach this workload: an
+// inbound POST, a cadence of its own, or both. Other transports (a
+// message queue) will join here.
 type EdgeTrigger struct {
-	HTTP *HTTPTrigger `yaml:"http,omitempty"`
+	HTTP      *HTTPTrigger      `yaml:"http,omitempty"`
+	Scheduled *ScheduledTrigger `yaml:"scheduled,omitempty"`
 }
 
 // A2A is the workload's A2A-server exposure (docs/a2a-design.md, "Which

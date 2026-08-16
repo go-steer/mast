@@ -85,6 +85,30 @@ const (
 	TimedPauseError = "error"
 )
 
+// Scheduled-trigger outcomes (mast_scheduled_fires_total{outcome}) for
+// the v0.4 W4.1 cadence. The family counts what the cadence DID with
+// each tick, which is why three of the four outcomes are not runs: a
+// scheduled workload that stopped doing its work is indistinguishable
+// from a healthy one unless the ticks it declined to run are counted
+// too.
+const (
+	// ScheduledFireRan: the tick drove a turn to completion.
+	ScheduledFireRan = "ran"
+	// ScheduledFireSkipped: the tick came due while the daemon was
+	// draining, so no turn was started. Not an error and not retried —
+	// the next tick is the retry.
+	ScheduledFireSkipped = "skipped"
+	// ScheduledFireError: the turn the tick started failed. The cadence
+	// is unaffected; the next tick fires on schedule.
+	ScheduledFireError = "error"
+	// ScheduledFireMissed: the tick passed with nobody to run it — the
+	// daemon was down, or a previous run overran the interval — and was
+	// coalesced away rather than caught up. Incremented once per
+	// skipped tick, so a crash-looping daemon is visible as a rising
+	// missed count rather than as silence.
+	ScheduledFireMissed = "missed"
+)
+
 // Auto-resume outcomes for AutoResume (mast_autoresume_total{outcome}).
 // A fixed vocabulary, mirroring cmd/mast's boot-time auto-resume
 // decision tree (#41): every interrupted candidate the boot pass
@@ -192,6 +216,7 @@ type Registry struct {
 	aborts          *prometheus.CounterVec
 	gatePauses      *prometheus.CounterVec
 	timedPauseFires *prometheus.CounterVec
+	scheduledFires  *prometheus.CounterVec
 	a2aTasks        *prometheus.CounterVec
 	aguiRuns        *prometheus.CounterVec
 	aguiRunDur      *prometheus.HistogramVec
@@ -274,6 +299,9 @@ func New() *Registry {
 	r.timedPauseFires = counter("mast_timed_pause_fires_total",
 		"Timed-pause scheduler fires, by outcome.",
 		"workload", "outcome")
+	r.scheduledFires = counter("mast_scheduled_fires_total",
+		"Scheduled-trigger ticks, by what became of them (ran, skipped, error, missed).",
+		"workload", "outcome")
 
 	// A2A server (#78). Task lifecycle outcomes for inbound A2A tasks
 	// driven through the runTurnPre chokepoint (Stage B) plus cancels
@@ -328,6 +356,9 @@ func (r *Registry) Prime(workload string) {
 	}
 	for _, outcome := range []string{TimedPauseResumed, TimedPauseSkipped, TimedPauseError} {
 		r.timedPauseFires.WithLabelValues(workload, outcome)
+	}
+	for _, outcome := range []string{ScheduledFireRan, ScheduledFireSkipped, ScheduledFireError, ScheduledFireMissed} {
+		r.scheduledFires.WithLabelValues(workload, outcome)
 	}
 	for _, outcome := range a2aTaskOutcomes {
 		r.a2aTasks.WithLabelValues(workload, outcome)
@@ -451,6 +482,16 @@ func (r *Registry) TimedPauseFire(workload, outcome string) {
 		return
 	}
 	r.timedPauseFires.WithLabelValues(workload, outcome).Inc()
+}
+
+// ScheduledFire records one scheduled-trigger tick with the given
+// outcome (one of the ScheduledFire* constants). Called once per tick,
+// including the ticks that produced no run at all.
+func (r *Registry) ScheduledFire(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.scheduledFires.WithLabelValues(workload, outcome).Inc()
 }
 
 // A2ATask records one A2A server task lifecycle transition with the

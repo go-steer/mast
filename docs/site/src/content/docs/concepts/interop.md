@@ -26,6 +26,12 @@ which is a dev-only posture and is warned about at startup.
 If you are wiring monitoring to mast, this is the surface. The others are
 additions to it.
 
+A Cloud Scheduler job or a Kubernetes CronJob posting here still works, and
+it remains the right answer when you already run one — your schedules live
+in one place and mast is just another target. What changed in v0.4 is that
+you no longer need one to run something periodically: see [no caller at
+all](#no-caller-at-all--the-workloads-own-clock) below.
+
 ## Attach — the operator's live view
 
 `--attach-listen` serves the mast-native attach protocol (HTTP + SSE) that
@@ -121,11 +127,31 @@ a federation call are invisible from here, and a call whose consequences
 you cannot see is not one to fire unattended — so it goes through [the
 write gate](/concepts/approvals/) like any other change.
 
+## No caller at all — the workload's own clock
+
+Every surface above answers "what reached the daemon". A workload that
+declares
+[`edge_trigger.scheduled`](/reference/workload-bundle/#scheduled--a-workload-that-wakes-itself)
+answers nothing: it wakes on its own interval, and the run has no caller to
+take an identity from. That is why it runs as `mast:scheduler` — a
+namespaced identity no human login can produce — and why a mutating call
+inside a scheduled run still parks for a real approver. The trigger is a
+bundle field rather than a surface: nothing is listening, so there is no
+token and no trust boundary to configure.
+
+Which to use is a question about where your schedules should live, not
+about capability. An external scheduler posting to `/inject` gives you one
+place to see every job your org runs and one place to change them; the
+bundle's own cadence gives you a workload that is still periodic after it
+is copied to a cluster where that scheduler does not exist.
+
 ## Picking one
 
 | The caller is… | Surface |
 |---|---|
-| Alertmanager, a cron job, CI, a runbook `curl` | **inject** |
+| Alertmanager, CI, a runbook `curl` | **inject** |
+| A scheduler you already run — Cloud Scheduler, a CronJob | **inject** (it is just another caller) |
+| Nothing — the workload should run periodically on its own | `edge_trigger.scheduled`, no surface |
 | A human operator watching or steering an incident | **attach** (mast-web) |
 | Another agent, in or out of your org | **A2A** |
 | A chat UI or CopilotKit app with end users in it | **AG-UI** |

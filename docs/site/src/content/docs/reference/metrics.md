@@ -73,6 +73,20 @@ vocabulary.
 | `mast_agui_runs_total` | `workload`, `outcome` | AG-UI runs by terminal disposition. Outcomes: `success`, `error`, `aborted`, `interrupted`, `rejected`. |
 | `mast_agui_run_duration_seconds` | `workload` | Histogram of executed-run wallclock (a `_bucket`/`_sum`/`_count` triple). |
 
+### Scheduled-trigger family (v0.4)
+
+A workload that declares
+[`edge_trigger.scheduled`](/reference/workload-bundle/#scheduled--a-workload-that-wakes-itself)
+counts every tick it accounts for, including the ones it deliberately did not
+run. `missed` is the one to alert on: it advances once per tick coalesced away
+after an outage, so a nonzero rate is the cadence telling you the daemon was
+not there — and it is the only place that shows up, because mast does not
+catch up on a missed tick.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_scheduled_fires_total` | `workload`, `outcome` | Scheduled-trigger ticks by disposition. Outcomes: `ran`, `skipped` (came due during a drain), `error` (the run failed; the tick is spent, the next tick is the retry), `missed` (coalesced away — the daemon was down when it came due). |
+
 ## Traces
 
 Trace export is env-gated OTel: a no-op unless `OTEL_EXPORTER_OTLP_*`
