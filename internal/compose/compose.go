@@ -73,12 +73,21 @@ const (
 	// that can mutate.
 	DispatchFanout Dispatch = "fanout"
 
+	// DispatchBounded is the W4.3 one-call shape (see bounded.go): a
+	// roster of exactly one SingleTurn specialist that declares an
+	// output_schema, run as a single workflow node. No router, no tool
+	// loop, no second specialist to choose between — so a cycle costs
+	// one model call, and that is a number rather than a hope.
+	DispatchBounded Dispatch = "bounded"
+
 	// DispatchAuto picks the shape from the roster: fanout when a
 	// graph.SynthesisName specialist is present, graph when a
 	// SingleTurn classifier and a graph.FallbackName Task specialist
 	// are both present (the pair graph dispatch needs), coordinator
 	// otherwise. This is the library default — programmatic callers
 	// declare a roster, not a flag.
+	//
+	// It never picks bounded; see RosterShape.
 	DispatchAuto Dispatch = "auto"
 )
 
@@ -114,6 +123,22 @@ func (d Dispatch) Resolve(b workload.Bundle) Dispatch {
 // coordinator dispatch, and a second copy of this rule living there is
 // a copy that drifts. It reads specs rather than built agents so a
 // caller can ask before paying for construction.
+//
+// # Why bounded is never inferred
+//
+// A roster of one SingleTurn specialist that declares an output_schema
+// is exactly the bounded shape's roster, and it falls through to
+// coordinator here on purpose. Every other shape this function infers
+// is one a roster cannot have arrived at by accident — you do not add a
+// `_synthesis` specialist without meaning fan-out. A one-specialist
+// roster is what every workload looks like on its first day, and
+// inferring bounded from it would silently take the coordinator away
+// from bundles that have been running on it since v0.1: the coordinator
+// answers in its own voice, the bounded shape returns the specialist's
+// JSON report, and no error is raised on the way. `dispatch: bounded`
+// is therefore a declaration, never a deduction — the same reasoning
+// that keeps cmd/mast's terminal default at coordinator rather than
+// auto (see resolveDispatch).
 func RosterShape(specs []specialists.Spec) Dispatch {
 	var hasSynthesis, hasFallback, hasClassifier bool
 	for _, s := range specs {
@@ -200,6 +225,9 @@ type RootConfig struct {
 //   - DispatchFanout → the concurrent-analysts fan-out shape
 //     (pkg/graph.BuildFanout); errors without a graph.SynthesisName
 //     specialist, or if any analyst can reach a mutating tool.
+//   - DispatchBounded → the one-call shape (bounded.go); errors unless
+//     the roster is exactly one SingleTurn specialist declaring an
+//     output_schema.
 //   - DispatchCoordinator → the SubAgents coordinator (pkg/router).
 //   - DispatchAuto/empty → the bundle's own `dispatch:` when it names
 //     one (see Dispatch.Resolve); otherwise fanout when the roster has
@@ -208,9 +236,9 @@ type RootConfig struct {
 func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	dispatch := cfg.Dispatch.Resolve(cfg.Bundle)
 	switch dispatch {
-	case DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchAuto:
+	case DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchBounded, DispatchAuto:
 	default:
-		return nil, fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, fanout, or auto)", dispatch)
+		return nil, fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, fanout, bounded, or auto)", dispatch)
 	}
 
 	// The read/write split is checked before anything is built, on every
@@ -221,6 +249,18 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	// lines are worth exactly one appearance in a startup log.
 	if err := CheckCapabilitySplit(cfg.Bundle, cfg.Specs, MutationPredicate(cfg.Bundle, nil), cfg.Logger); err != nil {
 		return nil, err
+	}
+
+	// The bounded roster is checked before anything is constructed, not
+	// at the terminal arm below, so a roster that can never be bounded
+	// is refused without first resolving a tier, opening a provider
+	// client or building a specialist mast is about to throw away.
+	var bounded specialists.Spec
+	if dispatch == DispatchBounded {
+		var err error
+		if bounded, err = boundedSpec(cfg.Bundle, cfg.Specs); err != nil {
+			return nil, err
+		}
 	}
 
 	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Logger)
@@ -307,6 +347,10 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 			Synthesis: taskOnly[graph.SynthesisName],
 			Mutating:  MutationPredicate(cfg.Bundle, cfg.Logger),
 		})
+	}
+
+	if dispatch == DispatchBounded {
+		return buildBounded(cfg.Bundle, bounded, byName[bounded.Name])
 	}
 
 	if dispatch == DispatchGraph {

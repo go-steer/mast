@@ -71,9 +71,9 @@ func (b *Bundle) validate() error {
 		return fmt.Errorf("unknown mode %q (want single_session or multi_session)", b.Mode)
 	}
 	switch b.Dispatch {
-	case "", DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchAuto:
+	case "", DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchBounded, DispatchAuto:
 	default:
-		return fmt.Errorf("unknown dispatch %q (want coordinator, graph, fanout, or auto)", b.Dispatch)
+		return fmt.Errorf("unknown dispatch %q (want coordinator, graph, fanout, bounded, or auto)", b.Dispatch)
 	}
 	switch b.HITL.OnMutation {
 	case "", OnMutationRequireApproval, OnMutationApply, OnMutationDryRun:

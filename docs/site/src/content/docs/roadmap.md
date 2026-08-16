@@ -265,10 +265,20 @@ a labelled eval row.*
   that the verdict is richer than a boolean and the edit is recorded durably.
 - **Scheduled triggers** — a bundle wakes on an interval, with jitter, and the
   schedule survives a daemon restart. Today the only trigger is HTTP.
-- **A bounded analysis path** — one cheap-tier model call with a forced
-  structured answer and a fixed step count, for the cycles that do not need an
-  orchestrator. Same report contract as the agent path, because the schema is
-  a shared file rather than a block copied into each specialist.
+- **A bounded analysis path** — *landed on `main`, unreleased.*
+  `dispatch: bounded` is a fourth shape: a roster of exactly one `SingleTurn`
+  specialist, built as a single node with no orchestrator above it, so the
+  cycle costs one cheap-tier model call and there is nothing in the shape that
+  could take a second turn. The report is forced to the specialist's
+  `output_schema:` before the turn ends, and the step count is asserted off
+  the meter — `Result.Usage.ModelCalls`, the `session_model_calls` log field,
+  and `mast_model_calls_total` — rather than inferred from latency or tokens.
+  A roster that is not exactly one schema-declaring `SingleTurn` specialist is
+  a startup error naming what it found, and `dispatch: auto` never picks the
+  shape: a cost ceiling is declared, never inferred. Same report contract as
+  the agent path, because the schema is a shared file rather than a block
+  copied into each specialist. See [the four dispatch
+  shapes](/concepts/specialists-and-dispatch/#bounded--one-cheap-call-one-schema-forced-report).
 
 ## Then: v0.5 — unattended monitoring, end to end
 

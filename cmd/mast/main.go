@@ -107,7 +107,7 @@ func main() {
 func run() {
 	var (
 		workloadFlag     = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
-		dispatchMode     = flag.String("dispatch", "", "dispatch shape: `coordinator` (spike-1 SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (concurrent read-only analysts + a _synthesis merge), or `auto` (read the shape off the roster). Unset takes the workload's own `dispatch:`, then coordinator")
+		dispatchMode     = flag.String("dispatch", "", "dispatch shape: `coordinator` (spike-1 SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (concurrent read-only analysts + a _synthesis merge), `bounded` (one SingleTurn specialist, one model call, a report forced to a schema), or `auto` (read the shape off the roster; never picks `bounded`). Unset takes the workload's own `dispatch:`, then coordinator")
 		modelName        = flag.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`")
 		providerFlag     = flag.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. For claude-* models the alias also picks the backend (first-party vs Vertex)")
 		taskFlag         = flag.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)")
@@ -1246,6 +1246,17 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 	)
 	logger.Info("specialists loaded", "count", len(loaded))
 
+	// Refuse a roster the shape can never build BEFORE touching MCP,
+	// which reads a privilege-bearing catalog file and, for a hosted
+	// server, fetches an OAuth token. Neither is work a doomed startup
+	// should do, and the token fetch is also the error the operator
+	// would otherwise be shown — an auth failure standing in for "your
+	// roster is fourteen specialists and bounded takes one". BuildRoot
+	// re-checks; see compose.CheckRoster.
+	if err := compose.CheckRoster(bundle, loaded, compose.Dispatch(resolved)); err != nil {
+		return rootBuild{}, err
+	}
+
 	toolsets, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName)
 	if err != nil {
 		return rootBuild{}, err
@@ -1292,10 +1303,10 @@ type rootBuild struct {
 // Empty is legal: it means "the workload decides".
 func validateDispatch(dispatch string) error {
 	switch dispatch {
-	case "", workload.DispatchCoordinator, workload.DispatchGraph, workload.DispatchFanout, workload.DispatchAuto:
+	case "", workload.DispatchCoordinator, workload.DispatchGraph, workload.DispatchFanout, workload.DispatchBounded, workload.DispatchAuto:
 		return nil
 	default:
-		return fmt.Errorf("unknown --dispatch %q (want `coordinator`, `graph`, `fanout` or `auto`)", dispatch)
+		return fmt.Errorf("unknown --dispatch %q (want `coordinator`, `graph`, `fanout`, `bounded` or `auto`)", dispatch)
 	}
 }
 

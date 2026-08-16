@@ -134,6 +134,58 @@ func finishTaskParams(req *model.LLMRequest) *genai.Schema {
 	return nil
 }
 
+// responseSchema digs the forced structured-output schema out of the
+// request config. Nil unless the runtime asked for one.
+//
+// This is the *other* way a declared output_schema reaches the wire.
+// A toolless SingleTurn specialist (W4.3's bounded shape) gets no
+// finish_task to hang the contract off, so ADK's basic processor puts
+// the schema on the request itself — Config.ResponseSchema plus
+// ResponseMIMEType: application/json — and validates the reply text
+// against it when the turn ends. A fake that answered such a request
+// with the usual "[echo] acknowledged: ..." line failed that check
+// every time, so the bounded path could not be exercised offline at
+// all: the run died on output-schema validation rather than on
+// anything the shape got wrong. Filling this in is what lets
+// U-bounded-cost run without a provider.
+func responseSchema(req *model.LLMRequest) *genai.Schema {
+	if req == nil || req.Config == nil {
+		return nil
+	}
+	return req.Config.ResponseSchema
+}
+
+// structuredReply renders the JSON document a forced-structured-output
+// request demands, using the same property filler the finish_task path
+// uses so both spellings of "answer the contract you were handed"
+// produce the same report for the same schema.
+//
+// Reports false when no object schema is in force, which leaves every
+// existing fake path byte-identical. Non-object response schemas fall
+// through deliberately: mast's report contract is an object, and a fake
+// that guessed at a bare array or scalar would be inventing a shape no
+// shipped bundle asks for.
+func structuredReply(req *model.LLMRequest, seed string) (string, bool) {
+	decl := responseSchema(req)
+	if decl == nil || schemaType(decl) != genai.TypeObject {
+		return "", false
+	}
+	args := conformingArgs(decl, seed)
+	if violateSchemaEnabled() && len(decl.Required) > 0 {
+		// The violation knob has to reach this path too, or the harness
+		// leg that proves the contract is enforced would quietly pass by
+		// never being applied. There is no giving-up turn to pair with
+		// it here: a SingleTurn agent gets one turn, so the violation is
+		// terminal by construction.
+		delete(args, decl.Required[0])
+	}
+	out, err := json.Marshal(args)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
 // isDefaultResultWrapper reports whether s is ADK's stand-in schema for
 // a Task agent with no output_schema: an object carrying exactly one
 // string property named "result" (internal/workflowinternal's

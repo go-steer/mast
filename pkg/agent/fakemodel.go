@@ -89,10 +89,7 @@ func (m *echoModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 			// left the reason blank on exactly that path, so the
 			// unschema'd digest read "diagnosed from envelope: " with
 			// nothing after the colon.
-			reason := reasonAcross(req)
-			if reason == "" {
-				reason = firstMatch(reasonRe, last)
-			}
+			reason := reasonSeed(req, last)
 			args := finishTaskArgs(req, reason,
 				fmt.Sprintf("[echo triage] diagnosed from envelope: %s", reason))
 			resp := &model.LLMResponse{
@@ -105,6 +102,21 @@ func (m *echoModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 				FinishReason:  genai.FinishReasonStop,
 			}
 			yield(resp, nil)
+			return
+		}
+
+		// Toolless request under a forced output schema: the bounded
+		// shape (W4.3). The reply is the report itself, as JSON, because
+		// there is no finish_task to carry it and the runtime validates
+		// the text against the declared schema before the turn is
+		// allowed to end.
+		if reply, ok := structuredReply(req, reasonSeed(req, last)); ok {
+			yield(&model.LLMResponse{
+				Content:       genai.NewContentFromText(reply, genai.RoleModel),
+				UsageMetadata: usage,
+				TurnComplete:  true,
+				FinishReason:  genai.FinishReasonStop,
+			}, nil)
 			return
 		}
 
@@ -123,6 +135,18 @@ func (m *echoModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 		}
 		yield(resp, nil)
 	}
+}
+
+// reasonSeed recovers the incident reason a synthesized report is
+// traced by, scanning the whole history before falling back to the last
+// user message: a specialist reached through a workflow node sees the
+// envelope earlier in the conversation, and on a retry turn the most
+// recent content is a function response.
+func reasonSeed(req *model.LLMRequest, last string) string {
+	if reason := reasonAcross(req); reason != "" {
+		return reason
+	}
+	return firstMatch(reasonRe, last)
 }
 
 func firstMatch(re *regexp.Regexp, s string) string {

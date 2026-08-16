@@ -77,10 +77,30 @@
 #          approval arrives at a process that never saw the diagnoser,
 #          and still covers the whole set
 #
+#   U-bounded-cost (W4.3 `/steps`; W4.2 `/collect`, v0.5) — what one
+#     cycle costs. The other legs above are about what a run DOES; this
+#     one is about what it SPENDS, which is the question an operator
+#     answers before letting a workload run unattended on a timer:
+#       /steps  the shipped examples/workloads/bounded-triage bundle
+#               answers one incident in exactly ONE model call, with a
+#               report forced to the finding schema — asserted off the
+#               meter, on both surfaces that publish it, and paired
+#               with the refusal that keeps the number honest (a roster
+#               that would need an orchestrator will not start)
+#       /collect (W4.2, v0.5) zero-token collection — cluster data
+#               gathered with no model call at all. Stubbed here rather
+#               than left unwritten so the row's other half has a home
+#               the day it lands
+#
 # The observation points are the two an operator already has: `mast
 # sessions show`, which reads the parked question back out of SQLite,
 # and the blocker's own call ledger, which records the arguments each
-# call actually ran with.
+# call actually ran with. U-bounded-cost adds the third, the meter: the
+# daemon's `session_model_calls` log field and `mast_model_calls_total`
+# on /metrics. Step count is read there and nowhere else — wallclock and
+# token totals move with the model, the prompt and the machine, so a
+# cost claim inferred from either is a claim about the afternoon it was
+# measured.
 #
 # Usage: scripts/uat-v0.4.sh
 # State goes under ${TMPDIR:-/tmp}/mast-uat-v04 (house rule #5); port 7790.
@@ -170,6 +190,32 @@ start_daemon() {
   echo "daemon failed to start; log:" >&2; cat "${log}" >&2; exit 1
 }
 
+# start_refused <logfile> <workload> <dispatch> — run the daemon
+# expecting it to REFUSE the roster and exit. Returns 0 when it did.
+#
+# A daemon that comes up instead is killed and the caller reports a
+# failure: the value of a build-time refusal is precisely that it lands
+# before the workload is serving, so "it errored later" is not the same
+# result.
+start_refused() {
+  local log="$1" wl="$2" dispatch="$3" i rc=0
+  "${BIN}" --workload="${wl}" --dispatch="${dispatch}" \
+    --listen=":${PORT}" --model=toolactor --session-db="${DB}" \
+    --log-level=info >"${log}" 2>&1 &
+  local pid=$!
+  for ((i = 0; i < 200; i++)); do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      wait "${pid}" || rc=$?
+      [ "${rc}" -ne 0 ] && return 0
+      return 1
+    fi
+    sleep 0.1
+  done
+  kill -9 "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+  return 1
+}
+
 stop_term() {
   kill -TERM "${PID}" 2>/dev/null || true
   wait "${PID}" 2>/dev/null || true
@@ -248,6 +294,25 @@ show_field() {
 }
 
 state_is() { [ "$(show_field "$1" State)" = "$2" ]; }
+
+# model_calls <logfile> — the meter's own count for the last completed
+# turn, off the daemon's `turn complete` record (budget.Meter.Snapshot).
+#
+# The count is read here rather than derived from anything else on
+# purpose. Wallclock says how long the turn took, token totals say how
+# much text moved; neither says how many times the provider was called,
+# and both drift with the model, the prompt and the machine. A cost
+# claim has to come from the thing that counts calls.
+model_calls() {
+  grep -o '"session_model_calls":[0-9]*' "$1" | tail -n 1 | cut -d: -f2
+}
+
+# metric_value <metric-with-labels> — one gauge/counter sample from the
+# daemon's /metrics, exactly as an operator's scrape would read it. The
+# second, independently computed view of the same number.
+metric_value() {
+  curl -sf -m 5 "${BASE}/metrics" 2>/dev/null | awk -v k="$1" '$1 == k { print $2 }'
+}
 
 wait_for() {
   local budget="$1"; shift
@@ -907,6 +972,90 @@ assert_has "including the one only the grant authorized" "$(calls_args apply_cha
 assert_log_count "the restarted process asked nothing new" "${LOG}" 'awaiting_approval' 0
 stop_term
 unset MAST_FAKE_PROPOSED_CHANGE
+
+# ====================================================================
+# U-bounded-cost (W4.3 /steps) — what one cycle costs
+# ====================================================================
+# The subject is the SHIPPED bundle, examples/workloads/bounded-triage,
+# not a derived fixture. The claim is about what an operator gets when
+# they run what mast ships; a fixture would only show that this harness
+# can write a one-specialist roster.
+BOUNDED="${REPO}/examples/workloads/bounded-triage"
+
+# ---- /steps: the cycle is one model call ----------------------------
+say "U-bounded-cost/steps: one incident costs exactly one model call"
+WL="${BOUNDED}"
+# Deliberately unset: the bundle's own `dispatch: bounded` has to be
+# what selects the shape, or this leg would be testing the flag.
+DISPATCH=
+DB="${WORK}/b-steps.db"
+LOG="${WORK}/b-steps.log"
+start_daemon "${LOG}"
+
+assert_http "inject CrashLoopBackOff -> 202" "$(inject_uat bs1 CrashLoopBackOff)" 202
+assert_state "the run finished on its own" incident-bs1 idle
+assert_has "the bundle's own dispatch: selected the shape" \
+  "$(grep -- 'root agent constructed' "${LOG}" || true)" 'bounded-triage_bounded'
+
+# The assertion the workstream exists for, read off the meter.
+assert_eq "the cycle cost one model call" "$(model_calls "${LOG}")" 1
+# And the other surface. The two are computed independently — the log
+# field from budget.Meter.Snapshot() when the turn ends, the counter
+# from the observability registry as events stream — so their agreeing
+# is what makes the number a fact about the run rather than about one
+# accounting path.
+assert_eq "and the exported counter agrees" \
+  "$(metric_value 'mast_model_calls_total{workload="bounded-triage"}')" 1
+
+# One call, and it answered: a shape that spends nothing because it did
+# nothing would pass the count assertion on its own.
+BSEV="$(grep -- 'runner event' "${LOG}" || true)"
+assert_has "the one call returned the finding contract" "${BSEV}" 'severity'
+assert_has "with a value from the enum the schema declares" "${BSEV}" 'critical'
+assert_has "and the change-set field the contract carries" "${BSEV}" 'proposed_change'
+# No router turn in front of it and no tool loop under it. Both would be
+# extra model calls, so both are asserted absent by their traces and not
+# only by the count.
+assert_has "the report came from the one specialist" "${BSEV}" '"author":"incident-report"'
+assert_no_log "no finish_task loop ran" "${LOG}" 'function_call:finish_task'
+stop_term
+
+# ---- /steps: the count is a promise, so it is enforced --------------
+# A number is only a guarantee if the rosters that could not keep it are
+# refused. Same binary, same flag, pointed at the shipped fourteen-
+# specialist gke-triage roster: the daemon must not come up at all.
+say "U-bounded-cost/steps: a roster that would need an orchestrator will not start"
+DB="${WORK}/b-refuse.db"
+LOG="${WORK}/b-refuse.log"
+if start_refused "${LOG}" "${REPO}/examples/workloads/gke-triage" bounded; then
+  ok "the daemon refused the roster instead of serving it"
+else
+  bad "the daemon came up on a roster the bounded shape cannot keep its promise for"
+fi
+BREF="$(grep -- 'failed to construct root agent' "${LOG}" || true)"
+# The daemon can exit nonzero for reasons that have nothing to do with
+# the roster — this leg runs under --model=toolactor, which unlike echo
+# does wire the workload's MCP servers — so say what it actually
+# reported when the expected refusal is absent. Reading that off three
+# "missing: <substring>" lines cost a CI round trip once already, and
+# the roster check moving ahead of MCP (compose.CheckRoster) is what
+# makes the leg credential-free rather than merely credential-free
+# here.
+[ -n "${BREF}" ] || note "no refusal logged; last line was: $(tail -n 1 "${LOG}")"
+assert_has "the refusal counts what it found" "${BREF}" '14 specialists'
+assert_has "and names them" "${BREF}" 'triage-classifier'
+assert_has "and says what the shape takes instead" "${BREF}" 'takes exactly one'
+
+# ---- /collect: zero-token collection (W4.2, v0.5) -------------------
+# Stubbed rather than left unwritten: `U-bounded-cost` is the proof for
+# two scoreboard rows, and the halves flip on different workstreams. A
+# leg that exists and says it is empty is harder to forget than a name
+# in a table.
+say "U-bounded-cost/collect: zero-token collection (W4.2 — not shipped yet)"
+note "SKIPPED: nothing gathers cluster data without a model call yet."
+note "  When W4.2 lands this leg asserts the collection step's own count"
+note "  is ZERO on the same two meter surfaces /steps reads. It flips"
+note "  scoreboard row 9 (docs/v0.3-plan.md §1); /steps flips row 10."
 
 # ====================================================================
 say "Summary"

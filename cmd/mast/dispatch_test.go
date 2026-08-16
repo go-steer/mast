@@ -22,7 +22,7 @@ import (
 )
 
 func TestValidateDispatch(t *testing.T) {
-	for _, ok := range []string{"", workload.DispatchCoordinator, workload.DispatchGraph, workload.DispatchFanout, workload.DispatchAuto} {
+	for _, ok := range []string{"", workload.DispatchCoordinator, workload.DispatchGraph, workload.DispatchFanout, workload.DispatchBounded, workload.DispatchAuto} {
 		if err := validateDispatch(ok); err != nil {
 			t.Errorf("validateDispatch(%q) = %v, want nil", ok, err)
 		}
@@ -30,6 +30,12 @@ func TestValidateDispatch(t *testing.T) {
 	err := validateDispatch("sideways")
 	if err == nil || !strings.Contains(err.Error(), "sideways") {
 		t.Fatalf("validateDispatch(\"sideways\") = %v, want a rejection quoting the value", err)
+	}
+	// A near miss, because that is the realistic typo: the flag is
+	// rejected here or the shape silently falls back to coordinator and
+	// bills like one.
+	if err := validateDispatch("bound"); err == nil || !strings.Contains(err.Error(), "bound") {
+		t.Fatalf("validateDispatch(\"bound\") = %v, want a rejection quoting the value", err)
 	}
 }
 

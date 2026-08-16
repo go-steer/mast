@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -385,6 +386,108 @@ func TestToolActorAnswersDeclaredReportSchema(t *testing.T) {
 	}
 	if fc.Args["severity"] != "critical" {
 		t.Errorf("args = %v, want the declared schema answered", fc.Args)
+	}
+}
+
+// reqWithResponseSchema builds the OTHER way a declared contract
+// reaches a model: a toolless SingleTurn request under forced
+// structured output, where ADK puts the schema on the request config
+// itself instead of on a finish_task declaration. This is the shape the
+// bounded dispatch path (W4.3) sends.
+func reqWithResponseSchema(s *genai.Schema) *model.LLMRequest {
+	return &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			ResponseMIMEType: "application/json",
+			ResponseSchema:   s,
+		},
+		Contents: []*genai.Content{{
+			Role:  genai.RoleUser,
+			Parts: []*genai.Part{genai.NewPartFromText(`INJECT {"reason":"OOMKilled","namespace":"prod"}`)},
+		}},
+	}
+}
+
+// fakeText drives a fake and returns the text it replied with.
+func fakeReplyText(t *testing.T, m model.LLM, req *model.LLMRequest) string {
+	t.Helper()
+	var text string
+	for resp, err := range m.GenerateContent(t.Context(), req, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent: %v", err)
+		}
+		for _, p := range resp.Content.Parts {
+			text += p.Text
+		}
+	}
+	return text
+}
+
+// TestFakesAnswerAForcedResponseSchema is the gap W4.3 found. Both
+// fakes filled a finish_task declaration and nothing else, so a
+// toolless SingleTurn specialist with an output_schema — the entire
+// bounded roster — got "[echo] acknowledged: …" or a bare reason word
+// back, which ADK then refused as invalid output JSON. The bounded path
+// could not be run offline at all, and no test said so because no
+// fixture had ever been that shape.
+func TestFakesAnswerAForcedResponseSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		m    model.LLM
+	}{
+		{"echo", NewEchoModel("echo")},
+		{"toolactor", NewToolActorModel("toolactor")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := fakeReplyText(t, tc.m, reqWithResponseSchema(findingSchema()))
+			var report map[string]any
+			if err := json.Unmarshal([]byte(text), &report); err != nil {
+				t.Fatalf("reply is not JSON: %v (reply %q)", err, text)
+			}
+			for _, key := range findingSchema().Required {
+				if _, ok := report[key]; !ok {
+					t.Errorf("required property %q missing from %v", key, report)
+				}
+			}
+			// The same filler as the finish_task path, so a roster that
+			// changes its report shape changes both answers at once.
+			if report["severity"] != "critical" {
+				t.Errorf("severity = %v, want the first enum member", report["severity"])
+			}
+			if got, _ := report["detail"].(string); !strings.Contains(got, "OOMKilled") {
+				t.Errorf("detail = %q, want the incident seeded into it", got)
+			}
+		})
+	}
+}
+
+// TestFakesViolateAForcedResponseSchemaOnDemand: the harness switch has
+// to reach this path too. A UAT leg that proves "the contract is
+// enforced" by asking for a violation would otherwise pass by never
+// producing one — the failure mode the switch itself was written for.
+//
+// There is no giving-up turn to pair with it here, unlike the
+// finish_task path: a SingleTurn agent gets one turn, so the violation
+// is terminal by construction.
+func TestFakesViolateAForcedResponseSchemaOnDemand(t *testing.T) {
+	t.Setenv(fakeSchemaViolationEnv, "1")
+	for _, tc := range []struct {
+		name string
+		m    model.LLM
+	}{
+		{"echo", NewEchoModel("echo")},
+		{"toolactor", NewToolActorModel("toolactor")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := fakeReplyText(t, tc.m, reqWithResponseSchema(findingSchema()))
+			var report map[string]any
+			if err := json.Unmarshal([]byte(text), &report); err != nil {
+				t.Fatalf("reply is not JSON: %v (reply %q)", err, text)
+			}
+			missing := findingSchema().Required[0]
+			if _, present := report[missing]; present {
+				t.Errorf("required property %q is present under the violation switch: %v", missing, report)
+			}
+		})
 	}
 }
 

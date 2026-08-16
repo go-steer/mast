@@ -124,6 +124,17 @@ func invocationFor(shape string, spec specialists.Spec, classifier string) strin
 			return "" // a second SingleTurn spec is built and never routed to
 		}
 		return attach.InvocationGraphNode
+	case workload.DispatchBounded:
+		// The roster is one SingleTurn spec run as a one-node workflow
+		// (internal/compose/bounded.go), so the one member is the node.
+		// A Task spec cannot reach here — the build refuses that roster
+		// before a catalog is ever projected — but saying so costs a
+		// line and keeps the catalog from claiming an unreachable
+		// specialist is the whole workload.
+		if task {
+			return ""
+		}
+		return attach.InvocationGraphNode
 	case workload.DispatchFanout:
 		switch {
 		case !task:
