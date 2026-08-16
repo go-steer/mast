@@ -192,3 +192,61 @@ func TestBuildRootBoundedFromTheCaller(t *testing.T) {
 		t.Fatalf("root = %q, want bt_bounded", root.Name())
 	}
 }
+
+// CheckRoster is the pre-flight the binary runs before it wires MCP, so
+// what matters about it is that it refuses the same rosters BuildRoot
+// does and accepts everything else without needing a model — including
+// the shapes it does not check at all.
+func TestCheckRoster(t *testing.T) {
+	tests := []struct {
+		name     string
+		bundle   workload.Bundle
+		specs    []specialists.Spec
+		dispatch Dispatch
+		wantErr  string
+	}{{
+		name:     "a bounded roster that keeps the contract",
+		bundle:   boundedBundleFixture(),
+		specs:    []specialists.Spec{boundedSpecFixture()},
+		dispatch: DispatchAuto,
+	}, {
+		// The refusal has to survive the bundle being the only thing
+		// that names the shape: that is how a scheduled workload gets
+		// here, with no operator typing a flag.
+		name:     "the bundle's own dispatch: is what is checked",
+		bundle:   boundedBundleFixture(),
+		specs:    []specialists.Spec{boundedSpecFixture(), func() specialists.Spec { s := boundedSpecFixture(); s.Name = "second-opinion"; return s }()},
+		dispatch: DispatchAuto,
+		wantErr:  "2 specialists",
+	}, {
+		name:     "an unknown shape is refused before anything is built",
+		bundle:   workload.Bundle{Name: "bt"},
+		specs:    []specialists.Spec{boundedSpecFixture()},
+		dispatch: Dispatch("sideways"),
+		wantErr:  `unknown dispatch "sideways"`,
+	}, {
+		// Not this check's business. A fourteen-specialist coordinator
+		// is an ordinary workload, and a pre-flight that grew opinions
+		// about the other shapes would start refusing rosters BuildRoot
+		// accepts — two answers to one question again.
+		name:     "the same roster under another shape is nobody's problem here",
+		bundle:   workload.Bundle{Name: "bt"},
+		specs:    []specialists.Spec{boundedSpecFixture(), func() specialists.Spec { s := boundedSpecFixture(); s.Name = "second-opinion"; return s }()},
+		dispatch: DispatchCoordinator,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckRoster(tc.bundle, tc.specs, tc.dispatch)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("CheckRoster = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("CheckRoster = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

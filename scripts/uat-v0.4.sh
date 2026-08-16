@@ -1033,6 +1033,15 @@ else
   bad "the daemon came up on a roster the bounded shape cannot keep its promise for"
 fi
 BREF="$(grep -- 'failed to construct root agent' "${LOG}" || true)"
+# The daemon can exit nonzero for reasons that have nothing to do with
+# the roster — this leg runs under --model=toolactor, which unlike echo
+# does wire the workload's MCP servers — so say what it actually
+# reported when the expected refusal is absent. Reading that off three
+# "missing: <substring>" lines cost a CI round trip once already, and
+# the roster check moving ahead of MCP (compose.CheckRoster) is what
+# makes the leg credential-free rather than merely credential-free
+# here.
+[ -n "${BREF}" ] || note "no refusal logged; last line was: $(tail -n 1 "${LOG}")"
 assert_has "the refusal counts what it found" "${BREF}" '14 specialists'
 assert_has "and names them" "${BREF}" 'triage-classifier'
 assert_has "and says what the shape takes instead" "${BREF}" 'takes exactly one'

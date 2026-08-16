@@ -1246,6 +1246,17 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 	)
 	logger.Info("specialists loaded", "count", len(loaded))
 
+	// Refuse a roster the shape can never build BEFORE touching MCP,
+	// which reads a privilege-bearing catalog file and, for a hosted
+	// server, fetches an OAuth token. Neither is work a doomed startup
+	// should do, and the token fetch is also the error the operator
+	// would otherwise be shown — an auth failure standing in for "your
+	// roster is fourteen specialists and bounded takes one". BuildRoot
+	// re-checks; see compose.CheckRoster.
+	if err := compose.CheckRoster(bundle, loaded, compose.Dispatch(resolved)); err != nil {
+		return rootBuild{}, err
+	}
+
 	toolsets, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName)
 	if err != nil {
 		return rootBuild{}, err

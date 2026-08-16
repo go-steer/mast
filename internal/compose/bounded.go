@@ -111,6 +111,44 @@ func boundedSpec(b workload.Bundle, specs []specialists.Spec) (specialists.Spec,
 	return s, nil
 }
 
+// CheckRoster answers "could this roster ever be this shape?" from the
+// bundle and the specs alone — no model, no provider, no toolsets.
+//
+// It exists because BuildRoot is not the first thing a daemon does. The
+// binary wires the workload's MCP servers first, and wiring one is a
+// real side effect: a process spawned, or an OAuth token fetched. A
+// roster the shape can never build should not cost either, and in an
+// environment without credentials it costs worse than that — the
+// operator gets "initial Google OAuth token fetch: 403" as the reason
+// mast would not start, when the actual reason is that they pointed
+// `--dispatch=bounded` at a fourteen-specialist roster. The token fetch
+// was never going to make that roster buildable.
+//
+// Static checks only, and deliberately a subset of BuildRoot's: the
+// dispatch enum and the bounded roster contract. CheckCapabilitySplit
+// is just as static but stays where it is, because it logs the audited
+// mutation-class overrides as it goes and those lines are worth exactly
+// one appearance in a startup log.
+//
+// BuildRoot re-runs both checks rather than trusting a caller to have
+// called this first — every refusal here is a pure function of its
+// arguments, so running it twice costs nothing and skipping it would
+// make the library path weaker than the binary's.
+func CheckRoster(b workload.Bundle, specs []specialists.Spec, dispatch Dispatch) error {
+	resolved := dispatch.Resolve(b)
+	switch resolved {
+	case DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchBounded, DispatchAuto:
+	default:
+		return fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, fanout, bounded, or auto)", resolved)
+	}
+	if resolved == DispatchBounded {
+		if _, err := boundedSpec(b, specs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // rosterNames renders a roster for an error message, in the order the
 // specs arrive (the loader hands them over sorted by name). Stable
 // rather than pretty: the operator's next move is to compare this list
