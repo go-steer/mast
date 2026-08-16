@@ -16,6 +16,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -61,6 +62,22 @@ type JudgeSummary struct {
 	Aggregate []MetricSummary  `json:"aggregate"`
 	Notes     []string         `json:"notes,omitempty"`
 	Ceilings  []CeilingFinding `json:"ceilings,omitempty"`
+
+	// Cost is J-cost-tier: a two-tier roster run live, then priced off
+	// the meter. Nil when the check could not run at all, which is
+	// itself reported as a Problem.
+	//
+	// It rides this board because it needs the same thing the corpus
+	// needs and nothing cheaper has — a real provider answering with
+	// real usage numbers. It is unlike every other row here in that its
+	// verdict is arithmetic rather than judgment, which is why it can
+	// gate (see [Summary.Problems]) where the scores cannot.
+	Cost *judge.CostBoard `json:"cost,omitempty"`
+	// CostSkipped is why there is no cost board, when the reason is that
+	// the run had no live model to price. Carried as a field rather than
+	// left as a nil Cost so the board states the absence instead of
+	// having one fewer section than the reader expected.
+	CostSkipped string `json:"cost_skipped,omitempty"`
 }
 
 // JudgeScenario is one corpus row's run.
@@ -175,6 +192,30 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 	}
 
 	note := progressFn(cfg.Progress)
+
+	// J-cost-tier runs first. It is two specialists and one turn against
+	// the same credentials the corpus is about to spend minutes on, and
+	// its failures are machinery failures — a roster that will not
+	// compose, a provider that will not answer. Finding that out now
+	// rather than after thirty-one metered runs is worth the ordering.
+	note("[cost] pricing a two-tier roster against %s", modelName)
+	switch cost, err := judge.RunCost(ctx, under, modelName, cfg.Provider, scratch); {
+	case errors.Is(err, judge.ErrCostNeedsLiveModel):
+		// Not a Problem: the check was asked a question this
+		// configuration cannot answer. Under an offline fake every score
+		// on this board is machinery-shaped anyway, and calling the skip
+		// a failure would train a reader to ignore the field that
+		// matters when it is real. It is printed, loudly, so that the
+		// skip is never read as a pass.
+		board.CostSkipped = err.Error()
+	case err != nil:
+		sum.Problems = append(sum.Problems, fmt.Sprintf(
+			"J-cost-tier did not run, so nothing checked that a tiered roster is billed at its own rates: %v", err))
+	default:
+		board.Cost = cost
+		sum.Problems = append(sum.Problems, cost.Findings...)
+	}
+
 	for i, sc := range ds.Scenarios {
 		if err := ctx.Err(); err != nil {
 			return Summary{}, err
@@ -369,12 +410,60 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 			p("  %s scored %.2f against a ceiling of %.2f — %s", c.ID, c.Scored, c.Ceiling, c.Why)
 		}
 	}
+	j.writeCost(p)
+
 	for _, n := range j.Notes {
 		p("")
 		p("note: %s", n)
 	}
 	p("")
-	p("this tier reports; it does not gate. A low score is a finding, not a red build.")
+	p("a low score here is a finding, not a red build: this tier's scoring reports and does not gate.")
+	p("J-cost-tier is the exception — its verdict is arithmetic, so a mispriced tier is a Problem.")
+}
+
+// writeCost renders the cost board, or says why there isn't one. The
+// absent case gets a line of its own for the same reason the check
+// exists at all: a section that silently disappears reads as a section
+// that passed.
+func (j *JudgeSummary) writeCost(p func(string, ...any)) {
+	b := j.Cost
+	p("")
+	if b == nil {
+		if j.CostSkipped != "" {
+			p("J-cost-tier: SKIPPED — %s", j.CostSkipped)
+			p("  no tier was priced this run; this is not evidence that tiered pricing works")
+			return
+		}
+		p("J-cost-tier: DID NOT RUN — see problems above; no tier was priced this run")
+		return
+	}
+
+	verdict := "every tiered specialist was billed at its own rate"
+	if !b.OK() {
+		verdict = "a tiered specialist was not billed at its own rate"
+	}
+	p("J-cost-tier — %s (root %s at $%.5f/1K, provider %s)", verdict, b.RootModel, b.RootRate, b.Provider)
+	p("  %-14s %-9s %-24s %-6s %-8s %-11s %-11s %s",
+		"specialist", "tier", "resolved", "calls", "tokens", "billed", "at root", "rate/1K")
+	for _, s := range b.Scopes {
+		billed := fmt.Sprintf("$%.5f", s.CostUSD)
+		saved := fmt.Sprintf("$%.5f", s.AtParentRate)
+		rate := fmt.Sprintf("$%.5f", s.GotRate)
+		if s.Calls == 0 {
+			billed, saved, rate = "—", "—", "—"
+		}
+		p("  %-14s %-9s %-24s %-6d %-8d %-11s %-11s %s",
+			s.Name, s.Tier, s.Resolved, s.Calls, s.Tokens, billed, saved, rate)
+		if len(s.Ran) > 0 {
+			p("  %-14s ran as %s", "", strings.Join(s.Ran, ", "))
+		}
+	}
+	for _, n := range b.Notes {
+		p("  note: %s", n)
+	}
+	for _, f := range b.Findings {
+		p("  PROBLEM: %s", f)
+	}
 }
 
 func cell(results []evals.Result, metric string) string {

@@ -25,6 +25,17 @@
 # scores nothing anywhere in the corpus. That is a failure of the
 # measurement, not of mast, and it needs someone to look.
 #
+# It also fails on J-cost-tier (docs/v0.4-plan.md W0.6), which runs a
+# two-tier roster and reads the meter back. That one is a claim about
+# mast rather than about the measurement, and it can be made here
+# because its verdict is arithmetic: a specialist whose `tier:` resolved
+# to the cheap model and whose tokens were billed at the parent's rate
+# is a bug with a live reproduction, not a model having a bad day. It
+# needs a real provider for the same reason the corpus does — under an
+# offline fake every tier collapses onto the root, so there are no two
+# rates to compare — and it says so and skips rather than passing when
+# there is nothing to price.
+#
 # Cost is roughly $5-15 a run and the scenarios run sequentially, so
 # expect tens of minutes.
 #

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **The nightly now checks that a cheap tier is actually billed cheaply**
+  (#132, W0.6). "A tiered specialist's tokens are priced at the model it
+  ran on" has been true since v0.3 and unit-tested since, but it could
+  not be demonstrated end to end anywhere: the offline fakes that make
+  the free test tiers credential-free are exactly what collapses every
+  tier back onto one model, leaving no two rates to compare. `J-cost-tier`
+  runs in the judged nightly — a `tier: small` analyst under a
+  `tier: frontier` synthesis, one turn, against real models — and reads
+  the meter's per-scope snapshot back:
+
+  ```
+  J-cost-tier — every tiered specialist was billed at its own rate
+    specialist  tier      resolved          calls  tokens  billed    at root
+    analyst     small     claude-haiku-4-5  3      4200    $0.00420  $0.31500
+    _synthesis  frontier  claude-opus-4-7   1      900     $0.06750  $0.06750
+  ```
+
+  The counterfactual column is the point: "not billed at the parent's
+  rate" means nothing without the number it would have been. The check
+  also refuses to pass vacuously — a tier that resolved to one model but
+  *ran* as another is a finding, so is a specialist that made no call,
+  and a roster whose tiers all collapsed onto the root is reported as
+  proving nothing rather than as green. Unlike the scores on that board
+  it does gate the nightly job, because its verdict is arithmetic over
+  the meter's own numbers and does not depend on what the model said.
+
 - **New: a specialist can declare how much model it is worth, not which
   vendor's** (#132, W1.1a). `model: claude-haiku-4-5` in a specialist's
   frontmatter says two things at once — "this step is cheap" and "this
