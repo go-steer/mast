@@ -159,7 +159,7 @@ type Report struct {
 // Matches reports whether the observed outcome is the declared one.
 func (r Report) Matches() bool { return r.Outcome == r.Scenario.Expect }
 
-// All returns the five differentiator scenarios in a stable order.
+// All returns the six differentiator scenarios in a stable order.
 func All() []Scenario {
 	return []Scenario{
 		exactlyOnce(),
@@ -167,6 +167,7 @@ func All() []Scenario {
 		budgetExhaustion(),
 		approvalRejected(),
 		approvalEdited(),
+		feedbackCapture(),
 	}
 }
 

@@ -18,6 +18,8 @@
 //
 //	mast sessions list   --session-db=... [--user=...] [--state=paused|aborted|interrupted|idle]
 //	mast sessions show   <session-id> --session-db=...
+//	mast sessions export-decisions [<session-id>] --session-db=... [--workload=...]
+//	                     [--since=RFC3339] [--until=RFC3339] [--include-approver] [--out=FILE]
 //	mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--ack-effects] [--addr=...]
 //	mast sessions resume --token=<mrt_...> [--response='<json>'] [--ack-effects] [--addr=... | --session-db=...]
 //	mast sessions pause  <session-id> --reason=<enum> [--message=...] [--resume-at=RFC3339 | --resume-after=15m]
@@ -71,6 +73,13 @@ type sessionsCmd struct {
 	user  string
 	state string // list filter; empty = all
 
+	// export-decisions (reads the DB directly)
+	workload        string
+	since           string // RFC3339
+	until           string // RFC3339
+	includeApprover bool
+	out             string // file to write; empty = stdout
+
 	// resume/pause/extend-token/abort (POST to a running daemon)
 	addr        string
 	interruptID string
@@ -101,6 +110,11 @@ commands:
   abort  <session-id>     mark a session aborted via a running daemon
                           (terminal: cancels the in-flight turn, refuses all
                           further turns)
+  export-decisions [<session-id>]
+                          export the operator approve/reject/edit decisions
+                          as JSONL for evaluation (reads --session-db
+                          directly; approver identities are digested unless
+                          --include-approver)
   ack-effects <session-id> acknowledge ambiguous prior effects (lifts the
                           recorded-effect outbox's refusal); via a running
                           daemon by default, or --session-db when none serves
@@ -127,6 +141,15 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 		fs.StringVar(&cmd.db, "session-db", "", "path to the SQLite session DB (required)")
 		fs.StringVar(&cmd.app, "app", appName, "app name the sessions were stored under")
 		fs.StringVar(&cmd.user, "user", "", "user ID owning the session (empty = auto-discover)")
+	case "export-decisions":
+		fs.StringVar(&cmd.db, "session-db", "", "path to the SQLite session DB (required)")
+		fs.StringVar(&cmd.app, "app", appName, "app name the sessions were stored under")
+		fs.StringVar(&cmd.user, "user", "", "user ID owning the sessions (empty = auto-discover)")
+		fs.StringVar(&cmd.workload, "workload", "", "keep only decisions made under this workload (empty = all)")
+		fs.StringVar(&cmd.since, "since", "", "keep only decisions at or after this RFC3339 time")
+		fs.StringVar(&cmd.until, "until", "", "keep only decisions before this RFC3339 time")
+		fs.BoolVar(&cmd.includeApprover, "include-approver", false, "export raw approver identities instead of stable digests; the resulting file names the people who approved each change")
+		fs.StringVar(&cmd.out, "out", "", "write the JSONL to this file (mode 0600) instead of stdout")
 	case "resume":
 		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
 		fs.StringVar(&cmd.interruptID, "interrupt", "", "pending interrupt ID to resume (see `mast sessions show`); mutually exclusive with --token")
@@ -187,6 +210,18 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 		}
 		if cmd.db == "" {
 			return nil, errors.New("mast sessions show: --session-db is required")
+		}
+	case "export-decisions":
+		if cmd.db == "" {
+			return nil, errors.New("mast sessions export-decisions: --session-db is required")
+		}
+		for _, f := range []struct{ flag, value string }{{"--since", cmd.since}, {"--until", cmd.until}} {
+			if f.value == "" {
+				continue
+			}
+			if _, err := time.Parse(time.RFC3339, f.value); err != nil {
+				return nil, fmt.Errorf("mast sessions export-decisions: %s %q is not an RFC3339 time (e.g. 2026-08-16T09:00:00Z)", f.flag, f.value)
+			}
 		}
 	case "resume":
 		if cmd.token != "" {
@@ -273,6 +308,8 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 		return c.runList(ctx, out)
 	case "show":
 		return c.runShow(ctx, out)
+	case "export-decisions":
+		return c.runExportDecisions(ctx, out)
 	case "resume":
 		var response any
 		if c.response != "" {
@@ -511,6 +548,77 @@ func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
 			d.ID, p.InterruptID)
 	}
 	return nil
+}
+
+// runExportDecisions writes the fleet's operator adjudications as JSONL
+// (v0.4 W8).
+//
+// It reads the session DB directly, like list and show and for the same
+// reason: an export is a read, and routing it through a daemon would put
+// the decisions a stopped fleet already made out of reach.
+//
+// The default is redacted. An operator who wants the names has to ask
+// for them by flag, and the file's own header says which of the two they
+// got — so a consumer downstream can never mistake one for the other.
+func (c *sessionsCmd) runExportDecisions(ctx context.Context, out io.Writer) error {
+	store, err := transcript.Open(c.db, c.app)
+	if err != nil {
+		return err
+	}
+	opts := transcript.ExportOptions{
+		UserID:          c.user,
+		SessionID:       c.sessionID,
+		Workload:        c.workload,
+		IncludeApprover: c.includeApprover,
+		Source:          c.db,
+	}
+	// Parsed, not re-validated: parseSessionsArgs already refused
+	// anything unparseable, so a failure here is a bug in this file
+	// rather than operator input.
+	if c.since != "" {
+		if opts.Since, err = time.Parse(time.RFC3339, c.since); err != nil {
+			return err
+		}
+	}
+	if c.until != "" {
+		if opts.Until, err = time.Parse(time.RFC3339, c.until); err != nil {
+			return err
+		}
+	}
+
+	w := out
+	if c.out != "" {
+		// 0600: the rows carry tool arguments verbatim and, under
+		// --include-approver, the names of the people who approved them.
+		// #nosec G304,G703 -- the path is the operator's own --out flag.
+		f, err := os.OpenFile(c.out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("open --out %q: %w", c.out, err)
+		}
+		defer func() { _ = f.Close() }()
+		w = f
+	}
+	n, err := store.ExportDecisions(ctx, w, opts)
+	if err != nil {
+		return err
+	}
+	if c.out != "" {
+		// Only when the rows went to a file: on stdout the JSONL IS the
+		// output, and a trailing human sentence would corrupt it for the
+		// pipe it was written into.
+		fmt.Fprintf(out, "exported %d decision(s) to %s (%s)\n", n, c.out, redactionNote(c.includeApprover))
+	}
+	return nil
+}
+
+// redactionNote is the one line an operator sees about what they just
+// wrote to disk. Phrased as a warning in the raw case, because that is
+// the case where the file names people.
+func redactionNote(includeApprover bool) string {
+	if includeApprover {
+		return "raw approver identities — this file names the people who approved each change"
+	}
+	return "approver identities digested; re-run with --include-approver for raw"
 }
 
 // printChangeSet renders the change set a parked call belongs to, when

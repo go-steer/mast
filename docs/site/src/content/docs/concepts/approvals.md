@@ -234,6 +234,35 @@ precondition watching the field the set itself rewrites invalidates its own
 set): [`precondition:` in the workload
 bundle](/reference/workload-bundle/#precondition--what-makes-an-approval-stale).
 
+## What the operator decided, after the incident is over
+
+A verdict is expensive. Somebody stopped what they were doing, read a call,
+and made a judgement about a production system. Spending that once and
+keeping only a log line wastes the most informative thing a gated fleet
+produces: a case where the model's proposal and a human's answer are known
+to differ.
+
+So every adjudication is a durable record beside the call it decided, and
+`mast sessions export-decisions` writes them out as JSON Lines — one row per
+decision, with what the model proposed, what actually executed, which of
+approve / reject / edit the operator chose, and whether the call ended up
+authorized, refused by the operator, or refused by mast. Rejections are in
+there for the same reason edits are: an export of nothing but approvals is a
+dataset that never shows the model being wrong.
+
+Two things to know before pointing it at a production store. **Approver
+identities are digested by default** — a stable hash, so you can still group
+by approver or count how many people approved a class of change, without
+naming anyone; `--include-approver` opts out and the file records which mode
+produced it. **Tool arguments are exported verbatim**, because the
+proposed→executed diff is the whole label — which makes an export as
+sensitive as the arguments your tools take.
+
+Mast captures and exports; it does not score, retrain, or read the file
+back. What it is for is the evaluation you run yourself. Field detail and
+the full record shape: [exporting
+decisions](/reference/write-gate/#exporting-what-was-decided).
+
 ## Composing the four
 
 | Layer | Stops | Does not stop |

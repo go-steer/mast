@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- **New: the judgement an operator spends on one call survives as data**
+  (#132, W8). Approving, rejecting or correcting a mutating call used to
+  leave a log line and a transcript entry — legible to whoever was
+  reading the terminal at the time, and to nobody afterwards. The
+  highest-signal data a gated fleet produces is exactly this: a human
+  looked at `scale_deployment(deployment=api, replicas=10)` and said two,
+  or said no. That is a labelled example, and mast was throwing it away.
+
+  Every adjudication the write gate makes is now a durable record on the
+  session's event log, and a new subcommand harvests them:
+
+  ```
+  mast sessions export-decisions --session-db=/var/lib/mast/sessions.db \
+      --workload=gke-triage --since=2026-08-01T00:00:00Z --out=decisions.jsonl
+  ```
+
+  The output is JSON Lines: a `_meta` provenance object, then one object
+  per decision. Each row carries what the model proposed, what actually
+  executed, which of `approve` / `reject` / `edit` the operator chose,
+  and whether the call was authorized, refused by the operator, or
+  refused by mast — that last distinction because a gate that rejected an
+  unattributed edit is not a human saying no, and a dataset that
+  conflates them teaches the wrong lesson. A change-set grant being spent
+  writes its own row too, so a file cannot show one approval where four
+  calls ran.
+
+  **Approver identities are digested by default.** The row carries
+  `sha256:` plus sixteen hex characters, which is stable — you can group
+  by approver, count how many distinct people approved a class of change,
+  or find the identity that approves everything — without naming anyone.
+  `--include-approver` opts into raw identities, and `_meta.redaction`
+  records which mode produced the file, so a redacted export can never be
+  mistaken for a raw one. Machine identities (`mast:internal`) pass
+  through in the clear: they name a mechanism, not a person, and hiding
+  them would hide the one thing worth knowing about an unattended run.
+
+  **Argument values are exported verbatim, and that is deliberate.** The
+  proposed→executed pair is the entire label; strip it and the file
+  records only that somebody edited something. So an export is exactly as
+  sensitive as the arguments your tools take — namespaces, hostnames,
+  anything a remediation call carries. `--out` writes `0600`, the warning
+  travels inside the file, and you should treat the result like the
+  cluster it describes.
+
+  v0.4 captures and exports. Nothing scores these rows, nothing retrains
+  on them, and mast never reads the file back — what you do with it is
+  yours.
+
 - **New: `dispatch: bounded` — one cheap model call, a report forced to a
   schema, and a step count you can read off the meter** (#132, W4.3). Some
   workloads exist to answer one question on a schedule, and their whole

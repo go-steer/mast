@@ -89,7 +89,17 @@ func (g *writeGate) checkGrant(ctx agent.Context, t tool.Tool, args map[string]a
 // caller, and RecordMutationVerdict runs here, so a granted call leaves
 // the same approval audit record a parked-and-approved one does — the
 // grant removes the question, not the accounting.
-func (g *writeGate) spendGrant(ctx agent.Context, t tool.Tool, key string, grant *Grant) (map[string]any, error) {
+func (g *writeGate) spendGrant(ctx agent.Context, t tool.Tool, key string, args map[string]any, grant *Grant) (out map[string]any, err error) {
+	// A granted call is an adjudication too — the operator made it, one
+	// call earlier, about the whole set. Recording it under
+	// AuthorityChangeSetGrant is what keeps an exported dataset from
+	// showing one approval where four calls ran (v0.4 W8).
+	rec := g.newDecision(ctx, t, key, args)
+	rec.Authority, rec.ChangeSet = AuthorityChangeSetGrant, grant.Origin
+	rec.Outcome, rec.Scope = OutcomeApprove, ScopeChangeSet
+	rec.Approver, rec.Note = grant.Approver, grant.Note
+	defer func() { g.recordDecision(ctx, t, &rec, out, err) }()
+
 	if err := g.cfg.Gate.RecordMutationVerdict(ctx, t.Name(), key, permissions.DecisionAllowOnce); err != nil {
 		g.audit(ctx, t, key, "grant_not_honored", err.Error())
 		return map[string]any{

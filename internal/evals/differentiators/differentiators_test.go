@@ -27,8 +27,8 @@ func TestScenariosAreWellFormed(t *testing.T) {
 	if err := Validate(All()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(All()), 5; got != want {
-		t.Fatalf("registry has %d scenarios, want the %d docs/v0.3-plan.md W0.3 names", got, want)
+	if got, want := len(All()), 6; got != want {
+		t.Fatalf("registry has %d scenarios, want the %d named by docs/v0.3-plan.md W0.3 and docs/v0.4-plan.md W8", got, want)
 	}
 	want := map[string]bool{
 		"E-exactly-once":      true,
@@ -36,19 +36,23 @@ func TestScenariosAreWellFormed(t *testing.T) {
 		"E-budget-exhaustion": true,
 		"E-approval-rejected": true,
 		"E-approval-edited":   true,
+		// v0.4 W8. The registry is not frozen at W0.3's five, but it is
+		// closed: a scenario nobody declared here is a scenario no plan
+		// row is claiming, and the scoreboard would not know about it.
+		"E-feedback-capture": true,
 	}
 	for _, s := range All() {
 		if !want[s.ID] {
-			t.Errorf("unexpected scenario %q — W0.3 names five and only five", s.ID)
+			t.Errorf("unexpected scenario %q — every scenario is named by a plan row and listed here", s.ID)
 		}
 		delete(want, s.ID)
 	}
 	for id := range want {
-		t.Errorf("scenario %q from docs/v0.3-plan.md W0.3 is missing", id)
+		t.Errorf("declared scenario %q is missing from the registry", id)
 	}
 }
 
-// TestDifferentiators runs all five and requires each to land on its
+// TestDifferentiators runs all six and requires each to land on its
 // declared outcome.
 //
 // A mismatch fails in both directions on purpose:

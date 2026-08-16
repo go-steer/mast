@@ -220,6 +220,68 @@ outcome: `awaiting_approval`, `denied_by_policy`, `denied_by_operator`,
 `change_set_refused` (a proposed change the specialist's own report failed
 validation on).
 
+## Exporting what was decided
+
+An adjudication is worth more than a log line. *"A human looked at
+`scale_deployment(deployment=api, replicas=10)` and said two"* is a labelled
+example, and it is the highest-signal data a gated fleet produces. So the
+gate also writes a **decision record** for every adjudicated call — approve,
+reject, edit, a change-set grant being spent, and the calls mast refused on
+its own — and one subcommand harvests them:
+
+```
+mast sessions export-decisions --session-db=/var/lib/mast/sessions.db \
+    --workload=gke-triage \
+    --since=2026-08-01T00:00:00Z --until=2026-09-01T00:00:00Z \
+    --out=decisions.jsonl
+```
+
+Naming a `<session-id>` exports one session; omitting it exports every
+session in the store. Without `--out` the rows go to stdout, which is the
+form to pipe. The output is JSON Lines — a `_meta` provenance object, then
+one object per decision:
+
+```json
+{"_meta":{"tool":"mast sessions export-decisions","version":"0.4.0","schema":"mast.decision/v1","exported_at":"2026-08-16T11:04:02Z","redaction":"approver_digest","source":"/var/lib/mast/sessions.db","workload":"gke-triage","records":2,"warning":"Tool arguments are exported verbatim, …"}}
+{"decided_at":"2026-08-16T09:00:00Z","session":"incident-123","workload":"gke-triage","specialist":"change-executor","tool":"scale_deployment","outcome":"edit","scope":"once","authority":"operator_verdict","disposition":"authorized","proposed_key":"scale_deployment(deployment=api, replicas=10)","proposed_args":{"deployment":"api","replicas":10},"executed_key":"scale_deployment(deployment=api, replicas=2)","executed_args":{"deployment":"api","replicas":2},"approver":"sha256:4dc68d3cd589b641","note":"ten would exhaust the node pool"}
+{"decided_at":"2026-08-16T09:02:11Z","session":"incident-123","workload":"gke-triage","specialist":"change-executor","tool":"rollout_restart","outcome":"reject","authority":"operator_verdict","disposition":"refused_by_operator","proposed_key":"rollout_restart(deployment=api)","proposed_args":{"deployment":"api"},"approver":"sha256:4dc68d3cd589b641","note":"restarting loses the heap dump"}
+```
+
+Two fields answer two different questions. `outcome` is what the operator
+chose. `disposition` is what mast did — `authorized`, `refused_by_operator`,
+or `refused_by_mast` — because a call the gate refused for its own reasons
+(an unattributed edit, a malformed verdict, a deny policy) is not a human
+saying no, and a dataset that conflates them teaches the wrong lesson.
+`authority` is `operator_verdict` for a call somebody answered and
+`change_set_grant` for one that fired on a grant minted by an earlier
+answer, so a file cannot show one approval where four calls ran.
+
+**Approver identities are digested by default.** The row carries `sha256:`
+plus sixteen hex characters. The digest is stable, so you can still group by
+approver, count how many distinct people approved a class of change, or find
+the identity that approves everything — without naming anyone.
+`--include-approver` exports raw identities instead, and `_meta.redaction`
+records which mode produced the file (`approver_digest` or `none`), so a
+redacted export cannot be mistaken for a raw one. Machine identities —
+`mast:internal`, `mast:scheduler` — pass through in the clear: they name a
+mechanism rather than a person, and hiding them would hide the one thing
+worth knowing about an unattended run.
+
+:::caution[Tool arguments are exported verbatim]
+Argument values are **not** redacted, in either mode. The
+proposed→executed pair is the entire label; strip it and the file records
+only that somebody edited something. That makes an export exactly as
+sensitive as the arguments your tools take — namespaces, hostnames, object
+names, and anything else a remediation call carries. `--out` creates the
+file `0600`, the same warning travels inside it as `_meta.warning`, and you
+should treat the result with the same care as the cluster it describes.
+:::
+
+The export is inert. Mast never reads it back, nothing scores these rows,
+and nothing retrains on them — what you do with the file is yours. It is
+also a separate artifact from mast's own ported eval corpus, deliberately:
+two datasets, two contracts.
+
 ## The gate is not the only boundary
 
 Everything above is what mast enforces. What the *cluster* will accept from

@@ -92,6 +92,12 @@
 #               than left unwritten so the row's other half has a home
 #               the day it lands
 #
+#   U-decisions (W8, the harvest) — the same two-call set, exported
+#     with the daemon stopped: one record per adjudicated CALL (so one
+#     approval cannot stand in for two mutations), the approver digested
+#     by default, and --include-approver naming them with the file
+#     saying which mode produced it.
+#
 # The observation points are the two an operator already has: `mast
 # sessions show`, which reads the parked question back out of SQLite,
 # and the blocker's own call ledger, which records the arguments each
@@ -972,6 +978,49 @@ assert_has "including the one only the grant authorized" "$(calls_args apply_cha
 assert_log_count "the restarted process asked nothing new" "${LOG}" 'awaiting_approval' 0
 stop_term
 unset MAST_FAKE_PROPOSED_CHANGE
+
+# ---- U-decisions: the verdict outlives the incident -----------------
+# W8. Everything above proves mast obeyed the operator. This leg asks
+# the other question: a week later, can anyone read what the operator
+# decided? The export runs against the same SQLite file with NO daemon
+# alive, because a harvest that needs the process that made the
+# decisions is a harvest nobody will ever run.
+say "U-decisions: every adjudication exports as a labelled record"
+WL="${CHANGESET}"
+DB="${WORK}/dec.db"
+LOG="${WORK}/dec.log"
+reset_blocker
+export MAST_FAKE_PROPOSED_CHANGE="${SET_CHANGE}"
+start_daemon "${LOG}"
+
+assert_http "inject ApplyChange -> 202" "$(inject_uat d1 ApplyChange)" 202
+assert_state "the first call parked" incident-d1 paused
+DINT="$(show_field incident-d1 Interrupt)"
+assert_http "the operator approves the SET -> 202" \
+  "$(resume_verdict incident-d1 "${DINT}" '{"verdict":"approve","scope":"change_set","note":"uat"}')" 202
+assert_state "the run finishes" incident-d1 idle
+stop_term
+unset MAST_FAKE_PROPOSED_CHANGE
+
+DEC="$("${BIN}" sessions export-decisions incident-d1 --session-db="${DB}")"
+# One row per CALL, not per question. The set was approved once and ran
+# twice; a file showing one approval where two mutations happened is the
+# dataset defect this assertion exists to catch.
+assert_eq "one record per adjudicated call" \
+  "$(printf '%s\n' "${DEC}" | grep -c '"decided_at"' || true)" 2
+assert_has "the header counts them" "${DEC}" '"records":2'
+assert_has "the operator's own verdict is one record" "${DEC}" '"authority":"operator_verdict"'
+assert_has "the granted call is the other" "${DEC}" '"authority":"change_set_grant"'
+assert_has "both are recorded as authorized" "${DEC}" '"disposition":"authorized"'
+assert_has "the arguments are the label" "${DEC}" '"replicas":2'
+# Redaction is the default, not an option to remember.
+assert_has "the file says how it was redacted" "${DEC}" '"redaction":"approver_digest"'
+assert_hasnt "the default export does not name the approver" "${DEC}" 'shared-bearer-token'
+assert_has "it carries a stable digest instead" "${DEC}" '"approver":"sha256:'
+
+RAW="$("${BIN}" sessions export-decisions incident-d1 --session-db="${DB}" --include-approver)"
+assert_has "--include-approver names the approver" "${RAW}" 'shared-bearer-token'
+assert_has "and the header says the file is raw" "${RAW}" '"redaction":"none"'
 
 # ====================================================================
 # U-bounded-cost (W4.3 /steps) — what one cycle costs

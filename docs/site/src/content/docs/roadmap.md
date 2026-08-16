@@ -259,10 +259,17 @@ a labelled eval row.*
   minutes) is the backstop for what a re-read cannot see. See [one answer for
   a set of
   calls](/concepts/approvals/#one-answer-for-a-set-of-calls--and-what-makes-it-stale).
-- **Decisions become training data** — every approve, reject and edit is
-  logged as a labelled eval example. *"The operator edited 10 replicas down to
-  4"* is the highest-signal thing the system produces, and it is free now
-  that the verdict is richer than a boolean and the edit is recorded durably.
+- **Decisions become training data** — *landed on `main`, unreleased.* Every
+  approve, reject and edit is a durable record on the session, and `mast
+  sessions export-decisions` writes them out as JSON Lines. *"The operator
+  edited 10 replicas down to 4"* is the highest-signal thing the system
+  produces, and each row carries both argument sets, so the correction is the
+  label rather than the outcome alone. Approver identities are digested by
+  default and the file says which redaction mode produced it; tool arguments
+  are exported verbatim, which makes an export as sensitive as the cluster it
+  describes. Capture and export only — nothing scores or retrains on the rows.
+  See [exporting
+  decisions](/reference/write-gate/#exporting-what-was-decided).
 - **Scheduled triggers** — a bundle wakes on an interval, with jitter, and the
   schedule survives a daemon restart. Today the only trigger is HTTP.
 - **A bounded analysis path** — *landed on `main`, unreleased.*
