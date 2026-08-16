@@ -21,8 +21,19 @@
 # the run continues without a delta section — losing a night's metered
 # run because an artifact download 404'd would be the expensive way to
 # handle a missing nicety.
+#
+# MAST_EVALS_WORKFLOW / MAST_EVALS_ARTIFACT name which nightly's history
+# to read. There is one nightly per provider and their boards are not
+# comparable — a Gemini run delta'd against last night's Claude board
+# would render every metric as a swing and none of it would mean
+# anything. The defaults are the Claude nightly's, so a caller that
+# says nothing gets the behavior this script had when it was the only
+# one.
 
 set -euo pipefail
+
+workflow="${MAST_EVALS_WORKFLOW:-evals-nightly.yml}"
+artifact="${MAST_EVALS_ARTIFACT:-judge-board}"
 
 scratch="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/mast-evals"
 mkdir -p "${scratch}"
@@ -31,19 +42,19 @@ mkdir -p "${scratch}"
 # --json/-q rather than parsing text: the run list is machine-readable
 # and its formatting is not a contract.
 prev="$(gh run list \
-  --workflow evals-nightly.yml \
+  --workflow "${workflow}" \
   --status success \
   --limit 1 \
   --json databaseId \
   -q '.[0].databaseId' 2>/dev/null || true)"
 
 if [[ -z "${prev}" ]]; then
-  echo "no previous successful nightly; tonight's board will have no delta"
+  echo "no previous successful ${workflow} run; tonight's board will have no delta"
   exit 0
 fi
 
-if ! gh run download "${prev}" --name judge-board --dir "${scratch}/baseline" 2>/dev/null; then
-  echo "run ${prev} has no judge-board artifact (expired?); tonight's board will have no delta"
+if ! gh run download "${prev}" --name "${artifact}" --dir "${scratch}/baseline" 2>/dev/null; then
+  echo "run ${prev} has no ${artifact} artifact (expired?); tonight's board will have no delta"
   exit 0
 fi
 
