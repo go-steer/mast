@@ -1,0 +1,159 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The judge tier of the v0.3 parity evals, run against Gemini — the
+# sibling of .github/workflows/evals-nightly.yml, which runs the same
+# 31 scenarios against Claude on Vertex.
+#
+# ## Why a second workflow rather than a matrix
+#
+# The two boards are separate artifacts with separate histories, and
+# that is the point. A matrix leg that fails takes its sibling's run
+# status with it, and `dev/ci/evals-nightly-baseline.sh` reads "the last
+# successful run of this workflow" to compute a delta — so one shared
+# run id would make each provider's delta depend on whether the *other*
+# provider had a good night. Two workflows means a Gemini regression is
+# legible as a Gemini regression, and a Vertex Claude outage does not
+# erase Gemini's baseline.
+#
+# The logic is not duplicated: both call the same dev/ci scripts, which
+# take the provider as environment rather than holding it. Only the env
+# block and the artifact name differ.
+#
+# ## Model choice
+#
+# gemini-3.7-flash for both the model under test and the grader.
+# Deliberately one model rather than a frontier/small pair: this board
+# answers "how does mast behave on Gemini", and holding the grader at
+# the same model keeps the response_quality metric comparable
+# night-to-night without a second variable moving.
+#
+# Note this is NOT the tier ladder. `tier: frontier` on Gemini still
+# resolves to gemini-3.6-flash via pkg/taskclass.ModelForTier, which is
+# what J-cost-tier prices — that test resolves tiers itself and ignores
+# MAST_EVALS_MODEL, by design, since a cost claim about tiers has to use
+# the tiers the product ships.
+#
+# Flash pricing puts a run well under the Claude nightly's $5-15.
+#
+# ## What it needs configured
+#
+# The same three settings the Claude nightly uses, and no new ones —
+# roles/aiplatform.user on the impersonated service account covers both
+# publishers, so one WIF provider serves both workflows:
+#
+#   vars.MAST_EVALS_VERTEX_PROJECT      GCP project serving Vertex
+#   secrets.MAST_EVALS_WIF_PROVIDER     workload identity provider
+#   secrets.MAST_EVALS_SERVICE_ACCOUNT  service account to impersonate
+#   vars.MAST_EVALS_VERTEX_REGION       optional; defaults to global
+#   vars.MAST_EVALS_GEMINI_MODEL        optional; defaults to gemini-3.7-flash
+#
+# The region default is `global`, not the Claude workflow's us-east5:
+# Gemini's capacity for the flash line is served from the global
+# endpoint, and google.golang.org/genai special-cases that string onto
+# the un-prefixed host rather than `global-aiplatform.googleapis.com`.
+
+name: evals-nightly-gemini
+
+on:
+  schedule:
+    # 07:30 UTC — half an hour behind the Claude nightly, so the two do
+    # not contend for the same project's quota, and both boards are
+    # waiting by the start of the working day.
+    - cron: '30 7 * * *'
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model under test (overrides vars.MAST_EVALS_GEMINI_MODEL)'
+        required: false
+        type: string
+      grader:
+        description: 'Grading model (defaults to the model under test)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  # Reading the previous run's board artifact, and minting the OIDC
+  # token the Vertex auth exchanges.
+  actions: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    # Forks have no credentials and would post an empty board.
+    if: github.repository == 'go-steer/mast'
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check the tier is configured
+        id: config
+        env:
+          PROJECT: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
+          WIF: ${{ secrets.MAST_EVALS_WIF_PROVIDER }}
+        run: dev/ci/evals-nightly-configured.sh
+
+      - name: Authenticate to Google Cloud
+        if: steps.config.outputs.configured == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.MAST_EVALS_WIF_PROVIDER }}
+          service_account: ${{ secrets.MAST_EVALS_SERVICE_ACCOUNT }}
+
+      # This workflow's own history, not the Claude nightly's — see the
+      # header. Delta'ing across providers would report a model swap as
+      # a regression on every row.
+      - name: Fetch the previous board
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAST_EVALS_WORKFLOW: evals-nightly-gemini.yml
+          MAST_EVALS_ARTIFACT: judge-board-gemini
+        run: dev/ci/evals-nightly-baseline.sh
+
+      - name: Judge tier
+        if: steps.config.outputs.configured == 'true'
+        env:
+          # genai reads these; GOOGLE_GENAI_USE_VERTEXAI is what selects
+          # the ADC-authenticated Vertex backend over an API key, which
+          # is the whole reason the WIF step above is enough.
+          GOOGLE_GENAI_USE_VERTEXAI: 'true'
+          GOOGLE_CLOUD_PROJECT: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ vars.MAST_EVALS_VERTEX_REGION || 'global' }}
+          MAST_EVALS_PROVIDER: gemini
+          MAST_EVALS_MODEL: ${{ inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
+          MAST_EVALS_GRADER: ${{ inputs.grader || inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
+          MAST_EVALS_LABEL: gemini
+        run: dev/ci/evals-nightly.sh
+
+      # Uploaded whether or not the run was clean: a board with a row
+      # missing is still the baseline tomorrow's delta needs.
+      - name: Upload the board
+        if: always() && steps.config.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-board-gemini
+          path: ${{ runner.temp }}/mast-evals/board.json
+          retention-days: 90
+          if-no-files-found: warn

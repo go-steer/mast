@@ -22,6 +22,14 @@
 #
 #   ANTHROPIC_VERTEX_PROJECT_ID=<project> dev/ci/evals-nightly.sh
 #
+# Provider-neutral: MAST_EVALS_MODEL / MAST_EVALS_GRADER /
+# MAST_EVALS_PROVIDER choose what runs, and the credentials come from
+# the environment the caller set up, so the Gemini nightly
+# (.github/workflows/evals-nightly-gemini.yml) runs this same script
+# with a different env block rather than a forked copy of it.
+# MAST_EVALS_LABEL only names the provider in the job summary heading,
+# so two boards in one Actions run list are told apart at a glance.
+#
 # Exit status is the harness's: 0 for a complete board however low the
 # scores, 1 for a board that is short a row, has a metric scoring
 # nothing, or priced a tiered specialist at the wrong rate, 2 for a
@@ -45,6 +53,9 @@ fi
 if [[ -n "${MAST_EVALS_GRADER:-}" ]]; then
   args+=("--grader=${MAST_EVALS_GRADER}")
 fi
+if [[ -n "${MAST_EVALS_PROVIDER:-}" ]]; then
+  args+=("--provider=${MAST_EVALS_PROVIDER}")
+fi
 if [[ -f "${baseline}" ]]; then
   args+=("--baseline=${baseline}")
 fi
@@ -56,7 +67,7 @@ scripts/evals.sh "${args[@]}" | tee "${report}" || status=$?
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
-    echo "## mast v0.3 parity evals — judge tier"
+    echo "## mast v0.3 parity evals — judge tier${MAST_EVALS_LABEL:+ (${MAST_EVALS_LABEL})}"
     echo ""
     echo '```'
     cat "${report}"

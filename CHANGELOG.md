@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **The judged nightly now runs on two providers, on two boards.**
+  `.github/workflows/evals-nightly-gemini.yml` runs the same 31 parity
+  scenarios against `gemini-3.7-flash` at 07:30 UTC, half an hour behind
+  the Claude board. Deliberately a second workflow rather than a matrix
+  leg: each provider keeps its own artifact and its own history, so a
+  delta is a delta against the same model — one shared run would make
+  each provider's night-to-night comparison depend on whether the other
+  provider had a good night, and one provider's outage would erase the
+  other's baseline. The logic is not forked; `dev/ci/evals-nightly.sh`
+  and `dev/ci/evals-nightly-baseline.sh` now take the provider, the
+  workflow to read history from, and the artifact name as environment,
+  and the two workflows differ only in their env blocks.
+
+  No new repository settings: `roles/aiplatform.user` on the
+  impersonated service account already covers both publishers, so the
+  existing WIF provider serves both. `vars.MAST_EVALS_VERTEX_REGION`
+  defaults to `global` on the Gemini side, which is where the flash line
+  is served.
+
+  This is a second *board*, not a second tier ladder — `tier: frontier`
+  on Gemini still resolves to `gemini-3.6-flash`, and `J-cost-tier`
+  prices the tiers the product ships rather than the model under test.
+
 - **New: a workload can wake itself up, and the cadence survives the
   daemon** (#132, W4.1). Until now every run started with somebody
   calling in — an inbound POST, an operator, an external cron holding

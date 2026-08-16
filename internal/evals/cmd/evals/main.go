@@ -52,7 +52,7 @@ func main() {
 		format   = flag.String("format", "text", "output format: text or json")
 		model    = flag.String("model", "", "judge tier: the model under test (default: the Anthropic default)")
 		grader   = flag.String("grader", "", "judge tier: the model that scores response_quality (default: the small Anthropic model)")
-		provider = flag.String("provider", "", "judge tier: anthropic or anthropic-vertex (default: whichever the environment provides)")
+		provider = flag.String("provider", "", "judge tier: gemini, anthropic, or anthropic-vertex (default: whichever the environment provides)")
 		baseline = flag.String("baseline", "", "a previous board (--format=json output) to report this run's delta against")
 		out      = flag.String("out", "", "also write the JSON board to this path, whatever --format prints")
 	)
