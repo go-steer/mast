@@ -23,9 +23,10 @@
 #   ANTHROPIC_VERTEX_PROJECT_ID=<project> dev/ci/evals-nightly.sh
 #
 # Exit status is the harness's: 0 for a complete board however low the
-# scores, 1 for a board that is short a row or has a metric scoring
-# nothing, 2 for a harness that could not run. The scores are never the
-# reason this fails — the judge tier reports, S/U/E gate.
+# scores, 1 for a board that is short a row, has a metric scoring
+# nothing, or priced a tiered specialist at the wrong rate, 2 for a
+# harness that could not run. The scores are never the reason this
+# fails — the judge tier reports, S/U/E gate.
 
 set -euo pipefail
 cd "$(dirname "$0")/../.."

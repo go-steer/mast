@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/differentiators"
+	"github.com/go-steer/mast/internal/evals/judge"
 )
 
 const repoRoot = "../../.."
@@ -141,6 +142,17 @@ func TestRun_JudgeTierRunsTheWholeCorpus(t *testing.T) {
 	// LC-13 is the one structurally-capped row; the rest must not be.
 	if len(sum.Judge.Ceilings) != 1 || sum.Judge.Ceilings[0].ID != "LC-13-rollback-needed-after-bad" {
 		t.Errorf("ceilings = %+v, want only LC-13", sum.Judge.Ceilings)
+	}
+	// Under echo there is nothing to price: the fake collapses every
+	// tier back onto itself. That is a skip the board has to state — an
+	// absent cost section would read as one that passed — and it is not
+	// a Problem, because the question, not mast, is what this
+	// configuration cannot answer.
+	if sum.Judge.Cost != nil {
+		t.Errorf("the offline fake produced a cost board: %+v", sum.Judge.Cost)
+	}
+	if sum.Judge.CostSkipped == "" {
+		t.Error("J-cost-tier was skipped without saying so; a silent skip reads as a pass")
 	}
 }
 
@@ -390,4 +402,81 @@ func TestSummary_WriteJSON(t *testing.T) {
 	if len(back.ExpectedFail) != len(sum.ExpectedFail) {
 		t.Errorf("expected-fail list = %v, want %v", back.ExpectedFail, sum.ExpectedFail)
 	}
+}
+
+// TestJudgeSummary_WriteCost covers the three states the cost section
+// can be in, because each one is a different claim to a reader skimming
+// a nightly: priced and correct, priced and wrong, or not priced at all.
+func TestJudgeSummary_WriteCost(t *testing.T) {
+	rows := []judge.ScopeCost{
+		{
+			Name: "analyst", Tier: "small", Resolved: "claude-haiku-4-5",
+			Ran:   []string{"claude-haiku-4-5-20251001"},
+			Calls: 3, Tokens: 4200, CostUSD: 0.0042,
+			WantRate: 0.001, GotRate: 0.001, AtParentRate: 0.315,
+		},
+		{
+			Name: "_synthesis", Tier: "frontier", Resolved: "claude-opus-4-7",
+			Ran:   []string{"claude-opus-4-7"},
+			Calls: 1, Tokens: 900, CostUSD: 0.0675,
+			WantRate: 0.075, GotRate: 0.075, AtParentRate: 0.0675,
+		},
+	}
+
+	t.Run("priced", func(t *testing.T) {
+		out := renderJudge(t, &JudgeSummary{
+			Model: "claude-opus-4-7", Cost: &judge.CostBoard{
+				Provider: "anthropic-vertex", RootModel: "claude-opus-4-7", RootRate: 0.075,
+				Scopes: rows,
+			},
+		})
+		for _, want := range []string{
+			"J-cost-tier",
+			"every tiered specialist was billed at its own rate",
+			"claude-haiku-4-5",
+			// The counterfactual is the number the row is about: what
+			// these tokens would have cost at the parent's rate.
+			"$0.31500",
+			"ran as claude-haiku-4-5-20251001",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("cost section is missing %q:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("mispriced", func(t *testing.T) {
+		bad := &judge.CostBoard{
+			Provider: "anthropic-vertex", RootModel: "claude-opus-4-7", RootRate: 0.075,
+			Scopes:   rows,
+			Findings: []string{"analyst ran on claude-haiku-4-5 but was billed at $0.07500/1K"},
+		}
+		out := renderJudge(t, &JudgeSummary{Model: "claude-opus-4-7", Cost: bad})
+		if !strings.Contains(out, "a tiered specialist was not billed at its own rate") {
+			t.Errorf("a mispriced board did not say so in its headline:\n%s", out)
+		}
+		if !strings.Contains(out, "PROBLEM: analyst ran on") {
+			t.Errorf("the finding was not printed:\n%s", out)
+		}
+	})
+
+	t.Run("skipped", func(t *testing.T) {
+		out := renderJudge(t, &JudgeSummary{
+			Model:       "echo",
+			CostSkipped: "judge: cost: J-cost-tier needs a live model: root model \"echo\" collapses every tier back to itself",
+		})
+		if !strings.Contains(out, "J-cost-tier: SKIPPED") {
+			t.Errorf("a skipped check left no trace in the report:\n%s", out)
+		}
+		if !strings.Contains(out, "not evidence that tiered pricing works") {
+			t.Errorf("the skip did not say what it is not evidence of:\n%s", out)
+		}
+	})
+}
+
+func renderJudge(t *testing.T, j *JudgeSummary) string {
+	t.Helper()
+	var buf bytes.Buffer
+	Summary{Tier: TierJudge, Judge: j}.WriteText(&buf)
+	return buf.String()
 }

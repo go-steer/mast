@@ -120,10 +120,20 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   which tools it reached for. It runs the 31-scenario corpus against a live
   model over a fixtured cluster and has a second model grade each response
   against the upstream rubric, then posts a board and a delta against the
-  previous night. It reports; it never gates — no score can fail a build,
-  and the only things it flags are a scenario that did not run and a metric
+  previous night. Scores report and never gate — no score can fail a build,
+  and what the tier flags instead is a scenario that did not run or a metric
   that scored nothing. Scenarios the tool surface cannot satisfy are listed
   as structural ceilings rather than folded into a low score.
+
+  One check on that board *is* pass/fail, because its verdict is arithmetic
+  rather than judgment: the nightly runs a two-specialist roster with one
+  specialist on `tier: small` and one on `tier: frontier`, then reads the
+  meter back and asks whether the cheap one's tokens were billed at the
+  cheap rate. Each row prints what those tokens would have cost at the root
+  model's rate beside what they did cost. This cannot be checked without a
+  provider — the offline fakes collapse every tier onto one model, so there
+  would be no two rates to compare — and when there is no live model the
+  check says it was skipped rather than passing quietly.
 - **Per-specialist model selection** — a specialist's `model:` is honored
   instead of inheriting the workload's, including across providers.
 - **Per-specialist budgets** — the `max_turns` and `max_cost_usd` a

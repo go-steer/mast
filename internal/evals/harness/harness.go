@@ -148,6 +148,13 @@ type Summary struct {
 	// broken — a metric that scores nothing, a scenario whose run never
 	// happened. A low score is never a Problem: J reports, it does not
 	// gate (docs/v0.3-plan.md §2).
+	//
+	// J-cost-tier's findings are Problems, and they are not an exception
+	// to that rule but an instance of it. What it checks is arithmetic
+	// over the meter's own numbers — a specialist whose tier resolved to
+	// the cheap model and whose tokens were billed at the parent's rate
+	// is a mast bug with a live reproduction, not a model having a bad
+	// day. Nothing about the verdict depends on what the model said.
 	Problems []string `json:"problems,omitempty"`
 }
 
