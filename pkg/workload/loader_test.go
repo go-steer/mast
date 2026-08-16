@@ -136,6 +136,15 @@ func TestLoad_Dispatch(t *testing.T) {
 		t.Errorf("Fanout.MaxConcurrency = %d, want 2", b.Fanout.MaxConcurrency)
 	}
 
+	bounded := writeBundle(t, "d.yaml", "name: x\ndispatch: bounded\nspecialists: [a]\n")
+	bb, err := workload.Load(bounded)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if bb.Dispatch != workload.DispatchBounded {
+		t.Errorf("Dispatch = %q, want %q", bb.Dispatch, workload.DispatchBounded)
+	}
+
 	silent := writeBundle(t, "c.yaml", "name: x\nspecialists: [a]\n")
 	sb, err := workload.Load(silent)
 	if err != nil {
@@ -157,6 +166,11 @@ func TestLoad_Errors(t *testing.T) {
 		{"duplicate", "name: x\nspecialists: [a, b, a]\n", "duplicate"},
 		{"bad mode", "name: x\nmode: nonsense\nspecialists: [a]\n", "unknown mode"},
 		{"bad dispatch", "name: x\ndispatch: sideways\nspecialists: [a]\n", "unknown dispatch"},
+		// The plausible typo, not just the absurd one: `bound` has to be
+		// refused by name, because a dispatch the loader shrugs at is a
+		// bundle that runs as a coordinator while its author believes it
+		// costs one call.
+		{"a near-miss dispatch", "name: x\ndispatch: bound\nspecialists: [a]\n", "unknown dispatch"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -85,7 +85,7 @@ agui:
 | `tool_catalog.tools[].precondition.args_from` | map | Arguments taken from the change itself: `{name: deployment}` reads *the read's* `name` from *this call's* `deployment`. This is what lets each call in a set be checked against its own object. |
 | `tool_catalog.tools[].precondition.fields` | list of strings | Dotted paths into the read's result that must not have moved. Omitted means the whole result is digested. For an MCP tool every path starts `output.` — that is how a structured MCP result arrives. |
 | `specialists[]` | list of strings | Specialist names; resolve against the config root's `specialists/*.tmpl`. A roster with a SingleTurn classifier plus a `_fallback` Task specialist enables graph dispatch. |
-| `dispatch` | string | The root shape this roster is built for: `coordinator`, `graph`, `fanout`, or `auto`. Empty leaves the choice to the caller. A shape is a property of the roster, not of how the daemon happened to be launched, so the bundle is where it belongs — `--dispatch` overrides it only when an operator actually typed the flag. |
+| `dispatch` | string | The root shape this roster is built for: `coordinator`, `graph`, `fanout`, `bounded`, or `auto`. Empty leaves the choice to the caller. `auto` never picks `bounded` — a cost ceiling is declared, never inferred. A shape is a property of the roster, not of how the daemon happened to be launched, so the bundle is where it belongs — `--dispatch` overrides it only when an operator actually typed the flag. |
 | `fanout.max_concurrency` | int | Under `dispatch: fanout`, how many analyst branches run at once. `0` (omitted) means the default, **4**; a negative value means unbounded. Ignored under any other dispatch. |
 | `budget` | block | See below. |
 | `hitl.require_approval` | bool | When true, every specialist result pauses on a durable RequestInput interrupt until an operator resumes with a verdict. |
@@ -146,6 +146,55 @@ The shipped [GKE triage bundle](/quickstart/unattended-triage/) is *not* a fan-o
 roster — it carries a change executor, and a branch check refuses even a
 declared one, since a branch has no gate to pause on — so fan-out ships its
 own read-only example at `examples/workloads/ns-audit`.
+
+## Bounded rosters
+
+`dispatch: bounded` is for the workload whose value is that it cannot get
+expensive: one cheap model call, a report forced to a schema, and a step
+count an operator can read off the meter rather than infer from how long
+the run took.
+
+```yaml
+dispatch: bounded
+specialists:
+  - incident-report
+```
+
+```yaml
+---
+# specialists/incident-report.tmpl
+description: Classifies one incident and returns the finding report.
+mode: SingleTurn
+tier: small
+output_schema: ../schemas/finding.json
+---
+```
+
+The roster is built as a single node with no orchestrator above it, so
+there is nothing in the shape that can delegate, retry, or take a second
+turn. The specialist's reply is validated against `output_schema:` before
+the turn ends — a model that answers in prose fails the run instead of
+returning an unparseable paragraph that reads like success.
+
+Four things are refused at startup, each naming what it found, because
+each one silently un-bounds the run:
+
+- **A roster that is not exactly one specialist.** The error prints the
+  count and the names.
+- **A specialist not in `SingleTurn` mode.** A Task specialist runs a
+  tool loop, which is however many calls it takes. A spec with no `mode:`
+  at all is reported as `Task (the default for a spec with no mode:)` —
+  the author wrote nothing and the default is what has to be named.
+- **A specialist with no `output_schema:`.** Without it, one call buys a
+  paragraph nothing downstream can read.
+- **`planner.enabled: true`.** The planner is the orchestrator the shape
+  is defined by not having.
+
+`dispatch: auto` never infers this shape: a one-specialist roster is an
+ordinary coordinator, and imposing a cost ceiling the bundle did not ask
+for is not a favor. The worked example is
+`examples/workloads/bounded-triage`, on the same `finding.json` report
+contract the [GKE triage bundle](/quickstart/unattended-triage/) uses.
 
 ## Per-specialist capability
 

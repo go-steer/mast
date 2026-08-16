@@ -254,6 +254,11 @@ const (
 	DispatchGraph = "graph"
 	// DispatchFanout is the concurrent-analysts + synthesis shape.
 	DispatchFanout = "fanout"
+	// DispatchBounded is the one-call shape: a single SingleTurn
+	// specialist with a declared output_schema, no router and no tool
+	// loop, so the cost of a cycle is a constant an operator can read
+	// off the bundle. Never inferred — a roster has to ask for it.
+	DispatchBounded = "bounded"
 	// DispatchAuto picks a shape from the roster.
 	DispatchAuto = "auto"
 )

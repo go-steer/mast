@@ -1,6 +1,6 @@
 ---
 title: Workloads and specialists
-description: The workload bundle as the unit of deployment, what a specialist declares about itself, and the three dispatch shapes a roster can be built for.
+description: The workload bundle as the unit of deployment, what a specialist declares about itself, and the four dispatch shapes a roster can be built for.
 sidebar:
   order: 1
 ---
@@ -59,7 +59,8 @@ Five of those lines are worth understanding as concepts rather than fields:
 - **`mode`** — `Task` runs a full tool-calling loop until the specialist
   calls `finish_task`. `SingleTurn` answers in exactly one model call and
   carries no tools, which is what makes it the right shape for a
-  classifier. `Chat` is the conversational mode used by operator-facing
+  classifier — and the only mode a `bounded` roster accepts. `Chat` is the
+  conversational mode used by operator-facing
   surfaces.
 - **`capability`** — `read_only` (the default) or `change_executor`. This
   is enforced at construction, not by the prompt; see
@@ -78,9 +79,9 @@ Five of those lines are worth understanding as concepts rather than fields:
 Exact semantics and every field: [workload bundle
 reference](/reference/workload-bundle/).
 
-## Three dispatch shapes
+## Four dispatch shapes
 
-The same roster can be driven three ways. The shape belongs to the roster —
+The same roster can be driven four ways. The shape belongs to the roster —
 a bundle declares `dispatch:`, and `--dispatch` overrides it only when an
 operator actually typed the flag — because whether a roster is safe to run
 concurrently is a property of the roster, not of how the daemon happened to
@@ -144,6 +145,31 @@ The shipped GKE triage roster is deliberately one of the refused ones: it
 carries a change executor. Fan-out ships its own read-only example
 (`examples/workloads/ns-audit`) rather than converting the anchor.
 
+### `bounded` — one cheap call, one schema-forced report
+
+A roster of exactly one `SingleTurn` specialist, built as a single node
+with nothing above it. There is no orchestrator in the shape, so there is
+nothing that can delegate, retry, or take a second turn: the run is one
+model call, and `Result.Usage.ModelCalls`, the daemon's
+`session_model_calls` log field, and `mast_model_calls_total` all say `1`.
+The specialist declares an `output_schema:`, and its reply is validated
+against that schema before the turn ends.
+
+Best when a workload's value *is* that it cannot get expensive — a
+standing classification that runs on a trigger and must cost a known,
+small amount. Pair it with `tier: small` so the price is portable across
+providers instead of pinned to one vendor's id.
+
+Four things are refused at startup, because each one silently un-bounds
+the run: a roster that is not exactly one specialist (the error prints the
+count and the names), a specialist not in `SingleTurn` mode, a specialist
+with no `output_schema:`, and `planner.enabled: true` — the planner being
+the orchestrator this shape is defined by not having.
+
+`dispatch: auto` **never infers this shape.** A one-specialist roster is an
+ordinary coordinator, and a cost ceiling nobody declared is not a favor.
+The example is `examples/workloads/bounded-triage`.
+
 ## Choosing
 
 | You want… | Shape |
@@ -151,6 +177,7 @@ carries a change executor. Fan-out ships its own read-only example
 | One incident, one right specialist, cheap and repeatable routing | `graph` |
 | Judgment in the routing, or several specialists on one incident | `coordinator` |
 | Breadth over routing — audit everything, merge into one report | `fanout` |
+| A provable ceiling — one cheap call, a report forced to a schema | `bounded` |
 
 There is also a `planner` scaffold — a supervisor-body root whose
 `run_shape_*` vocabulary returns `not_implemented` until the reference-graph
@@ -169,6 +196,9 @@ error naming the file rather than an incident that behaves oddly:
   running provider cannot answer → refused
 - a spec declaring both `model:` and `tier:` → refused, with the file named
 - a malformed `output_schema` document → refused, with the file named
+- a bounded roster that is not exactly one `SingleTurn` specialist with an
+  `output_schema:`, or one that also enables the planner → refused, naming
+  what it found
 - a graph roster with no classifier or no `_fallback` → not routable
 
 Startup also logs every `change_executor` in the roster, so "which

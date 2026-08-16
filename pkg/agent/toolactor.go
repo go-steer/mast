@@ -170,6 +170,21 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 			yield(functionCall(deleg, map[string]any{"request": reason}, usage), nil)
 			return
 		}
+		// No tools and a forced output schema: the bounded shape (W4.3),
+		// where the one call has to return the report itself. Checked
+		// ahead of the classifier arm below because both are SingleTurn
+		// turns and only the schema tells them apart — a bare reason word
+		// would fail validation and take the run down with it.
+		if reply, ok := structuredReply(req, reason); ok {
+			yield(&model.LLMResponse{
+				Content:       genai.NewContentFromText(reply, genai.RoleModel),
+				UsageMetadata: usage,
+				TurnComplete:  true,
+				FinishReason:  genai.FinishReasonStop,
+			}, nil)
+			return
+		}
+
 		// No tools at all: a SingleTurn agent — mast's LLM-as-router
 		// classifier. Reply with the bare incident reason so graph
 		// dispatch routes to the real per-failure-mode specialist

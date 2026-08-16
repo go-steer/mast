@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **New: `dispatch: bounded` — one cheap model call, a report forced to a
+  schema, and a step count you can read off the meter** (#132, W4.3). Some
+  workloads exist to answer one question on a schedule, and their whole
+  value is that they cannot get expensive. Running them under
+  `coordinator` gave you a plausible-looking cheap run and no way to prove
+  it: the shape allowed delegation, retries and follow-up turns, so "this
+  costs one call" was a hope about a prompt rather than a property of the
+  build.
+
+  A bounded workload is a fourth dispatch shape — a roster of exactly one
+  `SingleTurn` specialist, built as a single node with no orchestrator
+  above it:
+
+  ```yaml
+  # workload.yaml
+  dispatch: bounded
+  specialists:
+    - incident-report
+  ```
+
+  ```yaml
+  ---
+  # specialists/incident-report.tmpl
+  description: Classifies one incident and returns the finding report.
+  mode: SingleTurn
+  tier: small
+  output_schema: ../schemas/finding.json
+  ---
+  ```
+
+  The specialist gets no tools, one turn, and its reply is validated
+  against `output_schema:` before the turn ends — a model that answers in
+  prose fails the run rather than returning an unparseable paragraph that
+  looks like success. `Result.Usage.ModelCalls` is `1`, the daemon logs
+  `"session_model_calls":1`, and `mast_model_calls_total` advances by one:
+  the count comes off the meter, not off a stopwatch or a token estimate.
+
+  **The refusals are the shape.** A roster with two specialists, a spec
+  left in the default Task mode, a spec with no `output_schema:`, or a
+  bundle that also enables the planner is a startup error naming what it
+  found — the count and the names, or `Task (the default for a spec with
+  no mode:)` for the author who wrote nothing. None of it is inferred:
+  `dispatch: auto` never picks `bounded`, because a one-specialist roster
+  is an ordinary coordinator and a cost ceiling nobody asked for is not a
+  favor.
+
+  `examples/workloads/bounded-triage` is the worked example, on the same
+  `finding.json` report contract the GKE triage bundle uses.
+
 - **The nightly now checks that a cheap tier is actually billed cheaply**
   (#132, W0.6). "A tiered specialist's tokens are priced at the model it
   ran on" has been true since v0.3 and unit-tested since, but it could

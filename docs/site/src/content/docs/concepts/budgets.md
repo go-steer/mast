@@ -59,7 +59,7 @@ event — rather than by execution branch. That is not a detail you would
 guess: under `coordinator` dispatch the branch field is empty, so
 branch-based attribution silently attributes everything to the root and
 per-specialist ceilings never trip. Author-based attribution works across
-all three dispatch shapes.
+every dispatch shape.
 
 ## Two limits worth knowing
 

@@ -20,9 +20,12 @@ package mast_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"google.golang.org/genai"
 
 	adksession "google.golang.org/adk/v2/session"
 
@@ -127,6 +130,94 @@ func TestRunWorkloadCoordinatorShape(t *testing.T) {
 	}
 	if res.Usage.ModelCalls != 1 {
 		t.Errorf("Usage.ModelCalls = %d, want 1 (coordinator only)", res.Usage.ModelCalls)
+	}
+}
+
+// boundedBundle is the W4.3 shape as a library consumer would build it:
+// one SingleTurn specialist that declares a report contract, and a
+// bundle that asks for `bounded` by name (auto never infers it).
+func boundedBundle() (workload.Bundle, []specialists.Spec) {
+	bundle := workload.Bundle{
+		Name:        "bounded_triage",
+		Description: "One-call triage for the library API test.",
+		Dispatch:    workload.DispatchBounded,
+		Specialists: []string{"incident-report"},
+	}
+	specs := []specialists.Spec{{
+		Name:        "incident-report",
+		Description: "Reads one incident envelope and returns one finding.",
+		Mode:        specialists.ModeSingleTurn,
+		Instruction: "Return one finding for the incident envelope.",
+		OutputSchema: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"severity": {Type: genai.TypeString, Enum: []string{"critical", "warning", "info"}},
+				"title":    {Type: genai.TypeString},
+				"reason":   {Type: genai.TypeString},
+			},
+			Required: []string{"severity", "title", "reason"},
+		},
+	}}
+	return bundle, specs
+}
+
+// TestRunWorkloadBoundedShape is W4.3's cost claim, asserted where the
+// claim is actually made: the meter. One SingleTurn specialist, one
+// model call, and a reply that parses as the declared report — no
+// router turn in front of it and no tool loop under it to add a second.
+//
+// The count is read off Result.Usage.ModelCalls rather than inferred
+// from latency or token totals. Both of those move with the model, the
+// prompt and the machine; only the meter counts calls, and it is the
+// same number the daemon logs as session_model_calls and exports as
+// mast_model_calls_total.
+func TestRunWorkloadBoundedShape(t *testing.T) {
+	bundle, specs := boundedBundle()
+	res, err := mast.RunWorkload(context.Background(), mast.Config{ModelName: "echo"},
+		bundle, specs, injectInput)
+	if err != nil {
+		t.Fatalf("RunWorkload: %v", err)
+	}
+	if res.Usage.ModelCalls != 1 {
+		t.Errorf("Usage.ModelCalls = %d, want 1 (the whole point of the bounded shape)", res.Usage.ModelCalls)
+	}
+	// Structured output is forced by the provider here, not by a
+	// finish_task declaration, and ADK validates the reply text before
+	// the turn ends. Parsing it is how this test tells "the schema was
+	// in force" apart from "the fake happened to answer".
+	var report map[string]any
+	if err := json.Unmarshal([]byte(res.Output), &report); err != nil {
+		t.Fatalf("Output is not the declared JSON report: %v (output %q)", err, res.Output)
+	}
+	for _, field := range []string{"severity", "title", "reason"} {
+		if _, ok := report[field]; !ok {
+			t.Errorf("report is missing required field %q: %v", field, report)
+		}
+	}
+	if got := report["severity"]; got != "critical" {
+		t.Errorf("severity = %v, want the first enum value (deterministic offline fixture)", got)
+	}
+}
+
+// TestRunWorkloadBoundedRefusesATwoSpecialistRoster: the refusal is the
+// feature. A second specialist needs something to choose between them,
+// and that chooser is the model call this shape exists not to spend —
+// so the roster is refused at construction rather than quietly costing
+// more than the bundle says it does.
+func TestRunWorkloadBoundedRefusesATwoSpecialistRoster(t *testing.T) {
+	bundle, specs := boundedBundle()
+	bundle.Specialists = append(bundle.Specialists, "second-opinion")
+	second := specs[0]
+	second.Name = "second-opinion"
+	specs = append(specs, second)
+
+	_, err := mast.RunWorkload(context.Background(), mast.Config{ModelName: "echo"},
+		bundle, specs, injectInput)
+	if err == nil {
+		t.Fatal("RunWorkload accepted a two-specialist bounded roster; want refusal")
+	}
+	if !strings.Contains(err.Error(), "2 specialists") || !strings.Contains(err.Error(), "second-opinion") {
+		t.Errorf("error = %q, want it to name what it found", err)
 	}
 }
 
