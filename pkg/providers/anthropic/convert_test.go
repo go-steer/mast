@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 )
 
@@ -619,5 +621,66 @@ func TestToolsParam_NormalizesGenaiTypeEnums(t *testing.T) {
 	loose, _ := props["loose"].(map[string]any)
 	if _, present := loose["type"]; present {
 		t.Errorf(`loose.type = %v, want absent (TYPE_UNSPECIFIED drops the key)`, loose["type"])
+	}
+}
+
+// scaleArgs is the args struct for the tool built in the test below.
+// Deliberately shaped like a real mutating tool: two arguments of
+// different types, one required by virtue of having no omitempty
+// sibling semantics in the generated schema.
+type scaleArgs struct {
+	Deployment string `json:"deployment"`
+	Replicas   int    `json:"replicas"`
+}
+
+type declarer interface {
+	Declaration() *genai.FunctionDeclaration
+}
+
+// TestToolsParam_ADKFunctionToolCarriesItsParameters is a regression
+// test for the silent-degradation bug where every mast-authored tool
+// reached Claude with an empty input schema.
+//
+// It builds the declaration with functiontool.New rather than by hand,
+// which is the whole point: the bug was that ADK v2 populates
+// ParametersJsonSchema and leaves Parameters nil, and a hand-built
+// genai.Schema fixture (as in the test above) exercises the branch
+// that always worked. On pre-fix code this fails with an empty
+// properties map.
+func TestToolsParam_ADKFunctionToolCarriesItsParameters(t *testing.T) {
+	t.Parallel()
+	ft, err := functiontool.New(functiontool.Config{
+		Name:        "scale_deployment",
+		Description: "scale a deployment",
+	}, func(ctx adkagent.Context, a scaleArgs) (map[string]any, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("functiontool.New: %v", err)
+	}
+	d, ok := ft.(declarer)
+	if !ok {
+		t.Fatalf("%T does not expose Declaration()", ft)
+	}
+	decl := d.Declaration()
+	if decl.Parameters != nil {
+		t.Fatalf("ADK populated the typed Parameters field; this test no longer covers the ParametersJsonSchema path")
+	}
+
+	tools, err := toolsParam(&genai.GenerateContentConfig{
+		Tools: []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{decl}}},
+	})
+	if err != nil {
+		t.Fatalf("toolsParam: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("got %d tools, want 1", len(tools))
+	}
+	props, ok := tools[0].OfTool.InputSchema.Properties.(map[string]any)
+	if !ok {
+		t.Fatalf("InputSchema.Properties is %T, want map[string]any", tools[0].OfTool.InputSchema.Properties)
+	}
+	for _, want := range []string{"deployment", "replicas"} {
+		if _, present := props[want]; !present {
+			t.Errorf("input schema is missing the %q argument — Claude cannot see it (properties=%v)", want, props)
+		}
 	}
 }
