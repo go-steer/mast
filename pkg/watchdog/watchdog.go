@@ -41,10 +41,11 @@
 //     extension — see failure.go. Kept optional rather than folded
 //     into Watchdog so a third-party implementation doesn't break to
 //     gain one signal.
-//   - "Warn" mode only: alerts are logged by the bridge's caller and
-//     surfaced on the attach guardrail endpoint. No interactive
-//     prompt, no auto-escalation, no model swap, and no halt — a
-//     tripped signal never stops a turn.
+//   - Two postures (enforce.go). "Warn": alerts are logged by the
+//     bridge's caller and surfaced on the attach guardrail endpoint,
+//     and nothing stops. "Enforce": a Critical alert halts the turn
+//     in flight and refuses the next one until an operator resets,
+//     mirroring the budget kill switch.
 //
 // Future scope (deferred — see design doc §"Piece 2"):
 //
@@ -54,10 +55,6 @@
 //     turn, which is the only party that can stop making the call.
 //     core-agent shipped this as its #159; mast's port is sequenced
 //     behind these detectors (see docs/sibling-sync.md).
-//   - "Enforce" mode: a Critical alert halts the agent until an
-//     operator resets, mirroring the budget kill switch. Until it
-//     lands, every signal here is Warn — severity that nothing acts on
-//     is a label, and a Critical that halts nothing reads as a bug.
 //   - "Prompt" mode: pause turn, ask operator y/n via the existing
 //     permissions prompter, resume on either path.
 //   - "Auto" mode: escalate to a frontier model without operator
@@ -77,9 +74,17 @@ import (
 	"sync"
 )
 
-// Severity classifies the urgency of an alert. Warn is the operator-
-// visible-but-not-action-blocking level v1 emits; the others are
-// reserved for future modes that pause or escalate automatically.
+// Severity classifies the urgency of an alert. Warn is operator-
+// visible but never action-blocking. Critical marks a runaway the
+// deployment should act on: under ModeEnforce a Critical alert halts
+// the turn in flight and refuses the next one until an operator
+// resets (see enforce.go), while under ModeWarn it is logged like any
+// other alert.
+//
+// Severity is an intrinsic property of the pattern, not of the wiring.
+// A tool loop is a runaway whether or not anything is configured to
+// stop it, so the signal reports Critical either way and the mode
+// decides the reaction.
 type Severity string
 
 const (
@@ -288,8 +293,11 @@ func (s *RepeatedToolCallSignal) ObserveToolCall(tc ToolCall) *Alert {
 	if s.runLength >= s.Threshold && !s.tripped {
 		s.tripped = true
 		return &Alert{
-			Signal:   s.Name(),
-			Severity: SeverityWarn,
+			Signal: s.Name(),
+			// Critical: a run of identical calls is a runaway, not
+			// advisory noise. Under ModeEnforce this halts the turn;
+			// under ModeWarn it is logged like any other alert.
+			Severity: SeverityCritical,
 			Reason: fmt.Sprintf(
 				"agent has called %s with identical args %d times in a row — possible tool loop. Args: %s. If the agent is stuck, POST /sessions/{id}/interrupt on the attach surface. The workload's budget ceiling is the hard backstop.",
 				tc.Name, s.runLength, truncate(tc.Args, 200),

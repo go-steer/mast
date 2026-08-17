@@ -34,10 +34,12 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	adksession "google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/pkg/watchdog"
 )
 
 // blockableModel yields one text response, optionally parking until
@@ -103,11 +105,18 @@ type turnHarness struct {
 
 func newTurnHarness(t *testing.T, m model.LLM) *turnHarness {
 	t.Helper()
+	return newTurnHarnessOpts(t, m, watchdog.ModeWarn)
+}
+
+// newTurnHarnessOpts is the same stack with the watchdog posture (and
+// any tools the fake model calls) spelled out.
+func newTurnHarnessOpts(t *testing.T, m model.LLM, mode watchdog.Mode, tools ...tool.Tool) *turnHarness {
+	t.Helper()
 	h := &turnHarness{
 		svc:    adksession.InMemoryService(),
 		locks:  newSessionTurnLocks(),
 		meters: newMeterPool(nil, nil, "", "test-model"),
-		wds:    newWatchdogPool(),
+		wds:    newWatchdogPool(mode),
 		obs:    observability.New(),
 	}
 	h.obs.Prime("(test)")
@@ -117,6 +126,7 @@ func newTurnHarness(t *testing.T, m model.LLM) *turnHarness {
 		Name:        "pause_abort_agent",
 		Description: "chokepoint test agent",
 		Model:       m,
+		Tools:       tools,
 	})
 	if err != nil {
 		t.Fatalf("llmagent.New: %v", err)

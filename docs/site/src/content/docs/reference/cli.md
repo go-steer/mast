@@ -25,6 +25,7 @@ runner, and the session store.
 | `--timeout` | `5m` | One-shot turn deadline (`2m`, `90s`, …); `0` disables. One-shot only — serve-mode wallclock ceilings come from workload budgets. An unresponsive backend (or a provider SDK silently retrying on quota errors) fails loudly instead of hanging a script. |
 | `--auto-resume` | `true` | On boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (see [boot-time auto-resume](#boot-time-auto-resume)). `--auto-resume=false` disables. Serve mode only; needs `--session-db` (in-memory sessions never survive a restart). |
 | `--auto-resume-window` | `1h` | Only auto-resume sessions interrupted within this window; older interruptions are left for an operator. `0` disables the freshness gate. Serve mode only. |
+| `--watchdog` | `warn` | Behavioral-watchdog posture. `warn` logs a detected tool loop and lets the turn run. `enforce` cancels the turn in flight on a **Critical** alert (`repeated-tool-call`, `alternating-tool-cycle`) and refuses the session's every subsequent turn until `POST /sessions/{id}/guardrails/reset`. Detection is identical either way — only the reaction changes. Applies to serve *and* one-shot mode; a one-shot has no session to refuse, so the halt just ends the turn. See [the watchdog signals](/concepts/interop/#attach--the-operators-live-view). |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` (JSON logs on stderr). |
 | `--version` | — | Print version and exit. |
 

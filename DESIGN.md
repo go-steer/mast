@@ -92,7 +92,7 @@ the version named in the library API design's import-surface table.
 | `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. |
 | `pkg/permissions` | Permission gate + prompt contract (ported; deliberately not runtime-wired in v0.1 — the package doc records the wiring-time inputs). |
 | `pkg/auth` | Caller identity, session ACL types, bearer/mTLS config (ported). |
-| `pkg/watchdog` | Repeated-tool-call signal + session-event bridge; alerts logged in v0.1 (model-context routing is later work). |
+| `pkg/watchdog` | Loop signals (repeated call, alternating cycle, tool-failure streak) + session-event bridge + the `warn`/`enforce` posture (`--watchdog`); alerts are logged and projected onto the guardrail surface (model-context routing is later work). |
 
 **Providers** — reshaped at port time (per-provider Options structs,
 no registry; dispatch is an explicit switch in `internal/compose`)

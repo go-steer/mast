@@ -32,6 +32,7 @@ import (
 	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -675,7 +676,7 @@ func newAGUIBackendPlanner(t *testing.T, m model.LLM) *aguiBackend {
 		workloadName: "(test)",
 		r:            r,
 		meters:       newMeterPool(nil, nil, "", "test-model"),
-		wds:          newWatchdogPool(),
+		wds:          newWatchdogPool(watchdog.ModeWarn),
 		turnLocks:    newSessionTurnLocks(),
 	}
 }

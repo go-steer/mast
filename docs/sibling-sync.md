@@ -160,7 +160,7 @@ The port ships as five PRs rather than one, because each changes what an operato
 | PR | upstream | what it adds |
 |---|---|---|
 | A | `317e18e`, `ef7dfb6` | **ported 2026-08-17.** Cycle detection, path-canonicalized args, tool-failure-streak, and result observation at the bridge. |
-| B | `635a9eb`, `6510a65` | enforce mode + in-turn halt — flips the loop detectors to Critical. |
+| B | `635a9eb`, `6510a65` | **ported 2026-08-17.** Enforce mode + in-turn halt — flips the loop detectors to Critical. |
 | C | `e42a511` | alert→model routing (`Alert.Guidance`, feedback mode). The reclassification lands with this one. |
 | D | `5682659` | safe autonomous defaults + `safety.watchdog` config. |
 | E | `4ac0337` | trip state that survives a restart. |
@@ -195,7 +195,7 @@ outstanding from the drift detector.
 
 ## What this triage changed
 
-Nine changes landed as a direct result, in five PRs.
+Eleven changes landed as a direct result, in six PRs.
 
 **[#154](https://github.com/go-steer/mast/pull/154) — the Anthropic tool-parameter bug.** Triaging
 `b98803c` turned up the same defect live in mast: every tool mast defines reached Claude as
@@ -288,6 +288,36 @@ from `NewDefaultWatchdog` and `matches` reverted to a literal args compare, ever
 fails with "alerts = []". The detectors are reachable from the shipped default, not merely
 constructible.
 
+**PR B of the watchdog cluster — `635a9eb` + `6510a65`.** `--watchdog=enforce` exists, and the
+default stays `warn`. The two commits are one shipment because `635a9eb` alone is close to
+useless in mast: mast's runaway shape is a loop *inside* a single turn — model calls a tool, the
+flow runs it and calls the model again, all within one `Run` — and a turn-boundary drain neither
+fires while that happens nor at all if the turn never ends. `6510a65` is the fix upstream shipped
+after hitting exactly that, and it also closes a real gap in mast's *warn* mode: before it, a
+looping session logged nothing until it stopped looping.
+
+Three adaptations. **Where the state lives:** upstream hangs enforce state off its `Agent` struct
+(`WithWatchdogEnforce`, `preflightWatchdog`, `ResetWatchdog`); mast has no `Agent`, so it is a
+`watchdog.Enforcer` the daemon holds per session in `watchdogPool`, and the halt itself is the
+caller's existing `cancel()` — the same handle a budget trip and an operator abort already use.
+The package decides *whether* a session is halted and why; it never decides how a turn dies.
+**Where the refusal sits:** at the `runTurnPre` chokepoint, after the abort/gate-pause checks, so
+auto-resume, a scheduled fire, and an attach inject are all refused by construction rather than
+by each caller remembering to ask. **Who names the remedy:** `NewEnforcer` takes the remedy
+sentence, because the daemon can name the session's own reset endpoint and a one-shot has none to
+name — the same posture applies to one-shot mode, where the halt just ends the turn.
+
+Severity moves with this PR, not against it: `repeated-tool-call` and `alternating-tool-cycle`
+become Critical, `tool-failure-streak` stays Warn per the adaptation above. Severity is a property
+of the pattern, so it is asserted in `pkg/watchdog` tests independently of any posture.
+
+Both arms were checked against pre-fix behavior. Neutering the in-turn drain (`if false &&
+observed`) makes the drain tests fail on timing rather than on outcome — the alert arrives at
+event 20 instead of event 5, and the halt test consumes 500 events instead of ~5. Neutering the
+chokepoint preflight alone still fails `TestWatchdogEnforceRefusesEverySubsequentTurn`, because
+the refusal then comes from the post-loop check as a plain error rather than as `ErrConflict` —
+the session is stopped, but a caller cannot tell a halted session from a failed turn.
+
 ---
 
 ## Observations that are not drift
@@ -309,7 +339,10 @@ Two things this triage surfaced that the detector cannot see, recorded so they a
 
 ## Baseline after this triage
 
-The report goes **48 → 40** commits across **53 → 45** files. `pkg/pricing` drops to zero;
+The report goes **48 → 40** commits across **53 → 47** files. (The file count *rose* by two as
+PR B added trailered files to a package that still reports drift — a port that adds files to a
+behind-baseline package widens the denominator without widening the backlog. The commit count is
+the signal.) `pkg/pricing` drops to zero;
 `pkg/modeltier` to 2 and `pkg/taskclass` to 1, all of which are the `f054590` / `09b6cd1`
 **ahead** rows — upstream commits that post-date the `cafe310` port SHA and whose content mast
 already has. Those three will keep reporting until mast next re-ports from a SHA at or after them,
@@ -320,12 +353,12 @@ moved to `e7a21da` — the per-file trailer is what the detector reads, so a pac
 several baselines at once and the aggregate row says so. `pkg/providers/vertexcache` drops to
 zero: the package is fully current with upstream as of `c319565`.
 
-The watchdog cluster does not move the count yet, on purpose. PR A ports `317e18e` and `ef7dfb6`
-into new files that carry those SHAs as their own baselines, but `pkg/watchdog/watchdog.go` and
-`bridge.go` — the files the detector maps those commits onto — stay at `b8dd225` until PR E. A
-partial port does not bump a baseline; bumping mid-cluster would silence the four commits still
-outstanding, which is precisely the lie the trailer scheme exists to prevent. `pkg/watchdog` goes
-to zero when the cluster closes, in one bump to `6510a65`.
+The watchdog cluster does not move the count yet, on purpose. PRs A and B port `317e18e`,
+`ef7dfb6`, `635a9eb`, and `6510a65` into new files that carry those SHAs as their own baselines,
+but `pkg/watchdog/watchdog.go` and `bridge.go` — the files the detector maps those commits onto —
+stay at `b8dd225` until PR E. A partial port does not bump a baseline; bumping mid-cluster would
+silence the commits still outstanding, which is precisely the lie the trailer scheme exists to
+prevent. `pkg/watchdog` goes to zero when the cluster closes, in one bump to `6510a65`.
 
 40 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next

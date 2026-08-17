@@ -67,6 +67,7 @@ type oneShotOptions struct {
 	SessionDrv string // sqlite | postgres
 	Prompt     string
 	Timeout    time.Duration // whole-turn deadline; 0 = none
+	Watchdog   watchdog.Mode // "" = warn
 }
 
 // runOneShot runs one turn of the class-shaped agent to completion and
@@ -176,10 +177,23 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// Watchdog tap (pkg/watchdog): one turn, so a fresh watchdog per
 	// invocation; alerts are logged on stderr like every other log line
 	// (the model-context routing is bucket-3 per docs/fork-design.md).
+	//
+	// --watchdog=enforce applies here too. A one-shot is a single turn,
+	// so "refuse the next one" has nothing to refuse — but the loop the
+	// watchdog catches happens *inside* a turn, and a one-shot burning
+	// its --timeout on the same tool call 200 times is precisely the
+	// bill enforce mode exists to stop. The remedy is empty because
+	// there is no operator surface to reset through: the process ends.
 	wd := watchdog.NewDefaultWatchdog()
+	enf := watchdog.NewEnforcer(opts.Watchdog, "")
 	onAlert := func(a watchdog.Alert) {
 		logger.Warn("watchdog alert", "task", opts.Class, "session", sessionID,
 			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
+		if enf.Observe(a) {
+			_, reason := enf.Tripped()
+			logger.Error("WATCHDOG HALT — stopping the turn",
+				"task", opts.Class, "session", sessionID, "signal", a.Signal, "reason", reason)
+		}
 	}
 
 	var lastOutput any
@@ -194,6 +208,12 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 				return fmt.Errorf("turn exceeded --timeout %s after %d events (raise --timeout or pass --timeout=0 to disable): %w", opts.Timeout, events, err)
 			}
 			return fmt.Errorf("turn failed after %d events: %w", events, err)
+		}
+		// Tap drains alerts before it yields, so a halt raised by this
+		// event is already visible: returning here abandons the stream
+		// mid-turn, which is the one-shot's cancel.
+		if terr := enf.Preflight(); terr != nil {
+			return fmt.Errorf("turn halted after %d events: %w", events, terr)
 		}
 		events++
 		logEvent(logger, event, sessionID)

@@ -133,8 +133,11 @@ func (s *AlternatingCycleSignal) ObserveToolCall(tc ToolCall) *Alert {
 
 	seq := strings.Join(s.names[len(s.names)-period:], " → ")
 	return &Alert{
-		Signal:   s.Name(),
-		Severity: SeverityWarn,
+		Signal: s.Name(),
+		// Critical for the same reason the consecutive-repeat signal
+		// is: this is a runaway. It is also the harder one to see from
+		// a log, which is the argument for letting a posture stop it.
+		Severity: SeverityCritical,
 		Reason: fmt.Sprintf(
 			"agent has repeated the same %d-call sequence (%s) %d times with identical args — possible tool loop that the consecutive-repeat detector cannot see. If the agent is stuck, POST /sessions/{id}/interrupt on the attach surface. The workload's budget ceiling is the hard backstop.",
 			period, seq, s.Cycles,

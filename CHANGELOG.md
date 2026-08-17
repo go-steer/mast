@@ -120,10 +120,50 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   aggregator re-emits both and a double-counted failure would trip the
   streak at half its threshold.
 
-  All three signals stay **Warn**: mast's watchdog annotates a session,
-  it does not stop one. Ported from core-agent's #679 and #690 — the
-  first two of seven; see `docs/sibling-sync.md` for the rest of the
-  cluster and the sync-classification call that unblocked it.
+  Ported from core-agent's #679 and #690 — the first two of seven; see
+  `docs/sibling-sync.md` for the rest of the cluster and the
+  sync-classification call that unblocked it.
+
+- **`--watchdog=enforce`: the loop detector can now stop the loop, in
+  the turn where it is happening.** The default is unchanged
+  (`--watchdog=warn`, log and keep going), because a false positive
+  that stops an unattended incident responder mid-triage is worse than
+  one that annotates it. What is new is that the other posture exists,
+  and that choosing it does something during the incident rather than
+  after.
+
+  Two things had to change for it to be worth having. First, alerts now
+  drain **in-turn** — as soon as an observation lands — not only at the
+  turn boundary. The loop the watchdog catches lives *inside* one turn:
+  the model emits a tool call, the flow runs it and calls the model
+  again, all within a single `Run`. A turn-boundary drain never fires
+  while that is happening, and never at all if the turn does not end.
+  That was a real gap in warn mode too — a looping session logged
+  nothing until it stopped looping. Second, `repeated-tool-call` and
+  `alternating-tool-cycle` are **Critical**; `tool-failure-streak`
+  stays **Warn**, deliberately, because stopping a daemon three denials
+  into a legitimate RBAC probe would make the backstop the outage.
+  Severity is a property of the pattern; the posture decides the
+  reaction.
+
+  Under enforce, the first Critical alert cancels the turn through the
+  same context handle a budget trip and an operator abort use, and the
+  session refuses **every** subsequent turn — auto-resume, a scheduled
+  fire, an attach inject — at the `runTurnPre` chokepoint, until
+  `POST /sessions/{id}/guardrails/reset`. Structural, not advisory: a
+  refusal only at the entry point an operator happens to use is a
+  refusal that auto-resume walks straight through, re-driving the loop
+  that tripped it. Turns that end this way are counted as
+  `watchdog_halt` on `mast_turns_total`, and
+  `GET /sessions/{id}/guardrails` reports `advisory: false` under
+  enforce whether or not it has fired yet — "will this thing stop my
+  agent?" is the question the field answers.
+
+  Upstream keeps this state on its `Agent` struct; mast has no `Agent`,
+  so it lives in a `watchdog.Enforcer` the daemon holds per session and
+  the halt itself is the caller's `cancel()`. The package decides
+  *whether* a session is halted and why; it never decides how a turn
+  dies. Ported from core-agent's #628 and #719.
 
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an

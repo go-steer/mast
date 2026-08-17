@@ -166,7 +166,12 @@ func (s *ToolFailureStreakSignal) ObserveToolResult(tr ToolResult) *Alert {
 	s.tripped = true
 	tools := distinctNames(s.names)
 	return &Alert{
-		Signal:   s.Name(),
+		Signal: s.Name(),
+		// Warn, deliberately, now that ModeEnforce exists and halts on
+		// Critical: stopping a daemon three denials into a legitimate
+		// RBAC probe would make the backstop the outage. An evidence
+		// gap needs a reader, not a kill switch. Runaway behavior is
+		// what the loop detectors escalate.
 		Severity: SeverityWarn,
 		Reason: fmt.Sprintf(
 			"%d tool calls in a row failed with no successful call in between (%s). The agent has no tool-verified evidence about the state it is being asked to report on; treat its next answer as unverified. Last error: %s",

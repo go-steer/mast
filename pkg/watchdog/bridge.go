@@ -57,10 +57,13 @@ import (
 // be skipping the observation entirely, which silently weakens
 // the signal. Better to compare on the placeholder than miss
 // observations.
-func ObserveEvent(w Watchdog, ev *session.Event, seen map[string]struct{}) {
+// Reports whether any observation actually landed, which is what
+// gates Tap's in-turn drain: a signal cannot newly trip without one.
+func ObserveEvent(w Watchdog, ev *session.Event, seen map[string]struct{}) bool {
 	if w == nil || ev == nil || ev.Content == nil {
-		return
+		return false
 	}
+	observed := false
 	for _, p := range ev.Content.Parts {
 		if p == nil || p.FunctionCall == nil {
 			continue
@@ -74,11 +77,13 @@ func ObserveEvent(w Watchdog, ev *session.Event, seen map[string]struct{}) {
 			continue
 		}
 		seen[key] = struct{}{}
+		observed = true
 		w.ObserveToolCall(ToolCall{
 			Name: p.FunctionCall.Name,
 			Args: args,
 		})
 	}
+	return observed
 }
 
 // ObserveToolResults walks ev's content parts and feeds any
@@ -99,14 +104,15 @@ func ObserveEvent(w Watchdog, ev *session.Event, seen map[string]struct{}) {
 // collapses same-error parallel calls within one turn; that is the
 // safe direction to be wrong in, since undercounting delays an
 // advisory alert while overcounting fires it on work that was fine.
-func ObserveToolResults(w Watchdog, ev *session.Event, seen map[string]struct{}) {
+func ObserveToolResults(w Watchdog, ev *session.Event, seen map[string]struct{}) bool {
 	if w == nil || ev == nil || ev.Content == nil {
-		return
+		return false
 	}
 	obs, ok := w.(ToolResultObserver)
 	if !ok {
-		return
+		return false
 	}
+	observed := false
 	for _, p := range ev.Content.Parts {
 		if p == nil || p.FunctionResponse == nil {
 			continue
@@ -120,11 +126,13 @@ func ObserveToolResults(w Watchdog, ev *session.Event, seen map[string]struct{})
 			continue
 		}
 		seen[key] = struct{}{}
+		observed = true
 		obs.ObserveToolResult(ToolResult{
 			Name:  p.FunctionResponse.Name,
 			Error: errText,
 		})
 	}
+	return observed
 }
 
 // toolResponseError extracts the tool error from an ADK function
@@ -155,21 +163,33 @@ func toolResponseError(resp map[string]any) string {
 // Tap wraps one turn's runner event stream with watchdog
 // observation. It creates its own per-turn dedup set (#363), feeds
 // every FunctionCall part — and every FunctionResponse part, when w
-// observes outcomes — to w as events pass through, and — after
-// the stream ends — drains w.Check() into onAlert, matching
-// core-agent's drainWatchdogAlerts semantics: Check is called
-// unconditionally (so alerts don't leak into the next turn) and the
-// alerts are discarded when onAlert is nil. Tap does NOT call
-// w.Reset() — per-turn Reset would wipe the signals' run state, and
-// cross-turn repetition is exactly what the watchdog exists to
-// count. Reset stays a caller decision at logical session
-// boundaries.
+// observes outcomes — to w as events pass through, and drains
+// w.Check() into onAlert. Tap does NOT call w.Reset() — per-turn
+// Reset would wipe the signals' run state, and cross-turn repetition
+// is exactly what the watchdog exists to count. Reset stays a caller
+// decision at logical session boundaries.
 //
-// The drain is deferred, so it runs even when the consumer stops
-// consuming early — same guarantee core-agent's wrapWithCleanup
-// gives its post-turn hooks. Wrap each turn's stream with a fresh
-// Tap; reusing one across turns would defeat the per-turn scoping
-// of the dedup set.
+// Alerts drain twice over, and the first one is the one that matters.
+//
+//   - In-turn, as soon as an observation lands. A loop *inside* one
+//     turn is the shape mast's tool-calling flow actually produces:
+//     the model emits a dispatch or MCP call, the flow runs it and
+//     calls the model again, all within a single Run. A turn-boundary
+//     drain never fires on that at all while it is happening, so the
+//     alert an operator needs during the incident arrives after it —
+//     or, if the turn never ends, never. Gated on a fresh observation
+//     because a signal cannot newly trip without one, and a turn emits
+//     far more text than tool calls. This is also what lets an
+//     enforcing caller cancel the turn in flight (see enforce.go).
+//   - After the stream ends, unconditionally, so a signal that tripped
+//     on the last observed event doesn't leak into the next turn. The
+//     post-turn drain is deferred, so it runs even when the consumer
+//     stops consuming early — the same guarantee core-agent's
+//     wrapWithCleanup gives its post-turn hooks.
+//
+// Alerts are discarded when onAlert is nil, but still pulled. Wrap
+// each turn's stream with a fresh Tap; reusing one across turns would
+// defeat the per-turn scoping of the dedup set.
 func Tap(events iter.Seq2[*session.Event, error], w Watchdog, onAlert func(Alert)) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
 		defer drainAlerts(w, onAlert)
@@ -179,8 +199,11 @@ func Tap(events iter.Seq2[*session.Event, error], w Watchdog, onAlert func(Alert
 		seen := map[string]struct{}{}
 		for ev, err := range events {
 			if w != nil && ev != nil {
-				ObserveEvent(w, ev, seen)
-				ObserveToolResults(w, ev, seen)
+				observed := ObserveEvent(w, ev, seen)
+				observed = ObserveToolResults(w, ev, seen) || observed
+				if observed {
+					drainAlerts(w, onAlert)
+				}
 			}
 			if !yield(ev, err) {
 				return
