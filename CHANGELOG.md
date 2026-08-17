@@ -152,6 +152,51 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   under test. (The two now name the same model; see the model-table
   entry below. They remain separate knobs.)
 
+  **Where both boards stand at this tag.** Fired by hand against the
+  shipped tier table so the release quotes a measurement rather than
+  last night's, over 31 scenarios each:
+
+  | metric | Claude | Gemini |
+  |---|---|---|
+  | `intent_coverage` | 0.984 | 0.951 |
+  | `response_quality` | 0.855 | 0.976 |
+  | `severity_accuracy` | 0.419 | 0.484 |
+  | `effect_ordering` | 1.000 | 1.000 |
+  | `exactly_once` | 1.000 | 1.000 |
+  | `tool_coverage` | 0.000 | 0.000 |
+
+  Claude is `claude-opus-5` graded by `claude-haiku-4-5`; Gemini is
+  `gemini-3.7-flash` graded by *itself*, which flatters it — the board
+  prints that warning on every run and its `response_quality` should be
+  read with it. **These are report-only**; only `J-cost-tier` gates. The
+  two columns are not comparable to each other, and neither is
+  comparable to the previous board on the same provider: the models
+  under test changed, and the harness refuses to call that a delta.
+
+  Three things the pair says that are not about either model:
+
+  - `severity_accuracy` sits near half on both, and the misses run
+    almost entirely one way — the run says CRITICAL where the corpus
+    expects WARNING. Two unrelated model families failing in the same
+    direction is a rubric that over-escalates, not a model quirk.
+  - `tool_coverage` is **0.000 on all 31 scenarios on both boards**,
+    every row reading `0/2 expected tool names called verbatim`. It is
+    diagnostic-only so it gates nothing, but it scores against the
+    upstream corpus's tool *names* and mast's tools are not named that:
+    it measures nothing as written.
+  - Claude's `response_quality` fell 0.984 → 0.855 when the frontier
+    default moved off `claude-opus-4-7`, and the drop is worth reading
+    before it is worth fixing. Seven scenarios lost points; on all seven
+    the grader still scored the answer *specific* and *actionable*, and
+    it was `correct_diagnosis` alone that flipped. The pattern is the
+    model declining to assert the fixture's expected root cause when the
+    scenario's tool output does not carry it — in `LC-31` it ran a
+    control query against a nonexistent object, got the same log line
+    back, and refused the evidence on those grounds. That is the corpus
+    rewarding confident assertion, and a model that will not be
+    rewarded. All three are findings against the corpus, not against
+    the release; none is fixed here.
+
 - **New: a workload can wake itself up, and the cadence survives the
   daemon** (#132, W4.1). Until now every run started with somebody
   calling in — an inbound POST, an operator, an external cron holding
@@ -310,10 +355,10 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   the meter's per-scope snapshot back:
 
   ```
-  J-cost-tier — every tiered specialist was billed at its own rate
-    specialist  tier      resolved          calls  tokens  billed    at root
-    analyst     small     claude-haiku-4-5  3      4200    $0.00420  $0.31500
-    _synthesis  frontier  claude-opus-4-7   1      900     $0.06750  $0.06750
+  J-cost-tier — every tiered specialist was billed at its own rate (root claude-opus-5 at $0.01500/1K)
+    specialist  tier      resolved          calls  tokens  billed    at root   rate/1K
+    analyst     small     claude-haiku-4-5  1      854     $0.00256  $0.01281  $0.00300
+    _synthesis  frontier  claude-opus-5     1      1085    $0.01627  $0.01627  $0.01500
   ```
 
   The counterfactual column is the point: "not billed at the parent's
@@ -324,6 +369,26 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   proving nothing rather than as green. Unlike the scores on that board
   it does gate the nightly job, because its verdict is arithmetic over
   the meter's own numbers and does not depend on what the model said.
+
+  That block is transcribed from run
+  [`32026849851`](https://github.com/go-steer/mast/actions/runs/32026849851),
+  not composed for the changelog. The Gemini board
+  ([`32026851892`](https://github.com/go-steer/mast/actions/runs/32026851892))
+  measured the same shape against its own ladder — `analyst` at
+  `tier: small` resolved to `gemini-3.5-flash-lite` and was billed
+  $0.00038 for 274 tokens at $0.00140/1K, where the root
+  `gemini-3.7-flash`'s $0.00225/1K would have charged $0.00062.
+
+  On both boards the `frontier` row is a **control, not a measurement**:
+  that tier resolves to the model the nightly already runs as root, so
+  its rate cannot disagree with the parent's, and the board says so in
+  its own notes rather than counting it. One real scope per provider is
+  what this claim rests on. Worth recording that the Gemini side proved
+  nothing at all until the tier table moved: on the previous table
+  `small` resolved to `gemini-2.5-flash` at exactly the root's
+  $0.00060/1K, so the counterfactual equalled the billed figure on
+  *both* rows and the check was vacuous on that provider — passing, and
+  empty. It is a measurement there for the first time in this release.
 
 - **New: a specialist can declare how much model it is worth, not which
   vendor's** (#132, W1.1a). `model: claude-haiku-4-5` in a specialist's
