@@ -123,11 +123,11 @@ Ranked by what it costs mast to keep not doing them.
 |---|---|---|
 | `e7a21da` | eventlog: `BEGIN IMMEDIATE` on SQLite (#576) | **ported 2026-08-17** ([#157](https://github.com/go-steer/mast/pull/157)). See "What this triage changed" — this one is live in mast for a reason upstream's commit message doesn't mention. |
 | `9f81626` | attach: durable peer registry across hub restarts (#688) | **open.** mast's `PeerRegistry` is in-memory: a daemon restart drops every registration and every peer has to re-register before federation works again. mast is the *unattended* sibling, so this bites harder here than upstream. |
-| `c319565` | vertexcache: retry a failed `Caches.Create` on a bounded backoff (#723) | **open.** mast's `manager.go` logs `"transient; will retry on a later turn"` — precisely the weaker behavior upstream replaced. A workload with long gaps between turns pays full prompt cost until the next one. |
+| `c319565` | vertexcache: retry a failed `Caches.Create` on a bounded backoff (#723) | **ported 2026-08-17** ([#161](https://github.com/go-steer/mast/pull/161)) — the vertexcache half. Upstream squashed three unrelated changes into this SHA; the `pkg/attach` + `pkg/eventlog` `BranchLister` half is subagent-branch resolution, which mast does not have, and the `pkg/models/gemini` touch is a comment. So `c319565` keeps reporting under `pkg/eventlog`, correctly. |
 | `ef9b9b5` | telemetry: Go runtime metrics + Gemini API-key otelhttp wrap (#525) | **open, low.** mast has neither. Runtime metrics are the more useful half for a long-lived daemon; the otelhttp wrap only covers the API-key Gemini path, which mast uses less than Vertex. |
 | `b1101f9` | mcp: surface JSON-RPC error body on 4xx/5xx (#305) | **open, low.** mast's `pkg/mcp` is mast-native apart from `auth.go`, so this is a re-implementation rather than a port. Worth doing the next time an MCP server returns an opaque 4xx. |
-| `cfcbe22` | vertexcache: close the lost-retry race in the transient-cancel test (#547) | **open, low.** Flake fix in a test mast has. |
-| `6a4810b` | vertexcache: widen async deadlines to a shared `testWait` (#517) | **open, low.** Same file; do it with `cfcbe22`. |
+| `cfcbe22` | vertexcache: close the lost-retry race in the transient-cancel test (#547) | **verdict corrected 2026-08-17: absorbed.** mast's `TestInit_TransientCancelRetriesInsteadOfStickyFail` already polls `Init` rather than firing once, and carries the comment explaining why. The triage read the row from the drift report and not from the test. |
+| `6a4810b` | vertexcache: widen async deadlines to a shared `testWait` (#517) | **verdict corrected 2026-08-17: absorbed but for one site, now closed** ([#161](https://github.com/go-steer/mast/pull/161)). mast had widened every `waitFor` deadline at port time but left one `time.After(time.Second)`; the port lifts all of them onto the shared `testWait` constant. |
 
 ### The watchdog cluster — 7 commits, and one governance question
 
@@ -177,7 +177,7 @@ accident.
 
 ## What this triage changed
 
-Six changes landed as a direct result, in three PRs.
+Seven changes landed as a direct result, in four PRs.
 
 **[#154](https://github.com/go-steer/mast/pull/154) — the Anthropic tool-parameter bug.** Triaging
 `b98803c` turned up the same defect live in mast: every tool mast defines reached Claude as
@@ -233,6 +233,23 @@ connection and fails on pre-fix code with `database is locked (5) (SQLITE_BUSY)`
 exactly this commit; `8d812e7` and `c319565` touch the same file and post-date it, so they keep
 reporting, correctly.
 
+**[#161](https://github.com/go-steer/mast/pull/161) — the vertexcache cluster, and two corrected
+verdicts.** `c319565`'s vertexcache half is ported: a non-context `Caches.Create` failure now gets
+15s / 30s / 1m / 2m / 4m before the manager goes sticky-failed, instead of going sticky-failed on
+the first one. The failure it fixes is one mast is *more* exposed to than upstream, not less — an
+unattended daemon starts when its controller schedules it, not when its Workload Identity binding
+lands, and nobody is watching the first turn. Retries are demand-driven off `Init`, which the
+gemini wrapper already calls on every non-cached model call, so an idle daemon issues no RPCs.
+
+Porting it corrected two verdicts this triage got wrong, both by reading the drift report instead
+of the code: `cfcbe22` is already absorbed, and `6a4810b` was absorbed but for a single
+`time.After(time.Second)` that the port-time widening missed. Both rows above now say so. The
+lesson is the same one the eventlog port taught in the other direction — a "low" verdict on a test
+commit is still a claim about mast's code, and the only way to check it is to open the test.
+
+Both vertexcache trailers move `b8dd225` → `c319565`, which is the whole set: those three commits
+are every upstream change to the package since `b8dd225`.
+
 ---
 
 ## Observations that are not drift
@@ -254,7 +271,7 @@ Two things this triage surfaced that the detector cannot see, recorded so they a
 
 ## Baseline after this triage
 
-The report goes **48 → 42** commits across **53 → 47** files. `pkg/pricing` drops to zero;
+The report goes **48 → 40** commits across **53 → 45** files. `pkg/pricing` drops to zero;
 `pkg/modeltier` to 2 and `pkg/taskclass` to 1, all of which are the `f054590` / `09b6cd1`
 **ahead** rows — upstream commits that post-date the `cafe310` port SHA and whose content mast
 already has. Those three will keep reporting until mast next re-ports from a SHA at or after them,
@@ -262,9 +279,10 @@ which is correct: the detector cannot know mast got there first, and inventing a
 never ported from to silence it would be a lie in the one record this whole scheme rests on.
 `pkg/eventlog` drops from 4 commits to 3 and now reports **two** port SHAs, because `sql.go` alone
 moved to `e7a21da` — the per-file trailer is what the detector reads, so a package can sit at
-several baselines at once and the aggregate row says so.
+several baselines at once and the aggregate row says so. `pkg/providers/vertexcache` drops to
+zero: the package is fully current with upstream as of `c319565`.
 
-42 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
+40 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next
 Monday. **Read the count as a delta, not a level.**
 
