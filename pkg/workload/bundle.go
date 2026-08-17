@@ -143,6 +143,53 @@ type Budget struct {
 	MaxCostUSD          float64 `yaml:"max_cost_usd,omitempty"`
 }
 
+// Watchdog postures a bundle may declare, in ladder order. These are
+// string copies of pkg/watchdog's Mode constants, not the constants
+// themselves: this package is stdlib-only by design (it sits in the
+// slim-embed slice, and a YAML schema has no business pulling the ADK
+// runtime in behind it). TestSafetyWatchdogVocabularyMatchesTheWatchdog
+// imports pkg/watchdog from the test binary and fails if the two lists
+// ever disagree, so the copy cannot rot silently.
+const (
+	// WatchdogWarn logs a detected runaway pattern and lets the turn
+	// run.
+	WatchdogWarn = "warn"
+
+	// WatchdogFeedback warns, and additionally tells the model what it
+	// is doing on its next turn.
+	WatchdogFeedback = "feedback"
+
+	// WatchdogEnforce feeds back, and additionally halts the session on
+	// a Critical alert until an operator resets it.
+	WatchdogEnforce = "enforce"
+)
+
+// Safety is the workload's runaway-backstop policy: the knobs that
+// decide what happens when the agent starts doing something no one
+// asked for.
+//
+// It lives in the bundle rather than only on the command line because
+// the bundle is mast's deployment unit. A workload that knows it never
+// polls can arm the halt for itself, and a workload that does nothing
+// but poll can stay at warn, without every invocation and every deploy
+// manifest carrying the flag by hand.
+type Safety struct {
+	// Watchdog is the behavioral watchdog posture for this workload:
+	// warn, feedback, or enforce (pkg/watchdog.Mode's ladder — each
+	// rung includes the one below it). Empty means unset, which is not
+	// the same as "warn": an unset posture falls through to the
+	// daemon's default, and the --watchdog flag overrides whatever is
+	// declared here.
+	//
+	// Enforce is the posture to reach for when the workload's tool loop
+	// is bounded by construction — a triage run that reads, concludes,
+	// and stops. Leave it unset for a workload whose steady state looks
+	// like a loop to a detector: a scheduler-driven daemon watching a
+	// rollout settle calls the same tool with the same arguments on
+	// purpose, and halting it is the outage.
+	Watchdog string `yaml:"watchdog,omitempty"`
+}
+
 // OnMutation is what happens before a state-mutating tool call
 // (docs/orchestration-design.md, hitl_policy.on_mutation). Which calls
 // are mutating is the mutation predicate's answer, not this field's:
@@ -543,6 +590,10 @@ type Bundle struct {
 
 	// Budget bounds this workload's per-invocation runtime.
 	Budget Budget `yaml:"budget,omitempty"`
+
+	// Safety is the workload's runaway-backstop policy; the zero value
+	// leaves every posture to the host's default.
+	Safety Safety `yaml:"safety,omitempty"`
 
 	// HITL is the human-in-the-loop policy for this workload.
 	HITL HITL `yaml:"hitl,omitempty"`

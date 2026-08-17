@@ -84,6 +84,28 @@ func TestModeLadder(t *testing.T) {
 	}
 }
 
+// DefaultMode is what a host picks when nothing declared a posture, so
+// the two properties that make it safe to arrive unasked-for are
+// asserted directly: it acts (or it is warn with extra steps, and warn
+// on an unattended run is off), and it does not halt (or a false
+// positive becomes an outage nobody chose).
+func TestDefaultModeActsWithoutHalting(t *testing.T) {
+	t.Parallel()
+
+	if !DefaultMode.Feeds() {
+		t.Errorf("DefaultMode = %q, which only logs; every mast run is unattended, so a log nobody tails is indistinguishable from off", DefaultMode)
+	}
+	if DefaultMode.Enforces() {
+		t.Errorf("DefaultMode = %q, which halts sessions; nothing that stops a workload should arrive without somebody asking for it", DefaultMode)
+	}
+	// ParseMode answers a different question and must keep its own
+	// answer: handed an empty value, the safe reading is the bottom
+	// rung, whatever a host would choose in the same situation.
+	if m, err := ParseMode(""); err != nil || m != ModeWarn {
+		t.Errorf("ParseMode(\"\") = %q, %v; want warn — a parse must not arm a posture out of nothing", m, err)
+	}
+}
+
 // Feedback is not a kill switch. An operator who asked to be told is not
 // asking to be stopped.
 func TestEnforcer_FeedbackModeNeverHalts(t *testing.T) {

@@ -61,6 +61,16 @@ pause/resume — `mast.ListSessions` to find pending interrupts,
 the bundle's budget block, or override with `Config.Budget`. A session DB
 written by an embedded runtime reads identically through `mast sessions`.
 
+The [watchdog](/concepts/interop/#where-the-posture-comes-from) runs here
+too, and it is armed by default: a turn that loops on the same tool call
+gets a `feedback` observation, and a bundle declaring
+`safety.watchdog: enforce` has the runaway turn abandoned with an error
+`watchdog.IsTripped` recognizes. What a library call cannot hold, it does
+not pretend to — there is no cross-call session state for the "refuse
+every later turn" half of `enforce`, and no next turn for a `feedback`
+observation to be injected into, so both rungs act within the turn they
+fire in.
+
 ## Path 2: the slim slice
 
 The root package imports the dispatch subsystems, several of which are

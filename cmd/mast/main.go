@@ -121,7 +121,7 @@ func run() {
 		logLevel         = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		autoResume       = flag.Bool("auto-resume", true, "serve mode: on boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (coordinator dispatch only in v0.2). --auto-resume=false disables")
 		autoResumeWindow = flag.Duration("auto-resume-window", time.Hour, "serve mode: only auto-resume sessions interrupted within this window; older interruptions are left for an operator (0 disables the freshness gate)")
-		watchdogFlag     = flag.String("watchdog", "warn", "behavioral watchdog posture, a ladder where each rung includes the one before it: `warn` (log a detected tool loop and let the turn run), `feedback` (also tell the model, on its next turn, what it is doing), or `enforce` (also cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical in all three")
+		watchdogFlag     = flag.String("watchdog", "", "behavioral watchdog posture, a ladder where each rung includes the one before it: `warn` (log a detected tool loop and let the turn run), `feedback` (also tell the model, on its next turn, what it is doing), or `enforce` (also cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical in all three. Unset takes the workload's own safety.watchdog, then mast's default (feedback) — the startup line says which")
 		showVersion      = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -149,13 +149,16 @@ func run() {
 	}
 	*modelName = resolvedModel
 
-	// Parsed before the mode split because the watchdog posture applies
-	// to both: a runaway loop is a property of the turn, not of the
-	// surface serving it.
-	watchdogMode, err := watchdog.ParseMode(*watchdogFlag)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "mast:", err)
-		os.Exit(2)
+	// The flag is validated before the mode split — a typo'd posture
+	// should exit 2 as a config error, not surface later as a run
+	// failure — but it is not *resolved* here. Resolution needs the
+	// workload's safety.watchdog, and the bundle is not loaded until
+	// serve; see resolveWatchdog.
+	if *watchdogFlag != "" {
+		if _, err := watchdog.ParseMode(*watchdogFlag); err != nil {
+			fmt.Fprintln(os.Stderr, "mast: --watchdog:", err)
+			os.Exit(2)
+		}
 	}
 
 	// One-shot mode: a positional prompt runs a single turn instead of
@@ -208,6 +211,15 @@ func run() {
 		if explicit["auto-resume"] || explicit["auto-resume-window"] {
 			logger.Warn("--auto-resume / --auto-resume-window are serve-mode flags; ignored in one-shot mode")
 		}
+		// No bundle in one-shot mode, so the chain is flag-or-default.
+		// The resolution still runs rather than short-circuiting to the
+		// flag: the default is a real decision and the log line has to
+		// name it.
+		wdRes, err := resolveWatchdog(watchdogInputs{Flag: *watchdogFlag})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mast:", err)
+			os.Exit(2)
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		opts := oneShotOptions{
 			Class:      class,
@@ -217,9 +229,9 @@ func run() {
 			SessionDrv: *sessionDrv,
 			Prompt:     strings.Join(flag.Args(), " "),
 			Timeout:    *timeoutFlag,
-			Watchdog:   watchdogMode,
+			Watchdog:   wdRes,
 		}
-		err := runOneShot(ctx, logger, opts, os.Stdout)
+		err = runOneShot(ctx, logger, opts, os.Stdout)
 		stop()
 		if err != nil {
 			logger.Error("one-shot turn failed", "task", class, "error", err.Error())
@@ -235,7 +247,7 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
-	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow, watchdogMode); err != nil {
+	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow, *watchdogFlag); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
@@ -335,7 +347,7 @@ func newTimedFireCallback(
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration, watchdogMode watchdog.Mode) error {
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration, watchdogFlag string) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -505,7 +517,19 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}
 
 	meters := newMeterPool(bundle, specs, providerName, modelName)
-	wds := newWatchdogPool(watchdogMode)
+	// Resolved here rather than at flag time because the bundle is a
+	// source: --watchdog > safety.watchdog > mast's default. Logged at
+	// Info with its source, because a posture nobody can see is a
+	// posture nobody audits — and enforce, the one an operator most
+	// needs to know is armed, is the one that only announces itself by
+	// refusing a turn.
+	wdRes, err := resolveWatchdog(watchdogInputs{Flag: watchdogFlag, Bundle: bundleWatchdog(bundle)})
+	if err != nil {
+		logger.Error("invalid watchdog posture", "error", err.Error())
+		return err
+	}
+	logger.Info("watchdog posture resolved", "mode", string(wdRes.Mode), "source", wdRes.Source)
+	wds := newWatchdogPool(wdRes.Mode)
 
 	// Fixed metric registry (pkg/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,

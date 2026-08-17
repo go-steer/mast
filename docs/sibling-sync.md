@@ -162,7 +162,7 @@ The port ships as five PRs rather than one, because each changes what an operato
 | A | `317e18e`, `ef7dfb6` | **ported 2026-08-17.** Cycle detection, path-canonicalized args, tool-failure-streak, and result observation at the bridge. |
 | B | `635a9eb`, `6510a65` | **ported 2026-08-17.** Enforce mode + in-turn halt — flips the loop detectors to Critical. |
 | C | `e42a511` | **ported 2026-08-17.** Alert→model routing (`Alert.Guidance`, feedback mode). The reclassification lands with this one. |
-| D | `5682659` | safe autonomous defaults + `safety.watchdog` config. |
+| D | `5682659` | **ported 2026-08-17, half of it.** The `safety.watchdog` bundle field, three-source precedence (`--watchdog` > bundle > default), a default posture, and a startup line naming which source won. Two divergences, below. The commit's other half — a `$10` session cost ceiling armed by default — is declined; see "Deliberately not ported". |
 | E | `4ac0337` | trip state that survives a restart. |
 
 Two adaptations run through all five. Severity stays **Warn** for `tool-failure-streak` — under
@@ -175,6 +175,27 @@ Alert prose is rewritten for mast's affordances. Upstream's reasons point an ope
 `POST /sessions/{id}/interrupt` on the attach surface and its ceilings come from the workload
 bundle. `pkg/watchdog/cycle_test.go` asserts on that directly, so the text cannot drift back.
 
+**PR D diverges twice, deliberately.** *The default posture is `feedback`, not upstream's
+`enforce`.* Upstream's premise is right — an unattended run with a warn-only watchdog has no
+backstop, and warn on a deployment nobody is tailing is indistinguishable from off — but the
+conclusion does not transfer. mast's `alternating-tool-cycle` detector has a workload-shaped
+false positive: a scheduler-driven daemon watching a rollout settle calls the same tools with the
+same arguments on purpose. Upstream's operator is at a terminal and clears a false halt in
+seconds; mast's is asleep, and a false halt is an outage that waits for the morning. A false
+`feedback` costs one paragraph the model may disregard. Recoverable beats unrecoverable when
+nobody is watching, and a workload whose loop is bounded by construction declares
+`safety.watchdog: enforce` and gets upstream's posture. Both halves of the divergence are
+test-pinned (`TestResolveWatchdogDefaultIsFeedback`, `TestDefaultModeActsWithoutHalting`), because
+it changes runtime behavior for every deployment that has never typed the flag.
+
+*And the port covers a surface upstream's does not.* mast's library-embed path (`mast.RunWorkload`)
+ran `r.Run` with no `watchdog.Tap` at all — the one mast surface with no runaway backstop of any
+kind. It now reads the same `safety.watchdog` field and taps the same signals, with the rungs
+bounded by what that surface holds: `enforce` abandons the runaway turn, but there is no
+cross-call session state for the "refuse every later turn" half and no next turn for `feedback`
+to inject into. This is mast's analog of the `ReproduceAgent` gap upstream closed in the same
+commit: a real agent path that the posture plumbing had simply never been wired into.
+
 `pkg/watchdog/watchdog.go` and `bridge.go` keep their `b8dd225` trailers until PR E; a partial
 port does not bump a baseline, and bumping mid-cluster would hide the commits still outstanding
 from the drift detector.
@@ -186,6 +207,20 @@ from the drift detector.
   budget (`drainBound`) rather than a fixed timeout — a `Retry-After` computed from it would be a
   guess dressed as a contract. Revisit if a caller ever needs to distinguish "draining" from
   "gone".
+- **The `$10` unattended session cost ceiling (the second half of `5682659`).** Upstream arms a
+  default per-session dollar cap whenever a run is unattended, discriminating on TTY / `-p` /
+  `--no-repl`. Four reasons it does not port. The discriminator is a *constant* in mast — every
+  run is unattended, so the rule degenerates to "always", which is a different decision than the
+  one upstream made. The session unit differs: a `single_session` daemon holds one session for its
+  entire life, so a fixed dollar cap on a session's lifetime is not a runaway guard, it is a
+  scheduled outage for a legitimate deployment shape. The opt-out would be a breaking change —
+  distinguishing `max_cost_usd: 0` from unset means pointer-ifying `workload.Budget.MaxCostUSD`, a
+  public field on a package `docs/library-api-design.md` calls stable as of v0.2, for two non-test
+  read sites' worth of benefit. And mast already composes three ceilings plus per-specialist
+  scopes plus a guardrails grant endpoint, so the gap upstream is filling is one mast filled from
+  the bundle instead. A `no_cost_ceiling: bool` escape hatch and an "arm only when the bundle
+  declares no `budget:` block at all" rule were both considered; both trade a legible default for
+  an inferred one. Revisit if a shipped workload ever runs up a bill nobody's ceiling caught.
 - **MCP child reaping (the second half of `daa78fc`).** mast launches stdio MCP servers through
   `pkg/mcp/catalog.go` and its teardown is mast-native; whether an orphaned child can survive a
   `mast` exit is **unverified**. Marked watch rather than n/a for that reason — it is a claim

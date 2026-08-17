@@ -75,7 +75,7 @@ you see it without reading the composition code.
 has when a session stops responding: *what stopped it, and what do I do?*
 It reports the budget ceilings in force and the usage against them across
 all three dimensions plus each specialist's own, and the watchdog's posture
-(`advisory: true` under the default `--watchdog=warn` and under
+(`advisory: true` under `--watchdog=warn` and under the default
 `--watchdog=feedback`, which corrects but never stops; `false` under
 `--watchdog=enforce`, whether or not it has fired yet).
 
@@ -98,8 +98,8 @@ Severity is a property of the pattern, not of the posture. What changes
 between postures is the reaction, and the three of them are a ladder —
 each rung includes the one below it:
 
-- **`--watchdog=warn`** (default) logs every alert and lets the turn run.
-- **`--watchdog=feedback`** also tells the model. Each alert carries a
+- **`--watchdog=warn`** logs every alert and lets the turn run.
+- **`--watchdog=feedback`** (default) also tells the model. Each alert carries a
   model-facing sentence alongside the operator-facing one, and on the
   session's next turn those are prepended to the prompt as a `[watchdog]`
   block: *an automated observation about your own previous turn — this is
@@ -107,7 +107,7 @@ each rung includes the one below it:
   observation to a reader who may not be there; the model about to repeat
   the call is the party that can decide not to. It is a correction, not a
   backstop — nothing stops a model that reads the block and loops anyway,
-  which is why unattended runs still want `enforce`.
+  which is why a workload with a bounded tool loop still wants `enforce`.
 - **`--watchdog=enforce`** also cancels the turn in flight on a
   **Critical** alert and refuses the session's every subsequent turn —
   auto-resume, a scheduled fire, and an attach inject all included — until
@@ -125,6 +125,44 @@ same reason, a reset clears the halt but **keeps** the queued observation.
 The `[watchdog]` block is steering, not a trust boundary — nothing
 downstream grants authority based on it, and a user prompt may contain the
 literal string.
+
+#### Where the posture comes from
+
+Three sources, in order: **`--watchdog` beats the bundle's
+`safety.watchdog` beats mast's default.** The daemon logs which one won at
+startup (`watchdog posture resolved mode=… source=…`), because a posture
+nobody can see is a posture nobody audits — and `enforce`, the one an
+operator most needs to know is armed, otherwise announces itself only by
+refusing a turn.
+
+```yaml
+# workload.yaml
+safety:
+  watchdog: enforce
+```
+
+The bundle is where a workload ships its own backstop: mast's deployment
+unit is the bundle, and without this every invocation and every deploy
+manifest had to carry the flag by hand. The flag sits above it so an
+operator debugging a halted workload can drop the posture for one run
+without editing — and later forgetting to revert — the deployed manifest.
+
+**The default is `feedback`.** Not `warn`: every mast run is unattended,
+so warn routes the alert to a log nobody is tailing, which is
+indistinguishable from off. Not `enforce` either: `alternating-tool-cycle`
+has a workload-shaped false positive — a scheduler-driven daemon watching
+a rollout settle calls the same tool with the same arguments on purpose —
+and on an unattended deployment a false halt is an outage that waits for
+the morning. A false `feedback` costs one paragraph the model is free to
+disregard. Recoverable beats unrecoverable when nobody is watching. Set
+`safety.watchdog: enforce` on a workload whose tool loop is bounded by
+construction — a triage run that reads, concludes, and stops.
+
+The library-embedded surface (`mast.RunWorkload`) reads the same
+`safety.watchdog` field and taps the same signals, with the rungs bounded
+by what that surface holds: `enforce` abandons the runaway turn, but there
+is no cross-call session state for the "refuse every later turn" half, and
+no next turn for `feedback` to inject into.
 
 `POST /sessions/{id}/guardrails/reset` is the way out: a budget trip is
 otherwise permanent, since enforcement is re-derived from usage against the

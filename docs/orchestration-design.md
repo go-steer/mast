@@ -107,6 +107,9 @@ hitl_policy:
   approval_granularity: per_call   # options: per_call | per_change_set
   on_budget_exhaustion: escalate   # options: escalate | abort
 
+safety:
+  watchdog: enforce                # options: warn | feedback | enforce; unset = leave it to the host
+
 isolation:
   scope: per_request               # options: per_request | per_tenant | global
 ```
@@ -131,6 +134,7 @@ isolation:
 | `hitl_policy.on_mutation` | enum | no (default `require_approval`) | What happens before a state-mutating tool call. **Mutation predicate (defined 2026-07-25 — the policy previously hung on an undefined term):** a tool call is *mutating* if (a) the built-in tool's registration carries `Mutating: true` (mast annotates all built-ins), or (b) an MCP tool lacks `readOnlyHint: true` — i.e. **default-deny-unknown**: absent or ambiguous annotations classify as mutating, since MCP hints are advisory and often missing. Operators can override per tool in the bundle's `tool_catalog` (`mutating: false`) to un-gate known-safe tools; overrides are audit-logged. |
 | `hitl_policy.approval_granularity` | enum | no (default `per_call`) | Only meaningful when `on_mutation: require_approval`. `per_call` parks the turn before each mutating call; `per_change_set` parks once on a typed change set and mints per-call grants from the verdict. See "Mutation approval" below — this is a granularity axis, orthogonal to the require/apply/dry_run axis. |
 | `hitl_policy.on_budget_exhaustion` | enum | no (default `escalate`) | What happens when a budget cap is hit. |
+| `safety.watchdog` | enum | no (unset = host's choice) | The runaway-loop posture this workload ships with: `warn`, `feedback`, or `enforce` (see [`./fork-design.md`](./fork-design.md) and the watchdog ladder). Unset is deliberately *not* `warn` — it means the bundle declares nothing, which is what lets `--watchdog` override in both directions. Precedence: `--watchdog` > `safety.watchdog` > mast's default (`feedback`). A **workload** carries its own backstop for the same reason it carries its own budget: the bundle is the deployment unit, and a posture that has to be re-typed at every invocation is one that gets typed wrong. |
 | `isolation.scope` | enum | no (default `per_request`) | Session isolation scope. Maps to `WithIsolationScope(scopeID)` on the root run. |
 
 ### Resolution paths

@@ -171,6 +171,11 @@ func TestLoad_Errors(t *testing.T) {
 		// bundle that runs as a coordinator while its author believes it
 		// costs one call.
 		{"a near-miss dispatch", "name: x\ndispatch: bound\nspecialists: [a]\n", "unknown dispatch"},
+		// Same reasoning one field over, and it bites harder: a posture
+		// the loader shrugs at is a workload that silently runs on the
+		// host default while its author believes the halt is armed.
+		{"bad safety.watchdog", "name: x\nspecialists: [a]\nsafety:\n  watchdog: halt\n", "unknown safety.watchdog"},
+		{"a near-miss posture", "name: x\nspecialists: [a]\nsafety:\n  watchdog: enfoce\n", "unknown safety.watchdog"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

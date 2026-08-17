@@ -77,6 +77,7 @@ import (
 	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -449,6 +450,28 @@ func meterConfig(cfg Config, bundle *workload.Bundle, specs []specialists.Spec, 
 	}
 }
 
+// libraryWatchdogMode resolves the watchdog posture for a library run:
+// the bundle's safety.watchdog when it declares one, otherwise
+// watchdog.DefaultMode. There is no flag rung here — cmd/mast's
+// --watchdog is an invocation-level override and a library consumer's
+// invocation is the Go call, which passes the bundle.
+//
+// An unparseable value is an error rather than a fall-through to the
+// default: workload.Load refuses a bad posture naming the file, but a
+// bundle built in Go never went through the loader, and quietly
+// downgrading a backstop somebody asked for is the failure this whole
+// field exists to prevent.
+func libraryWatchdogMode(bundle *workload.Bundle) (watchdog.Mode, error) {
+	if bundle == nil || bundle.Safety.Watchdog == "" {
+		return watchdog.DefaultMode, nil
+	}
+	m, err := watchdog.ParseMode(bundle.Safety.Watchdog)
+	if err != nil {
+		return "", fmt.Errorf("mast: workload %q: safety.watchdog: %w", bundle.Name, err)
+	}
+	return m, nil
+}
+
 // runTurn drives one turn through an ADK runner over cfg.Sessions,
 // metering usage against limits and collecting the final output (the
 // last node output or model text on the event stream — the same
@@ -521,12 +544,53 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	defer cancel()
 	meter := budget.New(mcfg)
 
+	// Behavioral watchdog (pkg/watchdog). Every other turn-driving path
+	// in this repo taps the event stream — the daemon at runTurnPre,
+	// the one-shot in runOneShot — and this one did not, so a
+	// library-embedded workload was the single mast surface with no
+	// runaway backstop at all. "Library-embedded" is one of the three
+	// words in mast's own thesis; it should not be the unguarded one.
+	//
+	// A fresh watchdog and enforcer per call, because this surface has
+	// no cross-call state to hang them on: RunWorkload mints a new
+	// session per call and holds nothing between them. That bounds what
+	// the rungs can mean here. Enforce cancels the runaway turn, which
+	// is the half that matters — the "refuse every later turn" half
+	// needs a session pool, and the daemon is where that lives.
+	// Feedback's next-turn injection has nothing to inject into, the
+	// same collapse one-shot mode has.
+	wdMode, err := libraryWatchdogMode(bundle)
+	if err != nil {
+		return nil, err
+	}
+	wd := watchdog.NewDefaultWatchdog()
+	enf := watchdog.NewEnforcer(wdMode, "The turn was abandoned; nothing is left halted — this process holds no cross-call session state.")
+	onAlert := func(a watchdog.Alert) {
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("watchdog alert", "session", sessionID,
+				"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
+		}
+		if enf.Observe(a) && cfg.Logger != nil {
+			_, reason := enf.Tripped()
+			cfg.Logger.Error("WATCHDOG HALT — abandoning the turn",
+				"session", sessionID, "signal", a.Signal, "reason", reason)
+		}
+	}
+
 	res := &Result{SessionID: sessionID}
-	for event, err := range r.Run(ctx, userID, sessionID, msg, adkagent.RunConfig{
+	for event, err := range watchdog.Tap(r.Run(ctx, userID, sessionID, msg, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeNone,
-	}) {
+	}), wd, onAlert) {
 		if err != nil {
 			return nil, fmt.Errorf("mast: session %q: %w", sessionID, err)
+		}
+		// Tap drains alerts before it yields, so a halt raised by this
+		// event is already visible. Returning abandons the stream
+		// mid-turn — the library's cancel, and the reason the deferred
+		// cancel above is not enough on its own.
+		if terr := enf.Preflight(); terr != nil {
+			cancel()
+			return nil, fmt.Errorf("mast: session %q: %w", sessionID, terr)
 		}
 		if berr := meter.Observe(event); berr != nil {
 			cancel()

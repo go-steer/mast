@@ -75,6 +75,17 @@ func (b *Bundle) validate() error {
 	default:
 		return fmt.Errorf("unknown dispatch %q (want coordinator, graph, fanout, bounded, or auto)", b.Dispatch)
 	}
+	// Validated at load, like the scheduled cadence below, so a typo'd
+	// posture is a refused bundle naming the file rather than a
+	// backstop that quietly resolves to the default. The empty case is
+	// legitimate and distinct from "warn" — it means "leave it to the
+	// host", which is what lets --watchdog win.
+	switch b.Safety.Watchdog {
+	case "", WatchdogWarn, WatchdogFeedback, WatchdogEnforce:
+	default:
+		return fmt.Errorf("unknown safety.watchdog %q (want %s, %s, or %s)",
+			b.Safety.Watchdog, WatchdogWarn, WatchdogFeedback, WatchdogEnforce)
+	}
 	switch b.HITL.OnMutation {
 	case "", OnMutationRequireApproval, OnMutationApply, OnMutationDryRun:
 	default:

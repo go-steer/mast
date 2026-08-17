@@ -68,6 +68,21 @@ const (
 	ModeEnforce Mode = "enforce"
 )
 
+// DefaultMode is the rung a host picks when nothing declared one — no
+// flag, no bundle field, no explicit argument.
+//
+// This is a different question from ParseMode's, and the two answers
+// differ on purpose. ParseMode is handed a value and asked what it
+// means; the safe reading of an empty value is the bottom rung, because
+// a parse must never arm a kill switch out of nothing. A host choosing
+// a default is instead asked what to do when nobody chose, and for mast
+// the honest answer is not warn: every mast run is unattended, so a
+// warning goes to a log nobody is tailing and warn is indistinguishable
+// from off. Feedback routes the same observation to the one party
+// present at the scene — the model — and its false-positive cost is a
+// paragraph, not a halted workload. Hosts that want the halt say so.
+const DefaultMode = ModeFeedback
+
 // ParseMode validates an operator-supplied posture. An empty string is
 // ModeWarn — an unset flag must not silently arm a kill switch.
 func ParseMode(s string) (Mode, error) {
