@@ -216,7 +216,7 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   shipped tier table so the release quotes a measurement rather than
   last night's, over 31 scenarios each. Claude is run
   [`32029654748`](https://github.com/go-steer/mast/actions/runs/32029654748),
-  taken with the Anthropic tool-schema fix below in place; Gemini is
+  taken with the Anthropic tool-schema fix above in place; Gemini is
   [`32026851892`](https://github.com/go-steer/mast/actions/runs/32026851892),
   taken before it, which that provider's path does not go through.
   What landed between either board and the tag is docs, derivation-header
@@ -241,12 +241,15 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   comparable to the previous board on the same provider: the models
   under test changed, and the harness refuses to call that a delta.
 
-  Three things the pair says that are not about either model:
+  Three things the pair says, two of which are not about either model:
 
   - `severity_accuracy` sits near half on both, and the misses run
-    almost entirely one way — the run says CRITICAL where the corpus
-    expects WARNING. Two unrelated model families failing in the same
-    direction is a rubric that over-escalates, not a model quirk.
+    almost entirely one way: 13 of Claude's 18 and 15 of Gemini's 16
+    are the run pitching a scenario *higher* than the corpus expects,
+    mostly `expected WARNING, got CRITICAL`. Exactly one miss on each
+    board goes the other way. Two unrelated model families failing in
+    the same direction is a rubric that over-escalates, not a model
+    quirk.
   - `tool_coverage` is **0.000 on all 31 scenarios on both boards**,
     every row reading `0/2 expected tool names called verbatim`. It is
     diagnostic-only so it gates nothing, but it scores against the
@@ -255,7 +258,7 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   - Claude's `response_quality` reads 0.855 against 0.984 on the last
     `claude-opus-4-7` board, and that pair of numbers should not be
     subtracted. Two things changed underneath it: the frontier default,
-    and the Anthropic tool-schema conversion the entry below fixes — the
+    and the Anthropic tool-schema conversion the entry above fixes — the
     corpus builds its cluster tools with `functiontool.New`, which is
     exactly the path that was sending Claude a name and no arguments. Of
     the seven scenarios below full marks at this tag, five turn on
