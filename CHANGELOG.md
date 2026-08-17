@@ -198,8 +198,8 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   observation lands exactly once even if that turn fails.
 
   `feedback` is a correction, not a backstop — nothing stops a model
-  that reads the block and loops anyway, which is why unattended runs
-  still want `enforce`, which now gets both. It is also the one rung
+  that reads the block and loops anyway, which is why a workload with a
+  bounded tool loop still wants `enforce`, which now gets both. It is also the one rung
   that does not apply to one-shot mode, whose whole mechanism is a next
   turn a one-shot does not have; it logs a line saying so rather than
   quietly running `warn`. The block is steering, not a trust boundary.
@@ -207,6 +207,55 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   of the fork this feature lives on — shared infrastructure, not
   lean-fork-specific. See `docs/fork-design.md` § "Sync discipline under
   (E)".
+
+- **A workload ships its own watchdog posture, and the default is no
+  longer "off".** The three postures above were reachable only through
+  `--watchdog`, and unset meant `warn` — log the alert and keep going.
+  On mast that is off with extra steps: every mast run is unattended, so
+  the operator the log is addressed to is a pod log nobody is tailing.
+
+  Bundles now declare `safety.watchdog: warn | feedback | enforce`, and
+  the posture resolves from three sources in order — the `--watchdog`
+  flag, then the bundle, then mast's default. The bundle is where it
+  belongs because the bundle is mast's deployment unit; the flag stays
+  above it so an operator debugging a halted workload can drop the
+  posture for one run without editing, and later forgetting to revert,
+  the deployed manifest. The daemon logs which source won at startup
+  (`watchdog posture resolved mode=… source=…`) — `enforce` otherwise
+  announces itself only by refusing a turn. An unrecognized posture is a
+  load error naming the field, not a silent fall back to the default:
+  the failure mode being avoided is a workload whose author believes the
+  halt is armed.
+
+  **The default is now `feedback`.** Upstream defaults an unattended run
+  to `enforce` and the premise is right — a warn-only backstop on a
+  deployment nobody watches is not a backstop. The conclusion is not
+  mast's: `alternating-tool-cycle` has a workload-shaped false positive
+  (a scheduler-driven daemon watching a rollout settle calls the same
+  tool with the same arguments on purpose), and on an unattended
+  deployment a false halt is an outage that waits for the morning, where
+  a false `feedback` costs one paragraph the model may disregard.
+  Recoverable beats unrecoverable when nobody is watching. Set
+  `safety.watchdog: enforce` on a workload whose tool loop is bounded by
+  construction. Two tests pin the default, because this changes runtime
+  behavior for every deployment that never typed the flag.
+
+  This also closes a gap that was mast's alone: the library-embed
+  surface (`mast.RunWorkload`) ran its turn with **no watchdog tap at
+  all** — the one mast surface with no runaway backstop of any kind. It
+  now reads the same `safety.watchdog` field and taps the same signals,
+  with the rungs bounded by what a library call holds: `enforce`
+  abandons the runaway turn, but there is no cross-call session state
+  for the "refuse every later turn" half and no next turn for `feedback`
+  to inject into.
+
+  Ported from core-agent's #665 — the fourth of seven. The commit's
+  other half, a `$10` per-session cost ceiling armed by default, is
+  deliberately **not** ported: upstream keys it on a run being
+  unattended, which in mast is a constant, and a fixed dollar cap on the
+  lifetime of a `single_session` daemon is a scheduled outage rather
+  than a runaway guard. `docs/sibling-sync.md` § "Deliberately not
+  ported" carries the full reasoning.
 
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an

@@ -45,6 +45,9 @@ budget:
 hitl:
   require_approval: true
 
+safety:
+  watchdog: enforce
+
 planner:
   enabled: false
 
@@ -95,6 +98,7 @@ agui:
 | `hitl.require_approval` | bool | When true, every specialist result pauses on a durable RequestInput interrupt until an operator resumes with a verdict. |
 | `hitl.on_mutation` | string | What happens before a call that would change something: `require_approval` (**the default** — the call parks on a durable interrupt, with its arguments, and fires only once an operator approves it), `apply` (run it, unattended), or `dry_run` (never run it; report what would have happened). Because this defaults to gating, a bundle that says nothing about mutation does not get to write; unattended writes have to be asked for. The block may also be spelled `hitl_policy:`; setting both is an error. See [the write gate](/reference/write-gate/) for the verdict an operator sends back. |
 | `hitl.change_set_ttl` | duration | How long an approval given with `scope: change_set` authorizes the set's remaining calls for. Default `10m` — far longer than an approve-then-execute round trip, far shorter than the span over which an operator forgets what they approved. It is the backstop, not the check: what an approval is really bounded by is the [`precondition:`](#precondition--what-makes-an-approval-stale) the tool declares. |
+| `safety.watchdog` | string | The runaway-loop posture this workload ships with: `warn` (log only), `feedback` (**mast's default when nothing declares one** — tell the model on its next turn), or `enforce` (also cancel the turn in flight and refuse every later turn until an operator resets). Unset is not `warn`: it means *leave it to the host*, which is what keeps `--watchdog` able to override a bundle in both directions. Precedence is `--watchdog` > `safety.watchdog` > the default, and the daemon logs which won at startup. Declare `enforce` on a workload whose tool loop is bounded by construction; see [where the posture comes from](/concepts/interop/#where-the-posture-comes-from). |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
 | `edge_trigger.http.path`, `.auth` | strings | Informational in v0.1 — the inject server declares its routes globally; per-workload path prefixes come later. |
 | `edge_trigger.scheduled.interval` | duration | Required in the block. How often the workload wakes itself, with nothing calling in — `15m`, `1h`, `24h`. Minimum `1s`. A malformed or missing value is a load error naming the file, because a cadence that fails to parse at runtime is a workload you believe is running and that never wakes up. See [`scheduled:`](#scheduled--a-workload-that-wakes-itself) below. |

@@ -92,7 +92,7 @@ the version named in the library API design's import-surface table.
 | `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. |
 | `pkg/permissions` | Permission gate + prompt contract (ported; deliberately not runtime-wired in v0.1 — the package doc records the wiring-time inputs). |
 | `pkg/auth` | Caller identity, session ACL types, bearer/mTLS config (ported). |
-| `pkg/watchdog` | Loop signals (repeated call, alternating cycle, tool-failure streak) + session-event bridge + the `warn`/`feedback`/`enforce` posture ladder (`--watchdog`); alerts are logged, projected onto the guardrail surface, and — from `feedback` up — routed into the model's own next prompt. |
+| `pkg/watchdog` | Loop signals (repeated call, alternating cycle, tool-failure streak) + session-event bridge + the `warn`/`feedback`/`enforce` posture ladder; alerts are logged, projected onto the guardrail surface, and — from `feedback` up — routed into the model's own next prompt. The posture resolves `--watchdog` > the bundle's `safety.watchdog` > `watchdog.DefaultMode` (`feedback`), and every turn-driving surface taps it, the library embed included. |
 
 **Providers** — reshaped at port time (per-provider Options structs,
 no registry; dispatch is an explicit switch in `internal/compose`)

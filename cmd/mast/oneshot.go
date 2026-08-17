@@ -66,8 +66,8 @@ type oneShotOptions struct {
 	SessionDB  string // empty = in-memory
 	SessionDrv string // sqlite | postgres
 	Prompt     string
-	Timeout    time.Duration // whole-turn deadline; 0 = none
-	Watchdog   watchdog.Mode // "" = warn
+	Timeout    time.Duration      // whole-turn deadline; 0 = none
+	Watchdog   watchdogResolution // resolved posture + where it came from
 }
 
 // runOneShot runs one turn of the class-shaped agent to completion and
@@ -189,12 +189,19 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// prompt, and a one-shot has none — the injection point is the turn
 	// boundary this mode does not have. Say so rather than quietly
 	// running warn behind an operator who asked for more.
+	//
+	// Only when they asked, though: feedback is also mast's default
+	// posture, and a notice that fires on every one-shot invocation is
+	// one operators learn to scroll past — including on the run where
+	// they did ask and it did matter.
 	wd := watchdog.NewDefaultWatchdog()
-	if opts.Watchdog == watchdog.ModeFeedback {
+	if opts.Watchdog.Mode == watchdog.ModeFeedback && opts.Watchdog.Source != watchdogSourceDefault {
 		logger.Warn("--watchdog=feedback has no effect in one-shot mode: the observation is delivered on the session's next turn, and there is none. Alerts are still logged; use --watchdog=enforce to stop an intra-turn loop.",
-			"task", opts.Class)
+			"task", opts.Class, "source", opts.Watchdog.Source)
 	}
-	enf := watchdog.NewEnforcer(opts.Watchdog, "")
+	logger.Info("watchdog posture resolved",
+		"task", opts.Class, "mode", string(opts.Watchdog.Mode), "source", opts.Watchdog.Source)
+	enf := watchdog.NewEnforcer(opts.Watchdog.Mode, "")
 	onAlert := func(a watchdog.Alert) {
 		logger.Warn("watchdog alert", "task", opts.Class, "session", sessionID,
 			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
