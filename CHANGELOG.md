@@ -154,11 +154,18 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
 
   **Where both boards stand at this tag.** Fired by hand against the
   shipped tier table so the release quotes a measurement rather than
-  last night's, over 31 scenarios each:
+  last night's, over 31 scenarios each. Claude is run
+  [`32029654748`](https://github.com/go-steer/mast/actions/runs/32029654748)
+  at the tagged commit; Gemini is
+  [`32026851892`](https://github.com/go-steer/mast/actions/runs/32026851892),
+  which ran two commits earlier — the difference is one Anthropic-only
+  fix and one docs commit, neither of which that provider's path
+  touches. The first Claude board of the day is not quoted anywhere: it
+  ran before the tool-schema fix below and is superseded by this one.
 
   | metric | Claude | Gemini |
   |---|---|---|
-  | `intent_coverage` | 0.984 | 0.951 |
+  | `intent_coverage` | 0.973 | 0.951 |
   | `response_quality` | 0.855 | 0.976 |
   | `severity_accuracy` | 0.419 | 0.484 |
   | `effect_ordering` | 1.000 | 1.000 |
@@ -184,18 +191,22 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
     diagnostic-only so it gates nothing, but it scores against the
     upstream corpus's tool *names* and mast's tools are not named that:
     it measures nothing as written.
-  - Claude's `response_quality` fell 0.984 → 0.855 when the frontier
-    default moved off `claude-opus-4-7`, and the drop is worth reading
-    before it is worth fixing. Seven scenarios lost points; on all seven
-    the grader still scored the answer *specific* and *actionable*, and
-    it was `correct_diagnosis` alone that flipped. The pattern is the
-    model declining to assert the fixture's expected root cause when the
-    scenario's tool output does not carry it — in `LC-31` it ran a
-    control query against a nonexistent object, got the same log line
-    back, and refused the evidence on those grounds. That is the corpus
-    rewarding confident assertion, and a model that will not be
-    rewarded. All three are findings against the corpus, not against
-    the release; none is fixed here.
+  - Claude's `response_quality` reads 0.855 against 0.984 on the last
+    `claude-opus-4-7` board, and that pair of numbers should not be
+    subtracted. Two things changed underneath it: the frontier default,
+    and the Anthropic tool-schema conversion the entry below fixes — the
+    corpus builds its cluster tools with `functiontool.New`, which is
+    exactly the path that was sending Claude a name and no arguments. Of
+    the seven scenarios below full marks at this tag, five turn on
+    `correct_diagnosis`: the run declines to commit to the root cause
+    the corpus expects. The other two are scored *not specific* or *not
+    actionable* with the diagnosis accepted. Whether that residue is the
+    corpus rewarding confident assertion or the run genuinely
+    underperforming is not something one board can say, and this
+    release does not claim it either way.
+
+  The first two are findings against the corpus rather than the
+  release, and neither is fixed here.
 
 - **New: a workload can wake itself up, and the cadence survives the
   daemon** (#132, W4.1). Until now every run started with somebody
@@ -357,8 +368,8 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   ```
   J-cost-tier — every tiered specialist was billed at its own rate (root claude-opus-5 at $0.01500/1K)
     specialist  tier      resolved          calls  tokens  billed    at root   rate/1K
-    analyst     small     claude-haiku-4-5  1      854     $0.00256  $0.01281  $0.00300
-    _synthesis  frontier  claude-opus-5     1      1085    $0.01627  $0.01627  $0.01500
+    analyst     small     claude-haiku-4-5  1      848     $0.00254  $0.01272  $0.00300
+    _synthesis  frontier  claude-opus-5     1      1094    $0.01641  $0.01641  $0.01500
   ```
 
   The counterfactual column is the point: "not billed at the parent's
@@ -371,7 +382,7 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   the meter's own numbers and does not depend on what the model said.
 
   That block is transcribed from run
-  [`32026849851`](https://github.com/go-steer/mast/actions/runs/32026849851),
+  [`32029654748`](https://github.com/go-steer/mast/actions/runs/32029654748),
   not composed for the changelog. The Gemini board
   ([`32026851892`](https://github.com/go-steer/mast/actions/runs/32026851892))
   measured the same shape against its own ladder — `analyst` at

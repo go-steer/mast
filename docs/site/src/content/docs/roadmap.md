@@ -137,8 +137,8 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   check says it was skipped rather than passing quietly.
 
   At the v0.4.0 tag it reads, on Claude: a `tier: small` analyst resolved to
-  `claude-haiku-4-5` and billed $0.00256 for 854 tokens, where the
-  `claude-opus-5` root's rate would have charged $0.01281. On Gemini:
+  `claude-haiku-4-5` and billed $0.00254 for 848 tokens, where the
+  `claude-opus-5` root's rate would have charged $0.01272. On Gemini:
   `gemini-3.5-flash-lite` billed $0.00038 against the $0.00062 the
   `gemini-3.7-flash` root would have. The `frontier` row on each board is a
   control rather than a measurement — that tier resolves to the model the
