@@ -161,7 +161,7 @@ The port ships as five PRs rather than one, because each changes what an operato
 |---|---|---|
 | A | `317e18e`, `ef7dfb6` | **ported 2026-08-17.** Cycle detection, path-canonicalized args, tool-failure-streak, and result observation at the bridge. |
 | B | `635a9eb`, `6510a65` | **ported 2026-08-17.** Enforce mode + in-turn halt — flips the loop detectors to Critical. |
-| C | `e42a511` | alert→model routing (`Alert.Guidance`, feedback mode). The reclassification lands with this one. |
+| C | `e42a511` | **ported 2026-08-17.** Alert→model routing (`Alert.Guidance`, feedback mode). The reclassification lands with this one. |
 | D | `5682659` | safe autonomous defaults + `safety.watchdog` config. |
 | E | `4ac0337` | trip state that survives a restart. |
 
@@ -176,8 +176,8 @@ Alert prose is rewritten for mast's affordances. Upstream's reasons point an ope
 bundle. `pkg/watchdog/cycle_test.go` asserts on that directly, so the text cannot drift back.
 
 `pkg/watchdog/watchdog.go` and `bridge.go` keep their `b8dd225` trailers until PR E; a partial
-port does not bump a baseline, and bumping mid-cluster would hide the four commits still
-outstanding from the drift detector.
+port does not bump a baseline, and bumping mid-cluster would hide the commits still outstanding
+from the drift detector.
 
 ### Deliberately not ported
 
@@ -318,6 +318,50 @@ chokepoint preflight alone still fails `TestWatchdogEnforceRefusesEverySubsequen
 the refusal then comes from the post-loop check as a plain error rather than as `ErrConflict` —
 the session is stopped, but a caller cannot tell a halted session from a failed turn.
 
+**PR C of the watchdog cluster — `e42a511`.** `--watchdog=feedback`: the observation reaches the
+model. Every posture before this one routed a runaway-loop alert to an operator, and on an
+unattended workload — the deployment mast exists for — that operator is a pod log nobody is
+tailing. The model about to make the same call for the sixth time is the only party that can
+decide not to, and it was the one party never told. This is also the commit the governance
+question was about; the reclassification is recorded in `fork-design.md` and in the
+resolved-decisions table.
+
+The postures become a ladder — `warn` < `feedback` < `enforce`, each including the one below —
+and **`enforce` implies `feedback`** rather than replacing it. An enforce halt is cleared by an
+operator reset, and a reset resumes a model whose context still ends in the loop it was halted
+for; without the injected observation the next turn re-issues the same call and re-trips. That is
+also why `watchdogPool.reset` clears the signals, the trip, and the alert residue but deliberately
+**keeps** the queued observation: the reset undoes the halt, not the correction.
+
+Four adaptations. **Where the queue lives:** upstream keeps pending alerts on `Agent` and prepends
+inside `Run`; mast has no `Agent`, so it is a `watchdog.Feedback` held per session in
+`watchdogPool`, symmetric with the `Enforcer` from PR B. **Where the injection happens:** at
+`runTurnPre`, before `r.Run`, building a *new* `*genai.Content` with a leading text part rather
+than appending to the caller's slice — `msg` belongs to the inject handler or the scheduler, and
+growing their slice would leak the block into a retry of the same message. **Three signals, three
+guidances:** upstream had one signal to write a model-facing sentence for; mast has three, and its
+operator-facing `Reason` strings name `POST /sessions/{id}/interrupt` and the bundle's budget
+ceiling — affordances the model does not have, and naming them invites a hallucinated call for
+them. `TestBuiltinSignalsCarryModelFacingGuidance` asserts every shipped signal sets `Guidance`
+and that none of them leaks an operator control, so a fourth signal cannot ship with only half the
+prose. **One-shot says no:** the feedback rung is the one that does not carry over to one-shot
+mode, whose whole mechanism is the next turn a one-shot does not have. It logs a line saying so
+instead of quietly running warn behind an operator who asked for more.
+
+The bound is upstream's: four pending alerts, oldest dropped, and nothing queued at all below
+`feedback` so that flipping a long-running deployment up a rung cannot deliver a backlog about
+turns that ended hours ago. Draining happens on read, not on turn success — an observation lands
+exactly once even if that turn fails, because by the time a retry lands the signal describes
+behavior several turns back, and a block that re-appears until something succeeds is a prompt
+leak. The block is steering, not a trust boundary; nothing downstream grants authority based on
+it.
+
+Three arms checked against pre-fix behavior. Neutering the prepend fails the reach, once-only, and
+post-reset tests with "no watchdog block". Narrowing `Mode.Feeds()` to feedback-only fails
+`TestWatchdogResetKeepsTheQueuedObservation` at the queue assertion — enforce stops implying
+feedback, and the treadmill is back. Making `reset` delete the queue fails the same test one line
+later, which is the assertion that the reset does not undo the correction.
+
 ---
 
 ## Observations that are not drift
@@ -339,10 +383,10 @@ Two things this triage surfaced that the detector cannot see, recorded so they a
 
 ## Baseline after this triage
 
-The report goes **48 → 40** commits across **53 → 47** files. (The file count *rose* by two as
-PR B added trailered files to a package that still reports drift — a port that adds files to a
-behind-baseline package widens the denominator without widening the backlog. The commit count is
-the signal.) `pkg/pricing` drops to zero;
+The report goes **48 → 40** commits across **53 → 48** files. (The file count *rose* by three as
+PRs B and C added trailered files to a package that still reports drift — a port that adds files
+to a behind-baseline package widens the denominator without widening the backlog. The commit count
+is the signal.) `pkg/pricing` drops to zero;
 `pkg/modeltier` to 2 and `pkg/taskclass` to 1, all of which are the `f054590` / `09b6cd1`
 **ahead** rows — upstream commits that post-date the `cafe310` port SHA and whose content mast
 already has. Those three will keep reporting until mast next re-ports from a SHA at or after them,
@@ -353,12 +397,13 @@ moved to `e7a21da` — the per-file trailer is what the detector reads, so a pac
 several baselines at once and the aggregate row says so. `pkg/providers/vertexcache` drops to
 zero: the package is fully current with upstream as of `c319565`.
 
-The watchdog cluster does not move the count yet, on purpose. PRs A and B port `317e18e`,
-`ef7dfb6`, `635a9eb`, and `6510a65` into new files that carry those SHAs as their own baselines,
-but `pkg/watchdog/watchdog.go` and `bridge.go` — the files the detector maps those commits onto —
-stay at `b8dd225` until PR E. A partial port does not bump a baseline; bumping mid-cluster would
-silence the commits still outstanding, which is precisely the lie the trailer scheme exists to
-prevent. `pkg/watchdog` goes to zero when the cluster closes, in one bump to `6510a65`.
+The watchdog cluster does not move the count yet, on purpose. PRs A through C port `317e18e`,
+`ef7dfb6`, `635a9eb`, `6510a65`, and `e42a511` into new files that carry those SHAs as their own
+baselines, but `pkg/watchdog/watchdog.go` and `bridge.go` — the files the detector maps those
+commits onto — stay at `b8dd225` until PR E. A partial port does not bump a baseline; bumping
+mid-cluster would silence the commits still outstanding, which is precisely the lie the trailer
+scheme exists to prevent. `pkg/watchdog` goes to zero when the cluster closes, in one bump to
+`6510a65`.
 
 40 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next

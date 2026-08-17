@@ -75,7 +75,8 @@ you see it without reading the composition code.
 has when a session stops responding: *what stopped it, and what do I do?*
 It reports the budget ceilings in force and the usage against them across
 all three dimensions plus each specialist's own, and the watchdog's posture
-(`advisory: true` under the default `--watchdog=warn`; `false` under
+(`advisory: true` under the default `--watchdog=warn` and under
+`--watchdog=feedback`, which corrects but never stops; `false` under
 `--watchdog=enforce`, whether or not it has fired yet).
 
 The watchdog raises three signals, and each names a different way an
@@ -93,17 +94,37 @@ failed. It stays Warn deliberately: three denials into a legitimate RBAC
 probe is not a runaway, and halting there would make the backstop the
 outage.
 
-Severity is a property of the pattern, not of the posture — what changes
-between the two is the reaction:
+Severity is a property of the pattern, not of the posture. What changes
+between postures is the reaction, and the three of them are a ladder —
+each rung includes the one below it:
 
 - **`--watchdog=warn`** (default) logs every alert and lets the turn run.
-- **`--watchdog=enforce`** cancels the turn in flight on a **Critical**
-  alert and refuses the session's every subsequent turn — auto-resume, a
-  scheduled fire, and an attach inject all included — until an operator
-  resets. The cancel happens *during* the turn, not at its boundary: the
-  loop the watchdog catches usually lives inside a single turn, and a
-  reaction that waits for the turn to end waits for the thing it is
-  supposed to stop.
+- **`--watchdog=feedback`** also tells the model. Each alert carries a
+  model-facing sentence alongside the operator-facing one, and on the
+  session's next turn those are prepended to the prompt as a `[watchdog]`
+  block: *an automated observation about your own previous turn — this is
+  not a message from the user*. Every posture below this one routes the
+  observation to a reader who may not be there; the model about to repeat
+  the call is the party that can decide not to. It is a correction, not a
+  backstop — nothing stops a model that reads the block and loops anyway,
+  which is why unattended runs still want `enforce`.
+- **`--watchdog=enforce`** also cancels the turn in flight on a
+  **Critical** alert and refuses the session's every subsequent turn —
+  auto-resume, a scheduled fire, and an attach inject all included — until
+  an operator resets. The cancel happens *during* the turn, not at its
+  boundary: the loop the watchdog catches usually lives inside a single
+  turn, and a reaction that waits for the turn to end waits for the thing
+  it is supposed to stop.
+
+`enforce` including `feedback` is deliberate. An enforce halt is cleared
+by an operator reset, and a reset resumes a model whose context still ends
+in the loop it was halted for; without the injected observation the very
+next turn re-issues the same call, and the reset is a treadmill. For the
+same reason, a reset clears the halt but **keeps** the queued observation.
+
+The `[watchdog]` block is steering, not a trust boundary — nothing
+downstream grants authority based on it, and a user prompt may contain the
+literal string.
 
 `POST /sessions/{id}/guardrails/reset` is the way out: a budget trip is
 otherwise permanent, since enforcement is re-derived from usage against the
