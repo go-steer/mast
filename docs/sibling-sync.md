@@ -129,7 +129,7 @@ Ranked by what it costs mast to keep not doing them.
 | `cfcbe22` | vertexcache: close the lost-retry race in the transient-cancel test (#547) | **verdict corrected 2026-08-17: absorbed.** mast's `TestInit_TransientCancelRetriesInsteadOfStickyFail` already polls `Init` rather than firing once, and carries the comment explaining why. The triage read the row from the drift report and not from the test. |
 | `6a4810b` | vertexcache: widen async deadlines to a shared `testWait` (#517) | **verdict corrected 2026-08-17: absorbed but for one site, now closed** ([#161](https://github.com/go-steer/mast/pull/161)). mast had widened every `waitFor` deadline at port time but left one `time.After(time.Second)`; the port lifts all of them onto the shared `testWait` constant. |
 
-### The watchdog cluster — 7 commits, and one governance question
+### The watchdog cluster — 7 commits, governance question resolved
 
 `635a9eb` enforce mode (#628) · `e42a511` route alerts into the model's next turn (#678) ·
 `6510a65` halt in-turn, not at the turn boundary (#719) · `ef7dfb6` tool-failure-streak signal
@@ -137,29 +137,47 @@ Ranked by what it costs mast to keep not doing them.
 defaults + `safety.watchdog` config (#665) · `4ac0337` persist guardrail trip-state across a
 process restart (#671)
 
-mast's watchdog is the pre-`635a9eb` shape: one signal (`repeated-tool-call`), observe-only,
-alerts surfaced through `Tap`. `cmd/mast/guardrails.go` is explicit that `watchdogModeWarn` is
-"the only watchdog posture mast ships", and the trip state lives in an in-memory `watchdogPool`
-that a restart clears.
+At triage time mast's watchdog was the pre-`635a9eb` shape: one signal (`repeated-tool-call`),
+observe-only, alerts surfaced through `Tap`. `cmd/mast/guardrails.go` was explicit that
+`watchdogModeWarn` is "the only watchdog posture mast ships", and the trip state lived in an
+in-memory `watchdogPool` that a restart cleared.
 
-**The governance question this raises.** `fork-design.md` § "Sync discipline under (E)" lists
+**The governance question this raised.** `fork-design.md` § "Sync discipline under (E)" listed
 **watchdog→model routing** as an example of a *lean-fork-specific feature* — mast-only, "not
 ported to core-agent unless someone there explicitly asks for it." Upstream built it anyway, as
-`e42a511`, on 2026-08-12. So one of the sync table's four categories now has a member sitting on
-the wrong side of the fork.
+`e42a511`, on 2026-08-12. So one of the sync table's four categories had a member sitting on the
+wrong side of the fork.
 
-Three ways out, and this doc does not pick one, because changing the sync-discipline table is a
-strategic call for the human (`AGENTS.md`, "how to contribute"):
+**Resolved 2026-08-17: port all seven and reclassify.** watchdog→model routing moves to *shared
+infrastructure*; `fork-design.md`'s lean-fork-specific row gets a different example. The
+reasoning is the one that makes mast mast: the unattended sibling is the deployment where a
+runaway or an unverified conclusion costs the most and is noticed the least, so a soaked upstream
+implementation is worth more here than a mast-original one. The classification was aspirational,
+not load-bearing.
 
-1. **Port it and reclassify.** Move watchdog→model routing to "shared infrastructure". mast gets a
-   soaked implementation; the category stops being wrong.
-2. **Build mast's own and keep the classification.** mast's version would differ — its watchdog is
-   per-session and per-workload, and the alert would land in a specialist's turn rather than a
-   chat loop.
-3. **Drop the classification.** Concede that the example was aspirational and pick a different one.
+The port ships as five PRs rather than one, because each changes what an operator sees:
 
-Until that is decided, all seven are **watch**: porting individually would answer the question by
-accident.
+| PR | upstream | what it adds |
+|---|---|---|
+| A | `317e18e`, `ef7dfb6` | **ported 2026-08-17.** Cycle detection, path-canonicalized args, tool-failure-streak, and result observation at the bridge. |
+| B | `635a9eb`, `6510a65` | enforce mode + in-turn halt — flips the loop detectors to Critical. |
+| C | `e42a511` | alert→model routing (`Alert.Guidance`, feedback mode). The reclassification lands with this one. |
+| D | `5682659` | safe autonomous defaults + `safety.watchdog` config. |
+| E | `4ac0337` | trip state that survives a restart. |
+
+Two adaptations run through all five. Severity stays **Warn** for `tool-failure-streak` — under
+an enforce posture a Critical alert would halt a daemon three denials into a legitimate RBAC
+probe, making the backstop the outage. And nothing ships inert: `Alert.Guidance` arrives with PR
+C, the posture that reads it, rather than with PR A as an unread field.
+
+Alert prose is rewritten for mast's affordances. Upstream's reasons point an operator at a
+`/interrupt` slash command and `--max-turn-cost-usd`; mast has neither — its interrupt is
+`POST /sessions/{id}/interrupt` on the attach surface and its ceilings come from the workload
+bundle. `pkg/watchdog/cycle_test.go` asserts on that directly, so the text cannot drift back.
+
+`pkg/watchdog/watchdog.go` and `bridge.go` keep their `b8dd225` trailers until PR E; a partial
+port does not bump a baseline, and bumping mid-cluster would hide the four commits still
+outstanding from the drift detector.
 
 ### Deliberately not ported
 
@@ -177,7 +195,7 @@ accident.
 
 ## What this triage changed
 
-Seven changes landed as a direct result, in four PRs.
+Nine changes landed as a direct result, in five PRs.
 
 **[#154](https://github.com/go-steer/mast/pull/154) — the Anthropic tool-parameter bug.** Triaging
 `b98803c` turned up the same defect live in mast: every tool mast defines reached Claude as
@@ -250,6 +268,26 @@ commit is still a claim about mast's code, and the only way to check it is to op
 Both vertexcache trailers move `b8dd225` → `c319565`, which is the whole set: those three commits
 are every upstream change to the package since `b8dd225`.
 
+**PR A of the watchdog cluster — `317e18e` + `ef7dfb6`.** mast's watchdog grows from one detector
+to three. `alternating-tool-cycle` catches the shape the consecutive-repeat check is structurally
+blind to — the `list_agents → check_agent` loop that survived an operator stop during upstream's
+GKE UAT, where no call is ever followed by itself. Path canonicalization closes the other half:
+`main.go`, `./main.go`, and `/workspace/main.go` now compare equal, so a repeat cannot hide behind
+a spelling. `tool-failure-streak` is the one that matters most here — it reads tool *outcomes*
+rather than calls, and fires when three in a row all error with none succeeding between, which is
+the situation where an unattended workload writes a confident report about a system nothing it ran
+could reach. mast is the deployment where that costs the most and is checked the least.
+
+Result observation arrives as an optional interface (`ToolResultObserver`) rather than a widening
+of `Watchdog`, which is documented as a plug-in point, and `Tap` feeds responses through the same
+per-turn dedup set as calls under a separate key prefix — the streaming aggregator re-emits both,
+and a double-counted failure would trip the streak at half its threshold.
+
+All four wiring gates were checked against pre-port behavior: with the two new signals removed
+from `NewDefaultWatchdog` and `matches` reverted to a literal args compare, every acceptance test
+fails with "alerts = []". The detectors are reachable from the shipped default, not merely
+constructible.
+
 ---
 
 ## Observations that are not drift
@@ -281,6 +319,13 @@ never ported from to silence it would be a lie in the one record this whole sche
 moved to `e7a21da` — the per-file trailer is what the detector reads, so a package can sit at
 several baselines at once and the aggregate row says so. `pkg/providers/vertexcache` drops to
 zero: the package is fully current with upstream as of `c319565`.
+
+The watchdog cluster does not move the count yet, on purpose. PR A ports `317e18e` and `ef7dfb6`
+into new files that carry those SHAs as their own baselines, but `pkg/watchdog/watchdog.go` and
+`bridge.go` — the files the detector maps those commits onto — stay at `b8dd225` until PR E. A
+partial port does not bump a baseline; bumping mid-cluster would silence the four commits still
+outstanding, which is precisely the lie the trailer scheme exists to prevent. `pkg/watchdog` goes
+to zero when the cluster closes, in one bump to `6510a65`.
 
 40 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next

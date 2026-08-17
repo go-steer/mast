@@ -93,6 +93,38 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   Ported from core-agent's #723. The two new tests fail on the old
   sticky behavior.
 
+- **The watchdog gained two detectors, and learned to read tool results
+  as well as tool calls.** Its one signal — five identical calls in a
+  row — is structurally blind to the loop that actually happens: an
+  agent alternating between two tools, `list_agents → check_agent`
+  forever, where no call is ever followed by itself.
+  `alternating-tool-cycle` scans for a repeating short cycle instead.
+  Argument comparison is also path-aware now, so `main.go`, `./main.go`,
+  and `/workspace/main.go` are one file rather than three; the match is
+  on a path-component boundary, so `a/doc.go` and `b/doc.go` stay
+  distinct.
+
+  `tool-failure-streak` is the one to read in a report. It fires when
+  three tool calls in a row all return errors with none succeeding
+  between, which is the state where a workload writes a confident
+  summary of a system that nothing it ran could reach. The calls look
+  ordinary; the results are the story. No prose is inspected — a
+  detector that tried to recognize an over-confident claim would be a
+  heuristic about English wearing the costume of a runtime guarantee.
+
+  Outcome observation is an optional extension (`ToolResultObserver`)
+  rather than a widening of the `Watchdog` interface, which is a
+  documented plug-in point: a third-party watchdog should not break to
+  gain a signal it may not want. Responses dedup against the same
+  per-turn set as calls under a separate key space, since the streaming
+  aggregator re-emits both and a double-counted failure would trip the
+  streak at half its threshold.
+
+  All three signals stay **Warn**: mast's watchdog annotates a session,
+  it does not stop one. Ported from core-agent's #679 and #690 — the
+  first two of seven; see `docs/sibling-sync.md` for the rest of the
+  cluster and the sync-classification call that unblocked it.
+
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an
   `// Originally derived from go-steer/core-agent@<sha>` trailer, frozen

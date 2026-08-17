@@ -24,29 +24,45 @@
 // and #145's cost ceiling (dollar signal); this is the *behavioral*
 // signal layer.
 //
-// v1 scope (this PR):
+// Current scope:
 //
 //   - Watchdog interface + Alert / Signal / Telemetry types.
-//   - DefaultWatchdog implementing one signal — repeated identical
-//     tool calls (the read_file loop pattern from #144 + family).
-//     The shape is built so adding signals (tools-without-text,
-//     files-not-touched, rate-based growth) is mechanical — each
-//     signal is a small struct with an Observe/Check pair, the
-//     DefaultWatchdog just fans observations across them.
-//   - "Warn" mode only: alerts are logged to stderr by the agent
-//     wiring. No interactive prompt, no auto-escalation, no model
-//     swap.
+//   - DefaultWatchdog implementing three detectors: repeated identical
+//     tool calls (the read_file loop pattern from #144 + family);
+//     alternating cycles (a → b → a → b) with path-canonicalized
+//     argument comparison, which are the two evasions the v1 detector
+//     documented and could not catch (#649, cycle.go + canonical.go);
+//     and a tool-failure streak read off tool *outcomes* rather than
+//     calls (#639, failure.go). The shape is built so adding signals
+//     is mechanical — each signal is a small struct with an
+//     Observe/Check pair, the DefaultWatchdog just fans observations
+//     across them.
+//   - Tool *outcome* observation via the optional ToolResultObserver
+//     extension — see failure.go. Kept optional rather than folded
+//     into Watchdog so a third-party implementation doesn't break to
+//     gain one signal.
+//   - "Warn" mode only: alerts are logged by the bridge's caller and
+//     surfaced on the attach guardrail endpoint. No interactive
+//     prompt, no auto-escalation, no model swap, and no halt — a
+//     tripped signal never stops a turn.
 //
 // Future scope (deferred — see design doc §"Piece 2"):
 //
 //   - Additional signals: tools-without-text, files-not-touched,
 //     context-growth-rate, cost-burn-rate.
+//   - "Feedback" mode: route the observation into the model's own next
+//     turn, which is the only party that can stop making the call.
+//     core-agent shipped this as its #159; mast's port is sequenced
+//     behind these detectors (see docs/sibling-sync.md).
+//   - "Enforce" mode: a Critical alert halts the agent until an
+//     operator resets, mirroring the budget kill switch. Until it
+//     lands, every signal here is Warn — severity that nothing acts on
+//     is a label, and a Critical that halts nothing reads as a bug.
 //   - "Prompt" mode: pause turn, ask operator y/n via the existing
 //     permissions prompter, resume on either path.
-//   - "Auto" mode: invoke Agent.SwapModel (also unshipped) to
-//     escalate to a frontier model without operator interaction.
-//   - `/escalate [model]` slash for operator-driven model swaps.
-//   - SSE event surface for alerts (today they go to stderr only).
+//   - "Auto" mode: escalate to a frontier model without operator
+//     interaction.
+//   - SSE event surface for alerts.
 //
 // The interface is designed so consumers can plug in their own
 // implementation — same composability pattern as Compactor /
@@ -84,12 +100,10 @@ type Alert struct {
 // ToolCall is the per-tool-call observation the watchdog needs.
 // Name is the canonical tool name (e.g. "read_file",
 // "mcp.gke.list_clusters"). Args is the JSON-serialized argument
-// blob — compared as a literal string by the v1 repeated-tool-call
-// detector, which means semantically-equivalent calls with
-// different arg formatting (e.g. relative vs absolute file paths)
-// are treated as distinct. Tool-specific canonicalization is a
-// future enhancement; for v1 the framing fix in #147 already
-// reduces the probability of the alternating-path subcase.
+// blob, passed through as the caller produced it: the detectors
+// canonicalize path-shaped values themselves (#649, canonical.go)
+// rather than requiring every caller to agree on a normal form, and a
+// third-party Watchdog implementation still sees the raw args.
 type ToolCall struct {
 	Name string
 	Args string
@@ -157,17 +171,28 @@ type Signal interface {
 }
 
 // NewDefaultWatchdog returns a DefaultWatchdog wired with the
-// default v1 signal set:
+// default signal set:
 //
-//   - RepeatedToolCall (threshold 5): N consecutive identical
-//     (name, args) tool calls.
+//   - RepeatedToolCall (threshold 5): 5 consecutive calls to the same
+//     tool with path-canonicalized-identical args.
+//   - AlternatingCycle (period ≤ 4, 3 laps): the same short sequence
+//     of calls repeated three times — the a → b → a → b shape the
+//     repeat detector structurally cannot see (#649).
+//   - ToolFailureStreak (3 in a row): every call erroring with none
+//     succeeding in between, i.e. an agent with no verified evidence
+//     about anything (#639).
 //
-// Operators wanting different thresholds construct DefaultWatchdog
-// directly with a custom signal list.
+// All three are Warn, because warn is mast's only posture: nothing
+// here halts a turn. Operators wanting different thresholds, or a
+// subset, construct DefaultWatchdog directly with a custom signal
+// list — the cycle detector is the one most likely to be dropped, on
+// a workload whose normal shape is a polling loop.
 func NewDefaultWatchdog() *DefaultWatchdog {
 	return &DefaultWatchdog{
 		signals: []Signal{
 			NewRepeatedToolCallSignal(5),
+			NewAlternatingCycleSignal(DefaultCycleMaxPeriod, DefaultCycleRepeats),
+			NewToolFailureStreakSignal(DefaultFailureStreak),
 		},
 	}
 }
@@ -218,12 +243,12 @@ func (w *DefaultWatchdog) Reset() {
 // thing") without flagging legitimate patterns like
 // alternating-tool exploration loops.
 //
-// Caveat from #144: args comparison is literal-string. Tool calls
-// with semantically-equivalent but textually-different args (e.g.
-// "main.go" vs "/workspace/main.go") won't be detected as repeats.
-// Tool-specific canonicalization is a future enhancement; v1
-// pairs with #147's inbox framing fix to reduce the probability of
-// that subcase reaching the watchdog at all.
+// Args comparison is path-canonicalized (#649, see canonical.go),
+// not literal-string as in v1: "main.go", "./main.go" and
+// "/workspace/main.go" are one call, because an agent re-reading one
+// file under three spellings is as stuck as one re-reading it under
+// the same spelling. Everything else still compares exactly — a
+// detector that generalizes too eagerly flags legitimate work.
 type RepeatedToolCallSignal struct {
 	Threshold int
 
@@ -266,7 +291,7 @@ func (s *RepeatedToolCallSignal) ObserveToolCall(tc ToolCall) *Alert {
 			Signal:   s.Name(),
 			Severity: SeverityWarn,
 			Reason: fmt.Sprintf(
-				"agent has called %s with identical args %d times in a row — possible tool loop. Args: %s. If the agent is stuck, consider /interrupt and a different prompt phrasing. Cost ceiling (see --max-turn-cost-usd) is the hard backstop.",
+				"agent has called %s with identical args %d times in a row — possible tool loop. Args: %s. If the agent is stuck, POST /sessions/{id}/interrupt on the attach surface. The workload's budget ceiling is the hard backstop.",
 				tc.Name, s.runLength, truncate(tc.Args, 200),
 			),
 		}
@@ -281,14 +306,15 @@ func (s *RepeatedToolCallSignal) Reset() {
 	s.tripped = false
 }
 
-// matches reports whether tc is the same (name, args) as the
-// run's lastCall. Returns false when there is no run in flight
+// matches reports whether tc is the same call as the run's lastCall,
+// comparing args through argsEquivalent so path spellings of one file
+// don't split a run. Returns false when there is no run in flight
 // (runLength == 0).
 func (s *RepeatedToolCallSignal) matches(tc ToolCall) bool {
 	if s.runLength == 0 {
 		return false
 	}
-	return s.lastCall.Name == tc.Name && s.lastCall.Args == tc.Args
+	return s.lastCall.Name == tc.Name && argsEquivalent(s.lastCall.Args, tc.Args)
 }
 
 // truncate caps s at maxLen, replacing the middle with "…" so the
