@@ -38,6 +38,36 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   branch that always worked, which is how this survived the existing
   tool tests.
 
+- **A turn could die on the eventlog's write lock instead of waiting for
+  it.** SQLite takes one database-wide write lock, and mast opens two
+  connection pools against the same file — ADK's session service and the
+  overlay that assigns event seq numbers. Under the default deferred
+  `BEGIN`, an `AppendEvent` reads the session row first, taking a read
+  snapshot, and the first write then attempts a snapshot→write upgrade.
+  SQLite refuses that upgrade with an *immediate* `SQLITE_BUSY` when
+  another connection holds the lock — `busy_timeout` deliberately never
+  retries an upgrade, because two upgraders waiting on each other is a
+  deadlock. So the 5s busy timeout mast already sets did nothing for the
+  one case that bites.
+
+  `eventlog.Open` now injects `_txlock=immediate` on the SQLite DSN, so
+  every read-write transaction begins with `BEGIN IMMEDIATE` and waits
+  on `busy_timeout` like an ordinary contended writer. Reads (`Get`,
+  `List`) use no explicit transaction and stay lock-free under WAL.
+
+  `pkg/eventlog/service.go`'s write mutex reads like it already covers
+  this and doesn't: it serializes writes made *through the service
+  wrapper*, not writes another connection makes on the same file. The
+  concurrent writer here is the daemon's own machinery — the scheduler
+  firing a cadence, auto-resume replaying a marked session, an A2A or
+  AG-UI submission, an attach inject. Unattended is the shape that hits
+  this most often and has nobody watching when it does.
+
+  Ported from core-agent's #576, found by the triage below; upstream hit
+  it through auto-continue, which mast does not have. The regression
+  test holds the write lock on an independent connection and fails on
+  pre-fix code with `database is locked (5) (SQLITE_BUSY)`.
+
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an
   `// Originally derived from go-steer/core-agent@<sha>` trailer, frozen

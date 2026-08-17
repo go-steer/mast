@@ -121,7 +121,7 @@ Ranked by what it costs mast to keep not doing them.
 
 | Commit | Subject | State |
 |---|---|---|
-| `e7a21da` | eventlog: `BEGIN IMMEDIATE` on SQLite (#576) | **ported 2026-08-17.** See "What this triage changed" — this one is live in mast for a reason upstream's commit message doesn't mention. |
+| `e7a21da` | eventlog: `BEGIN IMMEDIATE` on SQLite (#576) | **ported 2026-08-17** ([#157](https://github.com/go-steer/mast/pull/157)). See "What this triage changed" — this one is live in mast for a reason upstream's commit message doesn't mention. |
 | `9f81626` | attach: durable peer registry across hub restarts (#688) | **open.** mast's `PeerRegistry` is in-memory: a daemon restart drops every registration and every peer has to re-register before federation works again. mast is the *unattended* sibling, so this bites harder here than upstream. |
 | `c319565` | vertexcache: retry a failed `Caches.Create` on a bounded backoff (#723) | **open.** mast's `manager.go` logs `"transient; will retry on a later turn"` — precisely the weaker behavior upstream replaced. A workload with long gaps between turns pays full prompt cost until the next one. |
 | `ef9b9b5` | telemetry: Go runtime metrics + Gemini API-key otelhttp wrap (#525) | **open, low.** mast has neither. Runtime metrics are the more useful half for a long-lived daemon; the otelhttp wrap only covers the API-key Gemini path, which mast uses less than Vertex. |
@@ -177,7 +177,7 @@ accident.
 
 ## What this triage changed
 
-Five changes landed as a direct result, in two PRs.
+Six changes landed as a direct result, in three PRs.
 
 **[#154](https://github.com/go-steer/mast/pull/154) — the Anthropic tool-parameter bug.** Triaging
 `b98803c` turned up the same defect live in mast: every tool mast defines reached Claude as
@@ -217,7 +217,21 @@ title to find it.
   justification for mast's 8 MiB response cap; upstream measures the LiteLLM catalog at 2–3 MiB and
   caps at 32 MiB. The cap is still fine — the reason given for it was not.
 
-**Separately, [#155](https://github.com/go-steer/mast/pull/155) ports `e7a21da`.**
+**[#157](https://github.com/go-steer/mast/pull/157) — `BEGIN IMMEDIATE` on SQLite (`e7a21da`).**
+Ported unchanged; the reasoning is not upstream's. core-agent found this through auto-continue,
+which mast does not have. Here the second writer is the daemon's own ingress — the scheduler
+firing a cadence, auto-resume replaying a marked session, an A2A or AG-UI submission, an attach
+inject — landing on ADK's connection pool while the overlay pool writes its own rows.
+`pkg/eventlog/service.go`'s write mutex reads like it already covers this and does not: it
+serializes writes that go *through the wrapper*, not writes another connection makes on the same
+file. Under the default deferred `BEGIN`, an `AppendEvent` that reads before it writes fails
+*immediately* with `SQLITE_BUSY` rather than waiting out `busy_timeout`, because SQLite refuses to
+retry a snapshot→write upgrade. The regression test holds the write lock on an independent
+connection and fails on pre-fix code with `database is locked (5) (SQLITE_BUSY)`.
+
+`pkg/eventlog/sql.go`'s trailer moves `25d8531` → `e7a21da` per the re-port rule. That absorbs
+exactly this commit; `8d812e7` and `c319565` touch the same file and post-date it, so they keep
+reporting, correctly.
 
 ---
 
@@ -240,14 +254,17 @@ Two things this triage surfaced that the detector cannot see, recorded so they a
 
 ## Baseline after this triage
 
-The report goes **48 → 43** commits across **53 → 47** files. `pkg/pricing` drops to zero;
+The report goes **48 → 42** commits across **53 → 47** files. `pkg/pricing` drops to zero;
 `pkg/modeltier` to 2 and `pkg/taskclass` to 1, all of which are the `f054590` / `09b6cd1`
 **ahead** rows — upstream commits that post-date the `cafe310` port SHA and whose content mast
 already has. Those three will keep reporting until mast next re-ports from a SHA at or after them,
 which is correct: the detector cannot know mast got there first, and inventing a trailer SHA mast
 never ported from to silence it would be a lie in the one record this whole scheme rests on.
+`pkg/eventlog` drops from 4 commits to 3 and now reports **two** port SHAs, because `sql.go` alone
+moved to `e7a21da` — the per-file trailer is what the detector reads, so a package can sit at
+several baselines at once and the aggregate row says so.
 
-43 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
+42 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next
 Monday. **Read the count as a delta, not a level.**
 
