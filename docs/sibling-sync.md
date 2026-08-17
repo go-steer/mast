@@ -125,7 +125,7 @@ Ranked by what it costs mast to keep not doing them.
 | `9f81626` | attach: durable peer registry across hub restarts (#688) | **open.** mast's `PeerRegistry` is in-memory: a daemon restart drops every registration and every peer has to re-register before federation works again. mast is the *unattended* sibling, so this bites harder here than upstream. |
 | `c319565` | vertexcache: retry a failed `Caches.Create` on a bounded backoff (#723) | **ported 2026-08-17** ([#161](https://github.com/go-steer/mast/pull/161)) — the vertexcache half. Upstream squashed three unrelated changes into this SHA; the `pkg/attach` + `pkg/eventlog` `BranchLister` half is subagent-branch resolution, which mast does not have, and the `pkg/models/gemini` touch is a comment. So `c319565` keeps reporting under `pkg/eventlog`, correctly. |
 | `ef9b9b5` | telemetry: Go runtime metrics + Gemini API-key otelhttp wrap (#525) | **open, low.** mast has neither. Runtime metrics are the more useful half for a long-lived daemon; the otelhttp wrap only covers the API-key Gemini path, which mast uses less than Vertex. |
-| `b1101f9` | mcp: surface JSON-RPC error body on 4xx/5xx (#305) | **open, low.** mast's `pkg/mcp` is mast-native apart from `auth.go`, so this is a re-implementation rather than a port. Worth doing the next time an MCP server returns an opaque 4xx. |
+| `b1101f9` | mcp: surface JSON-RPC error body on 4xx/5xx (#305) | **ported 2026-08-17, narrowed** ([#167](https://github.com/go-steer/mast/pull/167)). The triage called this a re-implementation; it turned out to be a re-implementation of *less than half*, because the MCP SDK closed most of the gap in the interval. See below. |
 | `cfcbe22` | vertexcache: close the lost-retry race in the transient-cancel test (#547) | **verdict corrected 2026-08-17: absorbed.** mast's `TestInit_TransientCancelRetriesInsteadOfStickyFail` already polls `Init` rather than firing once, and carries the comment explaining why. The triage read the row from the drift report and not from the test. |
 | `6a4810b` | vertexcache: widen async deadlines to a shared `testWait` (#517) | **verdict corrected 2026-08-17: absorbed but for one site, now closed** ([#161](https://github.com/go-steer/mast/pull/161)). mast had widened every `waitFor` deadline at port time but left one `time.After(time.Second)`; the port lifts all of them onto the shared `testWait` constant. |
 
@@ -235,6 +235,51 @@ gap: PR C landed the routing in `main.go` and `oneshot.go`, which are mast-nativ
 trailer, while the only trailered file in the package (`safety.go`) is derived from `5682659`
 and should not claim a commit it did not come from.
 
+### `b1101f9` — what a re-implementation looks like when the dependency moved too
+
+Upstream wrote `pkg/mcp/errbody.go` on 2026-07-17 against go-sdk **v1.4.1**, where a non-2xx
+response resolved to `http.StatusText(code)` and nothing else: a GKE MCP IAM denial reached the
+operator as `sending "tools/call": Forbidden`, with the permission name they had to grant thrown
+away. Their fix wraps the HTTP transport and extracts the message from any 4xx/5xx JSON body.
+
+mast is on go-sdk **v1.7.0**, and the SDK has since taken half the job. `checkResponse` now
+decodes the body and surfaces a standard `{"error":{"message":..}}` object itself. Porting
+upstream's file verbatim would have duplicated that — and duplicating it is not free, because
+intercepting at the transport discards the typed `*jsonrpc.Error` the SDK wraps into the chain.
+
+So the port covers only what v1.7.0 still drops, both of which mast hits on its primary surface:
+
+- **The MCP tool-result error shape.** `container.googleapis.com/mcp` answers an IAM denial with
+  403 and a body of `{"result":{"isError":true,"content":[{"type":"text","text":"Permission
+  '...' denied"}]}}`. That decodes as a JSON-RPC *result*, not an error, so the SDK falls through
+  to the status line. This is the exact case upstream's commit message quotes — and the one the
+  SDK's own fix does not reach.
+- **Transient statuses.** For 429/500/502/503/504 the SDK returns early with the status text and
+  never reads the body, so a quota denial names no quota metric.
+
+Three exclusions the mast version adds, all because the SDK it composes with is newer than the
+one upstream wrote against. It only inspects **POST**, leaving the SSE reconnect (GET) and the
+teardown (DELETE) alone — failing a GET from the transport would spend the SDK's reconnect budget
+on a status it handles directly. It skips **404**, which the SDK translates to `ErrSessionMissing`
+so it can skip a redundant DELETE; that sentinel is worth more than the body. And it skips the
+standard error object on a non-transient status, as above.
+
+The interesting part is not the code, it is that **the verdict "port this" had a shelf life**.
+The triage row was written from upstream's commit message, which described a defect that was
+two-thirds fixed elsewhere by the time anyone acted on it. What made the difference was running
+the real client against a canned server and reading what it actually printed, before writing a
+line of the port. `TestSDKStillDropsTheseBodies` keeps that honest permanently: each case drives
+the exchange twice, once through the bare SDK and once through mast's wrap, and asserts the text
+is absent from the first and present in the second. A version bump that closes one of the
+remaining holes fails the test with "the SDK now surfaces this body itself — drop mast's branch
+for it", which is the only way a compatibility shim ever gets deleted.
+
+`pkg/mcp` moves to a single `b1101f9` baseline. `auth.go` carried `c5efbb9`, and `b1101f9`'s
+only change to `lifecycle.go` is the eight-line transport-wrap hunk — which mast now has, in
+`newHTTPToolset` rather than `transportFor`. The report drops from 36 commits to **35**; the
+three left on `pkg/mcp` are `daa78fc`, `49c8415`, and `6a4119b`, all triaged elsewhere on this
+page.
+
 ### Deliberately not ported
 
 - **`Retry-After` on drain refusal (`c986933`).** mast refuses intake during drain but sends no
@@ -283,7 +328,10 @@ and should not claim a commit it did not come from.
 
 ## What this triage changed
 
-Eleven changes landed as a direct result, in six PRs.
+Everything below landed as a direct result, as a chain of PRs running from
+[#154](https://github.com/go-steer/mast/pull/154) onward. The roster grows as the port backlog
+closes, so read the links rather than a count — an earlier revision of this line carried a tally
+that three PRs had already outrun.
 
 **[#154](https://github.com/go-steer/mast/pull/154) — the Anthropic tool-parameter bug.** Triaging
 `b98803c` turned up the same defect live in mast: every tool mast defines reached Claude as
@@ -450,6 +498,18 @@ post-reset tests with "no watchdog block". Narrowing `Mode.Feeds()` to feedback-
 feedback, and the treadmill is back. Making `reset` delete the queue fails the same test one line
 later, which is the assertion that the reset does not undo the correction.
 
+**[#167](https://github.com/go-steer/mast/pull/167) — the MCP error body (`b1101f9`), two-thirds
+of which the SDK had already fixed.** An IAM denial from the GKE MCP server reached the operator
+as `Forbidden`, with the permission name they needed dropped. mast now extracts the server's own
+text — but only for the two shapes go-sdk v1.7.0 still discards, because the SDK closed the rest
+of the gap in the month between upstream's commit and this port. The reasoning, the three
+exclusions, and the test that will tell us when the remaining branches can be deleted are in
+"`b1101f9` — what a re-implementation looks like when the dependency moved too", above. The
+general lesson is worth stating on its own: **a triage verdict is a claim about two codebases and
+everything between them, and the dependency counts.** This one was written from upstream's commit
+message and would have shipped a duplicate of the SDK's own fix if the first step had not been to
+run the real client and read what it printed.
+
 ---
 
 ## Observations that are not drift
@@ -493,7 +553,11 @@ silenced the commits still outstanding, which is precisely the lie the trailer s
 prevent. **PR E closed it**, and `pkg/watchdog` went to zero in one bump to `6510a65` — taking the
 report from 40 commits / 49 files to **36 / 44**.
 
-36 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
+`b1101f9` came off next, moving `pkg/mcp` to a single `b1101f9` baseline and the report to **35 /
+44** across 198 ported files. The file count rose without the drift-file count moving, which is
+the shape a clean addition makes: `errbody.go` is new, current, and reports nothing.
+
+35 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next
 Monday. **Read the count as a delta, not a level.**
 
