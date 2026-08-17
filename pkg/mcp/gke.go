@@ -53,7 +53,7 @@ type GKEConfig struct {
 // NewGKEToolset builds a tool.Toolset backed by the GKE MCP server,
 // authenticated via Google OAuth 2.0 from Application Default
 // Credentials. Fails fast if credentials cannot be loaded or an initial
-// token cannot be fetched — see newGoogleAuthClient for the exact
+// token cannot be fetched — see newGoogleAuthTransport for the exact
 // failure modes.
 func NewGKEToolset(ctx context.Context, cfg GKEConfig) (tool.Toolset, error) {
 	endpoint := cfg.Endpoint

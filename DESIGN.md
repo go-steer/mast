@@ -115,7 +115,7 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 | `pkg/inject` | The unattended entry point: dispatch/resume/abort HTTP + `/metrics`. |
 | `pkg/observability` | Fixed Prometheus counter registry + env-gated OTel trace export ([`docs/observability-design.md`](./docs/observability-design.md)). |
 | `pkg/a2a` / `pkg/federation` | Synchronous A2A v0.3 client; frozen `federation.Adapter`/`Handle` interface + `invoke_remote_agent` ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
-| `pkg/mcp` | MCP toolset wiring + per-specialist tool allowlists. |
+| `pkg/mcp` | MCP toolset wiring + per-specialist tool allowlists. HTTP servers get their transport wrapped so a 4xx/5xx carries the server's own error text (an IAM permission name, a quota metric) rather than a bare status line. |
 
 **Internal:** `internal/compose` (model/backend dispatch, shared
 one-shot construction), `internal/version` (ldflags-injected build

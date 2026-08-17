@@ -295,6 +295,33 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   of work, recorded in `docs/sibling-sync.md` § "Found while porting,
   not fixed here" rather than quietly folded into this.
 
+- **An MCP server that rejects a call now says why.** Google's GKE MCP
+  surface answers an IAM denial with HTTP 403 and a body naming the exact
+  permission to grant. The operator saw `Forbidden`. HTTP MCP transports
+  are now wrapped so a 4xx/5xx carries the server's own text — the
+  permission name, the quota metric — through to the log, the model, and
+  the attach surface.
+
+  Narrower than the upstream fix it comes from (core-agent's #305,
+  `b1101f9`), because the MCP SDK closed most of that gap in the interval:
+  go-sdk v1.7.0 surfaces a standard `{"error":{"message":..}}` object
+  itself. mast covers only what v1.7.0 still drops — the MCP tool-result
+  error shape (`{"result":{"isError":true,...}}`, which decodes as a
+  *result* and falls through to the status line, and is precisely what
+  the GKE surface sends) and transient statuses, where the SDK returns
+  early without reading the body at all. Standard error objects on
+  non-transient statuses are left to the SDK, so the typed
+  `*jsonrpc.Error` stays in the chain.
+
+  Three things it deliberately does not touch: anything but POST, so the
+  SSE reconnect keeps its retry budget; 404, whose `ErrSessionMissing`
+  sentinel is worth more than the body; and any response that is
+  non-JSON, over 32 KiB, or has no extractable text — all replayed
+  intact. An extracted error does not tear down the MCP session.
+  `TestSDKStillDropsTheseBodies` drives each case through the bare SDK
+  and through mast's wrap in the same run, so the day the SDK closes one
+  of the remaining holes it fails with instructions to delete the branch.
+
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an
   `// Originally derived from go-steer/core-agent@<sha>` trailer, frozen

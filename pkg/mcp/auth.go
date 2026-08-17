@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@c5efbb9e:pkg/mcp/lifecycle.go
+// Originally derived from go-steer/core-agent@b1101f99bec3b74ad41f2a938822c9bb9bbca072:pkg/mcp/lifecycle.go
 // (googleAuthTransport + Google-OAuth token wiring in transportFor).
 // Adapted for mast's simpler single-server spike: no header-transport
-// composition, no stdio, no otelhttp wrapping (yet).
+// composition, no stdio, no otelhttp wrapping (yet). Bumped from
+// c5efbb9e when b1101f9's transport-wrap hunk was taken; mast lands it
+// in newHTTPToolset rather than transportFor, and the transport itself
+// is errbody.go.
 
 package mcp
 
@@ -48,15 +51,19 @@ func (t *googleAuthTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return t.base.RoundTrip(clone)
 }
 
-// newGoogleAuthClient returns an *http.Client whose transport injects a
+// newGoogleAuthTransport returns an http.RoundTripper that injects a
 // Google OAuth access token sourced from Application Default Credentials
 // (ADC) on every request. Scopes must be non-empty — see the note on
 // core-agent's GoogleOAuthAuth about why there is no implicit default.
 //
+// A RoundTripper rather than a finished *http.Client, because the caller
+// composes it with jsonRPCErrorTransport before handing a client to the
+// MCP SDK.
+//
 // Fails fast: a token is pre-fetched at construction time so misconfig
 // (no ADC on the host, missing scope grant, unreachable metadata
 // server) surfaces at server-init rather than on the first tool call.
-func newGoogleAuthClient(ctx context.Context, name string, scopes []string) (*http.Client, error) {
+func newGoogleAuthTransport(ctx context.Context, name string, scopes []string) (http.RoundTripper, error) {
 	if len(scopes) == 0 {
 		return nil, fmt.Errorf("mcp: %q: at least one OAuth scope is required", name)
 	}
@@ -71,10 +78,8 @@ func newGoogleAuthClient(ctx context.Context, name string, scopes []string) (*ht
 		return nil, fmt.Errorf(
 			"mcp: %q: initial Google OAuth token fetch: %w", name, err)
 	}
-	return &http.Client{
-		Transport: &googleAuthTransport{
-			base:   http.DefaultTransport,
-			source: creds.TokenSource,
-		},
+	return &googleAuthTransport{
+		base:   http.DefaultTransport,
+		source: creds.TokenSource,
 	}, nil
 }

@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
@@ -88,22 +89,33 @@ func (n named) Name() string { return n.name }
 // declares Google OAuth, requests carry an ADC bearer token (fail-fast if
 // credentials are unavailable); otherwise the endpoint is called
 // unauthenticated. filter, when non-nil, narrows the exposed tools.
+//
+// Every HTTP server — authenticated or not — gets its transport wrapped
+// so a 4xx/5xx carries the server's own error text rather than a bare
+// status line; see jsonRPCErrorTransport. The wrap sits *above* auth so
+// it observes the response the server actually sent, and it is the
+// outermost layer for now: when otelhttp arrives it belongs outside
+// this one, so the span records the raw HTTP outcome.
 func newHTTPToolset(ctx context.Context, name string, cfg ServerConfig, filter tool.Predicate) (tool.Toolset, error) {
 	if cfg.URL == "" {
 		return nil, fmt.Errorf("mcp: server %q: http transport requires a url", name)
 	}
 
-	transport := &mcpsdk.StreamableClientTransport{Endpoint: cfg.URL}
+	rt := http.DefaultTransport // an http.RoundTripper, so authRT can replace it
 	if cfg.Auth != nil && cfg.Auth.GoogleOAuth != nil {
 		scopes := cfg.Auth.GoogleOAuth.Scopes
 		if len(scopes) == 0 {
 			scopes = []string{DefaultGKEScope}
 		}
-		httpClient, err := newGoogleAuthClient(ctx, name, scopes)
+		authRT, err := newGoogleAuthTransport(ctx, name, scopes)
 		if err != nil {
 			return nil, err
 		}
-		transport.HTTPClient = httpClient
+		rt = authRT
+	}
+	transport := &mcpsdk.StreamableClientTransport{
+		Endpoint:   cfg.URL,
+		HTTPClient: &http.Client{Transport: &jsonRPCErrorTransport{base: rt}},
 	}
 
 	ts, err := mcptoolset.New(mcptoolset.Config{

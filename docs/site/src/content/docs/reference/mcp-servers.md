@@ -136,6 +136,29 @@ than a bearer token.
   toolset for the process lifetime and does not tear individual toolsets
   down); the child exits when it closes its own stdio or the daemon exits.
 
+## When an HTTP server rejects a call
+
+An MCP server that answers 4xx or 5xx usually says *why* in the response
+body, and that sentence is normally the whole fix — the IAM permission to
+grant, the quota metric that ran out. mast reads it and puts it in the
+error, so a denial reaches the log, the model, and the operator as
+
+```
+403 Forbidden: Permission 'mcp.googleapis.com/tools.call' denied on
+resource '//container.googleapis.com/mcp/projects/example' (or it may
+not exist).
+```
+
+rather than the bare `Forbidden` the status line alone gives you. This is
+automatic for every `http` server; there is nothing to configure.
+
+Two limits worth knowing. The body is only read when the response
+declares a JSON content type and stays under 32 KiB — anything else
+(an HTML error page from a proxy in front of the server, an oversized
+response) passes through untouched and you get the status line. And an
+extracted error does **not** tear down the MCP session: the call fails,
+the model sees the reason, and the next call reuses the same connection.
+
 ## How wiring interacts with `--model`
 
 MCP is **not** wired under the default `echo` model, which never emits tool
