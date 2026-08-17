@@ -68,7 +68,7 @@ func TestPlanFirst_DeniesBashBeforePlan(t *testing.T) {
 func TestPlanFirst_AllowsReadTools(t *testing.T) {
 	t.Parallel()
 	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
-	readTools := []string{"read_file", "read_many_files", "stat", "list_dir", "glob", "grep", "json_query", "fetch_url", "todo"}
+	readTools := []string{"read_file", "read_many_files", "stat", "list_dir", "glob", "grep", "json_query", "todo"}
 	for _, name := range readTools {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -76,6 +76,29 @@ func TestPlanFirst_AllowsReadTools(t *testing.T) {
 				t.Errorf("%s should NOT be plan-gated, got: %v", name, err)
 			}
 		})
+	}
+}
+
+// fetch_url is the exception to the rule above: it reads, but it reads
+// across the network, and egress before a plan is recorded is an
+// exfiltration channel rather than research. It sat in the exempt list
+// until the 2026-08-17 upstream triage (docs/sibling-sync.md) — mast's
+// copy of the table was ported two days before core-agent's #465
+// security roundup removed it there.
+//
+// Pinned as its own test rather than by deleting a row from the loop
+// above, because a missing row proves nothing: the entry could be
+// re-added by anyone reading that list as "the read tools" and the
+// suite would stay green.
+func TestPlanFirst_GatesNetworkEgress(t *testing.T) {
+	t.Parallel()
+	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
+	err := g.CheckGeneric(context.Background(), "fetch_url", "https://example.invalid/x")
+	if err == nil {
+		t.Fatal("fetch_url must be plan-gated: network egress before a recorded plan is an exfiltration channel")
+	}
+	if !strings.Contains(err.Error(), "record_plan") {
+		t.Errorf("fetch_url denial should mention record_plan: %v", err)
 	}
 }
 

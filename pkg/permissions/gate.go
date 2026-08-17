@@ -171,9 +171,19 @@ var planExemptTools = map[string]bool{
 	"glob":            true,
 	"grep":            true,
 	"json_query":      true,
-	"fetch_url":       true,
 	"todo":            true,
 	"record_plan":     true,
+
+	// fetch_url is deliberately NOT here. It reads, but it reads
+	// across the network, and network egress before a plan is
+	// recorded is an exfiltration channel — a model that has been
+	// told to stop can still POST what it has already seen to a URL
+	// it chooses. Upstream reached the same conclusion in
+	// core-agent's #465 security roundup; mast's copy of this table
+	// predates that commit by two days and kept the exemption until
+	// the 2026-08-17 triage (docs/sibling-sync.md) found it. Inert
+	// here — mast registers no fetch_url tool — but a dead entry in
+	// a live table is how the next reader gets it wrong.
 
 	// Read-only skill introspection (namespace-level exempt: covers
 	// list_skills / load_skill / load_skill_resource, all of which

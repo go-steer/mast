@@ -1,0 +1,259 @@
+# Sibling sync: mast ↔ core-agent
+
+[`fork-design.md`](./fork-design.md) § "Sync discipline under (E)" says each repo carries this
+doc, listing shared-infrastructure SHAs ported in either direction, SHAs explicitly *not* ported
+with a one-line reason, and a security-fix correlation table. It was specified on 2026-07-26 and
+went unwritten until 2026-08-17, when the first [`dev/upstream-drift`](../dev/upstream-drift)
+report ([#153](https://github.com/go-steer/mast/issues/153)) produced something to triage.
+
+This is that doc. It is **not** hand-maintained per commit — that is what went wrong the first
+time. The machine keeps the *inventory*; a human keeps the *verdicts*.
+
+---
+
+## How the two halves work
+
+**The inventory is generated.** Every ported file carries a
+`// Originally derived from go-steer/core-agent@<SHA>[:<upstream-path>]` trailer, written at port
+time by whoever did the port. `dev/upstream-drift` reads all 182 of them and asks, per file: which
+upstream commits have touched this source path since the SHA it was frozen at?
+`.github/workflows/upstream-drift.yml` runs it every Monday and rewrites one long-lived tracking
+issue in place. It never fails a build — drift is the expected state here, and a red build nobody
+can turn green trains people to ignore red builds.
+
+**The verdicts are here.** A commit count is not a decision. This file records what each drifted
+commit *means* for mast, using the vocabulary below.
+
+| Verdict | Meaning |
+|---|---|
+| **absorbed** | The change's effect is present in mast — either the file was re-ported at a later SHA, or mast reached the same behavior independently. |
+| **ahead** | mast already had it, or has a superset. |
+| **n/a** | The code it changes has no counterpart in mast's lean scope. Nothing to port, ever. |
+| **divergent** | mast made the opposite call deliberately, or the surface is mast-native. Nothing to port unless the decision is revisited. |
+| **port** | Should come across. Tracked below with its state. |
+| **watch** | No action now; revisit when a stated condition changes. |
+
+### What the instrument does *not* tell you
+
+Four limits worth stating, all found by running the first triage:
+
+1. **A trailer is a port-batch baseline, not per-file provenance.** `pkg/attach`'s 80 files all say
+   `@25d8531` because that is the batch they came over in. Any file subsequently updated against
+   newer upstream keeps reading as drifted. This produced the largest single class of false
+   positives in the 2026-08-17 triage — see [#149](https://github.com/go-steer/mast/pull/149) below.
+   **Rule: a re-port bumps the trailer.** Otherwise the detector reports absorbed drift forever.
+2. **One SHA per file cannot express "absorbed everything except X."** Where that happens, the
+   trailer moves and the exception is recorded here. Two such exceptions exist today
+   (`4ac5efb`, `5bc4393` on `pkg/taskclass/taskclass.go`).
+3. **A commit's verdict is per-file, not per-commit.** `6012677` is a six-hardening security
+   roundup whose `pkg/attach` half is absorbed and whose `pkg/permissions` half is not, purely
+   because those two packages were ported two days apart.
+4. **It measures files, not capabilities.** A feature mast implemented from scratch in a
+   mast-native package is invisible to it; so is a feature upstream built that mast has no file
+   for. Both showed up in this triage.
+
+---
+
+## Security-fix correlation
+
+Security fixes land in both repos within 48 hours — the one rule in the sync table with no
+exceptions.
+
+| Upstream | Landed upstream | mast state | Notes |
+|---|---|---|---|
+| `6012677` attach security roundup, six hardenings (#385/#465) | 2026-07-27 | **partial → closed 2026-08-17** | Five of six were already in mast: `/whoami` reports only server-verified auth sources, `/events?since=0` replay is capped, the SSE boot-frame ordering race is fixed, redirect-hop header stripping and the `acceptEdits` blast-radius documentation all came over with the `pkg/attach` port at `25d8531` two days later. The sixth — dropping `fetch_url` from the plan-first exemption set — did not, because `pkg/permissions` was ported at `83ec071`, *before* the roundup. Closed by the change described under "What this triage changed". |
+
+The 48-hour rule was met in spirit and missed in mechanism: mast got five sixths of a security
+commit for free because of port timing, and missed the sixth for the same reason. Port timing is
+not a security control. When a security fix lands upstream, check every ported package's trailer
+against it explicitly rather than assuming the next batch will sweep it up.
+
+---
+
+## Triage of 2026-08-17
+
+Against core-agent `origin/main` @ `ee3d6ec`. 48 upstream commits across 53 of mast's 182 ported
+files, in 17 packages. Every commit below has a verdict; nothing is left unclassified.
+
+### Absorbed or ahead — 20 commits
+
+No action. Listed so the next triage doesn't re-derive them.
+
+| Commit | Subject | Verdict |
+|---|---|---|
+| `b98803c` | anthropic: send tool parameters Claude can actually see (#754) | **ported 2026-08-17**, [#154](https://github.com/go-steer/mast/pull/154). See "What this triage changed". |
+| `c07a4b4` | anthropic: normalize genai type enums in `input_schema` (#542) | absorbed — verified at code level. |
+| `6676bf9` | gemini: enforce the builtins Gemini 3.0+ constraint (#546) | absorbed — verified at code level. |
+| `1b5207c` | pricing: promote `internal/pricing` to `pkg/pricing` (#507) | absorbed at port; mast has never had an `internal/pricing`. |
+| `59d27e5` | taskclass,modeltier: real gemini tier defaults (#545) | absorbed by [#149](https://github.com/go-steer/mast/pull/149). |
+| `d2bd1ad` | gemini small tier → `gemini-3.5-flash-lite` (#561) | absorbed by #149. |
+| `ffca0ee` | pricing,modeltier,usage: close the cross-table gaps (#569) | absorbed by #149. |
+| `cebba9d` | teach every model table about `gemini-3.7-flash` (#752) | absorbed by #149. |
+| `afea653` | derive the model tables from one rule instead of four lists (#774) | absorbed by #149 — which is where mast's `dev/regen-builtin-pricing` came from. |
+| `f054590` | promote `gemini-3.7-flash` to the Gemini frontier default (#777) | **ahead** — post-dates the `cafe310` port SHA, and mast set that default anyway. |
+| `09b6cd1` | drop the `gemini-3.5-pro` needle from the companion tables (#786) | **ahead** — post-dates `cafe310`; mast dropped it independently and says why in `pkg/taskclass/taskclass.go`. |
+| `bdc4834` | usage: bill Anthropic cache-write tokens at their premium rate (#769) | absorbed by #149, which closed the same bug as mast [#121](https://github.com/go-steer/mast/issues/121). |
+| `4d2e954` | anthropic: wire prompt caching on by default (#772) | absorbed — mast has marked the last content block ephemeral since the provider was written. |
+| `254435e` | attach: operator-facing reset for a tripped watchdog / cost ceiling (#670) | **ahead.** mast's `GuardrailInfo`/`GuardrailResetRequest` are a superset: per-scope ceilings, token and turn top-ups, an `Advisory` flag, and an alert count upstream doesn't carry. |
+| `9a75b2a` | attach: advertise resolved build version in agent card (#574) | absorbed — `AgentCard.Version` defaults to the ldflag-injected `internal/version.Version`. |
+| `08b10f8` | attach: self-audit operator interrupts (#588) | absorbed — `InterruptSelfAuditor` is wired in `pkg/attach/handlers.go`. |
+| `c986933` | attach: refuse message intake during shutdown drain (#567) | absorbed in shape. mast refuses through `turnTracker.isDraining()` at every intake — inject, A2A, AG-UI, scheduler, auto-resume. It does **not** send `Retry-After`; see "Deliberately not ported". |
+| `daa78fc` | shutdown: bound every teardown wait (#548) | absorbed by a mast-native design — `defaultDrainBound`, `armTeardownWatchdog`, `storeWriteTimeout`, per-session turn locks. The MCP-child-reaping half is a **watch** item below. |
+| `49c8415` | loaders: read `$HOME/.agents/` as a user-scope root (#352) | absorbed — `instruction.WithHomeAgentsRoot`. |
+| `517b909` | loaders: `WithContentRoots` for instruction + skills (#608) | absorbed in shape — mast's `Load(projectRoot, userRoot, opts...)` plus the per-caller overlay covers the same need without the skills half. |
+
+### Not applicable to the lean scope — 13 commits
+
+These change code mast does not have and will not grow. `fork-design.md`'s "core-agent-specific
+feature" row: not ported unless someone here explicitly asks.
+
+| Commit(s) | Why not |
+|---|---|
+| `6a4119b` module path → `/v2` (#327) | mast is `github.com/go-steer/mast`, its own module at v0. Structural to core-agent only. |
+| `36b4842` `core_agent.*` subsystem meters (#528) | **divergent.** mast has `pkg/observability` with `mast_*` metric names. Porting upstream's names would be a regression in a mast-native surface. |
+| `f8e5256` subagent catalog (#634), `8d812e7` subagent persisted turns (#687), `db97d4d` report "sync" only where the sync tool exists (#743), `9dc8510` fold the background poller tools (#633), `6d5f671` declarative `subagents[]` (#603) | mast replaced skills and background subagents with **specialists** ([`specialists-design.md`](./specialists-design.md)). There is no background-subagent poller, no spawn/stop tool family, and no sync tool. |
+| `4ac5efb` advisory plan mode (#684), `c0007a5` `record_plan` reports the gate it armed (#757), `80fb9a6` descriptions name only registered tools (#759), `bf3bbbf` gate search-shaped bash behind the native tools (#676), `5bc4393` investigation classes drop bash and require a plan (#677) | All five hinge on `pkg/tools`, which mast does not have — no `bash`, no `record_plan`, no `fetch_url`, no `--task` CLI surface. `4ac5efb` and `5bc4393` also touch `pkg/taskclass/taskclass.go`; those are the two recorded exceptions to that file's trailer bump. |
+| `7672f25` auto-continue: resume MAX_TOKENS-truncated text turns (#585) | mast has no auto-continue. The `pkg/eventlog/service.go` half is a query helper with no consumer here. |
+
+### Port — 7 commits
+
+Ranked by what it costs mast to keep not doing them.
+
+| Commit | Subject | State |
+|---|---|---|
+| `e7a21da` | eventlog: `BEGIN IMMEDIATE` on SQLite (#576) | **ported 2026-08-17.** See "What this triage changed" — this one is live in mast for a reason upstream's commit message doesn't mention. |
+| `9f81626` | attach: durable peer registry across hub restarts (#688) | **open.** mast's `PeerRegistry` is in-memory: a daemon restart drops every registration and every peer has to re-register before federation works again. mast is the *unattended* sibling, so this bites harder here than upstream. |
+| `c319565` | vertexcache: retry a failed `Caches.Create` on a bounded backoff (#723) | **open.** mast's `manager.go` logs `"transient; will retry on a later turn"` — precisely the weaker behavior upstream replaced. A workload with long gaps between turns pays full prompt cost until the next one. |
+| `ef9b9b5` | telemetry: Go runtime metrics + Gemini API-key otelhttp wrap (#525) | **open, low.** mast has neither. Runtime metrics are the more useful half for a long-lived daemon; the otelhttp wrap only covers the API-key Gemini path, which mast uses less than Vertex. |
+| `b1101f9` | mcp: surface JSON-RPC error body on 4xx/5xx (#305) | **open, low.** mast's `pkg/mcp` is mast-native apart from `auth.go`, so this is a re-implementation rather than a port. Worth doing the next time an MCP server returns an opaque 4xx. |
+| `cfcbe22` | vertexcache: close the lost-retry race in the transient-cancel test (#547) | **open, low.** Flake fix in a test mast has. |
+| `6a4810b` | vertexcache: widen async deadlines to a shared `testWait` (#517) | **open, low.** Same file; do it with `cfcbe22`. |
+
+### The watchdog cluster — 7 commits, and one governance question
+
+`635a9eb` enforce mode (#628) · `e42a511` route alerts into the model's next turn (#678) ·
+`6510a65` halt in-turn, not at the turn boundary (#719) · `ef7dfb6` tool-failure-streak signal
+(#690) · `317e18e` cycle detection + path-canonicalized args (#679) · `5682659` safe autonomous
+defaults + `safety.watchdog` config (#665) · `4ac0337` persist guardrail trip-state across a
+process restart (#671)
+
+mast's watchdog is the pre-`635a9eb` shape: one signal (`repeated-tool-call`), observe-only,
+alerts surfaced through `Tap`. `cmd/mast/guardrails.go` is explicit that `watchdogModeWarn` is
+"the only watchdog posture mast ships", and the trip state lives in an in-memory `watchdogPool`
+that a restart clears.
+
+**The governance question this raises.** `fork-design.md` § "Sync discipline under (E)" lists
+**watchdog→model routing** as an example of a *lean-fork-specific feature* — mast-only, "not
+ported to core-agent unless someone there explicitly asks for it." Upstream built it anyway, as
+`e42a511`, on 2026-08-12. So one of the sync table's four categories now has a member sitting on
+the wrong side of the fork.
+
+Three ways out, and this doc does not pick one, because changing the sync-discipline table is a
+strategic call for the human (`AGENTS.md`, "how to contribute"):
+
+1. **Port it and reclassify.** Move watchdog→model routing to "shared infrastructure". mast gets a
+   soaked implementation; the category stops being wrong.
+2. **Build mast's own and keep the classification.** mast's version would differ — its watchdog is
+   per-session and per-workload, and the alert would land in a specialist's turn rather than a
+   chat loop.
+3. **Drop the classification.** Concede that the example was aspirational and pick a different one.
+
+Until that is decided, all seven are **watch**: porting individually would answer the question by
+accident.
+
+### Deliberately not ported
+
+- **`Retry-After` on drain refusal (`c986933`).** mast refuses intake during drain but sends no
+  hint about when to retry, because mast's drain window is a function of the workload's turn
+  budget (`drainBound`) rather than a fixed timeout — a `Retry-After` computed from it would be a
+  guess dressed as a contract. Revisit if a caller ever needs to distinguish "draining" from
+  "gone".
+- **MCP child reaping (the second half of `daa78fc`).** mast launches stdio MCP servers through
+  `pkg/mcp/catalog.go` and its teardown is mast-native; whether an orphaned child can survive a
+  `mast` exit is **unverified**. Marked watch rather than n/a for that reason — it is a claim
+  nobody has tested, not a decision anybody made.
+
+---
+
+## What this triage changed
+
+Five changes landed as a direct result, in two PRs.
+
+**[#154](https://github.com/go-steer/mast/pull/154) — the Anthropic tool-parameter bug.** Triaging
+`b98803c` turned up the same defect live in mast: every tool mast defines reached Claude as
+`{"type":"object","properties":{}}`. ADK v2's `functiontool.New` derives its schema into
+`ParametersJsonSchema` and leaves the typed `Parameters` field nil; `toolsParam` handled only
+`Parameters` and fell through to the canonical no-arguments shape for everything else. The
+planner's dispatch tools, `pause_session`, and every MCP tool were affected. It survived two green
+judged nightlies and a live GKE run because ADK's *internal* declarations — `finish_task` among
+them — do use the typed field, so the tool the eval harness asserts on converted correctly while
+the tools the workload dispatches went out blind. Nothing errors: Anthropic accepts an empty input
+schema and validates nothing against it.
+
+This is the strongest argument for the detector that exists. The bug was in mast's own code, in a
+package with tests, on a path exercised by every Anthropic run — and it took an upstream commit
+title to find it.
+
+**This PR — four hygiene and correctness items:**
+
+- **`fetch_url` dropped from `planExemptTools`**, closing the last sixth of security roundup
+  `6012677`. Inert in mast today (there is no `fetch_url` tool), which is exactly why it survived:
+  a dead entry in a live table. It is removed rather than left as harmless, because the next person
+  to read that table should not have to work out which entries are real.
+- **The stale port-status note in `pkg/permissions/denylist.go` corrected.** It said the package is
+  "compiled, tested, NOT wired into the mast runtime" and that "nothing in mast is protected by
+  these checks". Both have been false since the write gate landed —
+  `internal/compose/writegate.go` and `pkg/approval` call it. It also said of the `fetch_url` and
+  `acceptEdits` concerns "track upstream's resolution and adapt at wiring time; do not wire as-is",
+  which upstream resolved on 2026-07-27.
+- **Ten trailers bumped `83ec071` → `cafe310`** on the files [#149](https://github.com/go-steer/mast/pull/149)
+  re-ported: `pkg/pricing/{catalog,file,pricing,pricing_test,refresh,refresh_test}.go`,
+  `pkg/modeltier/{modeltier,modeltier_test}.go`, `pkg/taskclass/{taskclass,taskclass_test}.go`.
+  (`pkg/pricing/builtin.go` carries no trailer — it is generated by `dev/regen-builtin-pricing`.)
+  Without this the detector reports already-absorbed commits every Monday forever. Recorded
+  exceptions: `4ac5efb` and `5bc4393` touch `pkg/taskclass/taskclass.go` and are **not** absorbed —
+  they are `pkg/tools`-shaped and n/a per above.
+- **The "tens of KB" comment in `pkg/pricing/refresh.go` corrected.** It is the stated
+  justification for mast's 8 MiB response cap; upstream measures the LiteLLM catalog at 2–3 MiB and
+  caps at 32 MiB. The cap is still fine — the reason given for it was not.
+
+**Separately, [#155](https://github.com/go-steer/mast/pull/155) ports `e7a21da`.**
+
+---
+
+## Observations that are not drift
+
+Two things this triage surfaced that the detector cannot see, recorded so they are not rediscovered:
+
+- **`taskclass.Profile` has four fields nothing in mast reads** — `CompactionThreshold`,
+  `AgenticToolsEnabled`, `UseAgenticSmallModel`, `AskMode`. mast consumes `Tier` (via
+  `ModelForTier`) plus the package-level `AgentMode`/`PlannerEnabled`/`Instruction`. Declarative
+  fields nothing enforces are the failure class `docs/spike-findings.md` and the write-gate work
+  both keep running into; these are inert rather than wrong, but they read as settings.
+- **`pkg/permissions`'s exemption table names a tool universe mast doesn't have** — `read_file`,
+  `bash`, `glob`, the `skill` namespace, the `spawn_agent` family — and its comments point at
+  `pkg/tools/gate.go` and `pkg/skills/load.go`, neither of which exists here. Correcting the
+  comments is in this PR; deciding whether the table itself should be pruned to mast's actual tool
+  surface is a bigger question, deferred.
+
+---
+
+## Baseline after this triage
+
+The report goes **48 → 43** commits across **53 → 47** files. `pkg/pricing` drops to zero;
+`pkg/modeltier` to 2 and `pkg/taskclass` to 1, all of which are the `f054590` / `09b6cd1`
+**ahead** rows — upstream commits that post-date the `cafe310` port SHA and whose content mast
+already has. Those three will keep reporting until mast next re-ports from a SHA at or after them,
+which is correct: the detector cannot know mast got there first, and inventing a trailer SHA mast
+never ported from to silence it would be a lie in the one record this whole scheme rests on.
+
+43 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
+are upstream commits on files mast owns a diverged copy of, and they will still be listed next
+Monday. **Read the count as a delta, not a level.**
+
+## Next triage
+
+The weekly report regenerates [#153](https://github.com/go-steer/mast/issues/153) in place. Triage
+again when the counts move materially, or when a security commit appears upstream — whichever comes
+first. Start from the "port" and "watch" rows above rather than from a fresh count; the absorbed and
+n/a verdicts do not need re-deriving unless the trailer they hang on changed.
