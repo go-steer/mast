@@ -55,9 +55,9 @@ func TestToolFailureStreak_TripsAtTheThreshold(t *testing.T) {
 	}
 }
 
-// Warn, and it stays Warn when mast grows a posture that acts on
-// Critical: halting a daemon three denials into a legitimate RBAC
-// probe would make the backstop the outage.
+// Warn, and it stays Warn now that ModeEnforce halts on Critical:
+// stopping a daemon three denials into a legitimate RBAC probe would
+// make the backstop the outage.
 func TestToolFailureStreak_IsAdvisoryNotAHalt(t *testing.T) {
 	t.Parallel()
 	s := NewToolFailureStreakSignal(2)

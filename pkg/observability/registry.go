@@ -47,6 +47,12 @@ const (
 	OutcomeOK             = "ok"
 	OutcomeError          = "error"
 	OutcomeBudgetExceeded = "budget_exceeded"
+	// OutcomeWatchdogHalt is a turn the behavioral watchdog stopped
+	// under --watchdog=enforce. Distinct from error because it is the
+	// backstop working, and distinct from budget_exceeded because the
+	// session has runway left — an alert on this one should page
+	// differently from either.
+	OutcomeWatchdogHalt = "watchdog_halt"
 )
 
 // Token kinds for the mast_tokens_total{kind} label.
@@ -333,7 +339,7 @@ func (r *Registry) Prime(workload string) {
 	if r == nil {
 		return
 	}
-	for _, outcome := range []string{OutcomeOK, OutcomeError, OutcomeBudgetExceeded} {
+	for _, outcome := range []string{OutcomeOK, OutcomeError, OutcomeBudgetExceeded, OutcomeWatchdogHalt} {
 		r.turns.WithLabelValues(workload, outcome)
 	}
 	r.modelCalls.WithLabelValues(workload)

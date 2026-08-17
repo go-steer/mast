@@ -37,11 +37,10 @@ type guardrailView struct {
 	logger *slog.Logger
 }
 
-// watchdogModeWarn is the only watchdog posture mast ships. The
-// enforce / prompt / feedback modes in the design doc are deferred;
-// until one lands the honest answer to "what will the watchdog do" is
-// "log, and let the turn run".
-const watchdogModeWarn = "warn"
+// mast ships two watchdog postures, selected by --watchdog: warn logs
+// and lets the turn run, enforce cancels the turn in flight on a
+// Critical alert and refuses the session's next one. The prompt and
+// feedback modes in the design doc are still deferred.
 
 // info renders GET /sessions/{sid}/guardrails.
 //
@@ -77,16 +76,28 @@ func (g *guardrailView) info(sid string) attach.GuardrailInfo {
 	cc.WouldRetrip = cc.Tripped
 
 	fired := g.wds.alerts(sid)
+	mode := g.wds.mode
+	halted, haltReason := g.wds.halted(sid)
+	// Reason answers "what do I do?", so the halt text wins when there
+	// is one: it names the signal AND the reset endpoint, where the
+	// last alert only names the behavior.
+	reason := fired.last
+	if halted {
+		reason = haltReason
+	}
 	return attach.GuardrailInfo{
 		Watchdog: attach.WatchdogInfo{
-			Mode:     watchdogModeWarn,
-			Advisory: true,
-			Tripped:  false,
+			Mode: string(mode),
+			// Advisory is the operator's real question — "will this
+			// thing stop my agent?" — and under enforce the answer is
+			// yes whether or not it has yet.
+			Advisory: !mode.Enforces(),
+			Tripped:  halted,
 			Alerts:   fired.count,
-			Reason:   fired.last,
+			Reason:   reason,
 		},
 		CostCeiling: cc,
-		Halted:      cc.Tripped,
+		Halted:      cc.Tripped || halted,
 	}
 }
 
@@ -175,8 +186,9 @@ func (g *guardrailView) reset(sid string, req attach.GuardrailResetRequest) (att
 
 	if wantWatchdog {
 		fired := g.wds.alerts(sid)
+		halted, _ := g.wds.halted(sid)
 		g.wds.reset(sid)
-		if fired.count > 0 {
+		if fired.count > 0 || halted {
 			resp.Reset = append(resp.Reset, attach.GuardrailWatchdog)
 		}
 	}

@@ -27,12 +27,18 @@ import (
 // newGuardrailView builds the projection over a hand-sized meter pool,
 // the same way newMeterPool sizes one from a bundle.
 func newGuardrailView(lim budget.Limits, scopes map[string]budget.Limits) *guardrailView {
+	return newGuardrailViewMode(watchdog.ModeWarn, lim, scopes)
+}
+
+// newGuardrailViewMode is the same, with the watchdog posture spelled
+// out — the projection reads differently under enforce.
+func newGuardrailViewMode(mode watchdog.Mode, lim budget.Limits, scopes map[string]budget.Limits) *guardrailView {
 	return &guardrailView{
 		meters: &meterPool{
 			cfg:  budget.Config{Limits: lim, Scopes: scopes},
 			byID: map[string]*budget.Meter{},
 		},
-		wds:    newWatchdogPool(),
+		wds:    newWatchdogPool(mode),
 		logger: discardLogger(),
 	}
 }
@@ -221,15 +227,16 @@ func TestResetRejectsAnUnknownScope(t *testing.T) {
 	}
 }
 
-// mast's watchdog only logs. Reporting it as an armed guardrail
-// without saying so would promise an enforcement that is not there.
+// Under the default posture mast's watchdog only logs. Reporting it as
+// an armed guardrail without saying so would promise an enforcement
+// that is not there.
 func TestWatchdogProjectionIsHonestlyAdvisory(t *testing.T) {
 	g := newGuardrailView(budget.Limits{}, nil)
 	g.wds.note(gsid, watchdog.Alert{Signal: "repeated_tool_call", Reason: "kubectl get pods x6"})
 	g.wds.note(gsid, watchdog.Alert{Signal: "repeated_tool_call", Reason: "kubectl describe x6"})
 
 	got := g.info(gsid)
-	if !got.Watchdog.Advisory || got.Watchdog.Mode != watchdogModeWarn {
+	if !got.Watchdog.Advisory || got.Watchdog.Mode != string(watchdog.ModeWarn) {
 		t.Errorf("watchdog = %+v, want an advisory warn-mode posture", got.Watchdog)
 	}
 	if got.Watchdog.Tripped {

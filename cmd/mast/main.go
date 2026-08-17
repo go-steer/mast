@@ -121,6 +121,7 @@ func run() {
 		logLevel         = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		autoResume       = flag.Bool("auto-resume", true, "serve mode: on boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (coordinator dispatch only in v0.2). --auto-resume=false disables")
 		autoResumeWindow = flag.Duration("auto-resume-window", time.Hour, "serve mode: only auto-resume sessions interrupted within this window; older interruptions are left for an operator (0 disables the freshness gate)")
+		watchdogFlag     = flag.String("watchdog", "warn", "behavioral watchdog posture: `warn` (log a detected tool loop and let the turn run) or `enforce` (cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical either way")
 		showVersion      = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -147,6 +148,15 @@ func run() {
 		os.Exit(2)
 	}
 	*modelName = resolvedModel
+
+	// Parsed before the mode split because the watchdog posture applies
+	// to both: a runaway loop is a property of the turn, not of the
+	// surface serving it.
+	watchdogMode, err := watchdog.ParseMode(*watchdogFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mast:", err)
+		os.Exit(2)
+	}
 
 	// One-shot mode: a positional prompt runs a single turn instead of
 	// serving. --task shapes the agent (default chat); --workload is a
@@ -207,6 +217,7 @@ func run() {
 			SessionDrv: *sessionDrv,
 			Prompt:     strings.Join(flag.Args(), " "),
 			Timeout:    *timeoutFlag,
+			Watchdog:   watchdogMode,
 		}
 		err := runOneShot(ctx, logger, opts, os.Stdout)
 		stop()
@@ -224,7 +235,7 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
-	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow); err != nil {
+	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow, watchdogMode); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
@@ -324,7 +335,7 @@ func newTimedFireCallback(
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration) error {
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration, watchdogMode watchdog.Mode) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -494,7 +505,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}
 
 	meters := newMeterPool(bundle, specs, providerName, modelName)
-	wds := newWatchdogPool()
+	wds := newWatchdogPool(watchdogMode)
 
 	// Fixed metric registry (pkg/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,
@@ -1501,6 +1512,7 @@ func (mp *meterPool) meter(sessionID string) *budget.Meter {
 // unrelated sessions' tool streams into false positives.
 type watchdogPool struct {
 	mu   sync.Mutex
+	mode watchdog.Mode
 	byID map[string]*watchdog.DefaultWatchdog
 	// fired retains what Check() drains. watchdog.Tap collects alerts
 	// as they trigger and hands them straight to the log, so by the
@@ -1508,6 +1520,11 @@ type watchdogPool struct {
 	// and "armed, 0 alerts" is the same answer for a healthy session
 	// and one that looped six times an hour ago.
 	fired map[string]watchdogAlerts
+	// enf holds the per-session halt state under --watchdog=enforce.
+	// Separate from byID because a trip outlives the signal run that
+	// caused it: the signal is reset the moment the operator clears
+	// the guardrail, and the refusal has to survive until then.
+	enf map[string]*watchdog.Enforcer
 }
 
 // watchdogAlerts is the operator-visible residue of a session's
@@ -1518,10 +1535,15 @@ type watchdogAlerts struct {
 	last  string
 }
 
-func newWatchdogPool() *watchdogPool {
+func newWatchdogPool(mode watchdog.Mode) *watchdogPool {
+	if mode == "" {
+		mode = watchdog.ModeWarn
+	}
 	return &watchdogPool{
+		mode:  mode,
 		byID:  map[string]*watchdog.DefaultWatchdog{},
 		fired: map[string]watchdogAlerts{},
+		enf:   map[string]*watchdog.Enforcer{},
 	}
 }
 
@@ -1534,6 +1556,37 @@ func (wp *watchdogPool) watchdog(sessionID string) *watchdog.DefaultWatchdog {
 		wp.byID[sessionID] = w
 	}
 	return w
+}
+
+// enforcer returns the session's halt state, minting one in the pool's
+// configured posture.
+func (wp *watchdogPool) enforcer(sessionID string) *watchdog.Enforcer {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	e, ok := wp.enf[sessionID]
+	if !ok {
+		// The remedy names the session's own reset path, not a
+		// placeholder: an operator reading a halt reason out of a log
+		// line has the curl they need without looking anything up.
+		e = watchdog.NewEnforcer(wp.mode, fmt.Sprintf(
+			"The session refuses new turns until an operator resets it (POST /sessions/%s/guardrails/reset).",
+			sessionID))
+		wp.enf[sessionID] = e
+	}
+	return e
+}
+
+// preflight refuses a turn on a session the watchdog halted. Called at
+// the top of every turn, before any model call — auto-resume, the
+// scheduler, and an attach inject all reach runTurnPre, and each of
+// them would otherwise re-drive the loop that tripped it.
+func (wp *watchdogPool) preflight(sessionID string) error {
+	return wp.enforcer(sessionID).Preflight()
+}
+
+// halted reports whether the session is refusing turns, and why.
+func (wp *watchdogPool) halted(sessionID string) (bool, string) {
+	return wp.enforcer(sessionID).Tripped()
 }
 
 // note records one fired alert for the guardrail projection.
@@ -1553,10 +1606,16 @@ func (wp *watchdogPool) alerts(sessionID string) watchdogAlerts {
 	return wp.fired[sessionID]
 }
 
-// reset clears the session's signal state and its alert residue —
-// what POST /guardrails/reset does to the watchdog half.
+// reset clears the session's signal state, its halt, and its alert
+// residue — what POST /guardrails/reset does to the watchdog half.
+//
+// All three together, deliberately. Clearing the trip while the signal
+// still holds the completed run would re-halt on the session's next
+// tool call, and the operator would read that as the reset not
+// working.
 func (wp *watchdogPool) reset(sessionID string) {
 	wp.watchdog(sessionID).Reset()
+	wp.enforcer(sessionID).Reset()
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
 	delete(wp.fired, sessionID)
@@ -1794,6 +1853,16 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		}
 	}
 
+	// Watchdog halt (--watchdog=enforce): refuse before any model
+	// call. The refusal has to be structural — auto-resume, a
+	// scheduled fire, and an attach inject all land here, and each of
+	// them would otherwise re-drive the loop that tripped it. Placed
+	// after the chokepoint checks so an aborted or gate-paused session
+	// still reports the state an operator set deliberately.
+	if err := wds.preflight(sessionID); err != nil {
+		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
+	}
+
 	if preTurn != nil {
 		if err := preTurn(ctx); err != nil {
 			return err
@@ -1822,6 +1891,7 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// turns, per-turn dedup of aggregator re-emissions (core-agent
 	// #363). Alerts are logged, not routed into model context — the
 	// #159-style routing is bucket-3 work per docs/fork-design.md.
+	enf := wds.enforcer(sessionID)
 	onAlert := func(a watchdog.Alert) {
 		// Retained as well as logged: GET /guardrails answers "has this
 		// session been misbehaving?", and the alert is gone from the
@@ -1830,6 +1900,18 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		logger.Warn("watchdog alert",
 			"turn", label, "session", sessionID,
 			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
+		// Enforce mode halts the turn in flight. Tap drains as soon as
+		// an observation lands, so this runs while the loop is looping
+		// rather than after it finishes — cancel() is the same handle
+		// a budget trip and an operator abort use, so the turn unwinds
+		// the one way the daemon already knows how to unwind.
+		if enf.Observe(a) {
+			_, reason := enf.Tripped()
+			logger.Error("WATCHDOG HALT — cancelling the turn",
+				"turn", label, "session", sessionID,
+				"signal", a.Signal, "reason", reason)
+			cancel()
+		}
 	}
 
 	events := 0
@@ -1837,6 +1919,13 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		StreamingMode: adkagent.StreamingModeNone,
 	}), wds.watchdog(sessionID), onAlert) {
 		if err != nil {
+			// A halt cancels the run context, so the runner's own
+			// error here is "context canceled" — reporting that would
+			// bury the reason under a symptom.
+			if terr := enf.Preflight(); terr != nil {
+				obs.TurnComplete(workloadName, observability.OutcomeWatchdogHalt)
+				return terr
+			}
 			logger.Error("runner emitted error", "turn", label, "session", sessionID, "error", err.Error(), "events_before_error", events)
 			obs.TurnComplete(workloadName, observability.OutcomeError)
 			return err
@@ -1859,6 +1948,13 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 			obs.TurnComplete(workloadName, observability.OutcomeBudgetExceeded)
 			return berr
 		}
+	}
+	// A cancelled stream can also just end, without surfacing an
+	// error. Either way the turn stopped because the watchdog stopped
+	// it, and the caller has to hear that rather than "ok".
+	if terr := enf.Preflight(); terr != nil {
+		obs.TurnComplete(workloadName, observability.OutcomeWatchdogHalt)
+		return terr
 	}
 	tokens, cost, calls := meter.Snapshot()
 	logger.Info("turn complete", "turn", label, "session", sessionID, "events", events,
