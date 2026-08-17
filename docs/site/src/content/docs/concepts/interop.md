@@ -76,6 +76,19 @@ has when a session stops responding: *what stopped it, and what do I do?*
 It reports the budget ceilings in force and the usage against them across
 all three dimensions plus each specialist's own, and the watchdog's posture
 (`advisory: true` — mast's watchdog logs, it does not halt).
+
+The watchdog raises three signals, and each names a different way an
+unattended run goes wrong:
+
+| signal | fires when |
+|---|---|
+| `repeated-tool-call` | the same call, five times running — path spellings (`./main.go`, `/workspace/main.go`) count as the same file |
+| `alternating-tool-cycle` | a short loop repeating, e.g. `list_agents → check_agent` three times over — the shape a consecutive-repeat check is structurally blind to |
+| `tool-failure-streak` | three calls in a row all returned errors, so nothing the agent ran has verified the state of anything |
+
+The last one is the one to read carefully in a report. It does not mean the
+agent was stuck; it means the agent's conclusions rest on tools that all
+failed. All three are Warn — they annotate the session, they do not stop it.
 `POST /sessions/{id}/guardrails/reset` is the way out: a budget trip is
 otherwise permanent, since enforcement is re-derived from usage against the
 ceiling on every priced event. See

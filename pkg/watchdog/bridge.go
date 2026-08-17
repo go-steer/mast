@@ -28,6 +28,7 @@ package watchdog
 
 import (
 	"encoding/json"
+	"fmt"
 	"iter"
 
 	"google.golang.org/adk/v2/session"
@@ -80,9 +81,81 @@ func ObserveEvent(w Watchdog, ev *session.Event, seen map[string]struct{}) {
 	}
 }
 
+// ObserveToolResults walks ev's content parts and feeds any
+// function-response parts to w, when it implements the optional
+// ToolResultObserver extension (#639). A watchdog that only counts
+// calls is left alone.
+//
+// Success vs failure follows ADK's convention: a tool error is a
+// reserved "error" key inside FunctionResponse.Response. Flattening it
+// here means the watchdog never has to know a provider's response
+// shape, and one place decides what "failed" means.
+//
+// Shares the per-turn dedup set with ObserveEvent, under a distinct
+// key prefix — the same streaming aggregator that re-emits a
+// FunctionCall part re-emits its FunctionResponse, and a
+// double-counted failure would trip the streak signal at half its
+// threshold. A response with no ID falls back to name+error, which
+// collapses same-error parallel calls within one turn; that is the
+// safe direction to be wrong in, since undercounting delays an
+// advisory alert while overcounting fires it on work that was fine.
+func ObserveToolResults(w Watchdog, ev *session.Event, seen map[string]struct{}) {
+	if w == nil || ev == nil || ev.Content == nil {
+		return
+	}
+	obs, ok := w.(ToolResultObserver)
+	if !ok {
+		return
+	}
+	for _, p := range ev.Content.Parts {
+		if p == nil || p.FunctionResponse == nil {
+			continue
+		}
+		errText := toolResponseError(p.FunctionResponse.Response)
+		key := "result\x00" + p.FunctionResponse.ID
+		if p.FunctionResponse.ID == "" {
+			key = "result\x00" + p.FunctionResponse.Name + "\x00" + errText
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		obs.ObserveToolResult(ToolResult{
+			Name:  p.FunctionResponse.Name,
+			Error: errText,
+		})
+	}
+}
+
+// toolResponseError extracts the tool error from an ADK function
+// response, returning "" for a successful call.
+//
+// A non-string, non-error value under "error" still counts as a
+// failure — a tool that returns a structured error object is failing,
+// and treating an unrecognized shape as success would silently drop
+// exactly the observations this signal exists to make.
+func toolResponseError(resp map[string]any) string {
+	v, ok := resp["error"]
+	if !ok || v == nil {
+		return ""
+	}
+	switch e := v.(type) {
+	case string:
+		if e == "" {
+			return ""
+		}
+		return e
+	case error:
+		return e.Error()
+	default:
+		return fmt.Sprintf("%v", e)
+	}
+}
+
 // Tap wraps one turn's runner event stream with watchdog
 // observation. It creates its own per-turn dedup set (#363), feeds
-// every FunctionCall part to w as events pass through, and — after
+// every FunctionCall part — and every FunctionResponse part, when w
+// observes outcomes — to w as events pass through, and — after
 // the stream ends — drains w.Check() into onAlert, matching
 // core-agent's drainWatchdogAlerts semantics: Check is called
 // unconditionally (so alerts don't leak into the next turn) and the
@@ -107,6 +180,7 @@ func Tap(events iter.Seq2[*session.Event, error], w Watchdog, onAlert func(Alert
 		for ev, err := range events {
 			if w != nil && ev != nil {
 				ObserveEvent(w, ev, seen)
+				ObserveToolResults(w, ev, seen)
 			}
 			if !yield(ev, err) {
 				return
