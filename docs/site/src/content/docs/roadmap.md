@@ -135,6 +135,15 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   provider — the offline fakes collapse every tier onto one model, so there
   would be no two rates to compare — and when there is no live model the
   check says it was skipped rather than passing quietly.
+
+  At the v0.4.0 tag it reads, on Claude: a `tier: small` analyst resolved to
+  `claude-haiku-4-5` and billed $0.00256 for 854 tokens, where the
+  `claude-opus-5` root's rate would have charged $0.01281. On Gemini:
+  `gemini-3.5-flash-lite` billed $0.00038 against the $0.00062 the
+  `gemini-3.7-flash` root would have. The `frontier` row on each board is a
+  control rather than a measurement — that tier resolves to the model the
+  nightly already runs as root, so its rate cannot disagree with the
+  parent's, and the board labels it as such instead of counting it.
 - **Per-specialist model selection** — a specialist's `model:` is honored
   instead of inheriting the workload's, including across providers.
 - **Per-specialist budgets** — the `max_turns` and `max_cost_usd` a
