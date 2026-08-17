@@ -68,6 +68,31 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   test holds the write lock on an independent connection and fails on
   pre-fix code with `database is locked (5) (SQLITE_BUSY)`.
 
+- **A Vertex context cache that fails to be created is retried, instead
+  of disabling caching for the daemon's lifetime.** `Caches.Create`
+  failures split into two classes — context cancellation retried,
+  everything else permanently sticky — and IAM errors landed in the
+  permanent class. That is exactly backwards for the way a fresh
+  deployment fails: a pod that starts before its Workload Identity
+  binding has propagated gets `403 PERMISSION_DENIED` on its first
+  turn, becomes correctly configured a couple of minutes later, and
+  pays full input price for the rest of its life regardless. mast is
+  the deployment shape this happens to — an unattended daemon starts
+  when its controller schedules it, not when its bindings land, and
+  nobody is watching the first turn.
+
+  A non-context failure now gets 15s, 30s, 1m, 2m, 4m — six attempts
+  over roughly eight minutes — before the manager gives up for good,
+  which preserves what the sticky failure was protecting: a genuinely
+  misconfigured project stops being hammered, loudly. Retries are
+  demand-driven off `Init`, so the schedule is a floor on spacing
+  rather than a timer and an idle daemon issues no RPCs at all. Each
+  attempt logs its number and next eligible delay, so a rollout can be
+  read as "waiting on IAM" versus "fix your config".
+
+  Ported from core-agent's #723. The two new tests fail on the old
+  sticky behavior.
+
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an
   `// Originally derived from go-steer/core-agent@<sha>` trailer, frozen

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@b8dd225e9ae7fdeb3ff23772cc5be25eed34b818
+// Originally derived from go-steer/core-agent@c319565aa1cfde236ff023aaabd4ffa1f6559d7a
 
 // Package vertexcache owns the lifecycle of a single Vertex explicit
 // context cache — Create at agent startup, Refresh on TTL pressure,
@@ -74,6 +74,36 @@ const (
 	defaultRefreshThreshold = 30 * time.Minute
 )
 
+// defaultInitRetryBackoff is the delay before each retry of a failed
+// Caches.Create. Its length is the number of RETRIES allowed: after
+// the last one the manager goes stateFailed for the agent's lifetime.
+//
+// core-agent#370 carved out context errors as transient and left
+// everything else sticky, which meant a single 403 during IAM
+// propagation permanently disabled caching for a daemon whose config
+// was correct the whole time (their #707: a live GKE session then paid
+// full input price for all 365K of its billed input tokens). Fresh
+// Workload-Identity bindings routinely take minutes to become
+// effective, so the schedule spans ~7.75 minutes — long enough to
+// outlast that window, bounded so a genuinely misconfigured project is
+// not hammered forever, which is the property the sticky failure
+// existed to protect.
+//
+// This is the failure mast is most exposed to: an unattended daemon
+// rolled out by a controller starts when the scheduler places it, not
+// when its bindings land, and nobody is watching the first turn.
+//
+// Retries are demand-driven: pkg/providers/gemini calls Init on every
+// non-cached model call, so an idle daemon issues no RPCs at all and
+// the schedule is a floor on retry spacing, not a timer.
+var defaultInitRetryBackoff = []time.Duration{
+	15 * time.Second,
+	30 * time.Second,
+	1 * time.Minute,
+	2 * time.Minute,
+	4 * time.Minute,
+}
+
 func (o Options) ttl() time.Duration {
 	if o.TTL > 0 {
 		return o.TTL
@@ -117,6 +147,35 @@ type Manager struct {
 	// preventing us from firing multiple Refresh goroutines from
 	// concurrent Name() reads on the same near-expiry window.
 	refreshing bool
+	// initFailures counts consecutive non-context Create failures.
+	// Reset on success. Once it exceeds the backoff schedule the
+	// manager gives up for good.
+	initFailures int
+	// retryNotBefore gates Init while a failed attempt is serving its
+	// backoff, so a busy daemon's every turn doesn't re-issue the
+	// doomed RPC. Zero when no retry is pending.
+	retryNotBefore time.Time
+
+	// Seams for tests, both nil in production and set once before the
+	// first Init (so the unlocked reads in clock()/backoff() are
+	// against effectively immutable fields). retryBackoff overrides
+	// defaultInitRetryBackoff; now overrides time.Now.
+	retryBackoff []time.Duration
+	now          func() time.Time
+}
+
+func (m *Manager) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
+func (m *Manager) backoff() []time.Duration {
+	if m.retryBackoff != nil {
+		return m.retryBackoff
+	}
+	return defaultInitRetryBackoff
 }
 
 type state int
@@ -145,14 +204,21 @@ func NewManager(caches CachesClient, model string, opts Options) *Manager {
 // the actual Create RPC runs on a background goroutine so the
 // caller (typically the first GenerateContent call) doesn't wait.
 //
-// Called at-most-once — subsequent calls with the manager already
-// initializing / active are no-ops. This is by design: once we've
-// seeded the cache from turn N's config, turn N+1's config should be
-// identical (both come from the same agent's system instruction +
-// tools slice), so re-Init would be wasted RPCs.
+// Called at-most-once per outcome — subsequent calls with the manager
+// already initializing / active are no-ops, as are calls made while a
+// failed attempt serves its retry backoff. This is by design: once
+// we've seeded the cache from turn N's config, turn N+1's config
+// should be identical (both come from the same agent's system
+// instruction + tools slice), so re-Init would be wasted RPCs.
 func (m *Manager) Init(ctx context.Context, systemInstruction *genai.Content, tools []*genai.Tool) {
 	m.mu.Lock()
 	if m.initStarted || m.state == stateDeleted {
+		m.mu.Unlock()
+		return
+	}
+	// A prior attempt failed and is serving its backoff. Skip silently
+	// — the next turn past the deadline picks it up.
+	if !m.retryNotBefore.IsZero() && m.clock().Before(m.retryNotBefore) {
 		m.mu.Unlock()
 		return
 	}
@@ -203,16 +269,36 @@ func (m *Manager) doInit(ctx context.Context, systemInstruction *genai.Content, 
 			m.mu.Unlock()
 			return
 		}
-		m.opts.logger().Printf("mast-vertexcache: Caches.Create failed (agent will run uncached for its lifetime): %v", err)
+		// Everything else gets a bounded retry. The old code treated
+		// this whole class as permanent, so an IAM-propagation 403 —
+		// the config was right, the binding just hadn't landed yet —
+		// disabled caching for the daemon's lifetime.
 		m.mu.Lock()
-		m.state = stateFailed
+		m.initFailures++
+		attempt := m.initFailures
+		sched := m.backoff()
+		if attempt > len(sched) {
+			m.state = stateFailed
+			m.mu.Unlock()
+			m.opts.logger().Printf("mast-vertexcache: Caches.Create failed %d times (giving up; agent will run uncached for its lifetime): %v", attempt, err)
+			return
+		}
+		delay := sched[attempt-1]
+		m.retryNotBefore = m.clock().Add(delay)
+		m.initStarted = false
 		m.mu.Unlock()
+		m.opts.logger().Printf("mast-vertexcache: Caches.Create failed (attempt %d of %d; retrying no sooner than %s from now): %v", attempt, len(sched)+1, delay, err)
 		return
 	}
 	m.mu.Lock()
 	m.state = stateActive
 	m.cacheName = created.Name
 	m.expiresAt = created.ExpireTime
+	// A retry succeeded: clear the failure history so a much later
+	// blip gets the full schedule again rather than the tail of this
+	// one.
+	m.initFailures = 0
+	m.retryNotBefore = time.Time{}
 	m.mu.Unlock()
 }
 
@@ -296,9 +382,10 @@ func (m *Manager) doRefresh(ctx context.Context, name string) {
 //     cache handle instead of the agent running uncached for the rest
 //     of its lifetime.
 //
-// Distinct from stateFailed (which stays sticky — a Create failure at
-// Init time signals a persistent problem worth surfacing). Eviction is
-// a normal end-of-TTL event, especially on long-lived daemons whose
+// Distinct from stateFailed, which is only reached after the whole
+// retry budget is spent and then stays sticky — a Create that keeps
+// failing signals a persistent problem worth surfacing. Eviction is a
+// normal end-of-TTL event, especially on long-lived daemons whose
 // cache outlives a single session.
 //
 // Idempotent + safe against races with in-flight Refresh: a refresh

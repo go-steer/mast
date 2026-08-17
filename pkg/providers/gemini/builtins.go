@@ -152,9 +152,12 @@ type builtinsLLM struct {
 	// cacheInit + cacheName wire Vertex explicit context caching.
 	// Both nil = no caching (behavior identical to pre-#221).
 	//
-	// cacheInit runs on every call — the manager it points at is
-	// at-most-once internally (see pkg/providers/vertexcache
-	// Manager.Init), so repeated fires are cheap. Kept here (not
+	// cacheInit runs on every call — the manager it points at
+	// self-limits (see pkg/providers/vertexcache Manager.Init: one
+	// creation in flight, and a failed one gated behind its retry
+	// backoff), so repeated fires are cheap. That demand-driven firing
+	// is also what makes the retry schedule work at all; the manager
+	// runs no timer of its own. Kept here (not
 	// sync.Once-guarded) so builtinsLLM stays stateless. cacheName
 	// runs on every call and stamps the resolved cache handle (or "")
 	// onto the request config.
