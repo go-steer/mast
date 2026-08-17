@@ -257,6 +257,44 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   than a runaway guard. `docs/sibling-sync.md` § "Deliberately not
   ported" carries the full reasoning.
 
+- **A halt that a restart cleared was not a halt.** `--watchdog=enforce`
+  latched its trip in a map on the daemon's `watchdogPool`, so a crash,
+  an OOM kill, or a pod roll started a fresh process with the backstop
+  disarmed. That is the one deployment shape enforce mode exists for:
+  mast's restarts are automatic and nobody is watching, so the runaway
+  loop → halt → crash → restart cycle could repeat indefinitely, each
+  restart handing the loop a clean slate.
+
+  Trips and resets are now appended to `agent_guardrail_log`, a table
+  mast owns on the connection `pkg/eventlog` already holds, and folded
+  forward on a halted session's next turn — before any model call,
+  whichever surface drives it. The reset is durable in the same place,
+  so clearing a halt clears it for good, and the row records the
+  authenticated caller and any runway they granted. That upgrades the
+  reset audit from a log line to a queryable row, closing a gap
+  `cmd/mast/guardrails.go` had flagged in a comment.
+
+  Three constraints worth knowing. Persistence is wired **only under
+  `--attach-listen`**, because `POST /guardrails/reset` is attach-only
+  and a persisted halt with no reachable reset is a brick rather than a
+  backstop; enforce mode without an attach listener now says so at
+  startup. **Configuration still wins over history** — a deployment
+  dialed back to `feedback` does not inherit a halt only `enforce` could
+  have produced. And restore **fails open**: an unreadable guardrail
+  table logs a warning and lets the turn run, because a storage fault
+  must not halt every session in the deployment with no trip behind it.
+
+  Ported from core-agent's #671 — the last of seven, closing the
+  watchdog cluster — but by a different route. Upstream writes both rows
+  into the ADK session's own event stream from inside its agent's write
+  lease; mast has no `Agent` to hang that lease on, and an out-of-band
+  session append while a turn holds the handle trips ADK's
+  optimistic-concurrency check. A table mast owns has no such
+  contention. **Budget spend still does not survive a restart** — the
+  meter starts every process at zero — which is a larger, separate piece
+  of work, recorded in `docs/sibling-sync.md` § "Found while porting,
+  not fixed here" rather than quietly folded into this.
+
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an
   `// Originally derived from go-steer/core-agent@<sha>` trailer, frozen

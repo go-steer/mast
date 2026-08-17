@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@e42a511f4f96e874becad2fe4aef7b0cb0f96304:pkg/watchdog/watchdog_test.go
+// Originally derived from go-steer/core-agent@6510a65b54ead93b5f2c8c31f478443376203360:pkg/watchdog/watchdog_test.go
 
 package watchdog
 

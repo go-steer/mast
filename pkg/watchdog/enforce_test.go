@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@635a9eb75bc9b8c3cc6463e794893e887cfd1e0f:pkg/agent/watchdog_enforce_test.go
+// Originally derived from go-steer/core-agent@6510a65b54ead93b5f2c8c31f478443376203360:pkg/agent/watchdog_enforce_test.go
 
 package watchdog
 
@@ -295,13 +295,15 @@ func TestEnforcer_ConcurrentUse(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for range 200 {
-				switch i % 4 {
+				switch i % 5 {
 				case 0:
 					e.Observe(critical("repeated-tool-call"))
 				case 1:
 					e.Tripped()
 				case 2:
 					_ = e.Preflight()
+				case 3:
+					e.Adopt("restored", "halted before this process started")
 				default:
 					e.Reset()
 				}
@@ -309,4 +311,102 @@ func TestEnforcer_ConcurrentUse(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// Adopt restores a halt this process never observed. The turn after it
+// must refuse, exactly as if the trip had happened here.
+func TestEnforcer_AdoptRestoresAHaltFromAnotherProcess(t *testing.T) {
+	t.Parallel()
+	e := NewEnforcer(ModeEnforce, "reset with curl.")
+	const reason = "watchdog halted this session (repeated_tool_call): kubectl get pods x6"
+	if !e.Adopt("repeated_tool_call", reason) {
+		t.Fatal("Adopt refused under enforce")
+	}
+	tripped, got := e.Tripped()
+	if !tripped {
+		t.Fatal("Adopt did not latch the halt")
+	}
+	// Verbatim: an operator reads the sentence the original halt was
+	// written with, not a paraphrase assembled from the pieces.
+	if got != reason {
+		t.Errorf("reason = %q, want the stored text %q", got, reason)
+	}
+	err := e.Preflight()
+	if !IsTripped(err) {
+		t.Fatalf("Preflight after Adopt = %v, want a TrippedError", err)
+	}
+	var te *TrippedError
+	if errors.As(err, &te) && te.Signal != "repeated_tool_call" {
+		t.Errorf("TrippedError.Signal = %q, want repeated_tool_call", te.Signal)
+	}
+	// And an operator can still clear it — a restored halt is a halt,
+	// not a brick.
+	e.Reset()
+	if tripped, _ := e.Tripped(); tripped {
+		t.Error("Reset did not clear an adopted halt")
+	}
+}
+
+// Configuration still wins. A deployment dialed back from enforce must
+// not inherit a halt it would no longer produce: nothing below enforce
+// can clear a trip through a turn, so adopting one would make the
+// posture change unreachable.
+func TestEnforcer_AdoptRefusesBelowEnforce(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []Mode{ModeWarn, ModeFeedback, ""} {
+		t.Run("mode="+string(mode), func(t *testing.T) {
+			e := NewEnforcer(mode, "")
+			if e.Adopt("repeated_tool_call", "halted earlier") {
+				t.Fatalf("Adopt armed a halt under %q", e.Mode())
+			}
+			if tripped, _ := e.Tripped(); tripped {
+				t.Errorf("%q inherited a halt", e.Mode())
+			}
+			if err := e.Preflight(); err != nil {
+				t.Errorf("%q refuses turns after a refused Adopt: %v", e.Mode(), err)
+			}
+		})
+	}
+}
+
+// A restore racing a live halt must not overwrite the fresher reason
+// with the stored one: the operator is looking at what just happened.
+func TestEnforcer_AdoptDoesNotOverwriteALiveTrip(t *testing.T) {
+	t.Parallel()
+	e := NewEnforcer(ModeEnforce, "")
+	if !e.Observe(critical("cycle")) {
+		t.Fatal("Observe did not halt")
+	}
+	_, live := e.Tripped()
+	if e.Adopt("repeated_tool_call", "a stale reason from the last process") {
+		t.Fatal("Adopt overwrote a live trip")
+	}
+	if _, got := e.Tripped(); got != live {
+		t.Errorf("reason = %q, want the live one %q", got, live)
+	}
+}
+
+// A halt with no sentence is worse than no halt: the operator gets a
+// refusal that cannot explain itself.
+func TestEnforcer_AdoptSynthesizesAMissingReason(t *testing.T) {
+	t.Parallel()
+	e := NewEnforcer(ModeEnforce, "Reset with POST /guardrails/reset.")
+	if !e.Adopt("tool_failure_streak", "   ") {
+		t.Fatal("Adopt refused a reasonless halt")
+	}
+	_, reason := e.Tripped()
+	if !strings.Contains(reason, "tool_failure_streak") {
+		t.Errorf("synthesized reason %q does not name the signal", reason)
+	}
+	if !strings.Contains(reason, "POST /guardrails/reset") {
+		t.Errorf("synthesized reason %q does not say how to clear it", reason)
+	}
+}
+
+func TestEnforcer_AdoptNilIsSafe(t *testing.T) {
+	t.Parallel()
+	var e *Enforcer
+	if e.Adopt("x", "y") {
+		t.Error("nil Adopt reported a halt")
+	}
 }

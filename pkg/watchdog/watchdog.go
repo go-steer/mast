@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@b8dd225e9ae7fdeb3ff23772cc5be25eed34b818
+// Originally derived from go-steer/core-agent@6510a65b54ead93b5f2c8c31f478443376203360
 
 // Package watchdog implements the out-of-band behavioral observer
 // from docs/model-selection-design.md (issue #123, PR 2 of 2).
