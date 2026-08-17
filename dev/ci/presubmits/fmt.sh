@@ -22,7 +22,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
-offenders="$(gofmt -l ./*.go cmd internal pkg examples)"
+# dev is in the list because dev/ now holds real Go programs
+# (regen-builtin-pricing, upstream-drift), not just shell. vet, lint
+# and test already reach them via ./...; gofmt takes paths, so it has
+# to be told.
+offenders="$(gofmt -l ./*.go cmd internal pkg examples dev)"
 if [[ -n "${offenders}" ]]; then
   echo "FAIL: the following files are not gofmt-clean:" >&2
   sed 's/^/  - /' <<<"${offenders}" >&2
@@ -30,4 +34,4 @@ if [[ -n "${offenders}" ]]; then
   exit 1
 fi
 
-echo "OK: root, cmd, internal, pkg, examples are gofmt-clean."
+echo "OK: root, cmd, internal, pkg, examples, dev are gofmt-clean."

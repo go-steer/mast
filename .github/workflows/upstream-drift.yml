@@ -1,0 +1,146 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: upstream-drift
+
+# Weekly report on how far mast's ported files have fallen behind the
+# go-steer/core-agent commits they were copied from.
+#
+# ## Why this exists
+#
+# 182 files in this repo carry an "Originally derived from
+# go-steer/core-agent@<sha>" trailer, frozen at four different upstream
+# snapshots. Nothing reconciled them. pkg/pricing went five weeks
+# behind while three model families shipped, and it surfaced because a
+# human noticed — not because anything reported it (#149).
+#
+# docs/fork-design.md defers the `agent-substrate` shared-library
+# question until "the shared surface has stabilized", without saying
+# how to observe that. This job is the measurement: per-package drift,
+# every week, so the deferred decision eventually answers itself with
+# data instead of impressions.
+#
+# ## Why it opens an issue rather than failing
+#
+# Drift is the expected state, not a defect. Much of it is code P1.3
+# will re-port wholesale once core-agent's cleanup milestones close;
+# some is in packages that have genuinely forked. A red build nobody
+# can turn green trains people to ignore red builds. One long-lived
+# issue, re-edited each week, keeps the number visible without crying
+# wolf — and the edit-in-place means it does not re-notify subscribers
+# on a week where nothing moved.
+#
+# ## Why GITHUB_TOKEN here and an App token in pricing-regen
+#
+# The org restriction that forces pricing-regen onto a go-steer-bot App
+# token is specifically about *creating pull requests*, and the
+# push-doesn't-trigger-checks loop guard is about *pushes*. This job
+# does neither: it opens and edits an issue, which GITHUB_TOKEN is
+# allowed to do. Using it keeps this workflow free of any dependency
+# on the bot app's installation selection.
+
+on:
+  schedule:
+    # Mondays at 09:23 UTC. Same morning as pricing-regen but a
+    # separate slot — they share a runner pool and there is no reason
+    # to have them contend.
+    - cron: '23 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  ISSUE_TITLE: 'Upstream drift vs go-steer/core-agent'
+
+jobs:
+  report:
+    name: report
+    runs-on: ubuntu-latest
+    # Forks have no issue to file against and no reason to clone
+    # upstream every Monday.
+    if: github.repository == 'go-steer/mast'
+    steps:
+      - uses: actions/checkout@v4
+
+      # fetch-depth: 0 is load-bearing, not caution. The tool answers
+      # `git log <ported-sha>..origin/main -- <path>`, and the oldest
+      # attributed SHA predates the fork — a shallow clone would not
+      # contain it, and every row would come back "unknown-sha".
+      #
+      # Checked out inside the workspace because actions/checkout
+      # refuses a path outside it; dev/upstream-drift prunes .upstream
+      # from its own walk so the clone is not scanned as if it were
+      # mast.
+      - name: Check out core-agent
+        uses: actions/checkout@v4
+        with:
+          repository: go-steer/core-agent
+          path: .upstream
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Report drift
+        id: drift
+        run: |
+          set -euo pipefail
+          go run ./dev/upstream-drift \
+            --upstream .upstream \
+            --ref origin/main \
+            --root . > drift.md
+
+          # The tool ends its report with a machine-readable HTML
+          # comment. Parsing that beats a second invocation, and it
+          # renders as nothing in both the job summary and the issue.
+          marker="$(grep -o '<!-- drift .* -->' drift.md)"
+          commits="$(sed -n 's/.*commits=\([0-9]*\).*/\1/p' <<<"$marker")"
+          if [ -z "$commits" ]; then
+            echo "::error::could not parse the drift marker from the report"
+            exit 1
+          fi
+          echo "commits=$commits" >> "$GITHUB_OUTPUT"
+          cat drift.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Find-or-create by exact title. `gh issue list --search` does
+      # substring matching, so the result is filtered on an exact
+      # title match — a future issue merely mentioning this one in its
+      # title must not get overwritten with a drift report.
+      - name: Open or update the tracking issue
+        if: steps.drift.outputs.commits != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "_Regenerated by [\`upstream-drift.yml\`](https://github.com/${{ github.repository }}/actions/workflows/upstream-drift.yml) on each run. Edit the workflow, not this issue._"
+            echo
+            cat drift.md
+          } > body.md
+
+          number="$(gh issue list --state open --limit 100 \
+            --search "$ISSUE_TITLE in:title" \
+            --json number,title \
+            --jq "[.[] | select(.title == \"$ISSUE_TITLE\")] | .[0].number // empty")"
+
+          if [ -n "$number" ]; then
+            echo "Updating issue #${number}"
+            gh issue edit "$number" --body-file body.md
+          else
+            echo "Opening a new tracking issue"
+            gh issue create --title "$ISSUE_TITLE" --body-file body.md
+          fi

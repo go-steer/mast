@@ -16,6 +16,43 @@ and the decision→eval feedback loop — are all flipped. The remaining eight
 are v0.5's, and seven of those are halves of surfaces k8s-lookout and
 switchboard have not landed yet: the parity claim is v0.5's, not this one's.
 
+- **How far behind core-agent each ported package has fallen is now a
+  number, reported weekly.** 182 files in this repo carry an
+  `// Originally derived from go-steer/core-agent@<sha>` trailer, frozen
+  at four different upstream snapshots, and nothing reconciled them —
+  `pkg/pricing` went five weeks behind while three model families
+  shipped, and it surfaced because a human noticed.
+
+  - `dev/upstream-drift` answers `git log <ported-sha>..origin/main --
+    <upstream-path>` for every trailer it finds, and aggregates by
+    package. It is deliberately not a diff: every ported file already
+    differs from upstream by construction (the trailer itself, `~/.mast`
+    paths, mast-flavored comments), so a diff is 100% noise. Trailers
+    may carry an explicit `:<upstream-path>` suffix for files renamed on
+    the way in — three of them turned out to need one
+    (`pkg/watchdog/bridge.go` ← `pkg/agent/watchdog.go` and two more),
+    which is the bug class the tool has a distinct `missing-path` status
+    for: an upstream rename makes the query return zero commits, and
+    zero commits reads as "in sync". Once watchdog's real upstream path
+    was known its drift went from 4 commits to 9.
+  - `.github/workflows/upstream-drift.yml` runs it every Monday into one
+    long-lived tracking issue, edited in place so a quiet week doesn't
+    re-notify. It never fails a build — drift is the expected state
+    here, much of it in code P1.3 will re-port wholesale, and a red
+    build nobody can turn green trains people to ignore red builds.
+    `GITHUB_TOKEN` suffices, unlike `pricing-regen`: the org restriction
+    is on creating *pull requests* and the loop guard is on *pushes*.
+  - The point is the deferral in `docs/fork-design.md`, which says to
+    revisit extracting an `agent-substrate` shared library once "the
+    shared surface has stabilized" without saying how to tell. Now
+    there's a weekly sample. Baseline at first run: **48 upstream
+    commits across 53 of 182 ported files in 17 packages**, against
+    core-agent `main` at `ee3d6ec`.
+  - `dev/ci/presubmits/fmt.sh` now covers `dev/`, which has held real Go
+    programs since `regen-builtin-pricing` landed. vet, lint and test
+    already reached them via `./...`; gofmt takes paths, so it had to be
+    told.
+
 - **The model tables are generated from a rule, refreshed weekly, and
   can no longer drift apart quietly.** Mast forked its pricing code
   early and then went five weeks without a bump while three model
