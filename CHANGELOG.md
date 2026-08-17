@@ -16,6 +16,16 @@ and the decision→eval feedback loop — are all flipped. The remaining eight
 are v0.5's, and seven of those are halves of surfaces k8s-lookout and
 switchboard have not landed yet: the parity claim is v0.5's, not this one's.
 
+Landing alongside that scope rather than inside the claim above: the
+behavioral watchdog port — two more detectors, the `feedback` and `enforce`
+postures, a `safety.watchdog` field on the bundle, and halt state that
+survives the process. **It changes a default.** A workload that never typed
+`--watchdog` ran at `warn`, which on an unattended deployment is off with
+extra steps: the alert goes to a pod log nobody is tailing. The default is
+now `feedback`, so a detected runaway is told to the party that can stop it.
+`--watchdog=warn` restores the previous behavior; the entries below give the
+reasoning for the divergence from upstream's `enforce`.
+
 - **Claude could not see the arguments of any tool mast defines.** Every
   mast-authored tool — the planner's dispatch tools, `pause_session`,
   and every MCP tool — reached the Anthropic wire as
@@ -474,8 +484,14 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   [`32026851892`](https://github.com/go-steer/mast/actions/runs/32026851892),
   taken before it, which that provider's path does not go through.
   What landed between either board and the tag is docs, derivation-header
-  bumps, and an eventlog locking fix — nothing on the path either board
-  measures. The first Claude board of the day is not quoted anywhere: it
+  bumps, an eventlog locking fix, the Vertex cache retry, and the watchdog
+  port — none of it on the path either board measures. The judged rig's
+  link closure does not reach `pkg/watchdog`, `pkg/mcp`, `cmd/mast`, the
+  library entry point, or `pkg/providers/vertexcache` at all; of the three
+  packages it does share with those commits, `pkg/eventlog` gained a file
+  and modified none, `pkg/workload` gained an optional field that is
+  absent from the rig's bundles, and the `pkg/providers/gemini` change is
+  a comment. The first Claude board of the day is not quoted anywhere: it
   ran before the tool-schema fix and is superseded by this one.
 
   | metric | Claude | Gemini |
