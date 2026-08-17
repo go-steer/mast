@@ -56,9 +56,11 @@ import (
 // positive, and it is a shape mast's own workloads produce — a
 // scheduler-driven daemon watching a rollout settle looks exactly like
 // this. An operator who wants the pattern anyway drops the signal by
-// constructing DefaultWatchdog with their own signal list. Under warn
-// mode, mast's only posture today, the cost of the false positive is
-// one log line.
+// constructing DefaultWatchdog with their own signal list — which is
+// the right answer for that workload, because the signal is Critical
+// and the cost of the false positive therefore scales with the posture:
+// one log line under warn, a paragraph of unwanted steering under
+// feedback, a halted rollout watch under enforce.
 type AlternatingCycleSignal struct {
 	// MaxPeriod is the longest cycle considered. Periods start at 2 —
 	// period 1 is a consecutive repeat, which RepeatedToolCallSignal
@@ -141,6 +143,10 @@ func (s *AlternatingCycleSignal) ObserveToolCall(tc ToolCall) *Alert {
 		Reason: fmt.Sprintf(
 			"agent has repeated the same %d-call sequence (%s) %d times with identical args — possible tool loop that the consecutive-repeat detector cannot see. If the agent is stuck, POST /sessions/{id}/interrupt on the attach surface. The workload's budget ceiling is the hard backstop.",
 			period, seq, s.Cycles,
+		),
+		Guidance: fmt.Sprintf(
+			"you have run the same sequence of calls (%s) %d times with the same arguments each time. Nothing in the inputs changed, so nothing in the results did either. Break the cycle: act on what you already have, change your approach, or report what is blocking you.",
+			seq, s.Cycles,
 		),
 	}
 }

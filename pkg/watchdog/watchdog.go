@@ -41,20 +41,21 @@
 //     extension — see failure.go. Kept optional rather than folded
 //     into Watchdog so a third-party implementation doesn't break to
 //     gain one signal.
-//   - Two postures (enforce.go). "Warn": alerts are logged by the
-//     bridge's caller and surfaced on the attach guardrail endpoint,
-//     and nothing stops. "Enforce": a Critical alert halts the turn
-//     in flight and refuses the next one until an operator resets,
-//     mirroring the budget kill switch.
+//   - Three postures, a ladder — each rung includes the one before it
+//     (enforce.go). "Warn": alerts are logged by the bridge's caller
+//     and surfaced on the attach guardrail endpoint, and nothing
+//     stops. "Feedback": warn, plus each alert's model-facing Guidance
+//     is injected into the session's next-turn prompt (feedback.go) —
+//     the model choosing the next tool call is the only party that can
+//     stop making it, and under warn alone it never learns it is
+//     looping. "Enforce": feedback, plus a Critical alert halts the
+//     turn in flight and refuses the next one until an operator
+//     resets, mirroring the budget kill switch.
 //
 // Future scope (deferred — see design doc §"Piece 2"):
 //
 //   - Additional signals: tools-without-text, files-not-touched,
 //     context-growth-rate, cost-burn-rate.
-//   - "Feedback" mode: route the observation into the model's own next
-//     turn, which is the only party that can stop making the call.
-//     core-agent shipped this as its #159; mast's port is sequenced
-//     behind these detectors (see docs/sibling-sync.md).
 //   - "Prompt" mode: pause turn, ask operator y/n via the existing
 //     permissions prompter, resume on either path.
 //   - "Auto" mode: escalate to a frontier model without operator
@@ -92,14 +93,31 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
-// Alert is what a triggered signal returns. Fields are operator-
-// facing — the agent's wiring logs Reason verbatim. Signal is the
-// stable string ID the rest of the system can dispatch on (future
-// "auto" mode picks behavior per signal).
+// Alert is what a triggered signal returns. Signal is the stable
+// string ID the rest of the system can dispatch on (future "auto" mode
+// picks behavior per signal).
+//
+// Reason and Guidance are the same observation written for two
+// different readers, and the split matters because the readers can do
+// different things about it. Reason is operator-facing — the agent's
+// wiring logs it verbatim and the attach guardrail endpoint serves it —
+// so it names operator affordances: the interrupt endpoint, the budget
+// ceiling, the reset. Guidance is model-facing: it is what
+// FormatFeedback injects into the session's next prompt under
+// ModeFeedback, so it says what the model itself can do about the
+// pattern and names no affordance the model does not have. Telling a
+// looping model to "POST /sessions/{id}/interrupt" is at best noise and
+// at worst an invitation to hallucinate a tool call for it.
+//
+// Guidance is optional. A signal that leaves it empty still feeds —
+// FormatFeedback falls back to Reason — because a third-party signal
+// silently producing no feedback would be a worse failure than one
+// producing operator-flavored feedback.
 type Alert struct {
 	Signal   string
 	Severity Severity
 	Reason   string
+	Guidance string
 }
 
 // ToolCall is the per-tool-call observation the watchdog needs.
@@ -187,11 +205,11 @@ type Signal interface {
 //     succeeding in between, i.e. an agent with no verified evidence
 //     about anything (#639).
 //
-// All three are Warn, because warn is mast's only posture: nothing
-// here halts a turn. Operators wanting different thresholds, or a
-// subset, construct DefaultWatchdog directly with a custom signal
-// list — the cycle detector is the one most likely to be dropped, on
-// a workload whose normal shape is a polling loop.
+// The two loop detectors are Critical and the failure streak is Warn
+// (see each signal's docstring for why). Operators wanting different
+// thresholds, or a subset, construct DefaultWatchdog directly with a
+// custom signal list — the cycle detector is the one most likely to be
+// dropped, on a workload whose normal shape is a polling loop.
 func NewDefaultWatchdog() *DefaultWatchdog {
 	return &DefaultWatchdog{
 		signals: []Signal{
@@ -301,6 +319,10 @@ func (s *RepeatedToolCallSignal) ObserveToolCall(tc ToolCall) *Alert {
 			Reason: fmt.Sprintf(
 				"agent has called %s with identical args %d times in a row — possible tool loop. Args: %s. If the agent is stuck, POST /sessions/{id}/interrupt on the attach surface. The workload's budget ceiling is the hard backstop.",
 				tc.Name, s.runLength, truncate(tc.Args, 200),
+			),
+			Guidance: fmt.Sprintf(
+				"you have called %s with the same arguments %d times in a row. The result will not change on the next attempt. Either use what it already returned, try a different tool or different arguments, or report what is blocking you.",
+				tc.Name, s.runLength,
 			),
 		}
 	}

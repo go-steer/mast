@@ -175,8 +175,7 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// the last structured output (Task-mode finish_task value) and the
 	// last text part as the printable result.
 	// Watchdog tap (pkg/watchdog): one turn, so a fresh watchdog per
-	// invocation; alerts are logged on stderr like every other log line
-	// (the model-context routing is bucket-3 per docs/fork-design.md).
+	// invocation; alerts are logged on stderr like every other log line.
 	//
 	// --watchdog=enforce applies here too. A one-shot is a single turn,
 	// so "refuse the next one" has nothing to refuse — but the loop the
@@ -184,7 +183,17 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// its --timeout on the same tool call 200 times is precisely the
 	// bill enforce mode exists to stop. The remedy is empty because
 	// there is no operator surface to reset through: the process ends.
+	//
+	// The feedback rung is the one that does not carry over. Its whole
+	// mechanism is prepending the observation to the session's *next*
+	// prompt, and a one-shot has none — the injection point is the turn
+	// boundary this mode does not have. Say so rather than quietly
+	// running warn behind an operator who asked for more.
 	wd := watchdog.NewDefaultWatchdog()
+	if opts.Watchdog == watchdog.ModeFeedback {
+		logger.Warn("--watchdog=feedback has no effect in one-shot mode: the observation is delivered on the session's next turn, and there is none. Alerts are still logged; use --watchdog=enforce to stop an intra-turn loop.",
+			"task", opts.Class)
+	}
 	enf := watchdog.NewEnforcer(opts.Watchdog, "")
 	onAlert := func(a watchdog.Alert) {
 		logger.Warn("watchdog alert", "task", opts.Class, "session", sessionID,

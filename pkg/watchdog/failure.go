@@ -177,6 +177,14 @@ func (s *ToolFailureStreakSignal) ObserveToolResult(tr ToolResult) *Alert {
 			"%d tool calls in a row failed with no successful call in between (%s). The agent has no tool-verified evidence about the state it is being asked to report on; treat its next answer as unverified. Last error: %s",
 			s.streak, tools, truncate(s.lastErr, 200),
 		),
+		// The one signal whose model-facing half is the more important
+		// one. An operator reading "no verified evidence" already knows
+		// to distrust the report; the model composing that report is the
+		// party that can still go get the evidence — or say it could not.
+		Guidance: fmt.Sprintf(
+			"your last %d tool calls all failed (%s) with none succeeding in between, so you have not verified anything about the state you are working on. Do not describe that state as if you had. Fix the cause, try a different route to the evidence, or say plainly that you could not reach it. Last error: %s",
+			s.streak, tools, truncate(s.lastErr, 200),
+		),
 	}
 }
 

@@ -121,7 +121,7 @@ func run() {
 		logLevel         = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		autoResume       = flag.Bool("auto-resume", true, "serve mode: on boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (coordinator dispatch only in v0.2). --auto-resume=false disables")
 		autoResumeWindow = flag.Duration("auto-resume-window", time.Hour, "serve mode: only auto-resume sessions interrupted within this window; older interruptions are left for an operator (0 disables the freshness gate)")
-		watchdogFlag     = flag.String("watchdog", "warn", "behavioral watchdog posture: `warn` (log a detected tool loop and let the turn run) or `enforce` (cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical either way")
+		watchdogFlag     = flag.String("watchdog", "warn", "behavioral watchdog posture, a ladder where each rung includes the one before it: `warn` (log a detected tool loop and let the turn run), `feedback` (also tell the model, on its next turn, what it is doing), or `enforce` (also cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical in all three")
 		showVersion      = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -1525,6 +1525,9 @@ type watchdogPool struct {
 	// caused it: the signal is reset the moment the operator clears
 	// the guardrail, and the refusal has to survive until then.
 	enf map[string]*watchdog.Enforcer
+	// fb holds the per-session queue of observations awaiting delivery
+	// to the model, from --watchdog=feedback up.
+	fb map[string]*watchdog.Feedback
 }
 
 // watchdogAlerts is the operator-visible residue of a session's
@@ -1544,6 +1547,7 @@ func newWatchdogPool(mode watchdog.Mode) *watchdogPool {
 		byID:  map[string]*watchdog.DefaultWatchdog{},
 		fired: map[string]watchdogAlerts{},
 		enf:   map[string]*watchdog.Enforcer{},
+		fb:    map[string]*watchdog.Feedback{},
 	}
 }
 
@@ -1574,6 +1578,21 @@ func (wp *watchdogPool) enforcer(sessionID string) *watchdog.Enforcer {
 		wp.enf[sessionID] = e
 	}
 	return e
+}
+
+// feedback returns the session's pending-observation queue, minting one
+// in the pool's configured posture. Below ModeFeedback the queue exists
+// but never accepts anything, so callers need no mode check of their
+// own.
+func (wp *watchdogPool) feedback(sessionID string) *watchdog.Feedback {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	f, ok := wp.fb[sessionID]
+	if !ok {
+		f = watchdog.NewFeedback(wp.mode)
+		wp.fb[sessionID] = f
+	}
+	return f
 }
 
 // preflight refuses a turn on a session the watchdog halted. Called at
@@ -1613,12 +1632,43 @@ func (wp *watchdogPool) alerts(sessionID string) watchdogAlerts {
 // still holds the completed run would re-halt on the session's next
 // tool call, and the operator would read that as the reset not
 // working.
+//
+// The pending feedback queue is just as deliberately left alone. A
+// reset resumes a model whose context still ends in the loop it was
+// halted for; the queued observation is the only thing standing between
+// that and the first post-reset turn re-issuing the same call. Clearing
+// it here would make the reset undo the correction along with the halt,
+// and turn an operator round-trip into a treadmill.
 func (wp *watchdogPool) reset(sessionID string) {
 	wp.watchdog(sessionID).Reset()
 	wp.enforcer(sessionID).Reset()
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
 	delete(wp.fired, sessionID)
+}
+
+// prependFeedback drains the session's pending watchdog observations
+// onto the front of the turn's message. Returns msg untouched when
+// nothing is pending — which is every turn below --watchdog=feedback,
+// and most turns above it.
+//
+// A fresh Content rather than an edit in place: msg belongs to its
+// caller (the inject handler, the scheduler, an A2A task), and growing
+// their slice would leak the block into a retry of the same message.
+func prependFeedback(fb *watchdog.Feedback, msg *genai.Content) *genai.Content {
+	if msg == nil {
+		// Nothing to prepend to. Leave the queue alone rather than
+		// draining an observation into a message that will never be
+		// sent.
+		return nil
+	}
+	block := watchdog.FormatFeedback(fb.Drain())
+	if block == "" {
+		return msg
+	}
+	parts := make([]*genai.Part, 0, len(msg.Parts)+1)
+	parts = append(parts, genai.NewPartFromText(block+"\n\n---\n"))
+	return &genai.Content{Role: msg.Role, Parts: append(parts, msg.Parts...)}
 }
 
 // toolPolicies converts the bundle's tool_catalog per-tool overrides
@@ -1887,11 +1937,19 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		obs.AddCost(workloadName, costAfter-costBefore)
 	}()
 
+	// Feedback mode (--watchdog=feedback and up): whatever the session's
+	// previous turns tripped goes in front of this turn's prompt. Every
+	// posture below this one routes the observation to an operator; on
+	// an unattended workload that operator is a log nobody is tailing,
+	// and the model about to repeat the call is the only party that can
+	// decide not to.
+	msg = prependFeedback(wds.feedback(sessionID), msg)
+
 	// Watchdog tap (pkg/watchdog): per-session accumulation across
 	// turns, per-turn dedup of aggregator re-emissions (core-agent
-	// #363). Alerts are logged, not routed into model context — the
-	// #159-style routing is bucket-3 work per docs/fork-design.md.
+	// #363).
 	enf := wds.enforcer(sessionID)
+	fb := wds.feedback(sessionID)
 	onAlert := func(a watchdog.Alert) {
 		// Retained as well as logged: GET /guardrails answers "has this
 		// session been misbehaving?", and the alert is gone from the
@@ -1900,6 +1958,12 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		logger.Warn("watchdog alert",
 			"turn", label, "session", sessionID,
 			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
+		// Queue the model-facing half for the next turn. Not this one:
+		// the prompt was assembled before Run and the turn is already
+		// streaming. Under enforce that next turn is the one after an
+		// operator reset, which is exactly the turn that would
+		// otherwise re-issue the call that halted it.
+		fb.Queue([]watchdog.Alert{a})
 		// Enforce mode halts the turn in flight. Tap drains as soon as
 		// an observation lands, so this runs while the loop is looping
 		// rather than after it finishes — cancel() is the same handle

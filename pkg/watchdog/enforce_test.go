@@ -42,6 +42,7 @@ func TestParseMode(t *testing.T) {
 	}{
 		{"", ModeWarn, false},
 		{"warn", ModeWarn, false},
+		{"feedback", ModeFeedback, false},
 		{"enforce", ModeEnforce, false},
 		{"Enforce", "", true},
 		{"halt", "", true},
@@ -56,6 +57,46 @@ func TestParseMode(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("ParseMode(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// The rungs accumulate. Enforce that includes only the halt and not the
+// correction is the treadmill this ladder exists to avoid: loop, halt,
+// reset, loop.
+func TestModeLadder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		mode         Mode
+		feeds, halts bool
+	}{
+		{ModeWarn, false, false},
+		{ModeFeedback, true, false},
+		{ModeEnforce, true, true},
+	}
+	for _, tc := range tests {
+		if got := tc.mode.Feeds(); got != tc.feeds {
+			t.Errorf("%q.Feeds() = %v, want %v", tc.mode, got, tc.feeds)
+		}
+		if got := tc.mode.Enforces(); got != tc.halts {
+			t.Errorf("%q.Enforces() = %v, want %v", tc.mode, got, tc.halts)
+		}
+	}
+}
+
+// Feedback is not a kill switch. An operator who asked to be told is not
+// asking to be stopped.
+func TestEnforcer_FeedbackModeNeverHalts(t *testing.T) {
+	t.Parallel()
+	e := NewEnforcer(ModeFeedback, "reset it")
+	if e.Observe(critical("repeated-tool-call")) {
+		t.Error("feedback mode halted on a Critical alert")
+	}
+	if tripped, _ := e.Tripped(); tripped {
+		t.Error("feedback mode recorded a trip")
+	}
+	if err := e.Preflight(); err != nil {
+		t.Errorf("feedback mode refused the next turn: %v", err)
 	}
 }
 

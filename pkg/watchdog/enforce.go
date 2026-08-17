@@ -36,9 +36,12 @@ import (
 // Mode is the watchdog's posture: what the deployment does when a
 // signal trips.
 //
-// Detection is identical in both. Every signal observes, tallies, and
-// alerts the same way — the mode only decides the reaction, which is
-// why a workload can be switched between them without changing what
+// The postures are a ladder, and each rung includes the one below it:
+// warn logs, feedback also tells the model, enforce also stops it.
+//
+// Detection is identical in all three. Every signal observes, tallies,
+// and alerts the same way — the mode only decides the reaction, which
+// is why a workload can be switched between them without changing what
 // gets found.
 type Mode string
 
@@ -48,9 +51,20 @@ const (
 	// responder mid-triage is worse than one that annotates it.
 	ModeWarn Mode = "warn"
 
-	// ModeEnforce halts on a Critical alert: the turn in flight is
-	// cancelled and every subsequent turn is refused until an operator
-	// resets, the same contract the budget ceiling keeps.
+	// ModeFeedback warns, and additionally routes each alert's Guidance
+	// into the session's next prompt. The party that can stop making the
+	// looping call is the model making it, and under warn alone it is
+	// the one party never told.
+	ModeFeedback Mode = "feedback"
+
+	// ModeEnforce feeds back, and additionally halts on a Critical
+	// alert: the turn in flight is cancelled and every subsequent turn
+	// is refused until an operator resets, the same contract the budget
+	// ceiling keeps.
+	//
+	// Enforce implies feedback on purpose. Without it, the turn after a
+	// reset starts with the model knowing nothing about why it was
+	// stopped, which is a treadmill: loop, halt, reset, loop.
 	ModeEnforce Mode = "enforce"
 )
 
@@ -60,15 +74,22 @@ func ParseMode(s string) (Mode, error) {
 	switch Mode(s) {
 	case "", ModeWarn:
 		return ModeWarn, nil
+	case ModeFeedback:
+		return ModeFeedback, nil
 	case ModeEnforce:
 		return ModeEnforce, nil
 	default:
-		return "", fmt.Errorf("unknown watchdog mode %q (want %q or %q)", s, ModeWarn, ModeEnforce)
+		return "", fmt.Errorf("unknown watchdog mode %q (want %q, %q or %q)", s, ModeWarn, ModeFeedback, ModeEnforce)
 	}
 }
 
 // Enforces reports whether this mode halts on a Critical alert.
 func (m Mode) Enforces() bool { return m == ModeEnforce }
+
+// Feeds reports whether this mode routes alert Guidance back into the
+// model's next turn. True for enforce as well as feedback: the rungs
+// accumulate.
+func (m Mode) Feeds() bool { return m == ModeFeedback || m == ModeEnforce }
 
 // TrippedError is what a caller returns from a turn the watchdog
 // halted, and what Preflight returns for every turn after it. A

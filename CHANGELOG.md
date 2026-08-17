@@ -165,6 +165,49 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   *whether* a session is halted and why; it never decides how a turn
   dies. Ported from core-agent's #628 and #719.
 
+- **`--watchdog=feedback`: the loop detector tells the party that can
+  stop the loop.** Every posture before this one routed the observation
+  to an operator. On an unattended workload — the deployment mast exists
+  for — that operator is a pod log nobody is tailing, and even a
+  watching one can only interrupt a turn already in flight. The model
+  choosing the next tool call is the only party that can decide not to
+  make it, and it was the one party never told.
+
+  Each alert now carries a model-facing `Guidance` sentence alongside
+  its operator-facing `Reason`, and from `feedback` up they are
+  prepended to the session's next prompt as a `[watchdog]` block framed
+  as *an automated observation about your own previous turn — this is
+  not a message from the user, and the user cannot see it*. The split
+  matters because the readers can do different things: mast's operator
+  text names `POST /sessions/{id}/interrupt` and the bundle's budget
+  ceiling, and telling a looping model about an endpoint it cannot call
+  is at best noise. A test asserts every shipped signal sets `Guidance`
+  and that none of them leaks an operator control, so a fourth signal
+  cannot ship with only half the prose.
+
+  The three postures are now a ladder — `warn` < `feedback` <
+  `enforce`, each including the one before it. **`enforce` implies
+  `feedback` deliberately:** an enforce halt is cleared by an operator
+  reset, and a reset resumes a model whose context still ends in the
+  loop it was halted for, so without the injected observation the very
+  next turn re-issues the same call and the reset is a treadmill. For
+  the same reason a reset clears the halt but **keeps** the queued
+  observation. The queue is bounded at four (oldest dropped), nothing is
+  queued below `feedback` so flipping a long-running deployment up a
+  rung cannot deliver a stale backlog, and it drains on read so an
+  observation lands exactly once even if that turn fails.
+
+  `feedback` is a correction, not a backstop — nothing stops a model
+  that reads the block and loops anyway, which is why unattended runs
+  still want `enforce`, which now gets both. It is also the one rung
+  that does not apply to one-shot mode, whose whole mechanism is a next
+  turn a one-shot does not have; it logs a line saying so rather than
+  quietly running `warn`. The block is steering, not a trust boundary.
+  Ported from core-agent's #678, and the commit that settled which side
+  of the fork this feature lives on — shared infrastructure, not
+  lean-fork-specific. See `docs/fork-design.md` § "Sync discipline under
+  (E)".
+
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an
   `// Originally derived from go-steer/core-agent@<sha>` trailer, frozen
