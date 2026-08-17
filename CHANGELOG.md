@@ -215,13 +215,14 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
   **Where both boards stand at this tag.** Fired by hand against the
   shipped tier table so the release quotes a measurement rather than
   last night's, over 31 scenarios each. Claude is run
-  [`32029654748`](https://github.com/go-steer/mast/actions/runs/32029654748)
-  at the tagged commit; Gemini is
+  [`32029654748`](https://github.com/go-steer/mast/actions/runs/32029654748),
+  taken with the Anthropic tool-schema fix below in place; Gemini is
   [`32026851892`](https://github.com/go-steer/mast/actions/runs/32026851892),
-  which ran two commits earlier — the difference is one Anthropic-only
-  fix and one docs commit, neither of which that provider's path
-  touches. The first Claude board of the day is not quoted anywhere: it
-  ran before the tool-schema fix below and is superseded by this one.
+  taken before it, which that provider's path does not go through.
+  What landed between either board and the tag is docs, derivation-header
+  bumps, and an eventlog locking fix — nothing on the path either board
+  measures. The first Claude board of the day is not quoted anywhere: it
+  ran before the tool-schema fix and is superseded by this one.
 
   | metric | Claude | Gemini |
   |---|---|---|
