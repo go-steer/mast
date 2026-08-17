@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@83ec0713ade7a5c05d72ad280039f336f561414b
+// Originally derived from go-steer/core-agent@cafe3106cf61cb7c1edbb39c2ce446dd87358747
 
 package pricing
 
@@ -99,8 +99,18 @@ type RefreshOutcome struct {
 // maxRefreshBodyBytes caps how much of a remote pricing body Refresh
 // will buffer — a hostile or misconfigured mirror must not be able to
 // OOM the process (upstream: go-steer/core-agent#372, fixed here ahead
-// of the upstream patch per the sibling-sync discipline; real pricing
-// payloads are tens of KB). Variable, not const, so tests can shrink it.
+// of the upstream patch per the sibling-sync discipline). Variable, not
+// const, so tests can shrink it.
+//
+// 8 MiB against a real payload of 1.67 MiB — DefaultRefreshSource,
+// measured 2026-08-17. The comment here used to say "tens of KB",
+// which was wrong by two orders of magnitude and was the stated
+// justification for the cap; found by that day's upstream triage
+// (docs/sibling-sync.md). The number stays as it is — ~5x headroom
+// over the only thing we fetch is the right shape for an OOM guard,
+// and upstream's 32 MiB is more slack than one wants — but the
+// catalog has grown before and will again, so re-measure rather than
+// trusting this line if a refresh ever fails on the cap.
 var maxRefreshBodyBytes int64 = 8 << 20
 
 func Refresh(ctx context.Context, userHome string, opts RefreshOptions) (RefreshOutcome, error) {

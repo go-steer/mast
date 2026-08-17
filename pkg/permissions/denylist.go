@@ -29,25 +29,40 @@
 // The interactive prompt path is implemented by the host (TUI / CLI REPL);
 // see prompter.go for the Prompter interface.
 //
-// # Port status: compiled, tested, NOT wired into the mast runtime
+// # Port status: partly wired (corrected 2026-08-17)
+//
+// Two entry points are live. internal/compose/writegate.go builds a
+// Gate and pkg/approval drives it: CheckMutatingToolCall on every call
+// the workload's mutation predicate classifies as mutating, and
+// RecordMutationVerdict on the operator's answer. That path runs the
+// plan-first pre-check (planExemptTools in gate.go is therefore live
+// policy, not a dormant table), the config deny policy, and ModePlan.
+//
+// The rest is not. Nothing calls CheckBash, CheckPath or CheckGeneric,
+// because mast registers no bash tool and no built-in file tools —
+// its mutations arrive over MCP. Nothing populates Settings from a
+// config surface either (see settings.go). So the bash denylist
+// documented below and the path-scope check are compiled and tested
+// but unreached; a reader looking for what protects mast today should
+// look at the write gate, not at this file.
+//
+// This note previously said the whole package was unwired and that
+// "nothing in mast is protected by these checks". That stopped being
+// true when the write gate landed in v0.3 (W2.1–W2.3) and was not
+// updated; the 2026-08-17 upstream triage found it
+// (docs/sibling-sync.md).
 //
 // # Wiring-time design inputs (recorded 2026-07-27, from upstream
-// go-steer/core-agent#385): before this gate goes live in mast, revisit
-// (1) plan-first exempting network egress (fetch_url) and the whole
-// skill namespace — an unattended runtime should record a plan before
-// any egress; (2) acceptEdits auto-allowing out-of-scope filesystem
-// writes — mast's unattended posture likely wants that mode narrowed
-// or excluded rather than documented-louder. Track upstream's
-// resolution and adapt at wiring time; do not wire as-is.
-//
-// Honest scope note for the P1.3a port: mast's runtime does not yet
-// consult this gate anywhere — no tool execution path calls CheckBash
-// / CheckPath / CheckGeneric, and no config surface populates
-// Settings (see settings.go). The package is ported now because it is
-// ADK-independent and stable in the parent project; integrating the
-// gate into specialist tool execution is its own future workstream
-// (docs/fork-design.md, P1.3 staging). Until that lands, nothing in
-// mast is protected by these checks.
+// go-steer/core-agent#385; resolved upstream the same day as #465):
+// (1) plan-first exempting network egress — resolved. fetch_url is no
+// longer exempt in either repo; the read-only skill namespace stays
+// exempt, and gate.go says why. (2) acceptEdits auto-allowing
+// out-of-scope filesystem writes — upstream documented the blast
+// radius louder rather than narrowing the mode. mast reached a
+// stronger answer by a different route: CheckMutatingToolCall refuses
+// to let ModeAcceptEdits (or ModeYolo, or ModeAllow) short-circuit a
+// mutation approval at all, so the mode cannot auto-allow a write here
+// regardless of scope. Nothing further is owed at wiring time.
 //
 // # The bash denylist is defense-in-depth, NOT a security boundary
 //

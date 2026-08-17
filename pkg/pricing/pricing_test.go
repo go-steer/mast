@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@83ec0713ade7a5c05d72ad280039f336f561414b
+// Originally derived from go-steer/core-agent@cafe3106cf61cb7c1edbb39c2ce446dd87358747
 
 package pricing
 
