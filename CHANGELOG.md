@@ -75,6 +75,36 @@ switchboard have not landed yet: the parity claim is v0.5's, not this one's.
     already reached them via `./...`; gofmt takes paths, so it had to be
     told.
 
+- **`fetch_url` is no longer exempt from plan-first gating.** Under
+  `require_plan_artifact`, read-only tools are exempt so research can
+  happen before the plan is recorded. `fetch_url` was in that list: it
+  reads, but it reads *across the network*, and egress before a plan
+  exists is an exfiltration channel rather than research. Inert in mast
+  today — no `fetch_url` tool is registered — which is exactly how it
+  survived: a dead entry in a live table. `planExemptTools` is real
+  policy, consulted by `CheckMutatingToolCall` on every mutating call,
+  so the next tool named `fetch_url` would have inherited the exemption
+  silently.
+
+  This is the last sixth of core-agent's #465 security roundup. mast
+  already had the other five for free, because `pkg/attach` was ported
+  two days *after* that roundup landed; this one was missing because
+  `pkg/permissions` was ported two days *before* it. Port timing is not
+  a security control, which is the finding, not the fix.
+
+  `docs/sibling-sync.md` is new and is where findings like that now
+  live: every one of the 48 commits in the first drift report has a
+  verdict, and the doc records what the instrument cannot see. The
+  split is deliberate — the machine keeps the inventory, the doc keeps
+  the verdicts — because the per-commit ledger `fork-design.md`
+  originally specified went unwritten for three weeks. Also corrected
+  along the way: `pkg/permissions/denylist.go` claimed the package was
+  unwired and that "nothing in mast is protected by these checks",
+  false since the v0.3 write gate; ten trailers left at `83ec071` by a
+  re-port, which would have re-reported eight absorbed commits every
+  Monday forever; and an 8 MiB response cap in `pkg/pricing/refresh.go`
+  justified by a payload size ("tens of KB") that measures 1.67 MiB.
+
 - **The model tables are generated from a rule, refreshed weekly, and
   can no longer drift apart quietly.** Mast forked its pricing code
   early and then went five weeks without a bump while three model
