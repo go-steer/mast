@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 (2026-08-17)
+
+*An operator approves the exact call that will fire, the loop runs on a
+schedule without an orchestrator, and every verdict becomes a labelled eval
+row.* v0.3 put an operator in front of every mutating call; v0.4 makes what
+they approve a typed object rather than a paragraph, and closes the honest
+gap v0.3 shipped with — the change executor was unreachable from a diagnosis
+in both shipped dispatch shapes.
+
+Parity scoreboard: **11 of 19** rows green, up from 7 at the v0.3.0 tag
+(`docs/v0.3-plan.md` §1). The four this release is accountable for — the
+per-specialist model tier, the scheduled trigger, the bounded analysis path,
+and the decision→eval feedback loop — are all flipped. The remaining eight
+are v0.5's, and seven of those are halves of surfaces k8s-lookout and
+switchboard have not landed yet: the parity claim is v0.5's, not this one's.
 
 - **The model tables are generated from a rule, refreshed weekly, and
   can no longer drift apart quietly.** Mast forked its pricing code

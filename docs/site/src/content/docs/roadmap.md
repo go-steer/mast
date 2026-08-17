@@ -1,11 +1,12 @@
 ---
 title: Roadmap
-description: What v0.3 ships, and what lands after it — honestly.
+description: What v0.4 ships, and what lands after it — honestly.
 ---
 
-mast is at **v0.3.0** — the write gate and the structural read/write split,
-on the v0.2.0 durable-execution spine. See
-[Shipped in v0.3.0](#shipped-in-v030) below.
+mast is at **v0.4.0** — an operator approves the exact call that will fire,
+the loop runs on a schedule without an orchestrator, and every verdict becomes
+a labelled eval row. On the v0.3.0 write gate and the v0.2.0
+durable-execution spine. See [Shipped in v0.4.0](#shipped-in-v040) below.
 
 **All eleven v0.1 exit criteria from the fork design are green.** The
 `--task` profile criterion cleared with the P1.3a/P1.3b adapter ports and
@@ -228,14 +229,14 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   names moved from `PascalCase` to `camelCase`; stored sessions are unaffected
   and the operator UI already reads both.
 
-## Next: v0.4
+## Shipped in v0.4.0
 
-Planned work, entirely in this repo — nothing here waits on another project.
-The claim it adds up to: *an operator approves the exact call that will fire,
-the loop runs on a schedule without an orchestrator, and every verdict becomes
-a labelled eval row.*
+Entirely in this repo — nothing in it waited on another project. The claim it
+adds up to: *an operator approves the exact call that will fire, the loop runs
+on a schedule without an orchestrator, and every verdict becomes a labelled
+eval row.*
 
-- **The change-set producer** — *landed on `main`, unreleased.* The missing
+- **The change-set producer** — the missing
   half of the write gate. A finding carries a typed proposed change rather
   than a sentence, drawn from the workload's own tool catalog and checked
   against that tool's input schema when the finding is returned; a proposal
@@ -246,7 +247,7 @@ a labelled eval row.*
   it. An empty proposal stays a complete, valid report. This closes the
   honest gap v0.3 shipped with. See [the change
   set](/concepts/approvals/#the-change-set--approving-the-call-not-the-prose).
-- **Change-set approvals** — *landed on `main`, unreleased.* Approving one
+- **Change-set approvals** — approving one
   parked call with `scope: change_set` mints a grant for each remaining call
   in that set, bound to an exact `(tool, arguments)` signature rather than to
   a tool name: single-use, durable across a restart, and still adjudicated
@@ -259,7 +260,7 @@ a labelled eval row.*
   minutes) is the backstop for what a re-read cannot see. See [one answer for
   a set of
   calls](/concepts/approvals/#one-answer-for-a-set-of-calls--and-what-makes-it-stale).
-- **Decisions become training data** — *landed on `main`, unreleased.* Every
+- **Decisions become training data** — every
   approve, reject and edit is a durable record on the session, and `mast
   sessions export-decisions` writes them out as JSON Lines. *"The operator
   edited 10 replicas down to 4"* is the highest-signal thing the system
@@ -270,7 +271,7 @@ a labelled eval row.*
   describes. Capture and export only — nothing scores or retrains on the rows.
   See [exporting
   decisions](/reference/write-gate/#exporting-what-was-decided).
-- **Scheduled triggers** — *landed on `main`, unreleased.* A bundle wakes
+- **Scheduled triggers** — a bundle wakes
   itself on an interval, with jitter, and the cadence survives the daemon
   rather than merely restarting with it: the anchor is durable, so fires land
   on the same phase after a redeploy instead of drifting a 02:00 sweep into
@@ -281,7 +282,7 @@ a labelled eval row.*
   the same path every other kind of turn takes: a mutating call in a scheduled
   run still parks for a real approver. See
   [`scheduled:`](/reference/workload-bundle/#scheduled--a-workload-that-wakes-itself).
-- **A bounded analysis path** — *landed on `main`, unreleased.*
+- **A bounded analysis path** —
   `dispatch: bounded` is a fourth shape: a roster of exactly one `SingleTurn`
   specialist, built as a single node with no orchestrator above it, so the
   cycle costs one cheap-tier model call and there is nothing in the shape that
@@ -296,7 +297,48 @@ a labelled eval row.*
   copied into each specialist. See [the four dispatch
   shapes](/concepts/specialists-and-dispatch/#bounded--one-cheap-call-one-schema-forced-report).
 
-## Then: v0.5 — unattended monitoring, end to end
+- **Provider-portable specialist tiers** — a specialist declares `tier: small
+  | mid | frontier` rather than a vendor's model id, and mast resolves it
+  against whichever provider the workload is actually running on. One roster
+  line, `tier: small`, is `gemini-3.5-flash-lite` under a Gemini root and
+  `claude-haiku-4-5` under an Anthropic one, so a shipped bundle is no longer
+  a vendor choice for everyone who forks it. `model:` stays for an exact pin;
+  declaring both on one spec is a load error rather than a precedence rule,
+  because a silent winner between two ways of saying the same thing is the
+  bug. An unresolvable tier fails the build instead of quietly inheriting the
+  parent's model, and an offline-fake root collapses every tier back to
+  itself so a tiered bundle still runs credential-free. See
+  [`tier:` — the portable spelling](/reference/workload-bundle/#tier--the-portable-spelling).
+- **The judged nightly is on, on two providers** — the metered tier v0.3
+  built now runs unattended against live credentials, and a second workflow
+  runs the same 31 scenarios on Gemini with its own board and its own
+  history. Deliberately two workflows rather than one matrix: a night-to-night
+  delta should not depend on whether the *other* provider had a good night,
+  and one provider's outage should not erase the other's baseline. This is
+  what finally makes the cheap-tier claim measurable rather than declared —
+  the board prices a `tier: small` specialist against what the parent's rate
+  would have charged, and a specialist that resolved to the cheap model but
+  was billed at the parent's rate is a build failure, because that verdict is
+  arithmetic rather than judgment. Scores still only report.
+- **The model tables are generated from a rule and refreshed weekly** —
+  membership in the built-in pricing table is now every chat-mode,
+  tool-calling, priced, non-deprecated Gemini/Anthropic model in the upstream
+  catalog, regenerated by a scheduled job that opens a PR only when the
+  catalog actually moved. A stale rate is not a loud failure — an unpriced
+  model is metered at a flat fallback, so the symptom is a `max_cost_usd` that
+  quietly means a different number of dollars. Two invariant tests now fail
+  the build when the four tables that have to move together drift apart.
+  Prompt-cache *writes* are priced at their own rate, which the previous
+  table charged as reads. See [Cost](/concepts/providers/#cost).
+- **An opt-in live acceptance tier over a throwaway kind cluster** — the
+  free tiers prove mast's guarantees against fakes and the judged tier
+  measures answer quality against a live model; neither watches a real
+  API server accept a real mutation. `MAST_LIVE_KIND=1` runs the write gate
+  end to end against a disposable cluster. Deliberately not a presubmit and
+  deliberately never pointed at a cluster anyone cares about: fault injection
+  must never touch a real one.
+
+## Next: v0.5 — unattended monitoring, end to end
 
 The parity claim, and the release where the other two projects land their
 halves: cross-run finding state and resource-name normalization in
