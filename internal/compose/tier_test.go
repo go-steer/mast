@@ -40,12 +40,12 @@ func TestTierModelName_FollowsTheRunningProvider(t *testing.T) {
 		tier     string
 		want     string
 	}{
-		{"gemini root, no alias", "", "gemini-3.6-flash", taskclass.TierSmall, "gemini-2.5-flash"},
+		{"gemini root, no alias", "", "gemini-3.6-flash", taskclass.TierSmall, "gemini-3.5-flash-lite"},
 		{"claude root, no alias", "", "claude-opus-4-7", taskclass.TierSmall, "claude-haiku-4-5"},
 		{"gemini root, mid", "", "gemini-3.6-flash", taskclass.TierMid, "gemini-3.5-flash"},
-		{"claude root, frontier", "", "claude-haiku-4-5", taskclass.TierFrontier, "claude-opus-4-7"},
-		{"explicit vertex alias", "vertex", "gemini-3.6-flash", taskclass.TierSmall, "gemini-2.5-flash"},
-		{"explicit anthropic-vertex alias", "anthropic-vertex", "claude-opus-4-7", taskclass.TierMid, "claude-sonnet-4-6"},
+		{"claude root, frontier", "", "claude-haiku-4-5", taskclass.TierFrontier, "claude-opus-5"},
+		{"explicit vertex alias", "vertex", "gemini-3.6-flash", taskclass.TierSmall, "gemini-3.5-flash-lite"},
+		{"explicit anthropic-vertex alias", "anthropic-vertex", "claude-opus-4-7", taskclass.TierMid, "claude-sonnet-5"},
 		// The alias wins over the root's prefix. It is the operator's
 		// explicit statement of which provider this run is against.
 		{"alias beats the prefix", "anthropic", "gemini-3.6-flash", taskclass.TierSmall, "claude-haiku-4-5"},
@@ -173,7 +173,7 @@ func TestSpecModelName(t *testing.T) {
 	}{
 		{"no declaration inherits", specialists.Spec{Name: "plain"}, ""},
 		{"model wins as written", specialists.Spec{Name: "pinned", Model: "claude-haiku-4-5"}, "claude-haiku-4-5"},
-		{"tier resolves", specialists.Spec{Name: "cheap", Tier: taskclass.TierSmall}, "gemini-2.5-flash"},
+		{"tier resolves", specialists.Spec{Name: "cheap", Tier: taskclass.TierSmall}, "gemini-3.5-flash-lite"},
 		{"unresolvable tier inherits for pricing", specialists.Spec{Name: "bogus", Tier: "cheap"}, ""},
 	}
 	for _, tc := range tests {

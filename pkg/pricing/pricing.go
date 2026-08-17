@@ -26,19 +26,28 @@
 //  2. .agents/pricing.json    — project-local additions (team-internal
 //     model variants, project-specific routing).
 //  3. ~/.mast/pricing.json — user-global file. Two sections:
-//     `manual` (operator-curated, hand-edited or set via /pricing set)
-//     and `external` (auto-fetched from LiteLLM in PR B; absent in PR A).
+//     `manual` (operator-curated, hand-edited or set via the operator
+//     API's /pricing set) and `external` (auto-fetched from LiteLLM by
+//     Refresh).
 //  4. builtin                 — the compiled-in fallback table; the
-//     zero-config baseline for common Gemini models. Lives in
-//     internal/pricing/builtin.go.
+//     zero-config baseline. Generated from LiteLLM's catalog by
+//     dev/regen-builtin-pricing into ./builtin.go; regenerated weekly
+//     by .github/workflows/pricing-regen.yml.
 //  5. longest-prefix match across the merge of (1)..(4) — handles
 //     `gemini-3.1-pro-preview-customtools`-style suffixes.
-//  6. (Rates{}, false)        — rate unknown; callers (e.g. the TUI's
-//     cost displays) should render "$—" rather than "$0".
+//  6. (Rates{}, false)        — rate unknown; callers (e.g. cost
+//     displays) should render "$—" rather than "$0".
 //
 // The catalog is built once at startup from these sources (see
 // NewCatalog) and consulted on every per-turn cost append; lookups
 // are read-only and lock-free.
+//
+// What the mast binary wires today is layer 4 only:
+// internal/compose builds a catalog from empty Options, so the
+// compiled-in table is the whole answer and the builtin regen is what
+// keeps rates current. Layers 1-3 and Refresh are the embedder's to
+// wire — an unattended daemon fetching from the public internet at
+// startup is a deployment decision, not a default.
 package pricing
 
 import (
@@ -52,6 +61,23 @@ import (
 // `cache_read_input_tokens`); a zero value means the cache-read rate
 // isn't known and callers should bill cached tokens at InputPerMTok.
 //
+// CacheCreationInputPerMTok is the rate for input tokens that WRITE a
+// cache entry — Anthropic's `cache_creation_input_tokens`, billed at a
+// premium over base input rather than a discount. It is a single
+// scalar and therefore holds exactly ONE write rate: the 5-minute-TTL
+// one (1.25x base input), which is also the only one LiteLLM publishes
+// (cache_creation_input_token_cost). Anthropic's 1-hour TTL costs 2x
+// base input, so a caller that starts requesting `ttl: "1h"` at the
+// cache_control site would be undercharged by 37.5% against this
+// field; adding 1h support means adding a second rate here, not
+// reusing this one. Gemini has no equivalent bucket: its explicit
+// caches bill storage per hour, not per written token, so the field
+// stays zero for Gemini rows. A zero value means the cache-write rate
+// isn't known and callers should bill written tokens at InputPerMTok —
+// which UNDERCOUNTS, so keep the builtin table populated
+// (dev/regen-builtin-pricing pulls the rate from LiteLLM's
+// cache_creation_input_token_cost). See go-steer/core-agent#263.
+//
 // UpdatedAt records when the rate was last verified against its
 // source (LiteLLM refresh time, generator run time for builtin
 // entries, operator edit time for manual overrides). Zero when
@@ -61,10 +87,11 @@ import (
 // baked into the "regenerate builtin from LiteLLM" workflow that
 // followed.
 type Rates struct {
-	InputPerMTok       float64
-	CachedInputPerMTok float64
-	OutputPerMTok      float64
-	UpdatedAt          time.Time
+	InputPerMTok              float64
+	CachedInputPerMTok        float64
+	CacheCreationInputPerMTok float64
+	OutputPerMTok             float64
+	UpdatedAt                 time.Time
 }
 
 // IsZero reports whether the rates carry no useful pricing.
@@ -86,21 +113,43 @@ func (r Rates) CostUSD(inputTokens, outputTokens int) float64 {
 // CostUSDWithCache returns the dollar cost with cache-hit tokens billed
 // at CachedInputPerMTok. When CachedInputPerMTok is zero (rate unknown)
 // cached tokens fall back to InputPerMTok — no silent free-riding.
+//
+// Providers that also report cache-WRITE tokens should call
+// CostUSDWithCacheWrites instead; this signature folds them into the
+// uncached bucket, which undercounts (go-steer/core-agent#263).
 func (r Rates) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, outputTokens int) float64 {
+	return r.CostUSDWithCacheWrites(uncachedInputTokens, cachedInputTokens, 0, outputTokens)
+}
+
+// CostUSDWithCacheWrites is CostUSDWithCache plus the cache-write
+// bucket: tokens that created a cache entry this turn, billed at
+// CacheCreationInputPerMTok.
+//
+// The three input buckets are mutually exclusive and must not overlap —
+// pass uncached = total prompt - cache reads - cache writes. Unknown
+// rates fall back to InputPerMTok for both cache buckets rather than to
+// zero, so a missing catalog entry degrades to the old (understated)
+// number instead of billing cached or written tokens as free.
+func (r Rates) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, outputTokens int) float64 {
 	const million = 1_000_000.0
-	cachedRate := r.CachedInputPerMTok
-	if cachedRate == 0 {
-		cachedRate = r.InputPerMTok
+	readRate := r.CachedInputPerMTok
+	if readRate == 0 {
+		readRate = r.InputPerMTok
+	}
+	writeRate := r.CacheCreationInputPerMTok
+	if writeRate == 0 {
+		writeRate = r.InputPerMTok
 	}
 	return (float64(uncachedInputTokens)/million)*r.InputPerMTok +
-		(float64(cachedInputTokens)/million)*cachedRate +
+		(float64(cacheReadTokens)/million)*readRate +
+		(float64(cacheWriteTokens)/million)*writeRate +
 		(float64(outputTokens)/million)*r.OutputPerMTok
 }
 
 // Catalog is the merged view of all pricing sources, queried by
 // model name. Construct with NewCatalog; consult with Lookup.
 //
-// Layers are stored separately so PR B's daily refresh can rewrite
+// Layers are stored separately so the daily LiteLLM refresh can rewrite
 // the external slice without touching the others, and so the
 // precedence chain stays explicit (no "where did this rate come
 // from" mystery).
@@ -204,7 +253,7 @@ func (c *Catalog) layersWithSource() []layerWithSource {
 }
 
 // CountByLayer reports how many model entries each layer holds.
-// Surfaced via /pricing list (PR C) and useful for tests that
+// Surfaced via /pricing list and useful for tests that
 // want to assert the expected number of rows landed in each layer.
 type CountByLayer struct {
 	CfgOverride  int

@@ -96,9 +96,9 @@ same and costs the right thing on either backend:
 
 | tier | Gemini | Anthropic |
 |---|---|---|
-| `small` | `gemini-2.5-flash` | `claude-haiku-4-5` |
-| `mid` | `gemini-3.5-flash` | `claude-sonnet-4-6` |
-| `frontier` | `gemini-3.6-flash` | `claude-opus-4-7` |
+| `small` | `gemini-3.5-flash-lite` | `claude-haiku-4-5` |
+| `mid` | `gemini-3.5-flash` | `claude-sonnet-5` |
+| `frontier` | `gemini-3.7-flash` | `claude-opus-5` |
 
 Both behaviours above carry over unchanged: an unresolvable tier fails
 startup, and the offline fakes collapse tiers back to the fake. Startup

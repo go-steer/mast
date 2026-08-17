@@ -488,9 +488,16 @@ func hasFunctionDeclarations(req *adkmodel.LLMRequest) bool {
 
 // geminiMajorVersion parses the leading major version out of a
 // gemini model id ("gemini-3.6-flash" → 3, "gemini-2.5-pro" → 2).
-// Returns 0 when the id doesn't parse — unknown ids conservatively
-// skip the mix rather than risk a hard 400 on every turn.
+// Path-qualified ids ("models/gemini-3.5-flash", Vertex
+// "publishers/google/models/gemini-…" resource names) resolve via
+// their last path segment. Returns 0 when the id doesn't parse —
+// unknown ids (including version-less aliases like
+// "gemini-flash-latest") conservatively skip the mix rather than
+// risk a hard 400 on every turn.
 func geminiMajorVersion(model string) int {
+	if i := strings.LastIndexByte(model, '/'); i >= 0 {
+		model = model[i+1:]
+	}
 	rest, ok := strings.CutPrefix(strings.ToLower(model), "gemini-")
 	if !ok {
 		return 0

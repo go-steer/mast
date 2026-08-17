@@ -41,7 +41,7 @@ type Options struct {
 // I/O failures and malformed JSON return non-nil.
 //
 // The returned catalog is read-only after construction. Callers
-// that want a refresh (PR B's daily fetch, or after /reload) build
+// that want a refresh (the daily LiteLLM fetch, or after /reload) build
 // a new Catalog and swap atomically via the consumer's chosen
 // pointer-store mechanism.
 func NewCatalog(opts Options) (*Catalog, error) {

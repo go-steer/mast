@@ -658,6 +658,16 @@ func TestGeminiMajorVersion(t *testing.T) {
 		"claude-sonnet-4-6":     0,
 		"":                      0,
 		"gemini-3.6-flash-lite": 3,
+
+		// Path-qualified ids: the direct API's "models/…" form and
+		// Vertex publisher resource names both reach this parse. Before
+		// the last-segment strip they returned 0, which silently
+		// dropped google_search / url_context for the whole session on
+		// a model that supports them.
+		"models/gemini-3.5-flash":                   3,
+		"publishers/google/models/gemini-3.6-flash": 3,
+		"models/gemini-2.5-pro":                     2,
+		"models/claude-sonnet-4-6":                  0,
 	}
 	for model, want := range cases {
 		if got := geminiMajorVersion(model); got != want {

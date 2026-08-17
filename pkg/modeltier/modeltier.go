@@ -30,14 +30,20 @@
 // hints in `/stats`). Add lookups here so the model→tier table
 // stays in one place.
 //
-// Classification is by substring match against the model ID, same
-// approach as pkg/usage/context_window.go's window-size table.
+// Classification is by substring match against the model ID.
 // Unknown models classify as "" — callers should treat the empty
 // string as "skip the tier-specific behavior" rather than guess.
 //
 // Maintenance: when a new model ships, add it to one of the case
 // branches in Classify. Substring patterns let the lookup land
 // regardless of date suffix (`-20251001`, `@20251101`, etc.).
+// This table moves with two others: pkg/pricing's builtin and
+// pkg/taskclass's ModelForTier. The first of those is generated
+// weekly from a RULE, not a hand-kept list, so a model can arrive
+// here without anyone deciding to add it — pkg/pricing's
+// TestBuiltinModelsKnownToCompanionTables fails the build when a
+// newly-priced model has no case here, which is the only thing that
+// makes this file's maintenance visible rather than overdue.
 package modeltier
 
 import "strings"
@@ -94,6 +100,21 @@ func DefaultCompactionThresholds() map[string]float64 {
 func Classify(modelID string) string {
 	m := strings.ToLower(modelID)
 	switch {
+	// Anthropic Claude 5.x. Fable is the Mythos-class tier above
+	// Opus — frontier a fortiori. LiteLLM publishes that tier under
+	// three ids at identical rates (claude-fable-5, claude-mythos-5,
+	// claude-mythos-preview); all three are priced, so all three must
+	// classify or TestBuiltinModelsKnownToCompanionTables fails. No
+	// 5-generation Haiku exists yet; when one ships, add it (unknown
+	// ids conservatively classify "" rather than small, so nothing
+	// misfires meanwhile). Without these cases the whole family
+	// classified "" and Claude 5 sessions ran the universal 0.85
+	// compaction threshold on a 1M window instead of their tier's.
+	case containsAny(m, "claude-fable-5", "claude-mythos", "claude-opus-5"):
+		return TierFrontier
+	case containsAny(m, "claude-sonnet-5"):
+		return TierMid
+
 	// Anthropic Claude 4.x.
 	case containsAny(m, "claude-opus-4"):
 		return TierFrontier
@@ -109,12 +130,30 @@ func Classify(modelID string) string {
 	case containsAny(m, "claude-3-5-haiku", "claude-3-haiku"):
 		return TierSmall
 
-	// Google Gemini 3.x. gemini-3.6-flash is the top of the
-	// flash-first agentic line and taskclass's gemini frontier
-	// default (the two tables move together; see ModelForTier).
-	case containsAny(m, "gemini-3.6-flash"):
+	// Google Gemini flash-lite line — the budget/speed tier by
+	// Google's own naming, every generation. MUST precede the base
+	// flash cases: "gemini-3.5-flash-lite" substring-contains
+	// "gemini-3.5-flash", and letting it fall through would classify
+	// a lite model at its base model's tier (mid for the 3.5 line,
+	// frontier for a future 3.6 lite) — hiding it from the
+	// small-tier-parent guard. One generic case instead of
+	// per-generation entries so the next lite release can't
+	// reintroduce the hole.
+	case containsAny(m, "flash-lite"):
+		return TierSmall
+
+	// Google Gemini 3.x. gemini-3.7-flash is taskclass's gemini
+	// frontier default as of 2026-08-17 (the two tables move
+	// together; see ModelForTier), and 3.6-flash stays classified
+	// behind it — a demoted default is still a model operators have
+	// pinned in bundles, and dropping the case would fall it through
+	// to "" (unclassified: the small-tier-parent guard can't reason
+	// about it, and the compaction threshold reverts to the universal
+	// 0.85). Classify must know a model BEFORE ModelForTier picks it,
+	// so a successor lands here first and gets promoted separately.
+	case containsAny(m, "gemini-3.7-flash", "gemini-3.6-flash"):
 		return TierFrontier
-	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro", "gemini-3.5-pro"):
+	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro"):
 		return TierFrontier
 	// gemini-3.5-flash was Google's headline agentic release at I/O
 	// 2026 (May 20, 2026). Beats gemini-3.1-pro on agent + coding

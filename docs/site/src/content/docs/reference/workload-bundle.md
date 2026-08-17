@@ -304,9 +304,9 @@ backend:
 
 | tier | Gemini | Anthropic |
 |---|---|---|
-| `small` | `gemini-2.5-flash` | `claude-haiku-4-5` |
-| `mid` | `gemini-3.5-flash` | `claude-sonnet-4-6` |
-| `frontier` | `gemini-3.6-flash` | `claude-opus-4-7` |
+| `small` | `gemini-3.5-flash-lite` | `claude-haiku-4-5` |
+| `mid` | `gemini-3.5-flash` | `claude-sonnet-5` |
+| `frontier` | `gemini-3.7-flash` | `claude-opus-5` |
 
 Which provider a tier resolves against is the one mast dispatches on: the
 `--provider` alias when you passed it, otherwise the root model id's own

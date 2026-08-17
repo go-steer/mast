@@ -61,6 +61,26 @@ branch-based attribution silently attributes everything to the root and
 per-specialist ceilings never trip. Author-based attribution works across
 every dispatch shape.
 
+## Where the dollar figure comes from
+
+Tokens are counted from what the provider reports; the price per token
+comes from a built-in rate table generated from
+[LiteLLM's catalog](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+and refreshed weekly by an automated pull request, so a `max_cost_usd`
+does not slowly become a different number of dollars as vendors move
+their prices. Prompt-caching is priced with the three buckets Anthropic
+bills separately — uncached input, cache reads at a tenth of it, and
+cache *writes* at 1.25x — rather than charging every cached token the
+read rate, which under-reports a cache-heavy turn.
+
+Rates are overridable, which is what you want for negotiated enterprise
+pricing or a model mast has never heard of: an operator can drop a
+`pricing.json` next to the workload in `.agents/`, and a library embedder
+can pass rows directly (`pricing.Options.CfgOverride`, highest
+precedence). A model with no row anywhere is metered at a flat fallback
+rate and counted as unpriced rather than billed at zero — a ceiling still
+trips on it, just less precisely.
+
 ## Two limits worth knowing
 
 **1. A ceiling is crossed *by* the call that reports it.** Cost and token

@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/go-steer/mast/pkg/taskclass"
 )
 
 // TestLookup_BuiltinOnly verifies the zero-config path: empty Options
@@ -178,7 +180,7 @@ func TestNewCatalog_MissingFilesAreOK(t *testing.T) {
 }
 
 // TestSaveAndReloadUserFile verifies the atomic write round-trips,
-// preserving manual + external sections. Critical for PR B's
+// preserving manual + external sections. Critical for Refresh's
 // refresh-without-clobbering-manual semantics.
 func TestSaveAndReloadUserFile(t *testing.T) {
 	t.Parallel()
@@ -287,6 +289,41 @@ func TestBuiltin_GeminiHasCachedRate(t *testing.T) {
 		if r.CachedInputPerMTok >= r.InputPerMTok {
 			t.Errorf("builtin %q cached rate (%v) >= input rate (%v) — should be a discount",
 				name, r.CachedInputPerMTok, r.InputPerMTok)
+		}
+	}
+}
+
+// TestBuiltin_CoversTaskclassTierDefaults pins that EVERY model
+// taskclass hands out — all providers, all tiers — stays priced in
+// the compiled-in builtin across regenerations. builtin is the
+// air-gapped / refresh-failed pricing floor (the LiteLLM startup
+// refresh covers networked daemons); an unpriced default accrues
+// $0 cost, so the workload's cost ceilings never trip exactly where
+// daemons run unattended. The regen tool's filter drops
+// non-allowlisted entries silently, so without this pin a curation
+// slip ships silently ("$—" across all cost UI) and every test stays
+// green.
+//
+// Reached through taskclass.Providers() rather than a literal list so
+// adding a provider to ModelForTier can't quietly escape coverage.
+func TestBuiltin_CoversTaskclassTierDefaults(t *testing.T) {
+	t.Parallel()
+	tiers := []string{taskclass.TierFrontier, taskclass.TierMid, taskclass.TierSmall}
+	for _, provider := range taskclass.Providers() {
+		for _, tier := range tiers {
+			model := taskclass.ModelForTier(provider, tier)
+			if model == "" {
+				t.Errorf("ModelForTier(%q, %q) = \"\" — provider missing from the tier table?", provider, tier)
+				continue
+			}
+			r, ok := builtin[model]
+			if !ok {
+				t.Errorf("builtin table is missing %q (the %s/%s tier default) — check the dev/regen-builtin-pricing allowlist", model, provider, tier)
+				continue
+			}
+			if r.InputPerMTok <= 0 || r.OutputPerMTok <= 0 {
+				t.Errorf("builtin %q rates = %+v, want positive input/output", model, r)
+			}
 		}
 	}
 }
