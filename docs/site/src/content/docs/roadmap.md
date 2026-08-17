@@ -346,6 +346,23 @@ eval row.*
   end to end against a disposable cluster. Deliberately not a presubmit and
   deliberately never pointed at a cluster anyone cares about: fault injection
   must never touch a real one.
+- **A runaway backstop that is armed by default, and talks to the model** —
+  the behavioral watchdog gained a detector for the loop that alternates
+  between two tools (no call is ever followed by itself, so the
+  repeated-call detector was structurally blind to it) and one for three
+  failing tool calls in a row with none succeeding between — the state where
+  a workload writes a confident summary of a system nothing it ran could
+  reach. Two postures above `warn`: `feedback` prepends the observation to
+  the model's next turn as an automated note about its own last turn, and
+  `enforce` cancels the turn on a Critical alert and refuses every later one
+  — auto-resume and scheduled fires included — until an operator resets it,
+  across a restart. Declared per workload as `safety.watchdog`, overridable
+  for one run with `--watchdog`. **The default moved from `warn` to
+  `feedback`**: on an unattended deployment a logged alert is off with extra
+  steps, and `enforce` is not the default here because a false halt is an
+  outage that waits for morning while a false paragraph costs one paragraph.
+  See [`--watchdog`](/reference/cli/) and
+  [`safety.watchdog`](/reference/workload-bundle/).
 
 ## Next: v0.5 — unattended monitoring, end to end
 
