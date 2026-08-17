@@ -164,6 +164,34 @@ by what that surface holds: `enforce` abandons the runaway turn, but there
 is no cross-call session state for the "refuse every later turn" half, and
 no next turn for `feedback` to inject into.
 
+#### A halt outlives the process that observed it
+
+An `enforce` halt is written to the session database, and a daemon that
+restarts adopts it on the halted session's next turn — before any model
+call, whichever surface drives that turn. A halt a restart cleared would
+not be a halt: mast's restarts are automatic and unattended, so the loop →
+halt → crash → restart cycle `enforce` exists to break would simply
+resume, each restart handing the loop a clean backstop. The reset is
+durable in the same place, so clearing a halt clears it for good, and the
+row records who cleared it and what runway they added.
+
+Two things to know about it:
+
+- **It needs `--attach-listen`** (which already requires `--session-db`).
+  The reset endpoint is attach-only, so persisting a halt on a daemon with
+  no attach surface would leave an operator no way to clear it. Starting
+  with `--watchdog=enforce` and no attach listener logs a warning saying
+  exactly that.
+- **The posture still wins over the history.** A deployment dialed back
+  from `enforce` does not inherit a halt it would no longer produce.
+
+Restore fails open: an unreadable guardrail table logs a warning and the
+turn runs. A storage fault must not halt every session in the deployment
+with no trip behind it, and the per-turn backstops are all still armed.
+
+Budget *spend* does not survive a restart yet — see
+[getting unstuck after a trip](/concepts/budgets/#getting-unstuck-after-a-trip).
+
 `POST /sessions/{id}/guardrails/reset` is the way out: a budget trip is
 otherwise permanent, since enforcement is re-derived from usage against the
 ceiling on every priced event. See

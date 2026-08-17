@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@317e18e4f75e6760b2240bbb0036e1cba4908dbf
+// Originally derived from go-steer/core-agent@6510a65b54ead93b5f2c8c31f478443376203360
 
 // Argument canonicalization for the loop detectors (#649).
 //

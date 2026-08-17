@@ -531,6 +531,30 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	logger.Info("watchdog posture resolved", "mode", string(wdRes.Mode), "source", wdRes.Source)
 	wds := newWatchdogPool(wdRes.Mode)
 
+	// A halt that a restart clears is not a halt, and mast's restarts
+	// are automatic. Persist trips and resets to a table mast owns on
+	// the connection the eventlog overlay already holds — the same
+	// connection pkg/attach's session ACL store shares.
+	//
+	// Only with an attach listener, and that is a correctness condition
+	// rather than a convenience: POST /guardrails/reset is attach-only,
+	// so persisting a halt on a daemon with no attach surface would
+	// leave an operator no way to clear it short of deleting a row.
+	// --attach-listen already requires --session-db, so the store exists
+	// exactly when the reset that clears it does.
+	if elHandle != nil {
+		gstore, err := eventlog.NewGuardrailStore(turnCtx, elHandle.DB)
+		if err != nil {
+			logger.Error("failed to open the durable guardrail store", "error", err.Error())
+			return err
+		}
+		wds.durable(gstore, logger)
+	} else if wdRes.Mode.Enforces() {
+		// Said once, at startup, rather than discovered after a restart
+		// silently disarmed the backstop.
+		logger.Warn("watchdog is in enforce mode without --attach-listen: a halt will not survive a restart, and there is no reset endpoint to clear one")
+	}
+
 	// Fixed metric registry (pkg/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,
 	// so the workload label is resolved once. Built before the tracker
@@ -1552,6 +1576,20 @@ type watchdogPool struct {
 	// fb holds the per-session queue of observations awaiting delivery
 	// to the model, from --watchdog=feedback up.
 	fb map[string]*watchdog.Feedback
+
+	// store persists trips and resets so a halt survives the process
+	// that observed it. Nil when the daemon has no durable session
+	// store, in which case every method below degrades to the
+	// in-memory behavior — a *eventlog.GuardrailStore is nil-safe.
+	store *eventlog.GuardrailStore
+	app   string
+	user  string
+	// restored latches per session once the durable state has been
+	// folded in, so the fold is one read per session per process rather
+	// than one per turn. Set on success only: a read that failed must be
+	// retried on the next turn, not remembered as "restored to nothing".
+	restored map[string]bool
+	logger   *slog.Logger
 }
 
 // watchdogAlerts is the operator-visible residue of a session's
@@ -1567,11 +1605,105 @@ func newWatchdogPool(mode watchdog.Mode) *watchdogPool {
 		mode = watchdog.ModeWarn
 	}
 	return &watchdogPool{
-		mode:  mode,
-		byID:  map[string]*watchdog.DefaultWatchdog{},
-		fired: map[string]watchdogAlerts{},
-		enf:   map[string]*watchdog.Enforcer{},
-		fb:    map[string]*watchdog.Feedback{},
+		mode:     mode,
+		byID:     map[string]*watchdog.DefaultWatchdog{},
+		fired:    map[string]watchdogAlerts{},
+		enf:      map[string]*watchdog.Enforcer{},
+		fb:       map[string]*watchdog.Feedback{},
+		restored: map[string]bool{},
+	}
+}
+
+// durable gives the pool somewhere to write its trips, so a halt
+// outlives the process that observed it.
+//
+// Wired only when the daemon has an attach listener, which is the only
+// surface with a reset endpoint. A persisted halt with no way to clear
+// it is not a backstop, it is a brick: the operator's recourse would be
+// deleting a database row. --attach-listen already requires
+// --session-db, so the store exists exactly when the reset does.
+// The (app, user) the rows are keyed on are the daemon's own constants,
+// the same pair the attach wiring and the transcript store use: a
+// single-workload process has exactly one of each, and threading them
+// through as parameters would suggest a choice that does not exist.
+func (wp *watchdogPool) durable(store *eventlog.GuardrailStore, logger *slog.Logger) {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	wp.store, wp.app, wp.user, wp.logger = store, appName, defaultUserID, logger
+}
+
+// restore folds the session's persisted guardrail state into this
+// process's enforcer, once per session.
+//
+// Called at the top of every turn rather than when the session is
+// minted, because a session's first appearance in a fresh daemon is a
+// turn: auto-resume, a scheduled fire, and an attach inject all reach
+// runTurnPre, and each of them is a way for a halted session to start
+// running again after a restart.
+//
+// Fails open, loudly. A guardrail that cannot be read is a reason to
+// log and continue, not a reason to refuse work: a corrupt or
+// locked-out row would otherwise halt every session in the deployment
+// with no trip behind it, converting a storage fault into an outage.
+// The turn-level backstops — the budget ceiling, the tool-failure
+// streak — are all still armed, and the halt re-trips the moment the
+// loop that caused it recurs.
+func (wp *watchdogPool) restore(ctx context.Context, sessionID string) {
+	wp.mu.Lock()
+	store, app, user, done, logger := wp.store, wp.app, wp.user, wp.restored[sessionID], wp.logger
+	wp.mu.Unlock()
+	if store == nil || done {
+		return
+	}
+	st, err := store.Fold(ctx, app, user, sessionID)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("could not read persisted guardrail state; continuing without it",
+				"session", sessionID, "error", err.Error())
+		}
+		return
+	}
+	wp.mu.Lock()
+	wp.restored[sessionID] = true
+	wp.mu.Unlock()
+	if !st.WatchdogTripped {
+		return
+	}
+	// Adopt is the one that decides: it refuses unless the current mode
+	// enforces, so a deployment dialed back to feedback does not inherit
+	// a halt it would no longer produce.
+	if !wp.enforcer(sessionID).Adopt(st.WatchdogSignal, st.WatchdogReason) {
+		return
+	}
+	if logger != nil {
+		logger.Warn("restored a watchdog halt recorded before this process started",
+			"session", sessionID, "signal", st.WatchdogSignal, "tripped_at", st.TrippedAt.Format(time.RFC3339))
+	}
+}
+
+// recordTrip persists a halt. Best-effort and background-context: the
+// turn's own context is being cancelled by this very halt, and a row
+// written because a backstop fired must not be lost to the cancellation
+// the backstop caused.
+func (wp *watchdogPool) recordTrip(sessionID string, a watchdog.Alert, reason string) {
+	wp.mu.Lock()
+	store, app, user, logger := wp.store, wp.app, wp.user, wp.logger
+	wp.mu.Unlock()
+	if store == nil {
+		return
+	}
+	err := store.Append(context.Background(), app, user, sessionID, eventlog.GuardrailRecord{
+		Kind:      eventlog.GuardrailKindTrip,
+		Guardrail: eventlog.GuardrailWatchdog,
+		Signal:    a.Signal,
+		Reason:    reason,
+	})
+	if err != nil && logger != nil {
+		// The session is halted either way — the in-memory enforcer
+		// already latched. What is lost is only the halt's survival of a
+		// restart, which is worth saying out loud.
+		logger.Error("watchdog halt is not durable: could not persist the trip",
+			"session", sessionID, "signal", a.Signal, "error", err.Error())
 	}
 }
 
@@ -1669,6 +1801,47 @@ func (wp *watchdogPool) reset(sessionID string) {
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
 	delete(wp.fired, sessionID)
+}
+
+// recordReset persists an operator's reset, which both clears the
+// durable halt and serves as the audit record for the intervention.
+//
+// One row, not two. A separate "the operator did this" row alongside a
+// "the halt is cleared" row would be two things to keep in agreement,
+// and the interesting audit question — who cleared it, when, and what
+// runway did they hand over — is answered by the row that does the
+// clearing.
+//
+// The grants are recorded but not replayed on restore: mast's meters
+// start each process at zero spend, so a restored ceiling raise would
+// be arithmetic on top of an accumulator that has forgotten what it
+// spent. Recording them keeps the audit honest while the accumulator
+// half stays an acknowledged gap (docs/sibling-sync.md).
+func (wp *watchdogPool) recordReset(sessionID, guardrail, caller string, resp attach.GuardrailResetResponse) {
+	wp.mu.Lock()
+	store, app, user, logger := wp.store, wp.app, wp.user, wp.logger
+	wp.mu.Unlock()
+	if store == nil {
+		return
+	}
+	err := store.Append(context.Background(), app, user, sessionID, eventlog.GuardrailRecord{
+		Kind:           eventlog.GuardrailKindReset,
+		Guardrail:      guardrail,
+		Caller:         caller,
+		Reason:         resp.Message,
+		BudgetAddedUSD: resp.BudgetAddedUSD,
+		TokensAdded:    resp.TokensAdded,
+		TurnsAdded:     resp.TurnsAdded,
+	})
+	if err != nil && logger != nil {
+		// Worth an error, not a failed request: the operator's reset
+		// took effect in this process. What did not happen is the
+		// durable clear, so a restart would restore a halt they already
+		// cleared — and they need to know that before the restart, not
+		// after it.
+		logger.Error("guardrail reset is not durable: could not persist it",
+			"session", sessionID, "guardrail", guardrail, "error", err.Error())
+	}
 }
 
 // prependFeedback drains the session's pending watchdog observations
@@ -1927,6 +2100,14 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		}
 	}
 
+	// Adopt a halt a previous process recorded, before the preflight
+	// that has to honor it. A daemon that crashed mid-loop restarts with
+	// an empty watchdogPool, and the restart is automatic: without this
+	// the loop → halt → crash → restart cycle enforce mode exists to
+	// break just resumes, each restart handing the loop a clean
+	// backstop. One fold per session per process; fails open.
+	wds.restore(ctx, sessionID)
+
 	// Watchdog halt (--watchdog=enforce): refuse before any model
 	// call. The refusal has to be structural — auto-resume, a
 	// scheduled fire, and an attach inject all land here, and each of
@@ -1998,6 +2179,10 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 			logger.Error("WATCHDOG HALT — cancelling the turn",
 				"turn", label, "session", sessionID,
 				"signal", a.Signal, "reason", reason)
+			// Persist before cancelling. The halt has to outlive this
+			// process, and the crash it is most needed for is the one
+			// that follows the loop it just stopped.
+			wds.recordTrip(sessionID, a, reason)
 			cancel()
 		}
 	}

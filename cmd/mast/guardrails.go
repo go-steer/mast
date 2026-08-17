@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -49,6 +50,16 @@ type guardrailView struct {
 // where a pre-emptive grant has to land, so the read and the reset
 // must be looking at the same object the next turn will meter against.
 func (g *guardrailView) info(sid string) attach.GuardrailInfo {
+	// A halt recorded before this process started is still a halt, and
+	// an operator polling a freshly restarted daemon must not be told
+	// the session is healthy right up until the next turn refuses. The
+	// fold latches per session, so this is one read, not one per poll.
+	//
+	// Background context because attach.GuardrailProvider takes none —
+	// changing that public signature to thread one through is a bigger
+	// change than this read is worth.
+	g.wds.restore(context.Background(), sid)
+
 	m := g.meters.meter(sid)
 	tokens, cost, calls := m.Snapshot()
 	lim := m.SessionLimits()
@@ -136,6 +147,12 @@ func (g *guardrailView) scopes(m *budget.Meter, trips []budget.Trip) []attach.Sc
 // the watchdog first and then 409-ing on the budget would report "no
 // change" while having made one.
 func (g *guardrailView) reset(sid string, req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
+	// Before the retrip check reads any state: a reset issued against a
+	// restarted daemon has to see the halt it is clearing, or it reports
+	// "nothing was tripped" and leaves the durable trip in place for the
+	// next turn to restore.
+	g.wds.restore(context.Background(), sid)
+
 	target := req.Guardrail
 	if target == "" {
 		target = attach.GuardrailAll
@@ -210,12 +227,16 @@ func (g *guardrailView) reset(sid string, req attach.GuardrailResetRequest) (att
 	resp.Guardrails = g.info(sid)
 	resp.Message = resetMessage(resp, req.Scope)
 
-	// The audit trail is this log line, not an eventlog row. An
-	// out-of-band append while a turn holds the session handle stales
-	// that handle and trips ADK's optimistic-concurrency check — the
+	// The audit trail is this log line and a row in mast's own
+	// agent_guardrail_log — deliberately not an ADK session event. An
+	// out-of-band append to the session stales the handle a running turn
+	// holds and trips ADK's optimistic-concurrency check, the
 	// write-lease constraint that already forced attachadapter to defer
-	// its interrupt audit to between turns. A reset arrives from an
-	// operator mid-incident, which is exactly when a turn is running.
+	// its interrupt audit to between turns; a reset arrives from an
+	// operator mid-incident, which is exactly when a turn is running. A
+	// table mast owns has no such contention, so the row can be written
+	// inline, here, where the decision is made.
+	g.wds.recordReset(sid, target, req.Caller, resp)
 	g.logger.Warn("guardrail reset",
 		"session", sid,
 		"caller", req.Caller,

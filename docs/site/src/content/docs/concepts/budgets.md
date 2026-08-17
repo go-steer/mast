@@ -144,7 +144,21 @@ Raising a specialist above the workload's cap still buys nothing — the
 workload ceiling is enforced independently, and it is still the outer
 bound.
 
-Every reset is logged with the authenticated caller that requested it.
+Every reset is logged with the authenticated caller that requested it, and
+recorded durably alongside the guardrail state when the daemon runs with
+`--attach-listen` — so "who cleared this, when, and what did they hand
+over" survives the log rotation and the process.
+
+:::caution[Spend does not survive a restart]
+The accumulator is in-memory. A daemon that restarts starts every session
+at zero spend, so a budget ceiling crossed before the restart is not
+crossed after it, and the session resumes with its full cap available
+again. A watchdog `enforce` halt *is* durable
+([how](/concepts/interop/#a-halt-outlives-the-process-that-observed-it));
+the budget half is a known gap. Until it closes, treat the ceiling as a
+per-process bound and alert on `mast_budget_trips_total` rather than
+relying on the cap to hold across a crash loop.
+:::
 
 ## Watching it
 

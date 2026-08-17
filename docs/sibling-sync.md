@@ -163,7 +163,7 @@ The port ships as five PRs rather than one, because each changes what an operato
 | B | `635a9eb`, `6510a65` | **ported 2026-08-17.** Enforce mode + in-turn halt — flips the loop detectors to Critical. |
 | C | `e42a511` | **ported 2026-08-17.** Alert→model routing (`Alert.Guidance`, feedback mode). The reclassification lands with this one. |
 | D | `5682659` | **ported 2026-08-17, half of it.** The `safety.watchdog` bundle field, three-source precedence (`--watchdog` > bundle > default), a default posture, and a startup line naming which source won. Two divergences, below. The commit's other half — a `$10` session cost ceiling armed by default — is declined; see "Deliberately not ported". |
-| E | `4ac0337` | trip state that survives a restart. |
+| E | `4ac0337` | **ported 2026-08-17, by a different route.** An `enforce` halt and its reset are written to a mast-owned table and folded forward, so a restart adopts the halt instead of clearing it. Stores the trip only; see the budget gap below. |
 
 Two adaptations run through all five. Severity stays **Warn** for `tool-failure-streak` — under
 an enforce posture a Critical alert would halt a daemon three denials into a legitimate RBAC
@@ -196,9 +196,44 @@ cross-call session state for the "refuse every later turn" half and no next turn
 to inject into. This is mast's analog of the `ReproduceAgent` gap upstream closed in the same
 commit: a real agent path that the posture plumbing had simply never been wired into.
 
-`pkg/watchdog/watchdog.go` and `bridge.go` keep their `b8dd225` trailers until PR E; a partial
-port does not bump a baseline, and bumping mid-cluster would hide the commits still outstanding
-from the drift detector.
+**PR E takes a different route to the same guarantee.** Upstream writes both the trip and the
+reset as rows in the ADK session's own event stream, folding the session's events forward on
+restore. mast cannot: an out-of-band `Get`-then-`AppendEvent` while the runner holds the session
+bumps `last_update_time` and trips ADK's optimistic-concurrency check — the write-lease
+constraint that already forced attachadapter to defer its interrupt audit to between turns, and
+the reason `cmd/mast/guardrails.go` had settled for a log line as its only reset audit. A reset
+arrives from an operator mid-incident, which is exactly when a turn is running. Upstream solves
+it with a pending queue drained from inside the agent's write lease; mast has no `Agent` to hang
+that lease on, so it writes to `agent_guardrail_log`, a table it owns, on the connection
+`pkg/eventlog` already holds for its overlay — the same connection `pkg/attach`'s
+`SessionACLStore` shares. Different table, no session row touched: nothing to race, no queue to
+drain, and the row can be written inline where the decision is made. It also closes a gap mast's
+own comment had flagged — the reset audit is now a durable row naming the caller, not just a log
+line.
+
+Three constraints the mast version adds. It is wired **only under `--attach-listen`**, because
+`POST /guardrails/reset` is attach-only and a persisted halt with no reachable reset is a brick
+rather than a backstop (`--attach-listen` already requires `--session-db`, so the store exists
+exactly when the reset does); enforce mode without an attach listener now warns about that at
+startup. **Configuration still wins over history** — `Enforcer.Adopt` refuses unless the current
+mode enforces, so a deployment dialed back to `feedback` does not inherit a halt only `enforce`
+could have produced, which would otherwise make the posture change unreachable. And restore
+**fails open, loudly**: an unreadable table logs and continues, because a storage fault must not
+halt every session in the deployment with no trip behind it.
+
+With PR E the cluster is closed, so `pkg/watchdog` moves to a single `6510a65` baseline —
+every file, not just `watchdog.go` and `bridge.go`. The earlier note here named only those two;
+that was under-specified. The detector maps upstream `pkg/agent/watchdog*.go` commits onto the
+package, so the package reports zero only when no file trails the newest of them, and a mixed
+set of baselines inside a package whose port is a re-implementation rather than a file-for-file
+copy says less than one baseline does. The seven commits it was reporting are exactly the seven
+PRs A–E ported; `6510a65` is the newest of them that touches `pkg/agent/watchdog.go`. That drops
+the report from 40 commits / 49 files to **36 / 44**.
+
+`cmd/mast` still reports `e42a511` afterwards, and that one is a mapping artifact rather than a
+gap: PR C landed the routing in `main.go` and `oneshot.go`, which are mast-native and carry no
+trailer, while the only trailered file in the package (`safety.go`) is derived from `5682659`
+and should not claim a commit it did not come from.
 
 ### Deliberately not ported
 
@@ -225,6 +260,24 @@ from the drift detector.
   `pkg/mcp/catalog.go` and its teardown is mast-native; whether an orphaned child can survive a
   `mast` exit is **unverified**. Marked watch rather than n/a for that reason — it is a claim
   nobody has tested, not a decision anybody made.
+
+### Found while porting, not fixed here
+
+- **Budget spend does not survive a restart.** `newMeterPool` mints every session's
+  `budget.Meter` at zero, so a daemon restart hands each session its full ceiling back: a
+  workload stopped by `max_cost_usd: 5.00` after $5.02 resumes with $5.00 available, and a crash
+  loop can spend the cap once per restart indefinitely. PR E makes the *watchdog* halt durable and
+  deliberately stops there. The two halves are not the same size. A trip is one latched bit that
+  can be written when it happens and read once per process; spend is an accumulator that has to
+  be reconstructed to the cent, which means either folding the session's priced events back
+  through a fresh meter on first touch — correct, but it re-prices a whole transcript per session
+  and inherits every model-attribution and unpriced-event edge case — or persisting the
+  accumulator itself and reconciling it against a transcript that may have advanced past it.
+  Either is its own PR with its own correctness argument, and bolting it onto a trip-latch port
+  would bury it. Recorded as a gap so nobody reads "guardrails are durable" as covering both.
+  PR E does persist the *grants* an operator hands over on a reset, for the audit trail, but does
+  not replay them: raising a ceiling over an accumulator that has forgotten what it spent is
+  arithmetic on a number that no longer means anything.
 
 ---
 
@@ -432,15 +485,15 @@ moved to `e7a21da` — the per-file trailer is what the detector reads, so a pac
 several baselines at once and the aggregate row says so. `pkg/providers/vertexcache` drops to
 zero: the package is fully current with upstream as of `c319565`.
 
-The watchdog cluster does not move the count yet, on purpose. PRs A through C port `317e18e`,
-`ef7dfb6`, `635a9eb`, `6510a65`, and `e42a511` into new files that carry those SHAs as their own
-baselines, but `pkg/watchdog/watchdog.go` and `bridge.go` — the files the detector maps those
-commits onto — stay at `b8dd225` until PR E. A partial port does not bump a baseline; bumping
-mid-cluster would silence the commits still outstanding, which is precisely the lie the trailer
-scheme exists to prevent. `pkg/watchdog` goes to zero when the cluster closes, in one bump to
-`6510a65`.
+The watchdog cluster did not move the count until it closed, on purpose. PRs A through D ported
+`317e18e`, `ef7dfb6`, `635a9eb`, `6510a65`, `e42a511`, and `5682659` into new files carrying those
+SHAs as their own baselines, while every file the detector maps those commits onto stayed at its
+pre-cluster trailer. A partial port does not bump a baseline; bumping mid-cluster would have
+silenced the commits still outstanding, which is precisely the lie the trailer scheme exists to
+prevent. **PR E closed it**, and `pkg/watchdog` went to zero in one bump to `6510a65` — taking the
+report from 40 commits / 49 files to **36 / 44**.
 
-40 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
+36 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next
 Monday. **Read the count as a delta, not a level.**
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@635a9eb75bc9b8c3cc6463e794893e887cfd1e0f:pkg/agent/watchdog.go
+// Originally derived from go-steer/core-agent@6510a65b54ead93b5f2c8c31f478443376203360:pkg/agent/watchdog.go
 
 // Enforce mode: the posture that acts on a Critical alert.
 //
@@ -46,9 +46,10 @@ import (
 type Mode string
 
 const (
-	// ModeWarn logs the alert and lets the turn run. mast's default,
-	// because a false positive that stops an unattended incident
-	// responder mid-triage is worse than one that annotates it.
+	// ModeWarn logs the alert and lets the turn run. The bottom rung, and
+	// what an empty value parses to — but not what a host picks when
+	// nobody chose; see DefaultMode for why those are different
+	// questions.
 	ModeWarn Mode = "warn"
 
 	// ModeFeedback warns, and additionally routes each alert's Guidance
@@ -191,6 +192,52 @@ func (e *Enforcer) Observe(a Alert) bool {
 	e.signal = a.Signal
 	e.reason = strings.TrimSpace(fmt.Sprintf(
 		"watchdog halted this session (%s): %s %s", a.Signal, a.Reason, e.remedy))
+	return true
+}
+
+// Adopt restores a halt this Enforcer did not observe — the trip a
+// previous process recorded before it died — and reports whether it
+// took effect.
+//
+// Signal and reason are carried over verbatim rather than
+// reconstructed, so a restored halt says what the original said. An
+// operator reading "watchdog halted this session (tool_failure_streak)"
+// after a pod roll is reading the sentence the halt was written with,
+// not a paraphrase of it.
+//
+// Two refusals, both deliberate:
+//
+// Adopt is a no-op unless the current mode enforces. The persisted trip
+// is history; the mode is configuration, and configuration still wins.
+// A deployment that has since been dialed back to feedback — or that
+// restarted with a different bundle — must not inherit a halt it would
+// no longer produce, or a posture change becomes unreachable: the
+// process refuses turns because of a trip only enforce mode could have
+// made, and only a turn could clear.
+//
+// Adopt is also a no-op on an already-tripped Enforcer, so a restore
+// racing a live halt cannot overwrite the fresher reason with the
+// stored one.
+func (e *Enforcer) Adopt(signal, reason string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.mode.Enforces() || e.tripped {
+		return false
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		// A halt with no sentence is worse than no halt: the operator
+		// gets a refusal that cannot explain itself. Synthesize the
+		// least-bad one rather than latch silence.
+		reason = strings.TrimSpace(fmt.Sprintf(
+			"watchdog halted this session (%s) before a restart. %s", signal, e.remedy))
+	}
+	e.tripped = true
+	e.signal = signal
+	e.reason = reason
 	return true
 }
 

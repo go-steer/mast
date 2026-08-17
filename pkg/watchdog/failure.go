@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@ef7dfb652b080a95f8595eeb2307bf93155d730a
+// Originally derived from go-steer/core-agent@6510a65b54ead93b5f2c8c31f478443376203360
 
 // Tool-outcome observation and the tool-failure-streak signal (#639).
 //
