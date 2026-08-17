@@ -16,6 +16,28 @@ and the decision→eval feedback loop — are all flipped. The remaining eight
 are v0.5's, and seven of those are halves of surfaces k8s-lookout and
 switchboard have not landed yet: the parity claim is v0.5's, not this one's.
 
+- **Claude could not see the arguments of any tool mast defines.** Every
+  mast-authored tool — the planner's dispatch tools, `pause_session`,
+  and every MCP tool — reached the Anthropic wire as
+  `{"type":"object","properties":{}}`: a name, a description, and no
+  parameters. The model had to infer argument names from prose.
+
+  ADK v2's `functiontool.New` derives a declaration into
+  `ParametersJsonSchema` and leaves the typed `Parameters` field nil;
+  `toolsParam` handled only `Parameters` and sent the canonical
+  "no arguments" shape for everything else. The declarations ADK builds
+  internally — `finish_task` among them — *do* use `Parameters`, which
+  is why this survived a green nightly and a live GKE run: the failure
+  is silent degradation on mast's own tools, not an error anybody sees.
+  Gemini is unaffected; it takes the genai declaration natively.
+
+  Found by triaging the first drift report (below) against
+  `core-agent@ee3d6ec`; upstream fixed the same gap in their #754. The
+  regression test builds its declaration with `functiontool.New` rather
+  than by hand — a hand-built `genai.Schema` fixture exercises the
+  branch that always worked, which is how this survived the existing
+  tool tests.
+
 - **How far behind core-agent each ported package has fallen is now a
   number, reported weekly.** 182 files in this repo carry an
   `// Originally derived from go-steer/core-agent@<sha>` trailer, frozen
