@@ -27,6 +27,13 @@ func TestClassify(t *testing.T) {
 		model string
 		want  string
 	}{
+		// Anthropic Claude 5.x.
+		{"claude-fable-5", modeltier.TierFrontier},
+		{"claude-opus-5", modeltier.TierFrontier},
+		{"claude-sonnet-5", modeltier.TierMid},
+		{"claude-sonnet-5-1m", modeltier.TierMid},
+		{"claude-haiku-5", ""}, // no 5-gen Haiku shipped; unknown until it does
+
 		// Anthropic Claude 4.x.
 		{"claude-opus-4-7", modeltier.TierFrontier},
 		{"claude-opus-4-8", modeltier.TierFrontier},
@@ -46,12 +53,22 @@ func TestClassify(t *testing.T) {
 		// 3.x flashes remain small-tier — no evidence they're
 		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
-		{"gemini-3.6-flash", modeltier.TierFrontier},
-		{"gemini-3.5-pro", modeltier.TierFrontier},
+		{"gemini-3.7-flash", modeltier.TierFrontier},         // taskclass frontier default
+		{"gemini-3.7-flash-08-2026", modeltier.TierFrontier}, // dated snapshot
+		{"gemini-3.6-flash", modeltier.TierFrontier},         // previous frontier default
+		{"gemini-3-pro-preview", modeltier.TierFrontier},
 		{"gemini-3.5-flash", modeltier.TierMid},
 		{"gemini-3.5-flash-05-2026", modeltier.TierMid}, // dated snapshot
 		{"gemini-3.1-flash", modeltier.TierSmall},
 		{"gemini-3-flash", modeltier.TierSmall},
+
+		// flash-lite is the budget line at every generation, including
+		// generations whose base flash sits higher. The lite case must
+		// win over the base-flash substring match.
+		{"gemini-3.5-flash-lite", modeltier.TierSmall},
+		{"gemini-3.1-flash-lite", modeltier.TierSmall},
+		{"gemini-3.6-flash-lite", modeltier.TierSmall}, // lite of a frontier-tier base
+		{"gemini-3.7-flash-lite", modeltier.TierSmall}, // ditto for the current default
 
 		// Gemini 2.x.
 		{"gemini-2.5-pro", modeltier.TierMid},
@@ -132,6 +149,7 @@ func TestIsSmall(t *testing.T) {
 		want  bool
 	}{
 		// Small-tier — must trigger the guard.
+		{"gemini-3.5-flash-lite", true}, // taskclass's gemini small default
 		{"gemini-2.5-flash", true},
 		{"gemini-3-flash", true},
 		{"gemini-3.1-flash", true},
@@ -145,11 +163,14 @@ func TestIsSmall(t *testing.T) {
 		// --small-tier-parent=allow purely to suppress a false-positive
 		// warning on 3.5-flash can drop that flag once this ships.
 		{"gemini-3.5-flash", false},
-		{"gemini-3.5-pro", false},
+		{"gemini-3-pro-preview", false},
 		{"gemini-2.5-pro", false},
 		{"claude-opus-4-7", false},
 		{"claude-opus-4-8", false},
 		{"claude-sonnet-4-6", false},
+		{"claude-fable-5", false},
+		{"claude-opus-5", false},
+		{"claude-sonnet-5", false},
 
 		// Unknown — must NOT trigger (false-positive risk on
 		// newly-released models the table doesn't know yet).

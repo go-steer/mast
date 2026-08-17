@@ -196,31 +196,60 @@ func Classes() []string {
 	return []string{Debug, Implement, Chat, Research, Review, Orchestrate}
 }
 
+// Providers returns the provider names ModelForTier has tier
+// mappings for. Extend together with ModelForTier's switch when a
+// provider is added — consumers iterate this list to verify
+// cross-table invariants for every default (pricing's
+// TestBuiltin_CoversTaskclassTierDefaults walks Providers() x tiers,
+// so a provider missing here silently loses that coverage).
+func Providers() []string {
+	return []string{"gemini", "vertex", "anthropic", "anthropic-vertex"}
+}
+
 // ModelForTier returns the default model ID for a (provider, tier)
 // pair. Returns "" when no mapping exists — caller should fall
 // through to whatever model would've been chosen without --task.
 //
-// Provider names match pkg/models's registration strings ("gemini",
-// "vertex", "anthropic", "anthropic-vertex"). Mock providers
-// (echo, scripted) don't appear here — they have no tier concept.
+// Provider names match the --provider aliases internal/compose
+// dispatches on ("gemini", "vertex", "anthropic", "anthropic-vertex")
+// — the set Providers() returns. Offline fakes (echo, scripted,
+// toolactor) don't appear here — they have no tier concept.
 //
 // The table embeds knowledge that also lives in pkg/modeltier's
 // reverse direction (model → tier). When a new model ships, both
-// need bumping. Worth a check at release time; not worth fusing
-// into one table (the two directions have different shape needs:
-// modeltier wants substring matching, taskclass wants
-// canonical-string outputs).
+// need bumping. Not worth fusing into one table (the two directions
+// have different shape needs: modeltier wants substring matching,
+// taskclass wants canonical-string outputs).
+//
+// POLICY: each entry names the LATEST model in its line. Picking Opus
+// means picking the newest Opus, not whichever Opus was current when
+// the line was last edited. That is not enforceable from LiteLLM —
+// the catalog has no recency field, and auto-promoting would ship an
+// un-UAT'd model to every operator on a Monday regen — so it is
+// enforced instead by TestModelForTier_ReturnsLatestInLine, which
+// fails the build when pricing.Builtin() contains a newer model in the
+// same line than the one returned here.
 func ModelForTier(provider, tier string) string {
 	switch provider {
 	case "gemini", "vertex":
 		switch tier {
 		case TierFrontier:
-			// gemini-3.6-flash: the current top of the flash-first
-			// agentic line. The ported table said gemini-3.5-pro — a
+			// gemini-3.7-flash: the current top of the flash-first
+			// agentic line, and half the per-token price of the
+			// gemini-3.6-flash it replaced ($0.75/$3.75 per MTok
+			// against $1.50/$7.50). Promoted 2026-08-17 off a live
+			// Vertex UAT — all 31 judged corpus scenarios ran through
+			// it, scoring within noise of the 3.6-era board, with no
+			// mid-plan stall. That UAT is the bar: the parent project
+			// shipped an un-UAT'd frontier bump on the strength of a
+			// spec sheet (core-agent#579) and reverted it a day later
+			// (#580) when the parent agent stopped mid-plan.
+			//
+			// The ported table originally said gemini-3.5-pro — a
 			// model id that never shipped (inherited from core-agent,
 			// stale there too; corrected 2026-07-29 when the first
 			// live-credential run hit it).
-			return "gemini-3.6-flash"
+			return "gemini-3.7-flash"
 		case TierMid:
 			// gemini-3.5-flash, not the older 2.5-pro: mid-tier
 			// classes (research, chat) need built-in grounding to
@@ -232,15 +261,32 @@ func ModelForTier(provider, tier string) string {
 			// classifies the 3.5-flash line as mid.
 			return "gemini-3.5-flash"
 		case TierSmall:
-			return "gemini-2.5-flash"
+			// gemini-3.5-flash-lite: current-gen budget tier at the
+			// same price point as the 2.5-flash it replaced
+			// ($0.30/$2.50 per MTok), with far stronger agentic
+			// scores and a March 2026 knowledge cutoff. The 2.5-flash
+			// it replaced also predates the Gemini 3.0 line's support
+			// for built-ins alongside function declarations, so every
+			// small-tier specialist silently ran unGrounded (see
+			// builtinsCompatible in pkg/providers/gemini).
+			return "gemini-3.5-flash-lite"
 		}
 	case "anthropic", "anthropic-vertex":
 		switch tier {
 		case TierFrontier:
-			return "claude-opus-4-7"
+			// Latest in the Opus line. Deliberately Opus and not the
+			// Mythos-class tier (claude-fable-5 / claude-mythos-5),
+			// which sits above Opus at 2x the rate — "frontier" is the
+			// top of the general-purpose line, not the most expensive
+			// model on offer.
+			return "claude-opus-5"
 		case TierMid:
-			return "claude-sonnet-4-6"
+			return "claude-sonnet-5"
 		case TierSmall:
+			// claude-haiku-4-5 is still the latest Haiku — no
+			// 5-generation Haiku has shipped. Moves in lockstep with
+			// pkg/providers/anthropic's DefaultSmallModelID; pinned by
+			// TestModelForTier_ConsistentWithSmallModelDefaulters.
 			return "claude-haiku-4-5"
 		}
 	}

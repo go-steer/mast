@@ -57,7 +57,7 @@ type RefreshOptions struct {
 	// MinInterval is the minimum age the cache must reach before
 	// Refresh actually fetches. Zero defaults to
 	// DefaultRefreshInterval (24h). Set to a negative duration to
-	// force a fetch regardless of cache age (used by PR C's
+	// force a fetch regardless of cache age (used by the
 	// /pricing refresh slash command).
 	MinInterval time.Duration
 
@@ -254,13 +254,12 @@ type liteLLMEntry struct {
 	// billing cached tokens at InputPerMTok.
 	CacheReadInputTokenCost *float64 `json:"cache_read_input_token_cost,omitempty"`
 	// CacheCreationInputTokenCost is Anthropic-specific: the rate for
-	// tokens that CREATE cache entries (billed at ~125% of input per
-	// Anthropic's docs). Captured here so LiteLLM data isn't lost, but
-	// NOT plumbed anywhere yet — Slice B follow-up work needs to
-	// extend Rates + Pricing.CostUSDWithCache to attribute these
-	// tokens at the correct rate. Today they're folded into the
-	// uncached-input bucket for Anthropic, undercounting cost on
-	// cache-warming turns.
+	// tokens that CREATE cache entries, billed at a premium over base
+	// input (1.25x on the 5-minute TTL, 2x on the 1-hour TTL). LiteLLM
+	// publishes the 5-minute rate. Feeds Rates.CacheCreationInputPerMTok
+	// so CostUSDWithCacheWrites bills the write bucket at its own rate
+	// instead of folding it into uncached input
+	// (go-steer/core-agent#263).
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
 	Mode                        string   `json:"mode,omitempty"`
 }
@@ -270,7 +269,7 @@ type liteLLMEntry struct {
 //   - Skip "sample_spec" (LiteLLM's documentation row)
 //   - Skip entries without both cost fields populated (image gen,
 //     embeddings, etc. either have no costs or mode-specific costs
-//     we don't model yet — PR C extension if it becomes a gap).
+//     we don't model yet — a later extension if it becomes a gap).
 //   - Convert per-token rates → per-million-token rates to match
 //     our internal Rates struct.
 func parseLiteLLMBody(body []byte) (map[string]ModelRates, error) {
@@ -313,6 +312,10 @@ func parseLiteLLMBody(body []byte) (map[string]ModelRates, error) {
 		// as a placeholder for "not supported" rather than free.
 		if e.CacheReadInputTokenCost != nil && *e.CacheReadInputTokenCost > 0 {
 			rates.CachedInputPerMTok = *e.CacheReadInputTokenCost * million
+		}
+		// Same zero-means-unsupported treatment as the read rate.
+		if e.CacheCreationInputTokenCost != nil && *e.CacheCreationInputTokenCost > 0 {
+			rates.CacheCreationInputPerMTok = *e.CacheCreationInputTokenCost * million
 		}
 		out[strings.ToLower(strings.TrimSpace(name))] = rates
 	}

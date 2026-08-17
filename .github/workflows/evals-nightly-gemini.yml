@@ -39,11 +39,14 @@
 # the same model keeps the response_quality metric comparable
 # night-to-night without a second variable moving.
 #
-# Note this is NOT the tier ladder. `tier: frontier` on Gemini still
-# resolves to gemini-3.6-flash via pkg/taskclass.ModelForTier, which is
-# what J-cost-tier prices — that test resolves tiers itself and ignores
-# MAST_EVALS_MODEL, by design, since a cost claim about tiers has to use
-# the tiers the product ships.
+# Note this is NOT the tier ladder. `tier: frontier` on Gemini resolves
+# through pkg/taskclass.ModelForTier, which is what J-cost-tier prices —
+# that test resolves tiers itself and ignores MAST_EVALS_MODEL, by
+# design, since a cost claim about tiers has to use the tiers the
+# product ships. The two happen to name the same model since
+# gemini-3.7-flash was promoted to the Gemini frontier default
+# (2026-08-17); they are still separate knobs, and a future
+# MAST_EVALS_GEMINI_MODEL bump moves only the board.
 #
 # Flash pricing puts a run well under the Claude nightly's $5-15.
 #

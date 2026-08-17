@@ -37,15 +37,19 @@ const SchemaVersion = 1
 // spelling regardless of whether they live in pricing.json or in
 // .agents/config.json's `model.pricing` override map.
 type ModelRates struct {
-	InputPerMTok       float64   `json:"input_per_mtok,omitempty"`
-	CachedInputPerMTok float64   `json:"cached_input_per_mtok,omitempty"`
-	OutputPerMTok      float64   `json:"output_per_mtok,omitempty"`
-	UpdatedAt          time.Time `json:"updated_at,omitempty"`
+	InputPerMTok              float64   `json:"input_per_mtok,omitempty"`
+	CachedInputPerMTok        float64   `json:"cached_input_per_mtok,omitempty"`
+	CacheCreationInputPerMTok float64   `json:"cache_creation_input_per_mtok,omitempty"`
+	OutputPerMTok             float64   `json:"output_per_mtok,omitempty"`
+	UpdatedAt                 time.Time `json:"updated_at,omitempty"`
 }
 
-// rates converts the JSON-tagged form into the internal Rates type.
-// Field order + names are identical so a direct conversion suffices.
-func (m ModelRates) rates() Rates { return Rates(m) }
+// Rates converts the JSON-tagged form into the Rates type. Field
+// order + names are identical so a direct conversion suffices.
+// Exported because embedders that build a UserFile/ProjectFile in
+// memory (rather than on disk) need a way to feed those rows into
+// Options without re-declaring the struct.
+func (m ModelRates) Rates() Rates { return Rates(m) }
 
 // ProjectFile is the .agents/pricing.json shape — flat models map.
 // Project files are always operator-curated (never auto-fetched), so
@@ -56,19 +60,19 @@ type ProjectFile struct {
 }
 
 // UserFile is the ~/.mast/pricing.json shape — sectioned so
-// PR B's daily refresh can overwrite the `external` section without
+// the LiteLLM refresh can overwrite the `external` section without
 // touching `manual` entries the operator hand-edited (or set via
-// /pricing set in PR C).
+// /pricing set).
 type UserFile struct {
 	Version  int             `json:"version"`
 	External *ExternalSource `json:"external,omitempty"`
 	Manual   *ManualSection  `json:"manual,omitempty"`
 }
 
-// ExternalSource is the auto-fetched section. Populated by PR B's
-// LiteLLM refresh; unused in PR A. The fetched_at + etag fields
-// drive cache-validity logic (skip refresh if <24h, send
-// If-None-Match on revalidation).
+// ExternalSource is the auto-fetched section, populated by Refresh
+// from LiteLLM's catalog. The fetched_at + etag fields drive
+// cache-validity logic (skip refresh if <24h, send If-None-Match on
+// revalidation).
 type ExternalSource struct {
 	FetchedAt time.Time             `json:"fetched_at"`
 	Source    string                `json:"source"` // canonical URL the data was pulled from
@@ -77,7 +81,7 @@ type ExternalSource struct {
 }
 
 // ManualSection is the operator-curated section. Round-trips intact
-// across refreshes (PR B's fetcher only rewrites External).
+// across refreshes (the fetcher only rewrites External).
 type ManualSection struct {
 	Models map[string]ModelRates `json:"models,omitempty"`
 }
@@ -142,7 +146,7 @@ func loadUserFile(path string) (*UserFile, error) {
 }
 
 // SaveUserFile writes uf to <userHome>/<UserFileName> atomically.
-// Used by PR B's refresher and PR C's /pricing set slash. Empty
+// Used by the LiteLLM refresher and the /pricing set slash. Empty
 // userHome is an error (caller should resolve a real home first).
 func SaveUserFile(userHome string, uf *UserFile) error {
 	if userHome == "" {
@@ -212,7 +216,7 @@ func lowerKeys(m map[string]ModelRates) map[string]Rates {
 		if k == "" {
 			continue
 		}
-		out[k] = v.rates()
+		out[k] = v.Rates()
 	}
 	return out
 }

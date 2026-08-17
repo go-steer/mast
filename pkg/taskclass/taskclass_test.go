@@ -19,6 +19,7 @@ package taskclass_test
 import (
 	"testing"
 
+	"github.com/go-steer/mast/pkg/providers/anthropic"
 	"github.com/go-steer/mast/pkg/taskclass"
 )
 
@@ -125,17 +126,17 @@ func TestModelForTier(t *testing.T) {
 		provider, tier, want string
 	}{
 		// Gemini family.
-		{"gemini", "frontier", "gemini-3.6-flash"},
+		{"gemini", "frontier", "gemini-3.7-flash"},
 		{"gemini", "mid", "gemini-3.5-flash"},
-		{"gemini", "small", "gemini-2.5-flash"},
-		{"vertex", "frontier", "gemini-3.6-flash"}, // vertex aliases gemini
-		{"vertex", "small", "gemini-2.5-flash"},
+		{"gemini", "small", "gemini-3.5-flash-lite"},
+		{"vertex", "frontier", "gemini-3.7-flash"}, // vertex aliases gemini
+		{"vertex", "small", "gemini-3.5-flash-lite"},
 
 		// Anthropic family.
-		{"anthropic", "frontier", "claude-opus-4-7"},
-		{"anthropic", "mid", "claude-sonnet-4-6"},
+		{"anthropic", "frontier", "claude-opus-5"},
+		{"anthropic", "mid", "claude-sonnet-5"},
 		{"anthropic", "small", "claude-haiku-4-5"},
-		{"anthropic-vertex", "frontier", "claude-opus-4-7"},
+		{"anthropic-vertex", "frontier", "claude-opus-5"},
 
 		// Negative cases — caller falls through to whatever model
 		// would've been chosen without --task.
@@ -156,24 +157,42 @@ func TestModelForTier(t *testing.T) {
 	}
 }
 
+// TestModelForTier_CoversAllProviders pins that every provider in
+// Providers() resolves a model for every tier — the list and the
+// switch in ModelForTier must move together, because downstream
+// invariant tests (pricing's builtin-floor coverage) iterate
+// Providers() and a missing entry silently loses their coverage.
+func TestModelForTier_CoversAllProviders(t *testing.T) {
+	for _, provider := range taskclass.Providers() {
+		for _, tier := range []string{taskclass.TierFrontier, taskclass.TierMid, taskclass.TierSmall} {
+			if got := taskclass.ModelForTier(provider, tier); got == "" {
+				t.Errorf("ModelForTier(%q, %q) = \"\" — Providers() and the ModelForTier switch have drifted", provider, tier)
+			}
+		}
+	}
+}
+
 func TestModelForTier_ConsistentWithSmallModelDefaulters(t *testing.T) {
-	// The "small" tier for each provider should match the
-	// DefaultSmallModelID constants in pkg/models/<provider>/.
-	// If these drift, --agentic-small-model defaulting (#122) and
-	// --task=*'s small-tier choice would disagree — operator
-	// confusion. Worth pinning.
+	// The "small" tier for each provider should match what that
+	// provider package hands out when nobody pins a cheap model. For
+	// Anthropic that is a real constant, so this compares against it
+	// rather than a literal: a drift there is a build-time failure,
+	// not a stale copy in a test. pkg/providers/gemini exposes no
+	// such constant (mast's Gemini adapter is a Wrap, not a registry
+	// Provider), so ModelForTier is the only source of truth and the
+	// literal below is it.
 	cases := []struct {
 		provider, want string
 	}{
-		{"gemini", "gemini-2.5-flash"},
-		{"vertex", "gemini-2.5-flash"},
-		{"anthropic", "claude-haiku-4-5"},
-		{"anthropic-vertex", "claude-haiku-4-5"},
+		{"gemini", "gemini-3.5-flash-lite"},
+		{"vertex", "gemini-3.5-flash-lite"},
+		{"anthropic", anthropic.DefaultSmallModelID},
+		{"anthropic-vertex", anthropic.DefaultSmallModelID},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {
 			if got := taskclass.ModelForTier(tc.provider, "small"); got != tc.want {
-				t.Errorf("small-tier mismatch for %q: ModelForTier returned %q, expected %q (matches pkg/models DefaultSmallModelID)", tc.provider, got, tc.want)
+				t.Errorf("small-tier mismatch for %q: ModelForTier returned %q, expected %q", tc.provider, got, tc.want)
 			}
 		})
 	}

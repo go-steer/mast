@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- **The model tables are generated from a rule, refreshed weekly, and
+  can no longer drift apart quietly.** Mast forked its pricing code
+  early and then went five weeks without a bump while three model
+  families shipped. Nothing broke, which is the problem: a model with no
+  rate is metered at a flat fallback and counted as unpriced, so the
+  symptom of a stale table is a `max_cost_usd` that quietly means a
+  different number of dollars.
+
+  - `dev/regen-builtin-pricing` decides membership by **rule** rather
+    than by a hand-curated list — every chat-mode, tool-calling,
+    priced, non-deprecated Gemini/Anthropic model in LiteLLM's catalog
+    ships built-in. That took `pkg/pricing`'s table from 12 models to
+    31, and it now emits context windows beside the rates. Rejected
+    near-misses are printed with their reason, so a model dropping out
+    is visible rather than silent.
+  - `.github/workflows/pricing-regen.yml` runs it every Monday and
+    opens an auto-PR when the catalog has actually moved. Drift is
+    detected with `--check`, which normalizes away the regen date — the
+    old shape would have opened a no-op date-churn PR every week. No new
+    repository settings: the PR is opened by the `go-steer-bot` App,
+    whose credentials are already org secrets — `GITHUB_TOKEN` cannot do
+    it, both because the org forbids it creating PRs and because pushes
+    it authors never trigger the checks `main` requires.
+  - Two new invariant tests fail the build when the tables separate:
+    every priced model must classify in `pkg/modeltier` and carry a
+    context window, and every tier default must be the **latest** model
+    in its line. The second one is why the Anthropic defaults moved —
+    frontier and mid were two generations behind (`claude-opus-4-7` /
+    `claude-sonnet-4-6` with Opus 5 and Sonnet 5 shipped and priced).
+  - `gemini-3.5-pro` is gone from `pkg/modeltier` (upstream
+    core-agent#786). It is a model id that never shipped — the 3.5
+    generation went flash-first — and it had been sitting in the
+    classifier since the fork as a needle matching nothing. Harmless,
+    but a phantom entry in a hand-maintained table is a claim that
+    somebody checked.
+  - Prompt-cache *writes* are now priced. Anthropic bills three
+    disjoint input buckets — uncached input, cache reads at 0.1x, cache
+    writes at 1.25x — and charging writes at the read rate under-reports
+    a cache-heavy turn. `Rates.CostUSDWithCacheWrites` takes all three.
+
+  **Tier defaults that moved:** Gemini `small`
+  `gemini-2.5-flash` → `gemini-3.5-flash-lite`, Gemini `frontier`
+  `gemini-3.6-flash` → `gemini-3.7-flash`, Anthropic `mid`
+  `claude-sonnet-4-6` → `claude-sonnet-5`, Anthropic `frontier`
+  `claude-opus-4-7` → `claude-opus-5`. The Gemini frontier bump is half
+  the per-token price of what it replaces ($0.75/$3.75 per MTok against
+  $1.50/$7.50) and was promoted off a live Vertex UAT — all 31 judged
+  corpus scenarios ran through it and scored within noise of the
+  `gemini-3.6-flash`-era board. That UAT is the bar on purpose: a
+  frontier bump taken on the strength of a spec sheet is how you ship a
+  parent agent that stops mid-plan.
+
 - **The judged nightly now runs on two providers, on two boards.**
   `.github/workflows/evals-nightly-gemini.yml` runs the same 31 parity
   scenarios against `gemini-3.7-flash` at 07:30 UTC, half an hour behind
@@ -22,8 +74,10 @@
   is served.
 
   This is a second *board*, not a second tier ladder — `tier: frontier`
-  on Gemini still resolves to `gemini-3.6-flash`, and `J-cost-tier`
-  prices the tiers the product ships rather than the model under test.
+  on Gemini resolves through `pkg/taskclass.ModelForTier`, and
+  `J-cost-tier` prices the tiers the product ships rather than the model
+  under test. (The two now name the same model; see the model-table
+  entry below. They remain separate knobs.)
 
 - **New: a workload can wake itself up, and the cadence survives the
   daemon** (#132, W4.1). Until now every run started with somebody
