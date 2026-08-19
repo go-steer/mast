@@ -27,6 +27,28 @@ Switching is a config change, not a code change. `--model` picks the model;
 backend — without it, `ANTHROPIC_API_KEY` selects the first-party API and a
 Vertex project selects Vertex.
 
+## Credentials
+
+Mast takes credentials from the environment; it never reads a key out of a
+workload bundle. Nothing here is a mast-specific variable — each backend
+reads the same names its own SDK does, so a working `gcloud`/genai/Anthropic
+environment already works.
+
+| Backend | Environment |
+|---|---|
+| Gemini API | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`; if both are set, `GOOGLE_API_KEY` wins) |
+| Gemini on Vertex | `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` — plus Application Default Credentials |
+| Claude, first-party | `ANTHROPIC_API_KEY` |
+| Claude on Vertex | `ANTHROPIC_VERTEX_PROJECT_ID` (falls back to `GOOGLE_CLOUD_PROJECT`) and `CLOUD_ML_REGION` (falls back to `GOOGLE_CLOUD_LOCATION`, then `us-east5`) — plus Application Default Credentials |
+
+`GOOGLE_GENAI_USE_VERTEXAI` is what flips the *Gemini* backend to Vertex; a
+project alone does not. For `claude-*` a resolvable project is enough, which
+is the asymmetry to remember when one process runs both.
+
+On Cloud Run or GKE, prefer the service account's Application Default
+Credentials over a key in the environment: with Workload Identity there is no
+key to leak, rotate, or forget to scope.
+
 ## The offline fakes are load-bearing
 
 `echo`, `scripted`, and `toolactor` are not toys. They are how the whole

@@ -56,3 +56,5 @@ Prints the release version (plus commit and date for tarball builds;
 
 - [Quickstart: unattended triage, fully offline](/quickstart/unattended-triage/)
 - [Quickstart: embed the library](/quickstart/library-embed/)
+- [Point it at a real provider](/concepts/providers/#credentials) — which
+  environment variables each backend reads

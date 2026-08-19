@@ -6,23 +6,25 @@ This file is mirrored verbatim to [`CLAUDE.md`](./CLAUDE.md) so tools that look 
 
 ---
 
-## What this repo is — and isn't, yet
+## What this repo is
 
-**`mast`** is the agent-infrastructure substrate for unattended, library-embedded, multi-provider workloads — the platform-agent product designed as a lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent).
+**`mast`** is the agent-infrastructure substrate for unattended, library-embedded, multi-provider workloads — the platform-agent product built as a lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent).
 
-**Right now this repo is design-only.** The code lives in `core-agent` (and the pre-fork `mast-prototype` spike repo) until the fork executes. Per the trigger condition in [`docs/fork-design.md`](./docs/fork-design.md), revised 2026-07-26: Phase 1's rebuild work (lean core + mast-native subsystems) starts immediately; only the adapter ports (P1.3) wait, on core-agent's three code cleanup milestones (*Correctness & durability*, *Security hardening*, *Substrate & API structure*) closing.
+**This repo holds the code.** The fork executed 2026-07-26 (Phase 1, under the revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)), the adapter ports from core-agent landed 2026-07-29, and four releases have shipped — **v0.4.0** (2026-08-17) is current. The design corpus under [`docs/`](./docs/) stays live alongside the code; [`DESIGN.md`](./DESIGN.md) is the architecture map of what actually ships.
 
 See [`docs/fork-design.md`](./docs/fork-design.md) for the rebuild-lean-core mechanics, naming, sync discipline, and resolved decisions.
 
-**What you can do here today (Phase 1 in progress since 2026-07-26):**
+**What you do here:**
 
-- Read + improve the design corpus under [`docs/`](./docs/).
-- Ship Go code for Phase-1 workstreams (lean core, bucket-3 subsystems, examples) — `cmd/mast/` + `pkg/` landed with the P1.1 bootstrap. Follow the design doc for the subsystem you touch; `docs/adk-v2-usage.md` is the substrate reference.
+- Ship Go code. Follow the design doc for the subsystem you touch; `docs/adk-v2-usage.md` is the substrate reference, and `docs/spike-findings.md` records verified resume/allowlist behavior you must not contradict.
+- Read + improve the design corpus under [`docs/`](./docs/), and record anything you settle in the resolved-decisions table in [`docs/README.md`](./docs/README.md).
+- Walk the docs site (`docs/site/`) alongside any user-visible change — house rule #4.
 - Cross-reference between docs and to the sibling repos (core-agent and mast-web).
 
-**What you cannot do here yet:**
+**What still doesn't happen here:**
 
-- **Port adapter packages from core-agent (P1.3 / bucket 2).** The ports gate on core-agent's three code cleanup milestones closing (see the revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)) — porting earlier means porting code core-agent is actively restructuring. Runtime changes that belong in core-agent still go to [`core-agent`](https://github.com/go-steer/core-agent) first.
+- **Runtime changes that belong in core-agent go to [`core-agent`](https://github.com/go-steer/core-agent) first**, then port. Shared-infrastructure fixes land wherever found first and port within a week; the ledger of what's absorbed, owed, or n/a is [`docs/sibling-sync.md`](./docs/sibling-sync.md), and `dev/upstream-drift` measures the gap weekly. Read that ledger before porting anything.
+- **Features a design doc defers** — see house rule #7. `DESIGN.md`'s "Deliberately not in v0.4" is the short list.
 
 ---
 
@@ -30,12 +32,13 @@ See [`docs/fork-design.md`](./docs/fork-design.md) for the rebuild-lean-core mec
 
 If you've never seen this project before, read in this order:
 
-1. [`README.md`](./README.md) — the public face. Status, related repos, how to contribute pre-fork.
-2. [`docs/README.md`](./docs/README.md) — index of the design corpus + reading order for the design docs.
-3. [`docs/positioning.md`](./docs/positioning.md) — the thesis. What mast is, what it isn't, the kept/cut/change-shape decisions.
-4. [`docs/fork-design.md`](./docs/fork-design.md) — the mechanics of the fork itself + the resolved-decisions table.
-5. [`docs/specialists-design.md`](./docs/specialists-design.md) — the specialists subsystem (replacing skills).
-6. [mast-web's `docs/web-design.md`](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) — the web UI design (lives in the sibling mast-web repo).
+1. [`README.md`](./README.md) — the public face. Status, related repos, how to contribute.
+2. [`DESIGN.md`](./DESIGN.md) — the architecture map: package layout, the contracts to know before changing anything, and what's deliberately deferred.
+3. [`docs/README.md`](./docs/README.md) — index of the design corpus + reading order for the design docs.
+4. [`docs/positioning.md`](./docs/positioning.md) — the thesis. What mast is, what it isn't, the kept/cut/change-shape decisions.
+5. [`docs/fork-design.md`](./docs/fork-design.md) — the mechanics of the fork itself + the resolved-decisions table.
+6. [`docs/specialists-design.md`](./docs/specialists-design.md) — the specialists subsystem. (It does *not* replace skills: that cut was reversed 2026-07-01 and the two coexist as complementary authoring models — see [`docs/skills-design.md`](./docs/skills-design.md).)
+7. [mast-web's `docs/web-design.md`](https://github.com/go-steer/mast-web/blob/main/docs/web-design.md) — the web UI design (lives in the sibling mast-web repo).
 
 The resolved-decisions cross-reference at the bottom of [`docs/README.md`](./docs/README.md) is the quickest way to check whether something you're about to propose has already been settled.
 
@@ -152,22 +155,22 @@ Typical design-doc PR shapes:
 
 ## How to contribute post-fork (active as of 2026-07-26)
 
-Phase 1 is in progress; the repo has code. Current shape (per [`docs/fork-design.md`](./docs/fork-design.md)):
+Phase 1 is complete and the repo is on its regular release cadence — v0.1.0 through v0.4.0 have shipped. Current shape (per [`docs/fork-design.md`](./docs/fork-design.md)):
 
 - `cmd/mast/` — the binary
 - `pkg/agent/`, `pkg/providers/`, `pkg/attach/`, etc. — runtime
 - `dev/ci/presubmits/` + `dev/tools/` — same convention as core-agent
 - `.github/workflows/{ci,ci-docs,docs,release}.yml` — same convention as mast-web / core-agent
-- `docs/site/` — Astro + Starlight mirror of core-agent's setup *(corrected 2026-07-26 — the earlier "Hugo + Docsy" reference was stale; skeleton shipped, deploy deferred until the repo is public)*
+- `docs/site/` — Astro + Starlight mirror of core-agent's setup *(corrected 2026-07-26 — the earlier "Hugo + Docsy" reference was stale)*, deployed at [go-steer.github.io/mast](https://go-steer.github.io/mast/) since 2026-07-27
 
-Working rules while Phase 1 is in flight: build + vet + gofmt + test green before pushing (CI runs exactly that per `.github/workflows/ci.yml`); every new source file gets the Apache header (house rule #2); one workstream per PR, stacked on `main` or the current integration branch; consult `docs/spike-findings.md` before touching graph/HITL/budget code — the resume contract and allowlist semantics there are verified behavior, not suggestions.
+Working rules: build + vet + gofmt + test green before pushing (CI runs exactly that per `.github/workflows/ci.yml`); every new source file gets the Apache header (house rule #2); one workstream per PR, stacked on `main` or the current integration branch; consult `docs/spike-findings.md` before touching graph/HITL/budget code — the resume contract and allowlist semantics there are verified behavior, not suggestions.
 
 ---
 
 ## Operational facts you should know
 
-- **Repo visibility:** private until the fork lands + a few sanity checks pass. Don't reference URLs as if they're public.
-- **Branch policy:** PRs against `main`. No long-lived feature branches pre-fork (the repo is small).
+- **Repo visibility:** early access. The docs site is live at [go-steer.github.io/mast](https://go-steer.github.io/mast/), but don't assume a `github.com/go-steer/...` URL resolves for an outside reader — several of these repos are still private, which is what the README's early-access note is for.
+- **Branch policy:** PRs against `main`. No long-lived feature branches; one workstream per PR, stacked where changes build on each other.
 - **License:** Apache 2.0. Compatible with the parent core-agent project.
 - **The `Antigravity` rule:** see house rule #3.
 

@@ -1,6 +1,6 @@
-# mast — architecture (v0.1)
+# mast — architecture (v0.4)
 
-**Status:** current as of v0.1.0 (2026-07-30). This is the map of what
+**Status:** current as of v0.4.0 (2026-08-17). This is the map of what
 actually ships — the working architecture for contributors and
 embedders. The *why* behind each subsystem lives in the design corpus
 under [`docs/`](./docs/README.md) (start with
@@ -19,21 +19,29 @@ not add-ons.
 
 ```
                     ┌────────────────────────────────────────────────┐
- envelopes ────────▶│  inject HTTP (dispatch / resume / abort)       │
- (webhooks, queues) │                                                │
-                    │   workload bundle ──▶ root agent               │
- operators ────────▶│   (.agents/ or       (graph or SubAgents       │
- (mast-web, curl,   │    programmatic)      dispatch, specialists     │
-  attach clients)   │                       as tools)                │
+ envelopes ────────▶│  inject HTTP (dispatch / resume / abort,       │
+ (webhooks, queues) │  pause / stop / ack-effects)                   │
+                    │                                                │
+ schedules ────────▶│  scheduled fires (durable anchor; a missed     │
+ (bundle scheduled) │  tick is skipped, one session per fire)        │
+                    │                                                │
+ operators ────────▶│   workload bundle ──▶ root agent               │
+ (mast-web, curl,   │   (.agents/ or        (coordinator / graph /   │
+  attach clients)   │    programmatic)       fanout / bounded;       │
+                    │                        specialists as tools)   │
+                    │                                                │
+                    │   write gate ──▶ operator verdict              │
+                    │   (a mutating call parks; approve / reject /   │
+                    │    edit, durable across a restart)             │
                     │                                                │
                     │   ADK v2 runner ──▶ session store (SQLite/     │
-                    │   (span tree,       Postgres via ADK           │
-                    │    HITL pause)      session/database)          │
-                    │                       └─ eventlog overlay      │
-                    │                          (seq + Watch/Since)   │
+                    │   (span tree,        Postgres via ADK          │
+                    │    HITL pause)       session/database)         │
+                    │                        └─ eventlog overlay     │
+                    │                           (seq + Watch/Since)  │
                     │                                                │
-                    │   attach HTTP/SSE (list, tail, inject, wake,   │
-                    │   interrupt, capabilities, agent card)         │
+                    │   attach HTTP/SSE · A2A · AG-UI (list, tail,   │
+                    │   inject, wake, interrupt, guardrail reset)    │
                     └────────────────────────────────────────────────┘
 ```
 
@@ -52,13 +60,19 @@ Two first-class shapes, same subsystems ([`docs/library-api-design.md`](./docs/l
 
 - **Library.** The root package: `mast.Run` (instruction + input),
   `mast.RunWorkload` (programmatic bundle + specialists),
-  `mast.ListSessions` / `mast.ResumeSession` (operator surface). A
+  `mast.ListSessions` / `mast.ResumeSession` / `mast.ResumeByToken`
+  (operator surface), `mast.Pause` and `mast.AckEffects` (durability
+  controls — the programmatic pause and the ambiguous-effect ack). A
   CI-enforced **slim-embed guarantee** (reference consumer
   `examples/deploy/slim` + denylist script) keeps the minimal import
   path free of heavyweight deps — pay for what you import.
 - **Binary.** `cmd/mast`: serve mode (workload daemon with inject +
-  attach + metrics listeners), one-shot mode (`mast --task=<class>
-  "<prompt>"`), and the `mast sessions` operator CLI.
+  attach + A2A + AG-UI + metrics listeners), one-shot mode, and the
+  `mast sessions` / `mast stop` operator CLIs. Serve and one-shot are
+  the *same* invocation distinguished by a positional prompt — `mast
+  --workload=<name> …` serves, `mast --task=<class> "<prompt>"` runs
+  one turn and exits. There is no `serve` subcommand; only `sessions`
+  and `stop` are subcommands (`cmd/mast/main.go`).
 
 Semver stability from v0.1 is reserved for the five packages the
 pillars stand on (the root `mast` package, `agent`, `transcript`, and the
@@ -74,7 +88,7 @@ the version named in the library API design's import-surface table.
 | Package | Role |
 |---|---|
 | `pkg/agent` | Agent-mode constructors over ADK (coordinator, Task, SingleTurn) + per-mode default instructions; echo/scripted fake models for offline smoke. |
-| `pkg/graph` | Workflow-graph dispatch (LLM-as-router over ADK's workflow engine). |
+| `pkg/graph` | Workflow-graph dispatch (LLM-as-router over ADK's workflow engine) and the `fanout` shape — concurrent read-only branches on `parallelagent` (never `ParallelWorker`, whose branch events the log suppresses) with one `_synthesis` merge. |
 | `pkg/router` | LLM-as-router classifier (SingleTurn) used by graph dispatch. |
 | `pkg/specialists` | Subagent-as-tool: `.tmpl` files (YAML frontmatter) with budgets, model overrides, tool allowlists ([`docs/specialists-design.md`](./docs/specialists-design.md)). |
 | `pkg/workload` | Workload bundles: declarative YAML naming specialists, tool catalog, budgets, HITL policy. |
@@ -87,11 +101,13 @@ the version named in the library API design's import-surface table.
 
 | Package | Role |
 |---|---|
-| `pkg/transcript` | Operator surface over the ADK session store: list/show summaries, pending-interrupt scan, durable abort markers. (Named `session` pre-v0.1.0; renamed to end the alias collision with ADK's `session`.) |
+| `pkg/transcript` | Operator surface over the ADK session store: list/show summaries, pending-interrupt scan, durable abort/pause markers, resume-token records, and the durable decision records (`approve`/`reject`/`edit`) that `mast sessions export-decisions` writes out as JSONL. (Named `session` pre-v0.1.0; renamed to end the alias collision with ADK's `session`.) |
 | `pkg/eventlog` | Seq-overlay + `Since`/`Watch` stream + audit metadata sidecar layered **on** ADK `session/database` (ADK owns the tables), plus `GuardrailStore` — a mast-owned append-only log of guardrail trips and resets, folded forward so an `enforce` halt outlives the process that observed it. Ported from core-agent. |
 | `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. |
-| `pkg/permissions` | Permission gate + prompt contract (ported; deliberately not runtime-wired in v0.1 — the package doc records the wiring-time inputs). |
-| `pkg/auth` | Caller identity, session ACL types, bearer/mTLS config (ported). |
+| `pkg/effects` | The recorded-effect outbox: the session event log **is** the outbox (durable `FunctionCall` = intent, paired `FunctionResponse` = completion), read once per turn in an ADK runner plugin's `BeforeRun`. A dangling mutating intent puts the turn in fail-closed ambiguous-effect mode until an operator acks. |
+| `pkg/approval` | The write gate: the runner-plugin seam where a mutating call parks for an operator, the three-valued verdict (`approve`/`reject`/`edit`), the typed change-set producer, and exact-`(tool, arguments)`-signature grants with their freshness re-read. Policy stays in `pkg/permissions`; the durable pause is ADK's tool-confirmation flow. |
+| `pkg/permissions` | Permission gate + prompt contract (ported). Runtime-wired since v0.3 through `pkg/approval`'s plugin — it decides policy (proceed / ask / refuse) and stays ADK-independent. |
+| `pkg/auth` | Caller identity, session ACL types, bearer/mTLS config (ported). Approvals and edits are recorded against the authenticated approver it resolves. |
 | `pkg/watchdog` | Loop signals (repeated call, alternating cycle, tool-failure streak) + session-event bridge + the `warn`/`feedback`/`enforce` posture ladder; alerts are logged, projected onto the guardrail surface, and — from `feedback` up — routed into the model's own next prompt. The posture resolves `--watchdog` > the bundle's `safety.watchdog` > `watchdog.DefaultMode` (`feedback`), and every turn-driving surface taps it, the library embed included. Under `--attach-listen` a halt is persisted through `eventlog.GuardrailStore` and adopted on the next turn after a restart — configuration still wins, so a posture dialed back below `enforce` inherits nothing. |
 
 **Providers** — reshaped at port time (per-provider Options structs,
@@ -110,16 +126,23 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 
 | Package | Role |
 |---|---|
-| `pkg/attach` | The mast-native operator transport (HTTP/SSE): session registry + resume gating, seq'd replay + live tail, inject/wake/interrupt, capabilities frames, agent card, prompt broker, peer registry, rate limiting. Ported from core-agent; wire-compatible with it (mast-web serves both). |
+| `pkg/attach` | The mast-native operator transport (HTTP/SSE): session registry + resume gating, seq'd replay + live tail, inject/wake/interrupt, capabilities frames, agent card, prompt broker, peer registry, rate limiting, and the guardrail surface (`GET`/`POST /sessions/{id}/guardrails[/reset]`) an `enforce` halt is cleared through. Ported from core-agent; wire-compatible with it (mast-web serves both). |
 | `pkg/attachadapter` | Bridges the runner-driven daemon into attach's `Registrant` contract: one injected message = one serialized turn; typed operator events in wire order; interrupt cancels the turn context. |
-| `pkg/inject` | The unattended entry point: dispatch/resume/abort HTTP + `/metrics`. |
+| `pkg/inject` | The unattended entry point: `POST /inject`, `/resume`, `/abort`, `/pause`, `/extend-token`, `/stop`, `/ack-effects`, plus `/metrics`. |
 | `pkg/observability` | Fixed Prometheus counter registry + env-gated OTel trace export ([`docs/observability-design.md`](./docs/observability-design.md)). |
-| `pkg/a2a` / `pkg/federation` | Synchronous A2A v0.3 client; frozen `federation.Adapter`/`Handle` interface + `invoke_remote_agent` ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
+| `pkg/a2a` / `pkg/federation` | A2A v0.3 both ways: the synchronous client, and the server (agent card, `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE) exposing workloads that opt in via the bundle's `a2a.expose`. Plus the frozen `federation.Adapter`/`Handle` interface + `invoke_remote_agent` ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
+| `pkg/agui` | The AG-UI server surface (agent↔user) for CopilotKit apps and chat-platform bots: hand-rolled zero-dep wire types, an HTTP+SSE run endpoint, `/agui/agents.json` discovery, and the HITL interrupt/resume lifecycle. Runtime-free, like `pkg/a2a` ([`docs/ag-ui-design.md`](./docs/ag-ui-design.md)). |
+| `pkg/serverauth` | The request-admission seams both network servers share: pluggable bearer auth (`TokenValidator` → `Principal`, per-surface scope checks) and rate limiting. Stdlib + `golang.org/x/time` only, so it stays slim-embed-safe. |
 | `pkg/mcp` | MCP toolset wiring + per-specialist tool allowlists. HTTP servers get their transport wrapped so a 4xx/5xx carries the server's own error text (an IAM permission name, a quota metric) rather than a bare status line. |
 
 **Internal:** `internal/compose` (model/backend dispatch, shared
-one-shot construction), `internal/version` (ldflags-injected build
-identity, reported by `--version` and the attach capabilities frame).
+one-shot construction, the `bounded` single-node build),
+`internal/evals` (the deterministic eval suite and the judged
+nightly's scoring, including the tiered-cost check),
+`internal/version` (ldflags-injected build identity, reported by
+`--version` and the attach capabilities frame). The scheduled-trigger
+loop is daemon-side in `cmd/mast/schedtrigger.go`, reading the
+bundle's `scheduled:` section.
 
 ## Key contracts worth knowing before changing anything
 
@@ -135,6 +158,21 @@ identity, reported by `--version` and the attach capabilities frame).
 - **Budgets act by cancellation.** The meter folds usage from the
   event stream and trips by canceling the run context — subsystems
   must tolerate mid-turn cancellation.
+- **Two runner plugins bracket every tool call, in this order.**
+  `pkg/effects` (the outbox) registers first, `pkg/approval` (the
+  write gate) second, so a call replayed after a crash is answered
+  from the outbox instead of asking an operator to re-approve a
+  mutation that already fired. Reordering them is a correctness bug,
+  not a preference.
+- **Unknown tools count as mutating.** The mutation predicate is
+  default-deny: a tool nothing has classified is gated, so a bundle
+  cannot get write access by omission. Un-gating is an audited
+  per-tool `tool_catalog.tools[].mutating` override.
+- **Nothing mutating runs in a parallel branch.** Fan-out branches all
+  run *before* the single post-synthesis approval gate, and a branch's
+  `Output` payload is its only durable record — so mutating tools (and
+  `request_operator_input`) are refused in a branch's allowlist at
+  construction.
 - **Attach is wire-compatible with core-agent.** The protocol
   (v1.4.0) is the contract; mast-web and any attach client work
   against both. Divergence is a bug on whichever side left the
@@ -145,17 +183,27 @@ identity, reported by `--version` and the attach capabilities frame).
   fixes land wherever found first, then port within a week
   ([`docs/fork-design.md`](./docs/fork-design.md) sync discipline).
 
-## Deliberately not in v0.1
+## Deliberately not in v0.4
 
 Deferrals are decisions ([`AGENTS.md`](./AGENTS.md) house rule #7);
-the owning doc names the version that lifts each one. Highlights:
-A2A **server** + registry publishing, AG-UI (both v0.2,
-[`docs/a2a-design.md`](./docs/a2a-design.md) /
-[`docs/ag-ui-design.md`](./docs/ag-ui-design.md)); skills consumption
+the owning doc names the version that lifts each one, and the
+[roadmap](https://go-steer.github.io/mast/roadmap/) is the
+user-facing view. Highlights: cross-run finding state and the chat
+egress half of unattended monitoring (v0.5, and deliberately owned by
+[`k8s-lookout`](https://github.com/go-steer/k8s-lookout) and
+switchboard rather than by mast); pre-call budget gating (today a
+ceiling is crossed by the call that reports it); the remaining AG-UI
+slices (`agui://` federation client, per-key `StateDelta`, webhook
+push, client-declared tools,
+[`docs/ag-ui-design.md`](./docs/ag-ui-design.md)); the `run_shape_*`
+planner vocabulary wired to the reference-graph library (it returns
+`not_implemented` in the shipped scaffold); multi-session attach (ACL
+store, per-caller auth, operator session creation) and `mode:
+multi_session` bundles; skills consumption
 ([`docs/skills-design.md`](./docs/skills-design.md)); audit-derived
 memory ([`docs/memory-design.md`](./docs/memory-design.md), gated on
-core-agent's shared-memory stack); multi-session attach (ACL store,
-per-caller auth, operator session creation); permission-gate runtime
-wiring; programmatic pause / resume tokens
-([`docs/durable-execution-design.md`](./docs/durable-execution-design.md));
-OTel metrics export (Prometheus scrape only in v0.1).
+core-agent's shared-memory stack); OTel *metrics* export (Prometheus
+scrape + OTel traces only). Providers beyond Gemini and Claude are a
+proposal, not a plan —
+[`docs/model-support-design.md`](./docs/model-support-design.md)
+targets v0.5+ and nothing in it is settled.

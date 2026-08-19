@@ -1,6 +1,6 @@
 # mast: design docs
 
-Design documentation for `mast` — the agent-infrastructure substrate for unattended, library-embedded, multi-provider, durable workloads. These docs describe the project as it's *currently designed*; the code lives in this repo (Phase 1 executed 2026-07-26), with adapter ports from [`core-agent`](https://github.com/go-steer/core-agent) pending per [`./fork-design.md`](./fork-design.md)'s revised trigger.
+Design documentation for `mast` — the agent-infrastructure substrate for unattended, library-embedded, multi-provider, durable workloads. These docs describe the project as it's *currently designed*; the code lives in this repo (Phase 1 executed 2026-07-26, and the adapter ports from [`core-agent`](https://github.com/go-steer/core-agent) landed 2026-07-29 at the pinned SHAs [`./fork-design.md`](./fork-design.md) records). Ongoing sync with core-agent runs through [`./sibling-sync.md`](./sibling-sync.md).
 
 ## Reading order for someone landing cold
 
@@ -38,21 +38,21 @@ Each doc has a Resolved-decisions section at the bottom listing what's been sett
 
 - **[`./assessments/langchain-sre-agent.md`](./assessments/langchain-sre-agent.md)** (2026-08-12) — LangChain's autonomous Kubernetes SRE agent vs. mast v0.2.0. Their subagents map ~1:1 onto specialists and mast leads on durability, cost metering, multi-provider, and read-path depth (`k8s-lookout`); the gaps are the designed-but-unwired parts — structural read/write split + per-mutating-tool gate (`hitl_policy.on_mutation`), fan-out, cross-run finding state, chat egress + Slack interactivity, typed report contract, per-specialist model tier, eval harness. Includes a six-slice MVP plan across mast / switchboard / k8s-lookout.
 
-## Status (2026-07-27)
+## Status (2026-08-19)
 
-This repo holds mast's design corpus **and, since 2026-07-26, the mast code** (Phase 1 of the fork executed under the revised trigger; `v0.1.0-pre` released). The thesis (E) — *sibling products with divergent agendas* — remains the resolved framing: mast = platform-agent product; core-agent = experimentation/integration substrate for embedded consumers. Both maintained indefinitely.
+This repo holds mast's design corpus **and, since 2026-07-26, the mast code** (Phase 1 of the fork executed under the revised trigger). Four releases have shipped since; **v0.4.0** is current. The thesis (E) — *sibling products with divergent agendas* — remains the resolved framing: mast = platform-agent product; core-agent = experimentation/integration substrate for embedded consumers. Both maintained indefinitely.
 
 Current state:
 
 | Repo | Status |
 |---|---|
-| [`go-steer/mast`](https://github.com/go-steer/mast) (this repo) | Design corpus + Phase-1 code. `v0.1.0-pre` released 2026-07-26 (9 of 11 exit criteria); P1.3 adapter ports pending core-agent's cleanup milestones. |
-| [`go-steer/mast-web`](https://github.com/go-steer/mast-web) | Initialized 2026-06-12 with main scaffolding + four stacked PRs (A/B/C/C+/docs). Operator UI ships independently of the code fork. |
-| [`go-steer/core-agent`](https://github.com/go-steer/core-agent) | Parent project; source of the pending P1.3 adapter ports. Continues as the experimentation/integration substrate under (E). |
+| [`go-steer/mast`](https://github.com/go-steer/mast) (this repo) | Design corpus + shipped code. **v0.4.0** released 2026-08-17; all eleven v0.1 exit criteria green since 2026-07-29, when the P1.3 adapter ports landed. Parity scoreboard 11 of 19 ([`./v0.3-plan.md`](./v0.3-plan.md) §1); the parity claim is v0.5's. |
+| [`go-steer/mast-web`](https://github.com/go-steer/mast-web) | Initialized 2026-06-12 with main scaffolding + four stacked PRs (A/B/C/C+/docs). Operator UI ships independently of the code fork; verified against a live mast daemon 2026-07-29. |
+| [`go-steer/core-agent`](https://github.com/go-steer/core-agent) | Parent project; source of the completed P1.3 adapter ports. Continues as the experimentation/integration substrate under (E). Drift against the ported packages is measured weekly by [`../dev/upstream-drift`](../dev/upstream-drift); the verdicts live in [`./sibling-sync.md`](./sibling-sync.md). |
 
-## Fork trigger
+## Fork trigger (satisfied — kept for the record)
 
-Per [`./fork-design.md`](./fork-design.md) (trigger revised 2026-07-26): **Phase 1's rebuild work (P1.1, P1.2, bucket-3 minimum) starts immediately** — it shares no code with core-agent, and the spike-validated `mast-prototype` graduates into it. Only **P1.3 (adapter ports) gates**, on core-agent's three code cleanup milestones closing (*Correctness & durability*, *Security hardening*, *Substrate & API structure* — they churn the exact packages being ported). Issues #158-#160 land in core-agent independently and no longer gate; the shared-memory stack is re-homed as the gate on mast's v0.2+ memory work.
+The fork has executed; this section is history, not a live gate. Per [`./fork-design.md`](./fork-design.md) (trigger revised 2026-07-26): **Phase 1's rebuild work (P1.1, P1.2, bucket-3 minimum) started immediately** — it shares no code with core-agent, and the spike-validated `mast-prototype` graduated into it. Only **P1.3 (adapter ports) gated**, on core-agent's three code cleanup milestones closing (*Correctness & durability*, *Security hardening*, *Substrate & API structure* — they churned the exact packages being ported); all closed 2026-07-28 and the staged ports landed 2026-07-29. Issues #158-#160 landed in core-agent independently and never gated; the shared-memory stack was re-homed as the gate on mast's memory work, which is still deferred.
 
 ## Resolved decisions cross-reference
 
