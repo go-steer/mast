@@ -91,6 +91,33 @@ const (
 	DispatchAuto Dispatch = "auto"
 )
 
+// Provider aliases for the Gemini family. The Anthropic pair lives in
+// pkg/providers/anthropic (ProviderName / VertexProviderName); these
+// two have no provider package of their own because both backends are
+// the same genai client under different configuration.
+//
+// The names match pkg/taskclass.Providers(), which has carried a
+// "vertex" family since the port — the tier table could always resolve
+// against it, there was just no way to ask for it. They also match
+// core-agent's config.ProviderVertex, which is where the pattern comes
+// from.
+const (
+	// ProviderGemini serves gemini-* models through whichever backend
+	// genai detects from the environment.
+	ProviderGemini = "gemini"
+
+	// ProviderVertex serves gemini-* models against Vertex AI, named
+	// outright rather than inferred from GOOGLE_GENAI_USE_VERTEXAI.
+	ProviderVertex = "vertex"
+)
+
+// DefaultVertexLocation is the location a Vertex client falls back to
+// when neither GOOGLE_CLOUD_LOCATION nor GOOGLE_CLOUD_REGION is set.
+// It is genai's own default for the backend, restated here only so
+// that the value mast passes is explicit and loggable rather than
+// filled in somewhere inside the SDK.
+const DefaultVertexLocation = "global"
+
 // Resolve returns the dispatch shape to build, given the caller's
 // choice and the bundle's own declaration.
 //
@@ -405,7 +432,9 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //     MAST_SCRIPT_STRICT=1 enables strict Contents matching.
 //   - "gemini-*": ADK's Gemini model wrapped in pkg/providers/gemini's
 //     builtin-tool layer (GoogleSearch + URLContext on — core-agent's
-//     defaults; Vertex vs API key is genai's env-driven selection).
+//     defaults). `--provider=vertex` names the Vertex backend outright;
+//     with no alias it stays genai's env-driven selection. See
+//     geminiClientConfig.
 //   - "claude-*": pkg/providers/anthropic; see anthropicProvider for
 //     backend selection.
 func BuildModel(ctx context.Context, provider, name string) (model.LLM, error) {
@@ -421,13 +450,17 @@ func BuildModel(ctx context.Context, provider, name string) (model.LLM, error) {
 		}
 		return mock.NewScripted(path, os.Getenv("MAST_SCRIPT_STRICT") == "1")
 	case strings.HasPrefix(name, "gemini-"):
-		base, err := gemini.NewModel(ctx, name, &genai.ClientConfig{})
+		cfg, err := geminiClientConfig(provider)
+		if err != nil {
+			return nil, err
+		}
+		base, err := gemini.NewModel(ctx, name, cfg)
 		if err != nil {
 			return nil, err
 		}
 		return geminiprov.Wrap(base, geminiprov.Options{
 			BuiltinTools:        geminiprov.DefaultBuiltinTools(),
-			TolerateEmptyChunks: geminiOnVertex(),
+			TolerateEmptyChunks: geminiOnVertex(provider),
 		}), nil
 	case strings.HasPrefix(name, "claude-"):
 		p, err := anthropicProvider(ctx, provider)
@@ -511,13 +544,62 @@ func NewModelResolver(ctx context.Context, provider, rootName string, root model
 	}
 }
 
-// geminiOnVertex mirrors genai's own backend selection: the Gemini
-// model runs against Vertex when GOOGLE_GENAI_USE_VERTEXAI is truthy.
-// Vertex streaming interleaves candidate-less heartbeat chunks, so the
-// builtins wrapper's empty-chunk tolerance follows the same switch.
-func geminiOnVertex() bool {
+// geminiOnVertex reports whether a gemini-* model will run against
+// Vertex: either the --provider=vertex alias says so outright, or
+// GOOGLE_GENAI_USE_VERTEXAI is truthy and genai's own env-driven
+// selection will pick Vertex. Vertex streaming interleaves
+// candidate-less heartbeat chunks, so the builtins wrapper's
+// empty-chunk tolerance follows the backend actually in use — which is
+// why this asks about the alias too, and not only the environment.
+func geminiOnVertex(provider string) bool {
+	if provider == ProviderVertex {
+		return true
+	}
 	v := strings.ToLower(os.Getenv("GOOGLE_GENAI_USE_VERTEXAI"))
 	return v == "true" || v == "1"
+}
+
+// geminiClientConfig builds the genai client config for a gemini-*
+// model under the given --provider alias.
+//
+// Two paths, and the split is deliberate:
+//
+// With no alias (or any alias that is not `vertex`) the config stays
+// empty and genai decides everything from the environment, exactly as
+// it did before the alias existed — GOOGLE_GENAI_USE_VERTEXAI picks the
+// backend, GOOGLE_API_KEY / GEMINI_API_KEY or GOOGLE_CLOUD_* supply the
+// credentials. Nothing about that path changes here.
+//
+// `--provider=vertex` names the backend outright, which is the whole
+// point of the alias: a deployment whose credential is the service
+// account's ADC should not have to also set an env var whose absence
+// surfaces as an API-key error from the *other* backend. Project and
+// location still come from the environment (there is no config file for
+// them), but a missing project fails here, naming the variable, rather
+// than inside genai as a struct dump.
+//
+// Location defaults to genai's own default rather than mast inventing
+// one, and is passed explicitly so the resolved value is deterministic.
+func geminiClientConfig(provider string) (*genai.ClientConfig, error) {
+	if provider != ProviderVertex {
+		return &genai.ClientConfig{}, nil
+	}
+	project := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	if project == "" {
+		return nil, fmt.Errorf("--provider=%s needs a project: set GOOGLE_CLOUD_PROJECT (and authenticate with Application Default Credentials, e.g. `gcloud auth application-default login`)", ProviderVertex)
+	}
+	location := os.Getenv("GOOGLE_CLOUD_LOCATION")
+	if location == "" {
+		location = os.Getenv("GOOGLE_CLOUD_REGION")
+	}
+	if location == "" {
+		location = DefaultVertexLocation
+	}
+	return &genai.ClientConfig{
+		Backend:  genai.BackendVertexAI,
+		Project:  project,
+		Location: location,
+	}, nil
 }
 
 // anthropicProvider picks the Anthropic backend for claude-* models.
@@ -532,6 +614,14 @@ func anthropicProvider(ctx context.Context, provider string) (*anthropic.Provide
 		return anthropic.New(anthropic.Options{})
 	case anthropic.VertexProviderName:
 		return anthropic.NewVertex(ctx, anthropic.VertexOptions{})
+	case ProviderGemini, ProviderVertex:
+		// A Gemini-family alias picks a Gemini backend; it says nothing
+		// about Anthropic's. A roster may still name a claude-*
+		// specialist under a gemini root — cross-provider overrides are
+		// allowed (see NewModelResolver) — so detect the backend the
+		// same way the no-alias path does rather than refusing a model
+		// the alias was never about.
+		return anthropicProvider(ctx, "")
 	case "":
 		if os.Getenv(anthropic.EnvAPIKey) != "" {
 			return anthropic.New(anthropic.Options{})

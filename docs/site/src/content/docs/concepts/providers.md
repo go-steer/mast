@@ -15,7 +15,8 @@ interfaces stable since v0.1.
 
 | Provider | Selected by | Notes |
 |---|---|---|
-| **Gemini** | a model id like `gemini-2.5-flash` | Google Search and URL-context builtins are available through the provider |
+| **Gemini** | a model id like `gemini-3.5-flash`, or `--provider=gemini` | Google Search and URL-context builtins are available through the provider |
+| **Gemini on Vertex** | `--provider=vertex`, or `GOOGLE_GENAI_USE_VERTEXAI=true` | same models, ADC instead of a key |
 | **Claude, first-party** | `claude-*` with `ANTHROPIC_API_KEY` set | |
 | **Claude on Vertex** | `claude-*` with a Vertex project, or `--provider=anthropic-vertex` | context caching supported |
 | **`echo`** | `--model=echo` (the default) | offline fake, no credentials, never emits tool calls |
@@ -23,9 +24,13 @@ interfaces stable since v0.1.
 | **`toolactor`** | `--model=toolactor` | offline fake that *does* drive tool calls |
 
 Switching is a config change, not a code change. `--model` picks the model;
-`--provider` is an alias that validates it and, for `claude-*`, chooses the
-backend — without it, `ANTHROPIC_API_KEY` selects the first-party API and a
-Vertex project selects Vertex.
+`--provider` is an alias that validates it and chooses the backend within a
+family. Each family has two aliases for the same model ids — `gemini` /
+`vertex` and `anthropic` / `anthropic-vertex` — because a backend is not a
+different model line. Without an alias the backend comes from the
+environment: `GOOGLE_GENAI_USE_VERTEXAI` for `gemini-*`, and for `claude-*`
+`ANTHROPIC_API_KEY` selecting the first-party API with a Vertex project
+selecting Vertex.
 
 ## Credentials
 
@@ -37,13 +42,19 @@ environment already works.
 | Backend | Environment |
 |---|---|
 | Gemini API | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`; if both are set, `GOOGLE_API_KEY` wins) |
-| Gemini on Vertex | `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` — plus Application Default Credentials |
+| Gemini on Vertex | `--provider=vertex` with `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` (or `GOOGLE_CLOUD_REGION`; defaults to `global`) — plus Application Default Credentials |
 | Claude, first-party | `ANTHROPIC_API_KEY` |
 | Claude on Vertex | `ANTHROPIC_VERTEX_PROJECT_ID` (falls back to `GOOGLE_CLOUD_PROJECT`) and `CLOUD_ML_REGION` (falls back to `GOOGLE_CLOUD_LOCATION`, then `us-east5`) — plus Application Default Credentials |
 
-`GOOGLE_GENAI_USE_VERTEXAI` is what flips the *Gemini* backend to Vertex; a
-project alone does not. For `claude-*` a resolvable project is enough, which
-is the asymmetry to remember when one process runs both.
+**Prefer the alias to the environment variable for Gemini on Vertex.**
+`GOOGLE_GENAI_USE_VERTEXAI=true` still works and still flips the backend, but
+without it *or* `--provider=vertex` a project alone does nothing: the run goes
+to the API-key backend and fails asking for a key the deployment does not
+have. `--provider=vertex` names the backend outright and fails at startup
+naming the project variable if it is missing.
+
+For `claude-*` there is no such switch — a resolvable project is enough. That
+asymmetry is worth remembering when one process runs both families.
 
 On Cloud Run or GKE, prefer the service account's Application Default
 Credentials over a key in the environment: with Workload Identity there is no

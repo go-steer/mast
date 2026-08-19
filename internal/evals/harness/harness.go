@@ -92,7 +92,8 @@ type Config struct {
 	// diagnosing a cluster.
 	Grader string
 	// Provider selects the credential path for both models
-	// (`anthropic`, `anthropic-vertex`). Empty lets compose pick from
+	// (`anthropic`, `anthropic-vertex`, or — with gemini-* names in
+	// Model/Grader — `gemini`, `vertex`). Empty lets compose pick from
 	// the environment.
 	Provider string
 

@@ -107,10 +107,19 @@ func TestBuildModel_ErrorsAndMocks(t *testing.T) {
 		t.Errorf("BuildModel(claude, no creds): err = %v, want guidance naming ANTHROPIC_API_KEY", err)
 	}
 
-	// A gemini/echo alias can't serve a claude model id.
-	if _, err := BuildModel(ctx, "gemini", "claude-sonnet-4-6"); err == nil ||
-		!strings.Contains(err.Error(), "anthropic") {
-		t.Errorf("BuildModel(provider=gemini, claude-*): err = %v, want anthropic guidance", err)
+	// A Gemini-family alias says nothing about Anthropic's backend, so a
+	// claude-* override under a gemini root detects like the no-alias
+	// path — here, with no credentials at all, that means the same
+	// guidance rather than a refusal of the alias.
+	if _, err := BuildModel(ctx, ProviderGemini, "claude-sonnet-4-6"); err == nil ||
+		!strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Errorf("BuildModel(provider=gemini, claude-*): err = %v, want the no-alias credential guidance", err)
+	}
+
+	// An alias from neither family still refuses: nothing to detect.
+	if _, err := BuildModel(ctx, "echo", "claude-sonnet-4-6"); err == nil ||
+		!strings.Contains(err.Error(), "cannot serve claude-*") {
+		t.Errorf("BuildModel(provider=echo, claude-*): err = %v, want a refusal naming the anthropic aliases", err)
 	}
 
 	if _, err := BuildModel(ctx, "", "gpt-42"); err == nil || !strings.Contains(err.Error(), "claude-*") {
@@ -122,6 +131,13 @@ func TestBuildModel_ErrorsAndMocks(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 	if llm, err := BuildModel(ctx, "anthropic", "claude-sonnet-4-6"); err != nil || llm == nil {
 		t.Fatalf("BuildModel(anthropic, claude-sonnet-4-6) = (%v, %v), want a model", llm, err)
+	}
+
+	// ...and so does the cross-provider override the doc comment on
+	// NewModelResolver promises: a claude-* specialist under a Gemini
+	// root resolves its own backend from the key it just found.
+	if llm, err := BuildModel(ctx, ProviderVertex, "claude-sonnet-4-6"); err != nil || llm == nil {
+		t.Fatalf("BuildModel(provider=vertex, claude-sonnet-4-6) = (%v, %v), want a model", llm, err)
 	}
 }
 

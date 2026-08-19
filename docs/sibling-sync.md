@@ -527,6 +527,26 @@ Two things this triage surfaced that the detector cannot see, recorded so they a
   comments is in this PR; deciding whether the table itself should be pruned to mast's actual tool
   surface is a bigger question, deferred.
 
+Added 2026-08-19, from a different direction — not this triage, and not a commit:
+
+- **Gemini on Vertex had no provider alias** ([#186](https://github.com/go-steer/mast/issues/186),
+  closed by [#187](https://github.com/go-steer/mast/pull/187)). core-agent registers `vertex` as a
+  first-class provider (`pkg/models/gemini.NewVertex`, `config.ProviderVertex`) that sets the
+  backend on the client config, and reads `GOOGLE_GENAI_USE_VERTEXAI` only to *guess* one when
+  nothing is configured. mast kept the guess and dropped the way to be explicit: `BuildModel`
+  passed an empty `genai.ClientConfig{}`, so the env var was the only route to Vertex — even
+  though `pkg/taskclass.Providers()` has listed a `vertex` family since the port. mast now has the
+  alias, named the same as core-agent's.
+
+  **The general point is about the instrument.** `dev/upstream-drift` measures commits landing
+  upstream *after* mast's port SHA. A capability core-agent already had at fork time, that mast's
+  pruning dropped, produces no commit and therefore no row — it is invisible to the detector by
+  construction, and will stay invisible however many Mondays pass. This one surfaced from a
+  reader's question about a README example, which is not a sync process. The "what the instrument
+  does not tell you" section above lists the known blind spots; **fork-time omissions belong on
+  that list**, and the only instrument for them is reading core-agent's surface against mast's
+  when touching a subsystem.
+
 ---
 
 ## Baseline after this triage
