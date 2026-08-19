@@ -30,9 +30,14 @@ func reachByMetric(t *testing.T, reach []MetricReach) map[string]MetricReach {
 	return out
 }
 
-// TestCorpusReach_RealCorpus pins that both gating corpus metrics can
-// actually score the ported dataset — the property upstream's harness
-// lacks on both of its custom-code metrics.
+// TestCorpusReach_RealCorpus pins that every corpus metric can actually
+// score the ported dataset — the property upstream's harness lacks on
+// both of its custom-code metrics.
+//
+// Reach is asserted for the diagnostics too. A diagnostic does not gate,
+// but one that scores nothing is reporting a constant, and the whole
+// point of this table is that a constant should never pass for a
+// measurement.
 func TestCorpusReach_RealCorpus(t *testing.T) {
 	ds := loadLangChain(t)
 	tbl := loadTable(t)
@@ -43,23 +48,30 @@ func TestCorpusReach_RealCorpus(t *testing.T) {
 	}
 	by := reachByMetric(t, reach)
 
-	for _, metric := range []string{MetricIntentCoverage, MetricSeverityAccuracy} {
+	for _, metric := range []string{MetricIntentCoverage, MetricToolCoverage, MetricSeverityAccuracy} {
 		r, ok := by[metric]
 		if !ok {
 			t.Fatalf("%s missing from the reach table", metric)
 		}
-		if r.Diagnostic {
-			t.Errorf("%s is marked diagnostic; it gates", metric)
-		}
 		// Every scenario declares expected tools and every expected
-		// response opens with a severity token, so both reach the whole
-		// corpus. A drop here means the fixture or the extractor moved.
+		// response opens with a severity token, so all three reach the
+		// whole corpus. A drop here means the fixture or the extractor
+		// moved.
 		if r.Reaches != 31 || r.Scenarios != 31 {
 			t.Errorf("%s reaches %d/%d scenarios, want 31/31", metric, r.Reaches, r.Scenarios)
 		}
 	}
+	if by[MetricIntentCoverage].Diagnostic {
+		t.Errorf("%s must stay gating: it is the trajectory claim the parity comparison rests on", MetricIntentCoverage)
+	}
 	if !by[MetricToolCoverage].Diagnostic {
 		t.Errorf("%s must stay diagnostic: name-level overlap scores a consolidated read path as a regression", MetricToolCoverage)
+	}
+	// #179: the corpus states no severity definition for the buckets 20
+	// of its 31 rows are labelled with, so the score cannot be acted on.
+	// judge.TestSeverityRubricDoesNotSpanCorpus is the measurement.
+	if !by[MetricSeverityAccuracy].Diagnostic {
+		t.Errorf("%s must stay diagnostic until the corpus states a basis for its WARNING and INFO labels (#179)", MetricSeverityAccuracy)
 	}
 	if dead := DeadMetrics(reach); len(dead) != 0 {
 		t.Errorf("DeadMetrics = %v, want none on the real corpus", dead)
@@ -93,7 +105,9 @@ func TestCorpusReach_DetectsUpstreamDefects(t *testing.T) {
 		{
 			// Upstream's severity_accuracy matches a bracketed token the
 			// corpus never writes, so extraction fails on the example side
-			// for all 31 rows regardless of what the agent produced.
+			// for all 31 rows regardless of what the agent produced. mast's
+			// version is diagnostic since #179, so it no longer appears in
+			// DeadMetrics — the reach table still has to see it go dead.
 			name:     "no severity token anywhere",
 			mutate:   func(s *Scenario) { s.Outputs.ExpectedResponse = "the cluster looks unwell" },
 			wantDead: []string{MetricSeverityAccuracy},
@@ -120,14 +134,23 @@ func TestCorpusReach_DetectsUpstreamDefects(t *testing.T) {
 				t.Errorf("%s went dead too; the probe is not discriminating between metrics", tc.wantLive)
 			}
 
+			// DeadMetrics names the gating half only: a diagnostic that
+			// scores nothing is a broken measurement, but it is not a red
+			// parity row. The harness reports that case separately —
+			// harness.summarizeCorpus, and TestSummarizeCorpus_Diagnostic
+			// DeathIsReported alongside it.
 			dead := DeadMetrics(reach)
 			for _, metric := range tc.wantDead {
+				if by[metric].Diagnostic {
+					if contains(dead, metric) {
+						t.Errorf("DeadMetrics = %v, want the diagnostic metric %s excluded: it does not gate", dead, metric)
+					}
+					continue
+				}
 				if !contains(dead, metric) {
 					t.Errorf("DeadMetrics = %v, want it to name %s", dead, metric)
 				}
 			}
-			// The diagnostic metric goes dead in the first case too, and
-			// must never gate: it is not a claim about mast.
 			if contains(dead, MetricToolCoverage) {
 				t.Errorf("DeadMetrics = %v, want the diagnostic metric excluded", dead)
 			}

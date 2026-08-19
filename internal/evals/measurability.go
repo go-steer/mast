@@ -26,6 +26,19 @@ import "fmt"
 // functions, and nothing in either output says so. Result.Vacuous marks
 // the individual case; this is the corpus-wide roll-up that turns it
 // into a harness failure instead of a green board.
+//
+// Reach is necessary and not sufficient, which severity_accuracy shows
+// from both ends. mast's extractor reads all 31 expected responses where
+// upstream's reads none, so the metric has reached the whole corpus
+// since v0.3 — and it was still wrong in two ways this guard cannot see.
+// It silently failed to read a decorated verdict on the *actual* side
+// (7 of 31 rows of one 2026-08-19 board, 0 of 31 of another, so the
+// published gap between two model families was partly markdown style;
+// fixed in extractSeverity), and the corpus states no severity
+// definition for the buckets 20 of its 31 rows are labelled with, so the
+// score it produces cannot be acted on however completely it reaches
+// (#179, which demoted it to diagnostic). A metric that scores every row
+// has cleared this bar and no other.
 type MetricReach struct {
 	Metric string
 	// Diagnostic mirrors Result.Diagnostic: a diagnostic metric is
@@ -77,7 +90,7 @@ func CorpusReach(tbl IntentTable, ds Dataset) []MetricReach {
 	reach := []MetricReach{
 		{Metric: MetricIntentCoverage},
 		{Metric: MetricToolCoverage, Diagnostic: true},
-		{Metric: MetricSeverityAccuracy},
+		{Metric: MetricSeverityAccuracy, Diagnostic: true},
 	}
 	for _, sc := range ds.Scenarios {
 		probes := []Result{

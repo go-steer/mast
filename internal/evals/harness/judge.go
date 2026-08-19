@@ -299,9 +299,12 @@ func scoreOf(results []evals.Result, metric string) float64 {
 }
 
 // aggregate means each metric over the rows that scored it, in a stable
-// order: the two gating metrics first, then the rest alphabetically, so
-// the board's first two columns are always the ones the parity claim
-// rests on.
+// order: intent_coverage, then severity_accuracy, then response_quality,
+// then the rest alphabetically. The order is the board's reading order
+// and is deliberately not the gating set — severity_accuracy sits second
+// because that is where a reader has looked for it since v0.3, and it
+// stopped being a parity claim when #179 demoted it. What gates is
+// marked on each row, not inferred from its column.
 func aggregate(scenes []JudgeScenario) []MetricSummary {
 	type acc struct {
 		sum        float64

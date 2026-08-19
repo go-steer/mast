@@ -190,14 +190,51 @@ func ToolCoverage(sc Scenario, tr Trace) Result {
 // of what any agent does. Here the expected side is read the way the
 // corpus is actually written, and the actual side accepts the formats a
 // model plausibly emits for the same claim.
+//
+// # Why this is diagnostic and not a comparison number (#179)
+//
+// Every board since v0.3 has read near half here, with the misses almost
+// all one direction — expected WARNING, got CRITICAL — on two unrelated
+// model families. Two readings fit that equally well: the corpus labels
+// contradict the severity definitions the corpus itself ships, or mast's
+// rubric escalates past them. #179 asked for the misses to be
+// partitioned between the two, against the corpus's own stated
+// definitions rather than its labels.
+//
+// That partition is not derivable from this corpus. The definitions are
+// twelve enumerated conditions (judge.systemInstruction, taken verbatim
+// from upstream): CRITICAL is "service down, crash loops, OOM kills, 0
+// ready endpoints", WARNING is "no PDB, missing probes, :latest images,
+// wildcard RBAC", INFO is "right-sizing, orphaned PVs, suspended
+// CronJobs". Over the 31 scenarios, the CRITICAL conditions occur in 5;
+// the WARNING and INFO conditions occur in none at all. Twenty of the 31
+// rows are nonetheless labelled WARNING or INFO — buckets the rubric
+// describes with four hygiene examples the corpus never once presents.
+// judge.TestSeverityRubricDoesNotSpanCorpus pins that measurement.
+//
+// So on almost every row that misses, there is no stated definition to
+// partition against, and the two readings are indistinguishable in
+// principle rather than merely by this metric. Where the rubric does
+// decide a row it contradicts the label twice in five — LC-03 is an
+// OOMKill labelled WARNING, LC-10 has 0 endpoints and is labelled
+// WARNING — and both families miss both rows by answering what they were
+// told to answer.
+//
+// Tuning the rubric until the number moves was rejected in v0.3 as
+// teaching to the test, and that still holds: there is nothing here to
+// tune against. The number is reported, and the per-row comment stays
+// legible, but it is not a claim about mast — the same disposition
+// tool_coverage has, for a sibling reason. Re-promoting it needs a
+// corpus that states a basis for the buckets it labels with.
 func SeverityAccuracy(sc Scenario, tr Trace) Result {
 	want := extractSeverity(sc.Outputs.ExpectedResponse)
 	if want == "" {
 		return Result{
-			Metric:  MetricSeverityAccuracy,
-			Score:   1,
-			Vacuous: true,
-			Comment: "scenario declares no expected severity",
+			Metric:     MetricSeverityAccuracy,
+			Score:      1,
+			Diagnostic: true,
+			Vacuous:    true,
+			Comment:    "scenario declares no expected severity",
 		}
 	}
 
@@ -210,21 +247,24 @@ func SeverityAccuracy(sc Scenario, tr Trace) Result {
 	switch {
 	case got == "":
 		return Result{
-			Metric:  MetricSeverityAccuracy,
-			Score:   0,
-			Comment: fmt.Sprintf("expected %s; run declared no severity in its %s", want, source),
+			Metric:     MetricSeverityAccuracy,
+			Score:      0,
+			Diagnostic: true,
+			Comment:    fmt.Sprintf("expected %s; run declared no severity in its %s", want, source),
 		}
 	case got != want:
 		return Result{
-			Metric:  MetricSeverityAccuracy,
-			Score:   0,
-			Comment: fmt.Sprintf("expected %s, got %s (from %s)", want, got, source),
+			Metric:     MetricSeverityAccuracy,
+			Score:      0,
+			Diagnostic: true,
+			Comment:    fmt.Sprintf("expected %s, got %s (from %s)", want, got, source),
 		}
 	}
 	return Result{
-		Metric:  MetricSeverityAccuracy,
-		Score:   1,
-		Comment: fmt.Sprintf("%s (from %s)", got, source),
+		Metric:     MetricSeverityAccuracy,
+		Score:      1,
+		Diagnostic: true,
+		Comment:    fmt.Sprintf("%s (from %s)", got, source),
 	}
 }
 
@@ -241,15 +281,32 @@ var (
 // token, while every format a model actually uses for the verdict does —
 // "CRITICAL: ...", "[CRITICAL] ...", "**CRITICAL**", "## CRITICAL",
 // "Severity: CRITICAL". The first line that yields a token wins.
+//
+// Decoration is stripped on both sides of the label because a real
+// response carries both at once. Until 2026-08-19 the label was stripped
+// first and the decoration second, so "## SEVERITY: CRITICAL" matched
+// nothing: the label pattern is anchored and cannot reach past "## ",
+// and once the decoration is gone the line opens with "SEVERITY:" rather
+// than the token. That is one line of a decorated heading — the single
+// most common way a model writes this verdict — silently scoring as "the
+// run declared no severity", on 7 of 31 rows of one board and 0 of 31 of
+// another. Trimming decoration, then the label, then decoration again
+// costs nothing and admits the combination.
 func extractSeverity(s string) string {
 	for _, line := range strings.Split(s, "\n") {
+		line = trimDecoration(line)
 		line = severityLabel.ReplaceAllString(line, "")
-		line = strings.TrimLeft(line, " \t#*_[(\"'`>-")
+		line = trimDecoration(line)
 		if m := severityToken.FindStringSubmatch(line); m != nil {
 			return strings.ToUpper(m[1])
 		}
 	}
 	return ""
+}
+
+// trimDecoration removes the markdown a model wraps a verdict in.
+func trimDecoration(line string) string {
+	return strings.TrimLeft(line, " \t#*_[(\"'`>-")
 }
 
 // EffectOrdering checks the outbox invariant on the recorded log: every
