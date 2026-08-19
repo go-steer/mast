@@ -256,6 +256,31 @@ func TestSeverityAccuracy(t *testing.T) {
 			want:     1,
 		},
 		{
+			// The four shapes below are transcribed from the 2026-08-19
+			// boards, where the extractor read every one of them as "the
+			// run declared no severity". Each carries decoration *and* the
+			// label on one line, which the old strip order could not see
+			// through: 7 of 31 rows on one board, 0 of 31 on another, so
+			// the metric was scoring markdown style and reporting it as a
+			// cross-family capability gap.
+			name:     "heading and label on one line (LC-09)",
+			expected: "CRITICAL: node is NotReady.",
+			final:    "## SEVERITY: CRITICAL\n\nNode ip-10-0-1-42 has been NotReady for 8 minutes.",
+			want:     1,
+		},
+		{
+			name:     "bold and label on one line (LC-17)",
+			expected: "WARNING: the namespace quota is exhausted.",
+			final:    "**SEVERITY: WARNING**\n\nScaling batch-runner is blocked by team-a-quota.",
+			want:     1,
+		},
+		{
+			name:     "decorated label after a heading (LC-11)",
+			expected: "WARNING: pods were evicted for ephemeral storage.",
+			final:    "## Report\n\n**SEVERITY: WARNING**\n\n10 pods were evicted.",
+			want:     1,
+		},
+		{
 			// The anchor's job: a severity word in running prose is not a
 			// verdict. An unanchored search reads "critical" here and
 			// scores a run that declared nothing as a correct CRITICAL.
@@ -298,6 +323,64 @@ func TestSeverityAccuracy(t *testing.T) {
 				t.Fatalf("Vacuous = %v, want %v", got.Vacuous, tc.vacuous)
 			}
 		})
+	}
+}
+
+// TestExtractSeverity_RealBoardVerdicts pins the extractor against
+// verdicts transcribed verbatim from the 2026-08-19 judge boards.
+//
+// Every one of these was read as no severity at all until the strip
+// order was fixed, and the failure was invisible in the aggregate: a
+// missing verdict and a wrong verdict both score 0, so the column read
+// as a model that could not classify rather than a harness that could
+// not parse. The two shapes that still yield nothing are here for the
+// same reason — the anchor has to keep holding, or the fix trades a
+// false miss for a false hit.
+func TestExtractSeverity_RealBoardVerdicts(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"LC-09 heading and label", "## SEVERITY: CRITICAL", "CRITICAL"},
+		{"LC-17 bold and label", "**SEVERITY: WARNING**", "WARNING"},
+		{"LC-11 label under a heading", "## Report\n\n**SEVERITY: WARNING**", "WARNING"},
+		{"LC-13 label with an em-dash qualifier", "## SEVERITY: WARNING — symptom unconfirmed from cluster reads", "WARNING"},
+		{"LC-29 label with a parenthetical", "## SEVERITY: CRITICAL (reported impact) — root cause **unconfirmed**", "CRITICAL"},
+		{"lowercase label", "### severity: info", "INFO"},
+		{"label with an equals sign", "> SEVERITY = OK", "OK"},
+
+		// The anchor: decoration is stripped from the front of a line, so
+		// a severity word that is not the line's subject stays out.
+		{"prose mention", "The situation is not critical.", ""},
+		{"label naming a severity mid-sentence", "## Findings\nWe rate the severity as CRITICAL below.", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractSeverity(tc.text); got != tc.want {
+				t.Errorf("extractSeverity(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSeverityAccuracy_IsDiagnostic pins #179's disposition. The corpus
+// states no severity definition for the buckets 20 of its 31 rows are
+// labelled with (judge.TestSeverityRubricDoesNotSpanCorpus measures
+// that), so the score cannot be acted on and is not a claim about mast.
+// Re-promoting it means fixing the corpus, not this line.
+func TestSeverityAccuracy_IsDiagnostic(t *testing.T) {
+	tr := Trace{FinalText: "CRITICAL: the api-server pod is crash-looping."}
+	for _, expected := range []string{
+		"CRITICAL: api-server is CrashLoopBackOff.", // scores 1
+		"WARNING: api-server is unhappy.",           // scores 0
+		"the deployment looks fine.",                // vacuous
+	} {
+		got := SeverityAccuracy(scenario(nil, expected), tr)
+		if !got.Diagnostic {
+			t.Errorf("SeverityAccuracy(%q).Diagnostic = false, want true (#179)", expected)
+		}
 	}
 }
 

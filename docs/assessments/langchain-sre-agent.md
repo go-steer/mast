@@ -279,6 +279,10 @@ Plus online evals over production traces, and a detect → fix → prevent loop 
 
 The consequence is for the *comparison*, not the port: their published `tool_coverage` is not a baseline to adopt unnormalized. Handling is specified in [`../v0.3-plan.md`](../v0.3-plan.md) W0.1/W0.1a, which also replaces the name-level metric with an intent-level one.
 
+**Dataset integrity, third finding (2026-08-19, #179).** The corpus does not state a severity definition for the buckets most of it is labelled with. `SYSTEM_PROMPT` enumerates twelve conditions — CRITICAL "service down, crash loops, OOM kills, 0 ready endpoints", WARNING "no PDB, missing probes, :latest images, wildcard RBAC", INFO "right-sizing, orphaned PVs, suspended CronJobs" — and measured over the 31 scenarios, **the CRITICAL conditions occur in 5 and the WARNING and INFO conditions in none**. Twenty of the 31 rows are labelled WARNING or INFO regardless. Where the definitions do decide a row they contradict the label twice in five (LC-03, an OOMKill, is WARNING; LC-10, 0 endpoints, is WARNING).
+
+This is the root of the WARNING→CRITICAL skew both mast and upstream's own agent show, and it is not separable from a rubric that escalates: on the rows that miss there is nothing stated to check either claim against. mast reports `severity_accuracy` as a diagnostic for that reason, pinned by `judge.TestSeverityRubricDoesNotSpanCorpus`. Copying the labels was still right — the alternative is re-labelling someone else's ground truth to match our agent — but the number they support is weaker than its two predecessors suggested.
+
 ### What we should build
 
 **Port the dataset.** Put it under `testdata/evals/*.jsonl`. Their 32 scenarios are good and were clearly written by someone who has carried a pager. Then **add the ones their harness structurally cannot express**:

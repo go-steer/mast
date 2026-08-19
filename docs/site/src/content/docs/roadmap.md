@@ -382,6 +382,21 @@ along with the runway an operator granted — and a session already past its
 cap is refused before the model call rather than after it. See
 [budgets](/concepts/budgets/#spend-survives-a-restart).
 
+Also on the way there, and a correction to what the judged board has been
+saying: `severity_accuracy` is now reported as a **diagnostic** rather than
+as one of the numbers the parity claim rests on. Two things were wrong with
+it. The extractor read a verdict written as `## SEVERITY: CRITICAL` as no
+verdict at all — which scores the same as a wrong answer, so a parsing
+failure on one model family's heading style was published as that family
+classifying worse. And the ported corpus does not state a severity
+definition for the buckets most of its rows are labelled with: the
+definitions it ships enumerate twelve conditions, five of the 31 scenarios
+present one, and all five fall under CRITICAL, while 20 rows are labelled
+WARNING or INFO. A score nobody can act on is not a comparison, so it is
+reported as what it is. The v0.3 promise that a green board cannot come
+from a measurement that never ran still holds — this is the other half of
+it, that a measurement can reach every row and still not support a claim.
+
 ## Further out
 
 - **AG-UI remaining slices** — the `agui://` federation client, per-key

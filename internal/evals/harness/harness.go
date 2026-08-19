@@ -261,6 +261,20 @@ func summarizeCorpus(tbl evals.IntentTable, ds evals.Dataset) (CorpusSummary, []
 		problems = append(problems, fmt.Sprintf(
 			"metric %q scores nothing anywhere in the corpus: it is a constant function, so no board it appears on means anything", m))
 	}
+	// A diagnostic never gates the parity claim — that is what makes it a
+	// diagnostic — but a diagnostic that can score nothing is still a
+	// broken measurement, and evals.DeadMetrics deliberately does not
+	// name one. Reported separately so both readings hold: the column is
+	// not a red parity row, and the harness still says it measures
+	// nothing. severity_accuracy is why this is not hypothetical — it was
+	// demoted to diagnostic by #179 while remaining the metric whose
+	// extractor has broken twice.
+	for _, r := range reach {
+		if r.Diagnostic && r.Dead() {
+			problems = append(problems, fmt.Sprintf(
+				"diagnostic metric %q scores nothing anywhere in the corpus: it does not gate, but it is reporting a constant", r.Metric))
+		}
+	}
 	return sum, problems
 }
 

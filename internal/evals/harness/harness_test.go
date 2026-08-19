@@ -474,6 +474,39 @@ func TestJudgeSummary_WriteCost(t *testing.T) {
 	})
 }
 
+// TestSummarizeCorpus_DiagnosticDeathIsReported covers the gap #179's
+// demotion opened. evals.DeadMetrics names gating metrics only, so a
+// diagnostic that can score nothing anywhere would have gone from a
+// harness failure to a silent column — and severity_accuracy, whose
+// extractor has now broken twice, is exactly such a metric. It is not a
+// red parity row, but the harness has to say it measures nothing.
+func TestSummarizeCorpus_DiagnosticDeathIsReported(t *testing.T) {
+	ds, tbl, err := loadFixtures(repoRoot)
+	if err != nil {
+		t.Fatalf("loadFixtures: %v", err)
+	}
+	for i := range ds.Scenarios {
+		ds.Scenarios[i].Outputs.ExpectedResponse = "the cluster looks unwell"
+	}
+
+	sum, problems := summarizeCorpus(tbl, ds)
+	if len(sum.Dead) != 0 {
+		t.Errorf("Dead = %v, want empty: no gating metric died here", sum.Dead)
+	}
+	var found string
+	for _, p := range problems {
+		if strings.Contains(p, evals.MetricSeverityAccuracy) {
+			found = p
+		}
+	}
+	if found == "" {
+		t.Fatalf("problems = %v, want one naming %s", problems, evals.MetricSeverityAccuracy)
+	}
+	if !strings.Contains(found, "diagnostic") || !strings.Contains(found, "does not gate") {
+		t.Errorf("problem %q does not say the column is a dead diagnostic rather than a failed parity claim", found)
+	}
+}
+
 func renderJudge(t *testing.T, j *JudgeSummary) string {
 	t.Helper()
 	var buf bytes.Buffer

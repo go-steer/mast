@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- **`severity_accuracy` was partly measuring markdown, and the rest of it
+  cannot be acted on.** Two findings, one metric.
+
+  The extractor read `## SEVERITY: CRITICAL` as no severity at all. It
+  stripped the `Severity:` label before the markdown decoration, and the
+  label pattern is anchored — so a line carrying both matched neither
+  pass, and the run was recorded as having declared nothing. On the
+  2026-08-19 boards that hit **7 of 31 rows on Claude and 0 of 31 on
+  Gemini**: the published Claude figure of 0.419 is 0.548 once the
+  decorated verdicts are read, and part of the cross-family gap the
+  nightly has been reporting was one family's heading style. A missing
+  verdict and a wrong verdict both score 0, which is why the column read
+  as a model that could not classify rather than a harness that could not
+  parse. `rig.go` already named this hazard — a coordinator rewrite would
+  "move severity_accuracy for a formatting reason rather than a capability
+  one" — for a different formatting change.
+
+  The remaining misses cannot be attributed to anyone. #179 asked for them
+  to be partitioned against the corpus's *own* severity definitions:
+  a row where the label contradicts the definition it ships with is a
+  corpus defect, one where the agent escalated past a definition the label
+  honours is mast's. That partition is not derivable. The definitions are
+  twelve enumerated conditions, taken verbatim from upstream — CRITICAL is
+  "service down, crash loops, OOM kills, 0 ready endpoints", WARNING is
+  "no PDB, missing probes, :latest images, wildcard RBAC", INFO is
+  "right-sizing, orphaned PVs, suspended CronJobs". Measured over the
+  corpus, **the CRITICAL conditions occur in 5 of the 31 scenarios and the
+  WARNING and INFO conditions in none**, while 20 of the 31 rows are
+  labelled WARNING or INFO. On almost every row that misses there is no
+  stated definition to partition against, so "the corpus is wrong" and
+  "the rubric escalates" are indistinguishable in principle, not merely by
+  this metric. Where the rubric does decide a row it contradicts the label
+  twice in five — LC-03 is an OOMKill labelled WARNING, LC-10 has 0
+  endpoints and is labelled WARNING — and both model families miss both by
+  answering what they were told to answer.
+
+  So `severity_accuracy` is now **diagnostic**, the disposition
+  `tool_coverage` has: still on every board, still per-row legible, no
+  longer a parity claim. Tuning the rubric until it moves was rejected in
+  v0.3 as teaching to the test and there is nothing here to tune against
+  anyway. `judge.TestSeverityRubricDoesNotSpanCorpus` pins the measurement
+  that justifies the demotion and fails if either the corpus or the rubric
+  moves toward covering the other — which is the condition for promoting
+  it back.
+
+  The demotion opened one gap, now closed: `evals.DeadMetrics` names
+  gating metrics only, so a diagnostic that can score nothing anywhere
+  would have become a silent column instead of a harness failure. The
+  corpus summary reports that case separately — it does not gate, and it
+  still says it is reporting a constant.
+
 - **A budget ceiling a restart resets is a ceiling on what a workload spends
   per process.** `newMeterPool` minted every session's meter at zero, so a
   daemon restart handed each session its full cap back: a workload stopped by
