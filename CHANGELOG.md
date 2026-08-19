@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **A rate can be current in its source and still be wrong, and nothing in
+  the table could say so.** `claude-sonnet-5` carries Sonnet 5's
+  *introductory* price of $2 in / $10 out per MTok, which lapses
+  2026-08-31 in favour of $3 / $15. `Rates.UpdatedAt` cannot catch that:
+  it records when the row was last read from LiteLLM, and the weekly regen
+  re-reads LiteLLM, gets the same promotional number back, and stamps a
+  fresh date on it — so the freshness signal reports maximum confidence in
+  a value that has become false. The 2026-08-19 regen did exactly this,
+  re-dating the row to the day with no change to the price.
+
+  It cannot be fixed at the source either: LiteLLM's catalog carries no
+  expiry metadata on any row.
+
+  `pkg/pricing/introductory_rates_test.go` now holds the expiry as a dated
+  assertion — past the end date, a row still reading the promotional rate
+  fails the build. It runs inside `pricing-regen.yml` as well as ordinary
+  CI, so an expiry LiteLLM has not caught up with stops the regen rather
+  than being rubber-stamped by it. This matters beyond `/pricing`:
+  `claude-sonnet-5` is the Anthropic mid-tier default, so an understated
+  rate lets a workload spend past its `max_cost_usd` ceiling before the
+  guardrail trips.
+
+  Crude on purpose, and scoped to the one row we know about. #188 tracks
+  the general version — a `provisional_until` field, `/pricing` marking
+  provisional rows, and a regen that reports which rates actually moved
+  instead of reading identically whether any did.
+
 - **Gemini could only reach Vertex AI through an environment variable.**
   `--provider` had no value that named the backend: `BuildModel` handed
   genai an empty client config and let it decide from
