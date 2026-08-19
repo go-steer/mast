@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+- **A budget ceiling a restart resets is a ceiling on what a workload spends
+  per process.** `newMeterPool` minted every session's meter at zero, so a
+  daemon restart handed each session its full cap back: a workload stopped by
+  `max_cost_usd: 5.00` after $5.02 resumed with $5.00 available. mast's
+  restarts are automatic and unattended, so a crash loop could spend the cap
+  once per restart, indefinitely — the exact situation the ceiling was bought
+  for. #166 made the watchdog halt durable and deliberately stopped here,
+  because a trip is one latched bit and spend is an accumulator that has to
+  come back to the cent.
+
+  It comes back as a ledger: one row per priced model call in
+  `agent_budget_spend`, written through a new `budget.Config.OnSpend` hook and
+  folded into a fresh meter by `budget.Meter.Restore` on a session's first
+  touch after a restart — session totals and each specialist's own, so scoped
+  ceilings survive too.
+
+  **Why not replay the session's own events**, which would have needed no new
+  state: ADK's database session service persists `UsageMetadata` and `Author`
+  but has no column for `ModelVersion` (`session/database/storage_session.go`,
+  adk/v2 v2.2.0). Every replayed call would therefore miss `pkg/pricing`'s
+  catalog and fall back to the flat per-1K rate that `pkg/budget` measures at
+  5.9x error on a cache-warm session, and a restored ceiling that wrong is
+  worse than none because it looks right. Replay would also price history at
+  today's weekly-regenerated rates, rewriting money that already left the
+  account, and its cost grows with the transcript — on the first turn after
+  every restart, for exactly the long sessions that survive restarts. Against
+  checkpointing the accumulator: that has to be reconciled against a
+  transcript that may have advanced, where a ledger written at the same
+  granularity the accumulator moves has nothing to reconcile. Its only loss
+  window is a call whose row had not landed, which is always an undercount,
+  never a phantom charge.
+
+  **Operator grants are replayed now too**, which #166 explicitly declined to
+  do — correctly at the time, since raising a ceiling over an accumulator that
+  had forgotten what it spent is arithmetic on a number that no longer means
+  anything. With the spend durable that inverts: a session an operator rescued
+  at $5.02/$5.00 would otherwise come back with the spend and without the
+  rescue. This needed `GuardrailRecord.GrantScope`, because replaying a
+  specialist's grant onto the session would raise a cap by an amount nobody
+  granted it. A pre-#175 row carries no scope, cannot be attributed either
+  way, and is skipped — it still counts toward the audit total, which is why
+  that total and the replayed figure can differ on an old database.
+
+  Durable spend also makes a wedged session permanently wedged, so a turn on a
+  session already past its ceiling is now refused **before** the model call
+  rather than after it. Enforcement is derived from usage-against-ceiling on
+  every priced event, so without the preflight a scheduler retrying every
+  minute would buy one model call a minute forever. The refusal is a `409`
+  naming `POST /sessions/{id}/guardrails/reset`, the same shape the watchdog's
+  is.
+
+  Restore fails open the way the watchdog's does — an unreadable ledger logs
+  and the turn runs — and the read is retried next turn rather than latched as
+  "restored to nothing". All of it requires `--attach-listen`, which already
+  requires `--session-db`: with no durable connection the pool behaves exactly
+  as it did before, and a daemon with budget ceilings and no attach surface now
+  warns at startup, as one with `--watchdog=enforce` already did.
+
 - **A rate can be current in its source and still be wrong, and nothing in
   the table could say so.** `claude-sonnet-5` carries Sonnet 5's
   *introductory* price of $2 in / $10 out per MTok, which lapses

@@ -164,6 +164,95 @@ func TestGuardrailStoreGrantsAccumulate(t *testing.T) {
 	}
 }
 
+// Grants split by the scope they were aimed at (#175), because a reader
+// that replays them has to give a specialist's runway to that
+// specialist. The whole-session audit totals keep their #166 meaning
+// alongside, and the two disagree on a legacy row — deliberately.
+func TestGuardrailStoreFoldsGrantsByScope(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openGuardrailStore(t)
+
+	sess := ""
+	spec := "OOMKilled"
+	rows := []GuardrailRecord{
+		// A grant to the session: non-nil, empty.
+		{Kind: GuardrailKindReset, Guardrail: GuardrailCostCeiling,
+			BudgetAddedUSD: 5, TokensAdded: 1_000, TurnsAdded: 2, GrantScope: &sess},
+		// A second one, to prove per-scope grants accumulate too.
+		{Kind: GuardrailKindReset, Guardrail: GuardrailCostCeiling,
+			BudgetAddedUSD: 2, GrantScope: &sess},
+		// And one aimed at a specialist, which must not land on the session.
+		{Kind: GuardrailKindReset, Guardrail: GuardrailCostCeiling,
+			BudgetAddedUSD: 1, TurnsAdded: 4, GrantScope: &spec},
+		// A pre-#175 row: recorded before the column existed, so its scope
+		// is unknown rather than "the session".
+		{Kind: GuardrailKindReset, Guardrail: GuardrailCostCeiling,
+			BudgetAddedUSD: 9, TokensAdded: 500},
+		// A reset that granted nothing is not a grant of zero.
+		{Kind: GuardrailKindReset, Guardrail: GuardrailAll, GrantScope: &sess},
+	}
+	for i, r := range rows {
+		if err := s.Append(ctx, gApp, gUser, gSID, r); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+
+	st, err := s.Fold(ctx, gApp, gUser, gSID)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	// The audit total is every grant, attributable or not — the figure
+	// #166 already reported, unchanged.
+	if st.BudgetAddedUSD != 17 || st.TokensAdded != 1_500 || st.TurnsAdded != 6 {
+		t.Errorf("audit totals = $%.2f / %d tokens / %d turns, want $17.00 / 1500 / 6",
+			st.BudgetAddedUSD, st.TokensAdded, st.TurnsAdded)
+	}
+	if len(st.GrantsByScope) != 2 {
+		t.Fatalf("GrantsByScope = %+v, want exactly the session and OOMKilled", st.GrantsByScope)
+	}
+	// The session's own runway excludes the $9 nobody can attribute: a
+	// reader replaying it would raise a ceiling by an amount no operator
+	// granted the session.
+	if got := st.GrantsByScope[""]; got != (GuardrailGrant{BudgetAddedUSD: 7, TokensAdded: 1_000, TurnsAdded: 2}) {
+		t.Errorf("session grant = %+v, want $7.00 / 1000 tokens / 2 turns (the legacy row is not replayable)", got)
+	}
+	if got := st.GrantsByScope[spec]; got != (GuardrailGrant{BudgetAddedUSD: 1, TurnsAdded: 4}) {
+		t.Errorf("OOMKilled grant = %+v, want $1.00 / 4 turns", got)
+	}
+
+	// History carries the scope back out, so an audit can tell a session
+	// grant from a specialist's — and a legacy row from either.
+	hist, err := s.History(ctx, gApp, gUser, gSID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(hist) != len(rows) {
+		t.Fatalf("History returned %d rows, want %d", len(hist), len(rows))
+	}
+	if hist[0].GrantScope == nil || *hist[0].GrantScope != "" {
+		t.Errorf("row 0 GrantScope = %v, want a non-nil empty string", hist[0].GrantScope)
+	}
+	if hist[2].GrantScope == nil || *hist[2].GrantScope != spec {
+		t.Errorf("row 2 GrantScope = %v, want %q", hist[2].GrantScope, spec)
+	}
+	if hist[3].GrantScope != nil {
+		t.Errorf("row 3 GrantScope = %q, want nil — an unrecorded scope must not read back as the session", *hist[3].GrantScope)
+	}
+}
+
+// SessionScope is the value callers write for "the session", and the
+// nil-vs-empty distinction it exists for is the whole reason the fold
+// can skip legacy rows.
+func TestSessionScopeIsNonNilEmpty(t *testing.T) {
+	got := SessionScope()
+	if got == nil {
+		t.Fatal("SessionScope() is nil; a nil scope means unattributable, not the session")
+	}
+	if *got != "" {
+		t.Fatalf("SessionScope() = %q, want the empty string", *got)
+	}
+}
+
 // GuardrailAll clears both latches; a targeted reset clears only its
 // own. An operator clearing the budget must not silently disarm the
 // watchdog halt that is the reason the session is stuck.

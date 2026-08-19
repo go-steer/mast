@@ -134,6 +134,20 @@ type Config struct {
 	// that authors the event — for a specialist, its spec name. An
 	// agent with no scope is metered into the session totals only.
 	Scopes map[string]Limits
+
+	// OnSpend, when set, is called once per priced call with what that
+	// call added — the write half of the durability seam described in
+	// durable.go. It runs on the caller's goroutine, outside the meter's
+	// lock, after the fold and before Observe returns, including when
+	// the fold reported a crossed ceiling: the call happened and the
+	// money is spent whether or not it was the one that stopped the run.
+	//
+	// It must not call back into the meter (Snapshot and friends take
+	// the same lock the fold just released, so a re-entrant caller would
+	// read a different meter than the one it was told about, and a
+	// re-entrant Observe would recurse). Keep it to handing the Spend
+	// somewhere durable.
+	OnSpend func(Spend)
 }
 
 // Meter accumulates usage for one session, and for each scoped agent
@@ -150,6 +164,14 @@ type Meter struct {
 	// figure as a mix of two pricing models, and every figure this meter
 	// reports is drawn from the same stream of calls.
 	unpriced int
+
+	// restored latches once prior spend has been folded in, so a second
+	// fold is refused rather than double-counted (see Restore).
+	restored bool
+
+	// onSpend is Config.OnSpend. Set at construction and never mutated,
+	// so Observe reads it without the lock.
+	onSpend func(Spend)
 }
 
 // usage is one accumulator: a session's or a scope's.
@@ -167,7 +189,7 @@ func NewMeter(limits Limits) *Meter {
 
 // New constructs a Meter from a full config.
 func New(cfg Config) *Meter {
-	m := &Meter{limits: cfg.Limits}
+	m := &Meter{limits: cfg.Limits, onSpend: cfg.OnSpend}
 	if len(cfg.Scopes) > 0 {
 		m.scopes = make(map[string]Limits, len(cfg.Scopes))
 		m.spent = make(map[string]*usage, len(cfg.Scopes))
@@ -186,6 +208,20 @@ func (m *Meter) Observe(ev *session.Event) error {
 	if ev == nil || ev.UsageMetadata == nil {
 		return nil
 	}
+	s, err := m.fold(ev)
+	// Outside the lock, and unconditional: a call that crossed a ceiling
+	// still cost what it cost, and a ledger that dropped exactly the
+	// calls that tripped the guardrail would understate every session
+	// this feature exists for.
+	if m.onSpend != nil {
+		m.onSpend(s)
+	}
+	return err
+}
+
+// fold is Observe's locked half: it accumulates the event and reports
+// both what it added and whether that crossed a ceiling.
+func (m *Meter) fold(ev *session.Event) (Spend, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -205,20 +241,21 @@ func (m *Meter) Observe(ev *session.Event) error {
 	// running token total: with per-scope rates and per-model catalog
 	// pricing the session total is a sum of differently-priced calls,
 	// not one multiplication.
-	spend := m.priceOf(ev, cat, rate)
+	spend, unpriced := m.priceOf(ev, cat, rate)
+	s := Spend{Author: ev.Author, Tokens: tokens, CostUSD: spend, Unpriced: unpriced}
 
 	m.total.add(tokens, spend)
 	if scoped {
 		u := m.spent[ev.Author]
 		u.add(tokens, spend)
 		if err := check(scope, u); err != nil {
-			return fmt.Errorf("%w: specialist %q: %s", ErrExceeded, ev.Author, err)
+			return s, fmt.Errorf("%w: specialist %q: %s", ErrExceeded, ev.Author, err)
 		}
 	}
 	if err := check(m.limits, &m.total); err != nil {
-		return fmt.Errorf("%w: %s", ErrExceeded, err)
+		return s, fmt.Errorf("%w: %s", ErrExceeded, err)
 	}
-	return nil
+	return s, nil
 }
 
 func (u *usage) add(tokens int64, cost float64) {
@@ -258,13 +295,14 @@ func crossed(scope string, l Limits, u *usage) []Trip {
 }
 
 // priceOf costs one model call, against cat where it can and the flat
-// rate where it cannot. Caller holds m.mu.
+// rate where it cannot, and reports whether it had to fall back.
+// Caller holds m.mu.
 //
 // Cached input is billed at the catalog's cache-read rate, which is
 // typically a tenth of fresh input; on a cache-warm agent that subset is
 // the majority of the prompt, so folding it in at the input rate is the
 // single largest source of error in a flat-rate figure.
-func (m *Meter) priceOf(ev *session.Event, cat *pricing.Catalog, rate float64) float64 {
+func (m *Meter) priceOf(ev *session.Event, cat *pricing.Catalog, rate float64) (cost float64, unpriced bool) {
 	u := ev.UsageMetadata
 	if cat != nil {
 		if r, ok := cat.Lookup(ev.ModelVersion); ok && !r.IsZero() {
@@ -278,11 +316,12 @@ func (m *Meter) priceOf(ev *session.Event, cat *pricing.Catalog, rate float64) f
 			if prompt := int(u.PromptTokenCount); cached > prompt {
 				cached = prompt
 			}
-			return r.CostUSDWithCache(int(u.PromptTokenCount)-cached, cached, int(u.CandidatesTokenCount))
+			return r.CostUSDWithCache(int(u.PromptTokenCount)-cached, cached, int(u.CandidatesTokenCount)), false
 		}
 		m.unpriced++
+		unpriced = true
 	}
-	return float64(u.TotalTokenCount) / 1000 * rate
+	return float64(u.TotalTokenCount) / 1000 * rate, unpriced
 }
 
 // Snapshot returns the session's cumulative usage so far.
