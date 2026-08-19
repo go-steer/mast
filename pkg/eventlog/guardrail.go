@@ -107,8 +107,37 @@ type GuardrailRecord struct {
 	BudgetAddedUSD float64
 	TokensAdded    int64
 	TurnsAdded     int
+	// GrantScope names the budget scope a grant was aimed at: nil for a
+	// row that does not carry one, and a non-nil "" for a grant aimed at
+	// the session.
+	//
+	// The nil-vs-empty distinction is load-bearing rather than fussy.
+	// Rows written before this column existed (#166, v0.4) read back as
+	// nil, and a nil is genuinely unknown: it could be a session grant or
+	// a specialist's. Replaying it as a session grant would raise a
+	// ceiling by an amount no operator ever granted the session, so a
+	// reader that applies grants must skip the nils and apply only what
+	// it can attribute (#175).
+	GrantScope *string
 	// At is the wall-clock time of the fact. Zero means "now".
 	At time.Time
+}
+
+// SessionScope is the GrantScope value for a grant aimed at the session
+// rather than at one specialist — a non-nil pointer to the empty string,
+// which is what distinguishes it from a row that recorded no scope at
+// all.
+func SessionScope() *string {
+	s := ""
+	return &s
+}
+
+// GuardrailGrant is the runway granted to one budget scope over a
+// session's life.
+type GuardrailGrant struct {
+	BudgetAddedUSD float64
+	TokensAdded    int64
+	TurnsAdded     int
 }
 
 // GuardrailState is what folding a session's guardrail rows forward
@@ -126,17 +155,35 @@ type GuardrailState struct {
 	TrippedAt time.Time
 
 	// CostTripped mirrors the watchdog latch for the budget ceiling.
-	// mast's daemon does not restore it today (see GuardrailStore.Fold);
-	// the fold reports it because the rows carry it and a reader that
-	// can act on it should not have to re-derive it.
+	// mast's daemon does not restore it, and since #175 that is a
+	// decision rather than a gap: a cost trip is derived from
+	// accumulator-vs-ceiling on every event (pkg/budget has no trip
+	// flag), so restoring the spend and the grants restores the trip
+	// with them. A latch alongside the arithmetic would be a second
+	// answer to the same question, free to disagree with it. The fold
+	// reports the field because the rows carry it and a reader that can
+	// act on it should not have to re-derive it.
 	CostTripped bool
 	CostReason  string
 
 	// BudgetAddedUSD / TokensAdded / TurnsAdded accumulate across every
-	// reset in the session's history.
+	// reset in the session's history, whichever scope each was aimed at.
+	// This is the audit total — "what has been handed to this session" —
+	// and it stays whole-session so the figure #166 reported does not
+	// change meaning.
 	BudgetAddedUSD float64
 	TokensAdded    int64
 	TurnsAdded     int
+
+	// GrantsByScope is the same runway split by the scope it was granted
+	// to, keyed by specialist name with "" for the session. It is the
+	// figure a reader replays, and it counts only rows that recorded a
+	// scope: a pre-#175 row cannot be attributed, so it contributes to
+	// the audit totals above and to nothing else. The two therefore
+	// disagree on a database with legacy rows, deliberately — one answers
+	// "what did operators give this session", the other "what can be
+	// given back to it after a restart".
+	GrantsByScope map[string]GuardrailGrant
 }
 
 // Halted reports whether the folded state leaves the session refusing
@@ -161,7 +208,11 @@ type guardrailLogRow struct {
 	BudgetAddedUSD float64
 	TokensAdded    int64
 	TurnsAdded     int
-	At             time.Time `gorm:"not null"`
+	// Pointer so AutoMigrate's added column is NULL on rows written
+	// before it existed, and a fold can tell "no scope recorded" from
+	// "the session". See GuardrailRecord.GrantScope.
+	GrantScope *string
+	At         time.Time `gorm:"not null"`
 }
 
 // TableName pins the table name independent of GORM's pluralization,
@@ -232,6 +283,7 @@ func (s *GuardrailStore) Append(ctx context.Context, app, user, sid string, rec 
 		BudgetAddedUSD: rec.BudgetAddedUSD,
 		TokensAdded:    rec.TokensAdded,
 		TurnsAdded:     rec.TurnsAdded,
+		GrantScope:     rec.GrantScope,
 		At:             at,
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
@@ -284,6 +336,16 @@ func (s *GuardrailStore) Fold(ctx context.Context, app, user, sid string) (Guard
 			st.BudgetAddedUSD += r.BudgetAddedUSD
 			st.TokensAdded += r.TokensAdded
 			st.TurnsAdded += r.TurnsAdded
+			if r.GrantScope != nil && (r.BudgetAddedUSD != 0 || r.TokensAdded != 0 || r.TurnsAdded != 0) {
+				if st.GrantsByScope == nil {
+					st.GrantsByScope = map[string]GuardrailGrant{}
+				}
+				g := st.GrantsByScope[*r.GrantScope]
+				g.BudgetAddedUSD += r.BudgetAddedUSD
+				g.TokensAdded += r.TokensAdded
+				g.TurnsAdded += r.TurnsAdded
+				st.GrantsByScope[*r.GrantScope] = g
+			}
 			if r.Guardrail == GuardrailWatchdog || r.Guardrail == GuardrailAll {
 				st.WatchdogTripped = false
 				st.WatchdogSignal = ""
@@ -325,6 +387,7 @@ func (s *GuardrailStore) History(ctx context.Context, app, user, sid string) ([]
 			BudgetAddedUSD: r.BudgetAddedUSD,
 			TokensAdded:    r.TokensAdded,
 			TurnsAdded:     r.TurnsAdded,
+			GrantScope:     r.GrantScope,
 			At:             r.At,
 		})
 	}

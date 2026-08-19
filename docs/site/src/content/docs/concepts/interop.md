@@ -189,8 +189,10 @@ Restore fails open: an unreadable guardrail table logs a warning and the
 turn runs. A storage fault must not halt every session in the deployment
 with no trip behind it, and the per-turn backstops are all still armed.
 
-Budget *spend* does not survive a restart yet — see
-[getting unstuck after a trip](/concepts/budgets/#getting-unstuck-after-a-trip).
+Budget *spend* is durable in the same place and on the same terms — a
+ledger of priced calls, folded back before the first turn after a restart,
+failing open the same way. See
+[spend survives a restart](/concepts/budgets/#spend-survives-a-restart).
 
 `POST /sessions/{id}/guardrails/reset` is the way out: a budget trip is
 otherwise permanent, since enforcement is re-derived from usage against the

@@ -374,6 +374,14 @@ side: zero-token collection, wiring the finding diff, notifying only on
 change (with a failed post that does not resurrect the diff next cycle), and
 ack windows.
 
+Landed already on the way there: **durable budget spend**. A `max_cost_usd`
+that a restart reset was a ceiling on what a workload spent per process,
+which under automatic unattended restarts is no ceiling at all. Spend now
+comes back from a ledger of priced calls, per session and per specialist,
+along with the runway an operator granted — and a session already past its
+cap is refused before the model call rather than after it. See
+[budgets](/concepts/budgets/#spend-survives-a-restart).
+
 ## Further out
 
 - **AG-UI remaining slices** — the `agui://` federation client, per-key

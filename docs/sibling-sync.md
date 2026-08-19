@@ -308,21 +308,42 @@ page.
 
 ### Found while porting, not fixed here
 
-- **Budget spend does not survive a restart.** `newMeterPool` mints every session's
-  `budget.Meter` at zero, so a daemon restart hands each session its full ceiling back: a
-  workload stopped by `max_cost_usd: 5.00` after $5.02 resumes with $5.00 available, and a crash
-  loop can spend the cap once per restart indefinitely. PR E makes the *watchdog* halt durable and
-  deliberately stops there. The two halves are not the same size. A trip is one latched bit that
-  can be written when it happens and read once per process; spend is an accumulator that has to
-  be reconstructed to the cent, which means either folding the session's priced events back
-  through a fresh meter on first touch — correct, but it re-prices a whole transcript per session
-  and inherits every model-attribution and unpriced-event edge case — or persisting the
-  accumulator itself and reconciling it against a transcript that may have advanced past it.
-  Either is its own PR with its own correctness argument, and bolting it onto a trip-latch port
-  would bury it. Recorded as a gap so nobody reads "guardrails are durable" as covering both.
-  PR E does persist the *grants* an operator hands over on a reset, for the audit trail, but does
-  not replay them: raising a ceiling over an accumulator that has forgotten what it spent is
-  arithmetic on a number that no longer means anything.
+- **Budget spend does not survive a restart.** *Closed by [#175](https://github.com/go-steer/mast/issues/175);
+  kept here because the reasoning it forced is worth reading next to the gap that produced it.*
+  `newMeterPool` minted every session's `budget.Meter` at zero, so a daemon restart handed each
+  session its full ceiling back: a workload stopped by `max_cost_usd: 5.00` after $5.02 resumed
+  with $5.00 available, and a crash loop could spend the cap once per restart indefinitely. PR E
+  made the *watchdog* halt durable and deliberately stopped there. The two halves are not the
+  same size. A trip is one latched bit that can be written when it happens and read once per
+  process; spend is an accumulator that has to be reconstructed to the cent, which means either
+  folding the session's priced events back through a fresh meter on first touch — correct, but it
+  re-prices a whole transcript per session and inherits every model-attribution and
+  unpriced-event edge case — or persisting the accumulator itself and reconciling it against a
+  transcript that may have advanced past it. Either is its own PR with its own correctness
+  argument, and bolting it onto a trip-latch port would bury it.
+
+  **How it was settled.** Neither, in the end: mast keeps an append-only ledger
+  (`eventlog.SpendStore`, one row per priced call in `agent_budget_spend`), written through a
+  `budget.Config.OnSpend` hook and folded back by `budget.Meter.Restore` on a session's first
+  touch after a restart. Replay lost on a substrate fact rather than on taste — ADK's database
+  session service persists `UsageMetadata` and `Author` but has **no column for `ModelVersion`**
+  (`session/database/storage_session.go`, adk/v2 v2.2.0), so every replayed call would miss
+  `pkg/pricing`'s catalog and fall back to the flat per-1K rate that `pkg/budget` measures at
+  5.9x error on a cache-warm session; a restored ceiling that wrong is worse than none, because
+  it looks right. Replay also prices history at today's weekly-regenerated rates, retroactively
+  rewriting money that already left the account. Checkpointing lost to the reconciliation problem
+  named above; a ledger written at the same granularity the accumulator moves has nothing to
+  reconcile, and its only loss window is one model call, always an undercount.
+
+  **And the grants question inverted.** PR E persisted the *grants* an operator hands over on a
+  reset for the audit trail but did not replay them, because raising a ceiling over an
+  accumulator that had forgotten what it spent is arithmetic on a number that no longer means
+  anything. With the spend durable, *not* replaying them became the bug: a session an operator
+  rescued at $5.02/$5.00 would come back with the spend and without the rescue. They are replayed
+  now, which required recording *which scope* each grant targeted (`GuardrailRecord.GrantScope`,
+  nil for a pre-#175 row) — replaying a specialist's grant onto the session would raise a cap by
+  an amount nobody granted it, and a legacy row cannot be attributed either way, so it counts
+  toward the audit total and nothing else.
 
 ---
 

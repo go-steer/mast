@@ -305,5 +305,5 @@ func TestWatchdogPoolWithoutAStoreIsInert(t *testing.T) {
 	if halted, _ := h.wds.halted("s-no-store"); !halted {
 		t.Error("restore with no store cleared a live halt")
 	}
-	h.wds.recordReset("s-no-store", attach.GuardrailAll, "test", attach.GuardrailResetResponse{})
+	h.wds.recordReset("s-no-store", attach.GuardrailAll, "test", "", attach.GuardrailResetResponse{})
 }

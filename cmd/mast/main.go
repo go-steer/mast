@@ -549,10 +549,26 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			return err
 		}
 		wds.durable(gstore, logger)
-	} else if wdRes.Mode.Enforces() {
-		// Said once, at startup, rather than discovered after a restart
-		// silently disarmed the backstop.
-		logger.Warn("watchdog is in enforce mode without --attach-listen: a halt will not survive a restart, and there is no reset endpoint to clear one")
+
+		// The other half of the same promise (#175). A max_cost_usd
+		// ceiling is only a ceiling on what a workload spends per process
+		// until the spend itself is durable, and mast's restarts are
+		// automatic: a crash loop can spend the cap once per restart.
+		sstore, err := eventlog.NewSpendStore(turnCtx, elHandle.DB)
+		if err != nil {
+			logger.Error("failed to open the durable budget spend ledger", "error", err.Error())
+			return err
+		}
+		meters.durable(sstore, gstore, logger)
+	} else {
+		if wdRes.Mode.Enforces() {
+			// Said once, at startup, rather than discovered after a restart
+			// silently disarmed the backstop.
+			logger.Warn("watchdog is in enforce mode without --attach-listen: a halt will not survive a restart, and there is no reset endpoint to clear one")
+		}
+		if bundle != nil && (bundle.Budget.MaxCostUSD > 0 || bundle.Budget.MaxTurns > 0) {
+			logger.Warn("budget ceilings without --attach-listen: spend is not persisted, so a restart hands this workload its full budget back")
+		}
 	}
 
 	// Fixed metric registry (pkg/observability owns every family name;
@@ -1523,6 +1539,32 @@ type meterPool struct {
 	mu   sync.Mutex
 	cfg  budget.Config
 	byID map[string]*budget.Meter
+
+	// spend is the durable ledger (#175). Nil when the daemon has no
+	// durable session store, in which case a ceiling is enforced against
+	// this process's spend only — the pre-v0.5 behavior, and the reason
+	// serve warns about it at startup. A nil *eventlog.SpendStore is
+	// itself safe to call, so nothing below needs a nil check.
+	spend *eventlog.SpendStore
+	// guards is read, not written, here: the grants an operator handed
+	// over on a reset live in the guardrail log, and replaying spend
+	// without them would revoke a rescue the operator already paid for.
+	// watchdogPool owns the writing.
+	guards *eventlog.GuardrailStore
+	app    string
+	user   string
+	// restored latches per session once the durable state has been
+	// folded in, so the fold is one read per session per process rather
+	// than one per turn. Set on success only — the same rule
+	// watchdogPool follows, and safe for a second reason here:
+	// budget.Meter.Restore refuses a second fold outright, so a retry
+	// after a failed read cannot double-count.
+	restored map[string]bool
+	// writeFailures counts ledger appends dropped per session, so a
+	// broken database says so once at Error and then stops shouting on
+	// every model call.
+	writeFailures map[string]int
+	logger        *slog.Logger
 }
 
 func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, provider, modelName string) *meterPool {
@@ -1539,7 +1581,12 @@ func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, provider, m
 	// specialist that declares a tighter cap stops the run on its own
 	// (pkg/budget, "Scopes").
 	cfg := budget.Config{Limits: limits, Scopes: compose.MeterScopes(specs, provider, modelName)}
-	return &meterPool{cfg: cfg, byID: map[string]*budget.Meter{}}
+	return &meterPool{
+		cfg:           cfg,
+		byID:          map[string]*budget.Meter{},
+		restored:      map[string]bool{},
+		writeFailures: map[string]int{},
+	}
 }
 
 func (mp *meterPool) meter(sessionID string) *budget.Meter {
@@ -1547,10 +1594,228 @@ func (mp *meterPool) meter(sessionID string) *budget.Meter {
 	defer mp.mu.Unlock()
 	m, ok := mp.byID[sessionID]
 	if !ok {
-		m = budget.New(mp.cfg)
+		cfg := mp.cfg
+		// Each session's meter writes its own rows, so the hook closes
+		// over the session ID here rather than the pool threading it
+		// through budget.Spend. pkg/budget stays a package about
+		// arithmetic that knows nothing about sessions.
+		cfg.OnSpend = func(s budget.Spend) { mp.record(sessionID, s) }
+		m = budget.New(cfg)
 		mp.byID[sessionID] = m
 	}
 	return m
+}
+
+// durable gives the pool a ledger to write spend to and the guardrail
+// log to read grants from, so a ceiling stops bounding what a workload
+// spends *per process*.
+//
+// Wired on the same condition as watchdogPool.durable, and for a related
+// reason: the ledger is what makes a crossed ceiling survive a restart,
+// and POST /guardrails/reset is the only thing that clears one. Without
+// an attach listener the operator's recourse would be editing
+// max_cost_usd in the bundle and restarting — real, but a different
+// promise than the endpoint makes. --attach-listen already requires
+// --session-db, so the store exists exactly when the reset does.
+func (mp *meterPool) durable(spend *eventlog.SpendStore, guards *eventlog.GuardrailStore, logger *slog.Logger) {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	mp.spend, mp.guards = spend, guards
+	mp.app, mp.user, mp.logger = appName, defaultUserID, logger
+	if mp.restored == nil {
+		mp.restored = map[string]bool{}
+	}
+	if mp.writeFailures == nil {
+		mp.writeFailures = map[string]int{}
+	}
+}
+
+// record appends one priced call to the ledger. Called from the meter's
+// OnSpend hook, on the turn's own goroutine, outside the meter's lock.
+//
+// Synchronous, on a background context with a short deadline. A model
+// call takes seconds and an indexed insert takes microseconds, so a
+// queue would buy nothing but a window in which the rows that matter
+// most are the ones still in it. The context is not the turn's, for the
+// guardrail store's reason: the call that crosses a ceiling is the one
+// whose turn is being cancelled by the crossing.
+func (mp *meterPool) record(sessionID string, s budget.Spend) {
+	mp.mu.Lock()
+	store, app, user, logger := mp.spend, mp.app, mp.user, mp.logger
+	mp.mu.Unlock()
+	if store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
+	defer cancel()
+	err := store.Append(ctx, app, user, sessionID, eventlog.SpendRecord{
+		Author:   s.Author,
+		Tokens:   s.Tokens,
+		CostUSD:  s.CostUSD,
+		Unpriced: s.Unpriced,
+	})
+	if err == nil {
+		return
+	}
+	mp.mu.Lock()
+	mp.writeFailures[sessionID]++
+	n := mp.writeFailures[sessionID]
+	mp.mu.Unlock()
+	if logger == nil {
+		return
+	}
+	if n == 1 {
+		// The ceiling still holds in this process — the in-memory meter
+		// has the spend. What is lost is its survival of a restart, which
+		// is the whole point of the ledger and is worth saying plainly,
+		// once.
+		logger.Error("budget spend is not durable: could not append to the ledger; this session's ceiling will not survive a restart",
+			"session", sessionID, "cost_usd", fmt.Sprintf("%.6f", s.CostUSD), "error", err.Error())
+		return
+	}
+	logger.Debug("budget spend ledger append failed again",
+		"session", sessionID, "dropped_calls", n, "error", err.Error())
+}
+
+// spendWriteTimeout bounds one ledger append. Long enough that a busy
+// SQLite writer is not cut off mid-lock, short enough that a wedged
+// database cannot stall the event loop of every turn behind it.
+const spendWriteTimeout = 5 * time.Second
+
+// restore folds the session's durable spend, and the grants operators
+// have handed it, into this process's meter — once per session.
+//
+// Called at the top of every turn, and from the guardrail read and reset
+// paths, for the reason watchdogPool.restore is: a session's first
+// appearance in a fresh daemon is a turn or an operator poll, and either
+// one must see what the session already spent rather than a clean cap.
+//
+// Grants are replayed here, which #166 deliberately did not do. Its
+// reasoning was that raising a ceiling over an accumulator that had
+// forgotten what it spent is arithmetic on a number that no longer means
+// anything — true then, and it stops being true on the line above. With
+// spend durable the reverse becomes the bug: a session an operator
+// rescued at $5.02 against a $5.00 cap would come back with the spend and
+// without the rescue, wedged by a restart the operator never made and
+// with their own grant sitting in the audit log. Only grants that
+// recorded which scope they were aimed at are replayed; see
+// eventlog.GuardrailRecord.GrantScope for why a pre-#175 row cannot be.
+//
+// Fails open, loudly, the same way and for the same reason: a guardrail
+// that cannot be read is a reason to log and continue, not to convert a
+// storage fault into an outage. The ceiling is still armed against this
+// process's own spend, and every ledger row stays on disk for the next
+// attempt.
+func (mp *meterPool) restore(ctx context.Context, sessionID string) {
+	mp.mu.Lock()
+	spend, guards, app, user, done, logger := mp.spend, mp.guards, mp.app, mp.user, mp.restored[sessionID], mp.logger
+	mp.mu.Unlock()
+	if spend == nil || done {
+		return
+	}
+
+	st, err := spend.Fold(ctx, app, user, sessionID)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("could not read this session's durable spend; the ceiling is enforced against this process only",
+				"session", sessionID, "error", err.Error())
+		}
+		return
+	}
+	grants, err := guards.Fold(ctx, app, user, sessionID)
+	if err != nil {
+		// Both halves or neither. Restoring spend without the grants that
+		// answer it would wedge a session an operator already rescued,
+		// which is a worse failure than the one this whole path fixes —
+		// so leave the latch unset and try again next turn.
+		if logger != nil {
+			logger.Warn("could not read this session's guardrail grants; leaving its durable spend unrestored for now",
+				"session", sessionID, "error", err.Error())
+		}
+		return
+	}
+
+	prior := budget.Prior{
+		Session:  budget.Totals(st.Session),
+		Unpriced: st.Unpriced,
+	}
+	if len(st.ByAuthor) > 0 {
+		prior.ByAuthor = make(map[string]budget.Totals, len(st.ByAuthor))
+		for author, t := range st.ByAuthor {
+			prior.ByAuthor[author] = budget.Totals(t)
+		}
+	}
+
+	m := mp.meter(sessionID)
+	if !prior.IsZero() {
+		if rerr := m.Restore(prior); rerr != nil {
+			// budget.ErrRestored: a concurrent caller — an operator poll
+			// racing the turn that woke the session — got there first.
+			// The fold is idempotent and the meter is already correct, so
+			// this is a latch to set, not a failure to report.
+			if !errors.Is(rerr, budget.ErrRestored) && logger != nil {
+				logger.Warn("could not restore this session's durable spend",
+					"session", sessionID, "error", rerr.Error())
+			}
+			mp.markRestored(sessionID)
+			return
+		}
+	}
+	mp.markRestored(sessionID)
+
+	for scope, g := range grants.GrantsByScope {
+		add := budget.Limits{MaxCostUSD: g.BudgetAddedUSD, MaxTokens: g.TokensAdded, MaxTurns: g.TurnsAdded}
+		if _, gerr := m.Grant(scope, add); gerr != nil && logger != nil {
+			// The named specialist is gone from the roster. The grant is
+			// unapplicable rather than lost — it is still in the audit
+			// log — but an operator whose rescue silently stopped applying
+			// needs to hear it.
+			logger.Warn("could not replay an operator grant after restart; the scope it named is no longer in this workload",
+				"session", sessionID, "scope", scope, "error", gerr.Error())
+		}
+	}
+
+	if logger == nil || (prior.IsZero() && len(grants.GrantsByScope) == 0) {
+		return
+	}
+	tokens, cost, calls := m.Snapshot()
+	logger.Info("restored spend recorded before this process started",
+		"session", sessionID,
+		"cost_usd", fmt.Sprintf("%.4f", cost), "tokens", tokens, "model_calls", calls,
+		"grants_replayed", len(grants.GrantsByScope))
+}
+
+// markRestored latches the session so the fold does not repeat.
+func (mp *meterPool) markRestored(sessionID string) {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if mp.restored == nil {
+		mp.restored = map[string]bool{}
+	}
+	mp.restored[sessionID] = true
+}
+
+// preflight refuses a turn on a session that is already past a ceiling,
+// before any model call.
+//
+// The meter alone would catch it one call later — enforcement is derived
+// on each event, so the first priced event of the next turn crosses the
+// same ceiling and aborts the turn. That was tolerable while a restart
+// cleared the accumulator: the wedge lasted a process. Durable spend
+// makes it permanent, so a scheduler firing every minute against a
+// session nobody has reset would buy one model call a minute, forever.
+// A ceiling that keeps costing money after it trips is not a ceiling.
+//
+// Same shape and same error as the watchdog's refusal, including the
+// reset endpoint in the text, because from the caller's side they are
+// the same event: this session will not run until an operator says so.
+func (mp *meterPool) preflight(sessionID string) error {
+	trips := mp.meter(sessionID).Trips()
+	if len(trips) == 0 {
+		return nil
+	}
+	return fmt.Errorf("session %q is over its budget (%s); it refuses new turns until an operator resets it (POST /sessions/%s/guardrails/reset)",
+		sessionID, joinReasons(trips), sessionID)
 }
 
 // watchdogPool hands out one watchdog per session, mirroring
@@ -1812,12 +2077,17 @@ func (wp *watchdogPool) reset(sessionID string) {
 // runway did they hand over — is answered by the row that does the
 // clearing.
 //
-// The grants are recorded but not replayed on restore: mast's meters
-// start each process at zero spend, so a restored ceiling raise would
-// be arithmetic on top of an accumulator that has forgotten what it
-// spent. Recording them keeps the audit honest while the accumulator
-// half stays an acknowledged gap (docs/sibling-sync.md).
-func (wp *watchdogPool) recordReset(sessionID, guardrail, caller string, resp attach.GuardrailResetResponse) {
+// The scope a grant was aimed at is recorded alongside it, and this is
+// the seam that made grant replay possible (#175). #166 recorded the
+// grants for the audit trail and did not replay them, because raising a
+// ceiling over an accumulator that had forgotten what it spent is
+// arithmetic on a number that no longer means anything. Durable spend
+// inverted that, and replaying a specialist's grant onto the session
+// would raise a cap by an amount nobody granted it — so the scope has to
+// be a fact in the row rather than an assumption in the reader. Rows
+// written before this column carry NULL and are not replayed at all; see
+// eventlog.GuardrailRecord.GrantScope.
+func (wp *watchdogPool) recordReset(sessionID, guardrail, caller, scope string, resp attach.GuardrailResetResponse) {
 	wp.mu.Lock()
 	store, app, user, logger := wp.store, wp.app, wp.user, wp.logger
 	wp.mu.Unlock()
@@ -1832,6 +2102,7 @@ func (wp *watchdogPool) recordReset(sessionID, guardrail, caller string, resp at
 		BudgetAddedUSD: resp.BudgetAddedUSD,
 		TokensAdded:    resp.TokensAdded,
 		TurnsAdded:     resp.TurnsAdded,
+		GrantScope:     &scope,
 	})
 	if err != nil && logger != nil {
 		// Worth an error, not a failed request: the operator's reset
@@ -2115,6 +2386,16 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// after the chokepoint checks so an aborted or gate-paused session
 	// still reports the state an operator set deliberately.
 	if err := wds.preflight(sessionID); err != nil {
+		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
+	}
+
+	// What this session already spent, before the ceiling check that has
+	// to honor it (#175). Same placement and same fail-open posture as
+	// the watchdog pair above: one fold per session per process, and a
+	// storage fault leaves the ceiling armed against this process's own
+	// spend rather than refusing the turn.
+	meters.restore(ctx, sessionID)
+	if err := meters.preflight(sessionID); err != nil {
 		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
 	}
 

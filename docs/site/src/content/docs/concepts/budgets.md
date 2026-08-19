@@ -105,8 +105,10 @@ something to discover during an incident.
 A trip is not a one-time event. Enforcement is re-derived every priced
 event by comparing the session's accumulated usage against its ceiling —
 there is no "tripped" flag to clear — so a session that is past its cap is
-past it on the next turn too, and the one after that. Left alone, it
-refuses every prompt until the process restarts.
+past it on the next turn too, and the one after that. Left alone it
+refuses every prompt, and a restart does not clear it either: the spend
+is [durable](#spend-survives-a-restart), so the arithmetic comes back with
+it. An operator is the way out.
 
 Two attach endpoints are the way out:
 
@@ -147,18 +149,46 @@ bound.
 Every reset is logged with the authenticated caller that requested it, and
 recorded durably alongside the guardrail state when the daemon runs with
 `--attach-listen` — so "who cleared this, when, and what did they hand
-over" survives the log rotation and the process.
+over" survives the log rotation and the process. The runway itself is
+replayed after a restart, against the scope it was granted to.
 
-:::caution[Spend does not survive a restart]
-The accumulator is in-memory. A daemon that restarts starts every session
-at zero spend, so a budget ceiling crossed before the restart is not
-crossed after it, and the session resumes with its full cap available
-again. A watchdog `enforce` halt *is* durable
-([how](/concepts/interop/#a-halt-outlives-the-process-that-observed-it));
-the budget half is a known gap. Until it closes, treat the ceiling as a
-per-process bound and alert on `mast_budget_trips_total` rather than
-relying on the cap to hold across a crash loop.
-:::
+## Spend survives a restart
+
+A ceiling a restart resets is a ceiling on what a workload spends *per
+process*, which is not what anyone bought. mast's restarts are automatic
+and unattended, so an in-memory accumulator would let a crash loop spend
+the cap once per restart, indefinitely.
+
+With `--attach-listen` (which already requires `--session-db`), each
+priced model call is written to a ledger mast owns, and a session's first
+turn after a restart folds it back before anything runs: a workload
+stopped by `max_cost_usd: 5.00` after $5.02 comes back at $5.02, not at
+zero. So does each specialist's own accumulator, so per-specialist
+ceilings survive too — and so do the grants an operator handed over, which
+means a session rescued at $5.02 comes back rescued rather than wedged by
+a restart nobody made.
+
+Three properties worth knowing:
+
+- **A restored over-ceiling session is refused before the model, not
+  after.** Without durable spend, a wedged session bought one model call
+  per turn — the ceiling is crossed *by* the call that reports it — and
+  the overshoot was bounded by the process lifetime. Now that it is not,
+  the turn is refused up front with `409` naming the reset endpoint.
+  A scheduler retrying every minute buys nothing.
+- **What a call cost is recorded when the call is made**, not
+  re-derived later. Rates move weekly; a session's spend is money that has
+  already left the account, and re-pricing history at today's catalog
+  would quietly rewrite it.
+- **Restore fails open**, the way the watchdog's does: an unreadable
+  ledger logs and the turn runs, rather than a storage fault stopping
+  every session in the deployment. The read is retried on the next turn
+  rather than remembered as "restored to nothing".
+
+Without `--attach-listen` there is no durable connection to write to, and
+the accumulator is per-process as it was before; a daemon with budget
+ceilings and no attach surface says so at startup. Alert on
+`mast_budget_trips_total` either way.
 
 ## Watching it
 

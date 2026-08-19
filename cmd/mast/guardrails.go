@@ -59,6 +59,11 @@ func (g *guardrailView) info(sid string) attach.GuardrailInfo {
 	// changing that public signature to thread one through is a bigger
 	// change than this read is worth.
 	g.wds.restore(context.Background(), sid)
+	// And the spend half (#175): an operator polling a restarted daemon
+	// must not be shown $0.00 against a $5.00 cap on a session that has
+	// already spent $5.02. The projection below reads the meter, so the
+	// meter has to have caught up first.
+	g.meters.restore(context.Background(), sid)
 
 	m := g.meters.meter(sid)
 	tokens, cost, calls := m.Snapshot()
@@ -150,8 +155,12 @@ func (g *guardrailView) reset(sid string, req attach.GuardrailResetRequest) (att
 	// Before the retrip check reads any state: a reset issued against a
 	// restarted daemon has to see the halt it is clearing, or it reports
 	// "nothing was tripped" and leaves the durable trip in place for the
-	// next turn to restore.
+	// next turn to restore. The spend half matters more here than
+	// anywhere — the retrip check is arithmetic against the accumulator,
+	// and run against an empty one it would clear a session that is still
+	// $5 over and hand the operator a 200 saying so.
 	g.wds.restore(context.Background(), sid)
+	g.meters.restore(context.Background(), sid)
 
 	target := req.Guardrail
 	if target == "" {
@@ -236,7 +245,7 @@ func (g *guardrailView) reset(sid string, req attach.GuardrailResetRequest) (att
 	// operator mid-incident, which is exactly when a turn is running. A
 	// table mast owns has no such contention, so the row can be written
 	// inline, here, where the decision is made.
-	g.wds.recordReset(sid, target, req.Caller, resp)
+	g.wds.recordReset(sid, target, req.Caller, req.Scope, resp)
 	g.logger.Warn("guardrail reset",
 		"session", sid,
 		"caller", req.Caller,
