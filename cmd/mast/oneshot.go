@@ -317,8 +317,12 @@ func formatOutput(v any) string {
 // default via taskclass.ModelForTier for gemini/anthropic (mid tier
 // when no class is declared). modelSet reports whether the operator
 // set --model explicitly (flag.Visit), since the flag's default is
-// "echo". anthropic and anthropic-vertex resolve the same model ids —
-// the alias's backend choice is consumed later by compose.BuildModel.
+// "echo".
+//
+// Each family's two aliases resolve the same model ids — gemini and
+// vertex both serve gemini-*, anthropic and anthropic-vertex both serve
+// claude-*. The backend half of the choice is consumed later by
+// compose.BuildModel; a backend is not a different model.
 func resolveModelSelection(provider, model string, modelSet bool, class string) (string, error) {
 	tierDefault := func(providerKey string) string {
 		tier := taskclass.TierMid
@@ -335,14 +339,14 @@ func resolveModelSelection(provider, model string, modelSet bool, class string) 
 			return "", fmt.Errorf("--provider=%s conflicts with --model=%s", provider, model)
 		}
 		return provider, nil
-	case "gemini":
+	case compose.ProviderGemini, compose.ProviderVertex:
 		if modelSet {
 			if !strings.HasPrefix(model, "gemini-") {
-				return "", fmt.Errorf("--provider=gemini conflicts with --model=%s (want a gemini-* model id)", model)
+				return "", fmt.Errorf("--provider=%s conflicts with --model=%s (want a gemini-* model id)", provider, model)
 			}
 			return model, nil
 		}
-		return tierDefault("gemini"), nil
+		return tierDefault(provider), nil
 	case "anthropic", "anthropic-vertex":
 		if modelSet {
 			if !strings.HasPrefix(model, "claude-") {
@@ -352,6 +356,6 @@ func resolveModelSelection(provider, model string, modelSet bool, class string) 
 		}
 		return tierDefault("anthropic"), nil
 	default:
-		return "", fmt.Errorf("unknown --provider %q (want `gemini`, `anthropic`, `anthropic-vertex`, `echo`, or `scripted`)", provider)
+		return "", fmt.Errorf("unknown --provider %q (want `gemini`, `vertex`, `anthropic`, `anthropic-vertex`, `echo`, or `scripted`)", provider)
 	}
 }

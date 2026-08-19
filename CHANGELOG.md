@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **Gemini could only reach Vertex AI through an environment variable.**
+  `--provider` had no value that named the backend: `BuildModel` handed
+  genai an empty client config and let it decide from
+  `GOOGLE_GENAI_USE_VERTEXAI`. Claude got an explicit
+  `anthropic-vertex` alias at port time; Gemini did not, and the tier
+  table has carried a `vertex` family since the port that nothing could
+  ask for (`pkg/taskclass.Providers()`).
+
+  The failure mode is the reason this matters more than the ergonomics.
+  A deployment whose credential is the service account's ADC — Cloud
+  Run, GKE with Workload Identity — that forgot the variable did not
+  get "you meant Vertex, say so". It got an API-key error from the
+  *other* backend, naming a credential it deliberately does not have,
+  which points away from the fix.
+
+  `--provider=vertex` now serves `gemini-*` against Vertex outright:
+  `Backend: genai.BackendVertexAI` with the project from
+  `GOOGLE_CLOUD_PROJECT` and the location from `GOOGLE_CLOUD_LOCATION` /
+  `GOOGLE_CLOUD_REGION` (falling back to genai's own `global`). A
+  missing project fails at construction naming the variable, not inside
+  the SDK as a struct dump. This is core-agent's `vertex` provider
+  (`pkg/models/gemini.NewVertex`) ported, down to the name, so the two
+  repos describe the same thing the same way.
+
+  The env-var path is untouched: with no alias, genai's env-driven
+  selection still decides, and `geminiClientConfig` hands it the same
+  empty config it always did. What changes is that there is now a way to
+  be explicit. Empty-chunk tolerance follows the backend actually in use
+  rather than the environment, so a Vertex run by alias no longer reads
+  Vertex's candidate-less heartbeat chunks as malformed.
+
+  One adjacent fix, since the same switch decides it: a Gemini-family
+  alias no longer refuses a `claude-*` specialist override. The alias
+  picks a *Gemini* backend and says nothing about Anthropic's, so the
+  override now detects its own backend the way an unaliased run does —
+  which is what `NewModelResolver` has documented as allowed since
+  cross-provider overrides were resolved (2026-08-12).
+
 - **An MCP server could turn a call around and ask mast for input, and mast
   would answer.** The MCP protocol lets a server request elicitation,
   sampling, or the client's roots in the middle of a call the client already

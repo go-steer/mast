@@ -30,10 +30,9 @@ Audit and governance run through all four: an append-only event log behind every
 # Gemini API key
 export GEMINI_API_KEY=...
 
-# ...or Gemini on Vertex AI
-export GOOGLE_GENAI_USE_VERTEXAI=true
+# ...or Gemini on Vertex AI, on the service account's own credentials
 export GOOGLE_CLOUD_PROJECT=my-project
-export GOOGLE_CLOUD_LOCATION=global
+export GOOGLE_CLOUD_LOCATION=global   # and run with --provider=vertex
 ```
 
 ```bash
@@ -50,7 +49,7 @@ mast --task=research --provider=gemini "what changed in the last deploy?"
 mast sessions list --session-db=/var/lib/mast/sessions.db
 ```
 
-Claude is the same shape: `--provider=anthropic` with `ANTHROPIC_API_KEY`, or `--provider=anthropic-vertex` on the Vertex variables above. `--provider` alone picks the tier's model; `--model` pins a specific one. With neither, mast runs its built-in `echo` model — which is how the [unattended triage](https://go-steer.github.io/mast/quickstart/unattended-triage/) quickstart walks the whole inject → approve → `kill -9` → resume loop with no credentials and no network.
+Claude is the same shape: `--provider=anthropic` with `ANTHROPIC_API_KEY`, or `--provider=anthropic-vertex` on the Vertex variables above. `--provider` alone picks the tier's model; `--model` pins a specific one; the `-vertex` half of a pair picks the backend. With neither, mast runs its built-in `echo` model — which is how the [unattended triage](https://go-steer.github.io/mast/quickstart/unattended-triage/) quickstart walks the whole inject → approve → `kill -9` → resume loop with no credentials and no network.
 
 Point [mast-web](https://github.com/go-steer/mast-web) at the attach address for the browser operator UI. More walkthroughs: [library embedding](https://go-steer.github.io/mast/quickstart/library-embed/), [forking a starter](https://go-steer.github.io/mast/quickstart/fork-a-starter/).
 
