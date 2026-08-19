@@ -10,10 +10,18 @@ sidebar:
 `mast --workload=...` runs the daemon: the HTTP inject endpoint, the
 runner, and the session store.
 
+There is **no `serve` subcommand** — serve mode *is* the flag-only
+invocation, and adding a positional prompt switches the same binary
+into one-shot mode. `mast serve --attach-listen=…` therefore does not
+start a daemon; it exits `2` with the misplaced-flag error, because
+`serve` was read as the prompt. The only subcommands are
+[`sessions`](#mast-sessions-operator-surface) and
+[`stop`](#mast-stop-planned-stop).
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--workload` | — | Workload to run: a name resolved via [.agents/ discovery](/reference/agents-discovery/), or a path to a workload directory. Empty = trivial single-agent coordinator (inject-endpoint smoke only). |
-| `--dispatch` | `coordinator` | Dispatch shape: `coordinator` (SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (whole roster investigates concurrently, one `_synthesis` specialist merges), or `bounded` (one `SingleTurn` specialist, one model call, a report forced to a schema). A bundle can declare its own `dispatch:`; the flag wins only when the operator actually typed it. `fanout` requires a read-only roster and `bounded` a single schema-declaring `SingleTurn` specialist — see [the bundle reference](/reference/workload-bundle/). |
+| `--dispatch` | *(unset)* | Dispatch shape: `coordinator` (SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (whole roster investigates concurrently, one `_synthesis` specialist merges), `bounded` (one `SingleTurn` specialist, one model call, a report forced to a schema), or `auto` (read the shape off the roster — it never picks `bounded`, because a cost ceiling is declared, never inferred). **Unset takes the bundle's own `dispatch:`, then `coordinator`**; the flag wins only when the operator actually typed it. `fanout` requires a read-only roster and `bounded` a single schema-declaring `SingleTurn` specialist — see [the bundle reference](/reference/workload-bundle/). |
 | `--model` | `echo` | `echo` (offline fake, no credentials), `scripted` (JSONL recorded-turn replay; path via `MAST_SCRIPT`, strict matching via `MAST_SCRIPT_STRICT=1`), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`. |
 | `--provider` | — | Provider alias: `echo`, `scripted`, `gemini`, `anthropic`, or `anthropic-vertex`. Validates `--model` when both are set; picks the provider's default model from the `--task` profile's tier when `--model` is unset. For `claude-*` models the alias also picks the backend — without it, `ANTHROPIC_API_KEY` selects the first-party API, then a Vertex project (`ANTHROPIC_VERTEX_PROJECT_ID` / `GOOGLE_CLOUD_PROJECT`) selects Vertex. |
 | `--listen` | `:7777` | HTTP bind address for `/inject`, `/resume`, `/abort`, `/metrics`. |

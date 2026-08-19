@@ -15,7 +15,7 @@ grounded search on the tier defaults, Claude on Vertex completing the
 Task-mode tool loop, sessions durable across runs and providers). The
 final criterion — attach-mode reachability from mast-web — cleared the
 same day with the P1.3c port: the real mast-web SPA, served in proxy mode
-against a live `mast serve --attach-listen` daemon, connected, listed
+against a live `mast --attach-listen=…` daemon, connected, listed
 sessions, and round-tripped a prompt through a real turn over SSE.
 
 ## Stability, precisely
@@ -58,7 +58,7 @@ trigger in
   attach HTTP/SSE transport (protocol v1.4.0: session listing, seq'd
   replay + live tail, inject/wake/interrupt, capabilities frames, agent
   card) plus `pkg/auth` and the eventlog overlay, pinned at
-  `core-agent@25d8531c`. `mast serve --attach-listen` binds the surface
+  `core-agent@25d8531c`. Serve mode's `--attach-listen` binds the surface
   (requires `--session-db`; bearer auth via `MAST_ATTACH_TOKEN`;
   loopback-only without auth), and the
   [mast-web](https://github.com/go-steer/mast-web) operator UI connects
