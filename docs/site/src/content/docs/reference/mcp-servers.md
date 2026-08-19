@@ -159,6 +159,38 @@ response) passes through untouched and you get the status line. And an
 extracted error does **not** tear down the MCP session: the call fails,
 the model sees the reason, and the next call reuses the same connection.
 
+## When a server asks mast for input
+
+The MCP protocol lets a server turn a call around and ask the *client* for
+something mid-flight: a question for the operator (`elicitation/create`), a
+model completion on the client's account (`sampling/createMessage`), or the
+list of directories the client considers in scope (`roots/list`). On the
+2026-07-28 protocol these arrive folded into the tool result as SEP-2322
+input requests; on earlier
+versions the server sends them as requests of their own. Both shapes reach
+mast the same way and are treated the same way.
+
+**mast refuses all of them, on both protocol versions.** The call fails with
+
+```
+mcp: refusing server-initiated roots/list: mast's approval gate covers tool
+dispatch, not an input request inside a call already in flight
+```
+
+This is deliberate and there is no flag to turn it off. mast's approval gate
+sits on tool *dispatch* — an operator approves a specific call, and that call
+runs. A server-initiated input request happens inside a call the gate has
+already cleared, so nothing the operator approved covers it. Worse, the SDK's
+default behaviour is to answer the request and then **retry the original
+call**, so a single approved dispatch can run a server's tool up to twenty
+times.
+
+Practically, this means an MCP server that requires elicitation to complete a
+tool will fail against mast rather than hang or silently proceed. That is the
+intended trade for an unattended deployment, where there is no operator to
+answer the question anyway. Supporting elicitation with the gate wired
+through it is a separate piece of work, not a configuration change.
+
 ## How wiring interacts with `--model`
 
 MCP is **not** wired under the default `echo` model, which never emits tool

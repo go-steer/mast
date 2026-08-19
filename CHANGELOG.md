@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+- **An MCP server could turn a call around and ask mast for input, and mast
+  would answer.** The MCP protocol lets a server request elicitation,
+  sampling, or the client's roots in the middle of a call the client already
+  made. mast's approval gate sits on tool *dispatch*: an operator approves a
+  specific call and that call runs. A server-initiated request happens
+  inside a call the gate has already cleared, so nothing the operator
+  approved covers it — and the SDK answers it and then **retries the
+  original call**. Against a stateful HTTP fixture, one approved dispatch
+  ran the server's tool 20 times.
+
+  This was filed as latent, on the reasoning that mast registers no
+  elicitation or sampling handler so such a request would error. That holds
+  for those two. It does not hold for `roots/list`, which go-sdk answers
+  itself out of the client's own root set — no handler, no capability
+  opt-in, no error — so the round trip completed against mast today.
+
+  The documented off switch, `MultiRoundTripOptions.Disabled`, is also only
+  half of it: the client-side middleware it governs runs on protocol
+  ≥ 2026-07-28, and `StreamableServerTransport.SupportsProtocolVersion`
+  serves that version only when the server is stateless. An ordinary
+  stateful HTTP server negotiates 2025-11-25 and its *server*-side
+  middleware sends the request directly, which `Disabled` never sees.
+
+  `pkg/mcp` now builds its own MCP client for both transports, with the
+  middleware disabled, no client capabilities advertised, and a receiving
+  middleware that refuses `elicitation/create`, `sampling/createMessage`,
+  and `roots/list` by name. Refusing by method rather than by omitting a
+  handler is the point: a future elicitation handler, added for a good
+  reason, has to delete a line someone reviews instead of silently
+  acquiring a gate bypass. Both protocol regimes are pinned in
+  `pkg/mcp/mrtr_test.go`, alongside two tripwires that fail if the SDK's
+  defaults move.
+
+  An MCP server that needs elicitation to complete a tool now fails against
+  mast rather than proceeding unapproved. On an unattended deployment there
+  is no operator to answer the question anyway; supporting elicitation with
+  the gate wired through it is separate work.
+
 ## v0.4.0 (2026-08-17)
 
 *An operator approves the exact call that will fire, the loop runs on a

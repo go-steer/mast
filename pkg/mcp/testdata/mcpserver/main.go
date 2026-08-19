@@ -17,6 +17,11 @@
 // end to end. It exposes a single "ping" tool that returns "pong". The
 // name it reports is overridable via MCP_TEST_TOOL_NAME so a test can
 // assert that env passed through buildStdioCommand reaches the child.
+//
+// Setting MCP_TEST_INPUT_REQUEST adds a second tool, "needs-input", that
+// answers every call with a server-initiated input request (SEP-2322)
+// instead of content — the shape mrtr_test.go uses to check that the
+// stdio toolset surfaces such a request rather than fulfilling it.
 package main
 
 import (
@@ -39,6 +44,15 @@ func main() {
 				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "pong"}},
 			}, struct{}{}, nil
 		})
+
+	if os.Getenv("MCP_TEST_INPUT_REQUEST") != "" {
+		mcpsdk.AddTool(srv, &mcpsdk.Tool{Name: "needs-input", Description: "asks the client for input"},
+			func(_ context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
+				return &mcpsdk.CallToolResult{
+					InputRequests: mcpsdk.InputRequestMap{"need": &mcpsdk.ListRootsParams{}},
+				}, struct{}{}, nil
+			})
+	}
 
 	if err := srv.Run(context.Background(), &mcpsdk.StdioTransport{}); err != nil {
 		os.Exit(1)
