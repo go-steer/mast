@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A Vertex resource-path model echo no longer costs a session its
+  per-model rates.** `ModelVersion` is stamped from the model the API
+  echoes back, because where that disagrees with the request the server's
+  answer is the billed one. But the field is read as a pricing key, and
+  `pricing.Catalog` matches by exact key then by longest prefix *anchored
+  at the start of the string* — so `claude-opus-4-5@20251101` finds its
+  row and `projects/{p}/locations/{l}/publishers/anthropic/models/…` finds
+  nothing. On `anthropic-vertex`, an echo carrying a resource path now
+  falls back to the requested model ID.
+
+  The failure this avoids was already bounded — `Meter.priceOf` degrades
+  to the flat per-1k rate and counts the turn as unpriced rather than
+  billing it at zero, so the ceiling still trips — but it discards every
+  per-model rate including cache reads, which is the largest term on a
+  cache-warm agent.
+
 - **A watchdog halt reports as a watchdog halt, not as a Vertex config
   error.** `turn-error` gains a `watchdog_halt` kind carrying
   `retryable: false` and a hint naming the reset endpoint, and the attach

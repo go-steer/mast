@@ -111,6 +111,14 @@ restated as work.
 | Usage projection | `pkg/providers/anthropic/stream.go:106`, `pkg/providers/gemini` | provider usage folds into `genai.GenerateContentResponseUsageMetadata` | That struct has no cache-**write** bucket (documented undercount, `stream.go:123`), and nothing at all for KV-cache stats |
 | The cost check's own matcher | `internal/evals/judge/cost.go:403` | reported `ModelVersion` relates to the resolved id by `HasPrefix` in either direction — right for Vertex's date suffixes (`claude-opus-5@20251101`) | A backend that reports an unrelated string (a Vertex MaaS `deepseek-ai/…-maas` id, an Azure deployment name, a vLLM local weights path) fails the *resolved-is-not-the-same-claim-as-ran* assertion and so **fails the nightly**. That is the check refusing to certify what it cannot verify — correct behavior — but it needs a per-profile identity rule rather than a prefix |
 
+One instance of the last row is closed at the source rather than in the
+check (#210, 2026-08-20): `pkg/providers/anthropic/llm.go` now refuses an
+echoed **resource path** and stamps the requested id instead. That is not a
+general answer — it is the one backend mast actually ships against Vertex,
+where the `/` shape is reachable today and where the catalog's own regen
+already drops `/` ids as router noise (row 5). Every other identity in the
+last row's list still needs the per-profile rule.
+
 Under all ten sits one assumption worth naming on its own, because it is the
 one that decides the shape of the fix:
 

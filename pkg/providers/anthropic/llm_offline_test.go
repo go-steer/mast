@@ -42,6 +42,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/mast/pkg/pricing"
 )
 
 // messagesSSEFixture is a canonical streaming response: two text
@@ -575,5 +577,116 @@ func TestGenerateContent_NonStreamingYieldsOnlyTerminal(t *testing.T) {
 	}
 	if final.UsageMetadata == nil {
 		t.Error("terminal response lost UsageMetadata in non-streaming mode")
+	}
+}
+
+// echoFixture is the canonical stream with the model the server echoes
+// in message_start swapped out. Only that field varies across the cases
+// below.
+func echoFixture(model string) string {
+	return strings.Replace(messagesSSEFixture, `"model":"claude-test"`, `"model":"`+model+`"`, 1)
+}
+
+// ModelVersion is not a label, it is a pricing key: pkg/budget's
+// Meter.priceOf hands it to pricing.Catalog and drops the whole session
+// to a flat per-1k rate when it does not resolve — losing the
+// cache-read rate, which on a cache-warm agent is the largest term.
+//
+// So the assertion here is not "the field is non-empty", it is "the
+// value resolves in the catalog mast actually prices with". A stamp
+// nothing can look up is the same outcome as no stamp at all, arrived
+// at more expensively (#210).
+func TestGenerateContent_ModelVersionIsAPricingKey(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		echo string // what the server names in message_start
+		want string // what must land in ModelVersion
+		why  string
+	}{
+		{
+			name: "a bare id is taken as-is",
+			echo: "claude-opus-4-5",
+			want: "claude-opus-4-5",
+			why:  "the server's echo is the billed model and normally agrees with the request",
+		},
+		{
+			name: "a dated snapshot beats the alias we asked for",
+			echo: "claude-opus-4-5-20251101",
+			want: "claude-opus-4-5-20251101",
+			why:  "an alias resolves server-side to a snapshot, and the snapshot is what was billed",
+		},
+		{
+			name: "the Vertex @date shape survives",
+			echo: "claude-opus-4-5@20251101",
+			want: "claude-opus-4-5@20251101",
+			why:  "documented in Provider.Model, and the catalog's longest-prefix match resolves it",
+		},
+		{
+			name: "a resource path falls back to what we asked for",
+			echo: "projects/p1/locations/us-east5/publishers/anthropic/models/claude-opus-4-5",
+			want: "claude-opus-4-5",
+			why:  "no catalog key is a prefix of a path, so the echo would price nothing; the request ID does",
+		},
+	}
+
+	// Builtin layer only — no project or user pricing file. That is
+	// the floor every deployment has, so a key that resolves here
+	// resolves everywhere.
+	cat, err := pricing.NewCatalog(pricing.Options{})
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			l, _ := newOfflineLLM(t, "claude-opus-4-5", echoFixture(tc.echo))
+
+			var final *adkmodel.LLMResponse
+			for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+				Contents: userText("hi"),
+			}, true) {
+				if err != nil {
+					t.Fatalf("GenerateContent yielded error: %v", err)
+				}
+				if !resp.Partial {
+					final = resp
+				}
+			}
+			if final == nil {
+				t.Fatal("no terminal response")
+			}
+			if final.ModelVersion != tc.want {
+				t.Errorf("ModelVersion = %q, want %q — %s", final.ModelVersion, tc.want, tc.why)
+			}
+
+			// The property that actually matters, checked against the
+			// real builtin catalog rather than a fixture: whatever was
+			// stamped has per-model rates behind it.
+			if _, ok := cat.Lookup(final.ModelVersion); !ok {
+				t.Errorf("pricing.Catalog cannot resolve %q — the turn silently leaves the per-model rates for the flat fallback", final.ModelVersion)
+			}
+		})
+	}
+}
+
+// Partials carry no usage, so nothing prices them and nothing should
+// stamp them either — a partial with a model on it invites a consumer
+// to count the same turn twice.
+func TestGenerateContent_PartialsStayUnstamped(t *testing.T) {
+	t.Parallel()
+	l, _ := newOfflineLLM(t, "claude-opus-4-5", messagesSSEFixture)
+
+	for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+		Contents: userText("hi"),
+	}, true) {
+		if err != nil {
+			t.Fatalf("GenerateContent yielded error: %v", err)
+		}
+		if resp.Partial && resp.ModelVersion != "" {
+			t.Errorf("partial carries ModelVersion %q, want empty", resp.ModelVersion)
+		}
 	}
 }

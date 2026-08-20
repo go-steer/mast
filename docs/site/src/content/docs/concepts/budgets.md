@@ -81,6 +81,23 @@ precedence). A model with no row anywhere is metered at a flat fallback
 rate and counted as unpriced rather than billed at zero — a ceiling still
 trips on it, just less precisely.
 
+### Which name gets looked up
+
+The rate table is keyed on the model the **provider says it ran**, not the
+one you asked for. Those normally agree, and where they don't the server's
+answer is the one that was billed: an alias resolves server-side to a dated
+snapshot, and pricing the snapshot is more accurate than pricing the alias.
+Lookup is by exact match and then by longest prefix anchored at the start of
+the string, so a Vertex-style `claude-opus-4-5@20251101` finds its
+`claude-opus-4-5` row.
+
+One shape can't be looked up: a backend that names the model as a full
+resource path (`projects/.../publishers/anthropic/models/claude-opus-4-5`)
+has no key that is a prefix of it. mast falls back to the model ID the
+request asked for rather than let a whole session drop to the flat rate —
+which would keep the ceiling honest but lose every per-model rate including
+cache reads, the largest term on a cache-warm agent.
+
 ### Some rates have an expiry date, and the catalog cannot say so
 
 A launch price is often introductory, and a `max_cost_usd` sized against
