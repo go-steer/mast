@@ -429,6 +429,24 @@ and the tools that would have served it. An unsatisfied question no read-only
 tool can answer stays out: LC-13 expects a rollback, lookout excludes write
 tools by design, and that is already reported as a structural ceiling.
 
+Four misses is few enough to ask which tool each one is, and the answer is
+that three of them are the same tool. `k8s_resource_top` is the only thing in
+the catalog that answers either saturation question, and two unrelated model
+families skipped it independently. So the board now charges a miss to a tool —
+but only when exactly one tool would have answered it. That restraint is the
+whole point: with 14 of 19 intents served two or three ways, charging a miss
+to each candidate would triple the numbers and name no cause, so a miss with
+several possible answers is counted as shared rather than blamed on anyone.
+The ranking leads with how many corpus scenarios a tool is the sole answer
+for, not with how often it was missed — the first is a property of the fixture
+and the second is one model on one night. What this buys is an experiment:
+`judge.toolDescription` lives in this repo rather than in k8s-lookout, so the
+description can be rewritten and the board re-run, and the nightly delta prints
+the answer as `k8s_resource_top: 3 miss(es) → 0`. The scores would not have
+shown it either way — a fix worth having moves `intent_coverage` by a fraction
+of one row's mean. The competing hypothesis is that the models reason past the
+tool rather than fail to find it, and the same experiment separates the two.
+
 ## Further out
 
 - **AG-UI remaining slices** — the `agui://` federation client, per-key

@@ -205,6 +205,42 @@ type MissBoard struct {
 	// seen. They deflate intent_coverage deliberately, but a gap in the
 	// table is not a miss by the model and is not counted as one.
 	Untabled int `json:"untabled"`
+	// Attribution is #171: the misses above grouped under the one tool
+	// that would have answered each, ranked by leverage.
+	Attribution []MissAttribution `json:"attribution,omitempty"`
+	// Shared is how many consequential misses had more than one tool that
+	// would have answered them, so no single tool is responsible.
+	// Counted rather than attributed — a miss charged to each of three
+	// tools would triple the ranking's numbers and point at none of them.
+	Shared int `json:"shared_misses"`
+}
+
+// MissAttribution is one tool's share of the board's consequential
+// misses, with what skipping it costs the corpus (#171).
+//
+// Every entry is sole-source by construction. A miss whose intent has an
+// alternative is not attributable: some other tool would have answered,
+// so nothing about this one caused it.
+//
+// The finding this exists to surface: across both v0.4.0 boards, three
+// of the four consequential misses are the same tool, k8s_resource_top,
+// skipped independently by two unrelated model families. It is the only
+// tool that satisfies either saturation intent, so skipping it does not
+// risk the miss — it guarantees it. Sole-source × gated-scenario-count
+// is what turns "the model skipped something" into a named item, and it
+// is what makes the description A/B in judge.toolDescription worth
+// running: the competing hypothesis is that the models are reasoning
+// past the tool rather than failing to find it, and the same experiment
+// separates the two.
+type MissAttribution struct {
+	Tool string `json:"tool"`
+	// Misses are the "<scenario> <intent>" keys charged to this tool.
+	Misses []string `json:"misses"`
+	// SoleSourceFor is every intent this tool alone answers.
+	SoleSourceFor []string `json:"sole_source_for"`
+	// Gates is how many corpus scenarios cannot reach full
+	// intent_coverage without it — the leverage half of the ranking.
+	Gates int `json:"gates_scenarios"`
 }
 
 // ScenarioMiss is one consequential miss with the row it came from.
@@ -402,7 +438,7 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 
 	board.Aggregate = aggregate(board.Scenes)
 	board.Validity = summarizeValidity(board.Scenes)
-	board.Misses = summarizeMisses(board.Scenes)
+	board.Misses = summarizeMisses(board.Scenes, evals.GatingBy(tbl, ds))
 	sum.Judge = board
 	return sum, nil
 }
@@ -544,9 +580,10 @@ func summarizeValidity(scenes []JudgeScenario) ValidityBoard {
 // [summarizeValidity] skips them, and it matters more here: a row with
 // no run has no unsatisfied intents to classify, so counting it would
 // make a board that lost rows read as a board that missed nothing.
-func summarizeMisses(scenes []JudgeScenario) MissBoard {
+func summarizeMisses(scenes []JudgeScenario, gating map[string]evals.ToolGating) MissBoard {
 	var b MissBoard
 	byIntent := map[string]int{}
+	charged := map[string][]string{}
 	for _, s := range scenes {
 		if s.Error != "" {
 			continue
@@ -559,8 +596,18 @@ func summarizeMisses(scenes []JudgeScenario) MissBoard {
 				Scenario: s.ID, Intent: m.Intent, ServedBy: m.ServedBy,
 			})
 			byIntent[m.Intent]++
+			// Attributable only when one tool could have answered. With
+			// two or more, charging the miss to each would triple the
+			// ranking's numbers and name none of them as the cause.
+			if len(m.ServedBy) != 1 {
+				b.Shared++
+				continue
+			}
+			name := m.ServedBy[0]
+			charged[name] = append(charged[name], s.ID+" "+m.Intent)
 		}
 	}
+	b.Attribution = rankAttribution(charged, gating)
 	sort.Slice(b.Consequential, func(i, j int) bool {
 		if b.Consequential[i].Scenario != b.Consequential[j].Scenario {
 			return b.Consequential[i].Scenario < b.Consequential[j].Scenario
@@ -571,6 +618,39 @@ func summarizeMisses(scenes []JudgeScenario) MissBoard {
 		b.ByIntent = append(b.ByIntent, fmt.Sprintf("%s=%d", id, byIntent[id]))
 	}
 	return b
+}
+
+// rankAttribution orders the charged tools by leverage: how much of the
+// corpus each one gates first, then how often it was actually skipped,
+// then by name so two identical boards render identically.
+//
+// Gates leads because it is the durable fact. How many misses a tool
+// collected on one board is a sample of one model on one night; how many
+// scenarios it is the only answer for is a property of the corpus, and
+// it is the number that says whether fixing this tool is worth an
+// afternoon.
+func rankAttribution(charged map[string][]string, gating map[string]evals.ToolGating) []MissAttribution {
+	out := make([]MissAttribution, 0, len(charged))
+	for name, misses := range charged {
+		sort.Strings(misses)
+		g := gating[name]
+		out = append(out, MissAttribution{
+			Tool:          name,
+			Misses:        misses,
+			SoleSourceFor: g.SoleSource,
+			Gates:         len(g.Gates),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		switch {
+		case out[i].Gates != out[j].Gates:
+			return out[i].Gates > out[j].Gates
+		case len(out[i].Misses) != len(out[j].Misses):
+			return len(out[i].Misses) > len(out[j].Misses)
+		}
+		return out[i].Tool < out[j].Tool
+	})
+	return out
 }
 
 func sortedKeys(m map[string]int) []string {
@@ -717,6 +797,17 @@ func (j *JudgeSummary) writeMisses(p func(string, ...any)) {
 	if len(m.ByIntent) > 0 {
 		p("  by intent: %s", strings.Join(m.ByIntent, "  "))
 		p("  an intent that recurs here is one tool's description or discoverability, not several unrelated rows")
+	}
+	if len(m.Attribution) > 0 {
+		p("  attributable to one tool (#171), most leverage first:")
+		for _, a := range m.Attribution {
+			p("    %s — sole answer to %s, gates %d of the corpus's scenarios, missed %d time(s) here",
+				a.Tool, strings.Join(a.SoleSourceFor, " and "), a.Gates, len(a.Misses))
+			p("      skipping it does not risk those misses, it guarantees them: no other tool in the catalog answers")
+		}
+	}
+	if m.Shared > 0 {
+		p("  %d miss(es) had more than one tool that would have answered, so none is attributable to a tool", m.Shared)
 	}
 	if m.OutOfCatalog > 0 {
 		p("  %d further unsatisfied intent(s) no read-only tool serves — the structural ceiling below, not a miss by the model", m.OutOfCatalog)

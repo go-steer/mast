@@ -188,6 +188,51 @@ func writeMissDelta(p func(string, ...any), before, after MissBoard) {
 	if len(gone) > 0 {
 		p("  no longer missed: %s", strings.Join(gone, "; "))
 	}
+	writeAttributionDelta(p, before, after)
+}
+
+// writeAttributionDelta reports #171's per-tool counts when the list
+// moved.
+//
+// This is the readout for the experiment the attribution layer exists to
+// make possible: judge.toolDescription is in this repo rather than in
+// k8s-lookout, so a sole-source tool that keeps getting skipped can have
+// its description changed and the board re-run. "k8s_resource_top: 3
+// miss(es) → 0" is that experiment's answer, and it is invisible in the
+// scores — a description fix moves intent_coverage by a fraction of one
+// row's worth of mean.
+func writeAttributionDelta(p func(string, ...any), before, after MissBoard) {
+	was := missCounts(before)
+	now := missCounts(after)
+	for _, tool := range unionKeys(was, now) {
+		if was[tool] == now[tool] {
+			continue
+		}
+		p("    %s: %d miss(es) → %d", tool, was[tool], now[tool])
+	}
+}
+
+func missCounts(b MissBoard) map[string]int {
+	out := make(map[string]int, len(b.Attribution))
+	for _, a := range b.Attribution {
+		out[a.Tool] = len(a.Misses)
+	}
+	return out
+}
+
+func unionKeys(a, b map[string]int) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, m := range []map[string]int{a, b} {
+		for k := range m {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func missKeys(b MissBoard) []string {

@@ -248,6 +248,43 @@ func TestWriteDelta_MissesAreNamedInBothDirections(t *testing.T) {
 	if out := delta(t, board(MissBoard{}), board(MissBoard{})); strings.Contains(out, "consequential misses") {
 		t.Errorf("a delta between two boards with no rows printed a miss section:\n%s", out)
 	}
+
+	// #171's readout. The experiment the attribution layer exists for is
+	// "change judge.toolDescription and re-run", and its answer is this
+	// line — the scores move by a fraction of one row's mean and say
+	// nothing.
+	charged := func(n int, misses ...ScenarioMiss) Summary {
+		b := MissBoard{Scenarios: 31, Consequential: misses}
+		if n > 0 {
+			keys := make([]string, 0, n)
+			for _, m := range misses {
+				keys = append(keys, m.Scenario+" "+m.Intent)
+			}
+			b.Attribution = []MissAttribution{{
+				Tool:          "k8s_resource_top",
+				Misses:        keys,
+				SoleSourceFor: []string{"inspect.node_saturation", "inspect.pod_saturation"},
+				Gates:         5,
+			}}
+		}
+		return board(b)
+	}
+	fixed := delta(t,
+		charged(2,
+			ScenarioMiss{Scenario: "LC-03", Intent: "inspect.pod_saturation", ServedBy: []string{"k8s_resource_top"}},
+			ScenarioMiss{Scenario: "LC-05", Intent: "inspect.node_saturation", ServedBy: []string{"k8s_resource_top"}}),
+		charged(0))
+	if !strings.Contains(fixed, "k8s_resource_top: 2 miss(es) → 0") {
+		t.Errorf("a tool that stopped being missed was not named:\n%s", fixed)
+	}
+
+	// A tool whose count did not move earns no line — the list above
+	// already said the misses are unchanged, and repeating it per tool
+	// makes the lines that do mean something harder to find.
+	steady := charged(1, ScenarioMiss{Scenario: "LC-05", Intent: "inspect.node_saturation", ServedBy: []string{"k8s_resource_top"}})
+	if out := delta(t, steady, steady); strings.Contains(out, "miss(es) →") {
+		t.Errorf("an unchanged attribution printed a movement line:\n%s", out)
+	}
 }
 
 // TestLoadSummary_RoundTripsARealBoard is the nightly's actual sequence:

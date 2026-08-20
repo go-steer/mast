@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **Three of the four consequential misses are the same tool, and the board
+  now says so.** `k8s_resource_top` is the only tool in the catalog that
+  answers either saturation question, and two unrelated model families
+  skipped it independently. Each miss is charged to a tool — but only when
+  exactly one tool would have answered it. With 14 of the table's 19 intents
+  served two or three ways, charging a miss to every candidate would triple
+  the numbers and name no cause, so a miss with several possible answers is
+  counted as shared rather than pinned on anyone.
+
+  The ranking leads with how many corpus scenarios a tool is the sole answer
+  for, then with how often it was actually missed. That order is deliberate:
+  the first is a property of the fixture and the second is one model on one
+  night, and the first is what says whether fixing the tool is worth an
+  afternoon. Skipping a sole-source tool does not risk the miss, it
+  guarantees it, which is a different fact from a model that chose a
+  different route to the same answer.
+
+  This exists to make an experiment readable. `judge.toolDescription` lives
+  in this repo rather than in k8s-lookout, so a tool that keeps being skipped
+  can have its description rewritten and the board re-run — and the nightly
+  delta prints the result as `k8s_resource_top: 3 miss(es) → 0`. The scores
+  would not have shown it: a fix worth keeping moves `intent_coverage` by a
+  fraction of one row's mean. The competing hypothesis is that the models
+  reason past the tool rather than fail to find it, and the same experiment
+  tells the two apart.
+
 - **The judged board names the questions a different tool choice would have
   answered — and there are four of them, not twenty-nine.** The obvious
   thing to measure is whether a run called the tools that had data for its
