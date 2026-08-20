@@ -430,6 +430,14 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	if bearer == "" {
 		logger.Warn("MAST_INJECT_TOKEN not set; inject endpoint is unauthenticated (dev only)")
 	}
+	// Who an approval names (#198). Nil unless the operator configured a
+	// user table, in which case a resume records the person rather than
+	// the shared credential.
+	injectAuthn, err := injectAuthenticator(logger, bearer)
+	if err != nil {
+		logger.Error("failed to build the inject listener's user table", "error", err.Error())
+		return err
+	}
 
 	// Two lifetimes (docs/durable-execution-design.md, "Shutdown
 	// contract"): ctx ends when a shutdown SIGNAL arrives and triggers
@@ -1100,6 +1108,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	srv, err := inject.New(inject.Config{
 		Listen:             listen,
 		BearerToken:        bearer,
+		Authenticator:      injectAuthn,
 		Handler:            handler,
 		ResumeHandler:      resumeHandler,
 		AbortHandler:       abortHandler,
