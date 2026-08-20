@@ -88,7 +88,7 @@ func (h *handlers) authorize(w http.ResponseWriter, r *http.Request, entry *Entr
 		return true
 	}
 	c, _ := auth.CallerFromContext(r.Context())
-	if auth.Authorize(c, action, entry.ACL) {
+	if auth.Authorize(c, action, entry.ACL()) {
 		return true
 	}
 	// Same body the lookup-not-found path uses so a 404 from the auth

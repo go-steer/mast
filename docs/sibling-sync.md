@@ -706,9 +706,9 @@ Each of these was checked against mast's code, and the gap is real.
 
 | SHA | Upstream | The mast finding |
 |---|---|---|
-| `6d1afd1` | let a session's ACL actually be set (#797) (#831) | mast has the ACL — `auth.SessionACL` with Owner / Viewers / Contributors, enforced by `auth.Authorize`, persisted through `SessionACLStore`, and the owner is filled from the authenticated caller at registration since #194. What it has no door for is *amendment*: `auth.ActionSessionAdmin` documents itself as covering "ACL / metadata mutations on the session" and is wired to exactly one route, `DELETE /sessions/{id}`. **Less severe than upstream's** (mast's ACL is enforced, not inert) — but a viewer cannot be added to a running session |
+| `6d1afd1` **(closed — [#216](https://github.com/go-steer/mast/issues/216), 2026-08-20)** | let a session's ACL actually be set (#797) (#831) | mast has the ACL — `auth.SessionACL` with Owner / Viewers / Contributors, enforced by `auth.Authorize`, persisted through `SessionACLStore`, and the owner is filled from the authenticated caller at registration since #194. What it has no door for is *amendment*: `auth.ActionSessionAdmin` documents itself as covering "ACL / metadata mutations on the session" and is wired to exactly one route, `DELETE /sessions/{id}`. **Less severe than upstream's** (mast's ACL is enforced, not inert) — but a viewer cannot be added to a running session |
 | `453e3f0` | report each subagent's configured tool grant on `/subagents` (#828) | `attach.SubagentCatalogInfo` carries Name, Description, Model, Root and Modes, and no tool grant. The operator question "what is this specialist allowed to touch" has no answer on the surface built to answer questions about specialists |
-| `a58fdcc` | root each turn in its own span and link the injects it answers (#807) | mast wires OTel for real (`pkg/observability/otel.go` builds a `TracerProvider` and an OTLP exporter) and then starts **one** span in the entire runtime, `digest.process`. There is no per-turn root span, so nothing links a turn to the inject that caused it. For the unattended product this is the audit artifact, which makes it a worse gap here than upstream |
+| `a58fdcc` **(closed — [#215](https://github.com/go-steer/mast/pull/215), 2026-08-20; the link half is n/a — mast dispatches injects synchronously, so no fan-in to link)** | root each turn in its own span and link the injects it answers (#807) | mast wires OTel for real (`pkg/observability/otel.go` builds a `TracerProvider` and an OTLP exporter) and then starts **one** span in the entire runtime, `digest.process`. There is no per-turn root span, so nothing links a turn to the inject that caused it. For the unattended product this is the audit artifact, which makes it a worse gap here than upstream |
 
 ### Design calls, not ports — 2 commits
 
@@ -793,14 +793,23 @@ n/a verdicts do not need re-deriving unless the trailer they hang on changed.
 
 Carried into the next pass from 2026-08-20, in the order they are worth doing:
 
-1. **`a58fdcc` — a per-turn root span.** The largest confirmed gap, and the one whose absence is
-   least visible: mast exports traces and emits one span. Unattended is the deployment where the
-   trace *is* the record.
-2. **`6d1afd1` — a route that amends a session ACL.** `ActionSessionAdmin` already documents the
-   mutation it has no door for.
+1. ~~**`a58fdcc` — a per-turn root span.**~~ **Shipped 2026-08-20**
+   ([#215](https://github.com/go-steer/mast/pull/215)). Every turn opens `mast.turn` at the shared
+   chokepoint with ADK's tree beneath it. mast needs **no** inject→turn links, contrary to this
+   report's own note: upstream's links exist because its inbox batches injects so one turn answers
+   several, and mast dispatches an inject synchronously on the request goroutine, which makes the
+   inject's server span the real parent already.
+2. ~~**`6d1afd1` — a route that amends a session ACL.**~~ **Shipped 2026-08-20**
+   ([#216](https://github.com/go-steer/mast/issues/216)). `GET`/`PUT /sessions/{id}/acl`, read at
+   the read bar and write at the admin bar. Two findings the port itself produced: a `PUT` on a
+   daemon that does not enforce ACLs is refused with 501 rather than accepted (an amendment nothing
+   consults is [#211](https://github.com/go-steer/mast/issues/211)'s defect one layer up), and
+   `Entry.ACL` had to become a lock-guarded accessor — a field written once at registration and read
+   unlocked by every authorizing request is a torn read the moment amendment exists.
 3. **`453e3f0` — subagent tool grants on `/subagents`.** Cheap, and the catalog is already there.
+   Next up.
 4. **`3de4134`** — unverdicted, and the baseline the last report was generated against.
-5. **[#210](https://github.com/go-steer/mast/issues/210) / [#211](https://github.com/go-steer/mast/issues/211)** — the two residuals this triage found, each smaller than the commit that surfaced it.
+5. ~~**[#210](https://github.com/go-steer/mast/issues/210) / [#211](https://github.com/go-steer/mast/issues/211)**~~ — both shipped 2026-08-20.
 
 Two open questions that are not ports and need an owner: whether mast follows upstream's
 park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it collides with what

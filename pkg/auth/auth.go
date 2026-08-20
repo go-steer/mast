@@ -15,7 +15,7 @@
 // Originally derived from go-steer/core-agent@25d8531cf8d1d69459471009a9e7e2e9b0dff1e2
 
 // Package auth defines the per-caller identity primitive used by the
-// multi-session attach layer. See docs/multi-session-design.md for the
+// multi-session attach layer. See core-agent's docs/multi-session-design.md for the
 // full design.
 //
 // The package is intentionally substrate-only: it defines Caller,

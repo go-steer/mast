@@ -106,7 +106,7 @@ type Options struct {
 	// session-scoped handlers authorize each action against the
 	// session ACL — including pre-resume (#484) — and unauthenticated
 	// requests are rejected unless AllowAnonymous. See
-	// docs/multi-session-design.md.
+	// core-agent's docs/multi-session-design.md.
 	Authenticator auth.Authenticator
 
 	// DefaultCaller is the Caller stamped onto requests when
@@ -163,7 +163,7 @@ type Options struct {
 	// single-session deployment model where the daemon constructs
 	// exactly one agent at startup.
 	//
-	// Per docs/multi-session-design.md §"Open questions" #1
+	// Per core-agent's docs/multi-session-design.md §"Open questions" #1
 	// (resolved 2026-06-12): explicit session-creation API is the
 	// preferred pattern; the factory closure lives in cmd-level
 	// wiring so the daemon can capture model/gate-template/tools/

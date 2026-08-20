@@ -47,6 +47,10 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	h.routeSession(mux, "GET", "pricing", auth.ActionSessionRead, h.doPricing)
 	h.routeSession(mux, "GET", "perms", auth.ActionSessionRead, h.doPerms)
 	h.routeSession(mux, "GET", "guardrails", auth.ActionSessionRead, h.doGuardrails)
+	// The ACL is readable at SessionRead, not SessionAdmin: everyone
+	// the ACL admits can already read the transcript, and a viewer who
+	// wants write access needs to know whom to ask.
+	h.routeSession(mux, "GET", "acl", auth.ActionSessionRead, h.doGetSessionACL)
 
 	// Mutation endpoints (PR A2): blocked by the ReadOnly middleware
 	// at the auth layer when ReadOnly=true (any non-GET is gated).
@@ -68,6 +72,11 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	h.routeSession(mux, "POST", "pricing/set", auth.ActionSessionWrite, h.doPricingSet)
 	h.routeSession(mux, "POST", "reload", auth.ActionSessionWrite, h.doReload)
 	h.routeSession(mux, "DELETE", "", auth.ActionSessionAdmin, h.doDeleteSession)
+	// The other half of what ActionSessionAdmin has always claimed to
+	// cover. Until #216 the action documented "modifying SessionACL"
+	// and DELETE was the only door behind it, so the only way to change
+	// who could see a session was to destroy it.
+	h.routeSession(mux, "PUT", "acl", auth.ActionSessionAdmin, h.doSetSessionACL)
 
 	// PR A3 async slash dispatchers. All synchronous on the wire —
 	// the operator stares at silence until the handler returns. The

@@ -67,6 +67,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -187,13 +188,20 @@ type Entry struct {
 	// reference; lifetime is the registrant's, not the registry's.
 	Agent Registrant
 
-	// ACL governs which Callers may interact with this session in a
+	// acl governs which Callers may interact with this session in a
 	// multi-session deployment. Zero value (empty Owner / nil slices)
 	// means "no owner" — only Admin Callers may access it, which is
 	// the documented behavior for legacy sessions registered via
 	// Register (vs. RegisterOwned). See
-	// docs/multi-session-design.md §"Migration story".
-	ACL auth.SessionACL
+	// core-agent's docs/multi-session-design.md §"Migration story".
+	//
+	// Unexported and guarded because the ACL is mutable at runtime
+	// (PUT /sessions/{id}/acl) while every request in flight reads
+	// it to authorize itself. A slice header assigned without a
+	// lock is not a stale read, it's a torn one. Read via ACL(),
+	// write via the registry's SetACL — never both at once.
+	aclMu sync.RWMutex
+	acl   auth.SessionACL
 
 	// lastTouchedNs is Unix nanoseconds of the last "activity" on
 	// this entry: a memory-hit Lookup, an event pumped by the
@@ -228,6 +236,38 @@ type Entry struct {
 	// registering a bare stubRegistrant, resumer's registerResumed
 	// path when cancel wasn't threaded).
 	cancelOnEvict context.CancelFunc
+}
+
+// ACL returns a copy of the entry's access-control list. Safe for
+// concurrent use with SetACL.
+//
+// The slices are cloned, not shared: a caller that ranges over the
+// returned Viewers while another goroutine amends the ACL is reading
+// its own array, and a caller that appends to them is not silently
+// granting access. Callers that want to change the ACL go through
+// SessionRegistry.SetACL, which also updates the persisted row.
+func (e *Entry) ACL() auth.SessionACL {
+	e.aclMu.RLock()
+	defer e.aclMu.RUnlock()
+	return auth.SessionACL{
+		Owner:        e.acl.Owner,
+		Viewers:      slices.Clone(e.acl.Viewers),
+		Contributors: slices.Clone(e.acl.Contributors),
+	}
+}
+
+// setACL replaces the entry's ACL. Unexported: an in-memory ACL that
+// disagrees with the persisted row is the failure mode this whole
+// surface exists to avoid, so the only way in is
+// SessionRegistry.SetACL, which writes the store first.
+func (e *Entry) setACL(acl auth.SessionACL) {
+	e.aclMu.Lock()
+	defer e.aclMu.Unlock()
+	e.acl = auth.SessionACL{
+		Owner:        acl.Owner,
+		Viewers:      slices.Clone(acl.Viewers),
+		Contributors: slices.Clone(acl.Contributors),
+	}
 }
 
 // LastTouchedAt returns the entry's last-touched wall time. Safe for
@@ -373,7 +413,7 @@ func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL, ca
 		UserID:        key.User,
 		SessionID:     key.SID,
 		Agent:         ag,
-		ACL:           acl,
+		acl:           acl,
 		regSeq:        r.regSeq,
 		cancelOnEvict: cancelOnEvict,
 	}
@@ -465,6 +505,68 @@ func (r *SessionRegistry) HardDelete(ctx context.Context, appName, userID, sessi
 		}
 	}
 	return nil
+}
+
+// SetACL replaces the ACL of an already-registered session, persisting
+// it before the in-memory entry changes so a crash between the two
+// leaves the durable row authoritative rather than a grant that only
+// this process ever knew about.
+//
+// Returns whether the new ACL reached disk. False means the amendment
+// is in-memory only and will not survive a restart — either no store
+// is wired, or the session has no Owner (legacy Register; SessionACLStore
+// rejects an ownerless row, and the "ACL row exists ⟺ session is
+// resumable" invariant means we must not invent one). Callers that
+// promise durability to an operator must surface that false.
+//
+// Refuses to clear an Owner that is already set: an owned session whose
+// owner is erased is reachable by admins only, which is a lockout
+// dressed up as an edit. Transfer it to someone instead.
+func (r *SessionRegistry) SetACL(ctx context.Context, appName, userID, sessionID string, acl auth.SessionACL) (persisted bool, err error) {
+	r.mu.RLock()
+	entry := r.byTriple[tripleKey{App: appName, User: userID, SID: sessionID}]
+	aclStore := r.aclStore
+	r.mu.RUnlock()
+	if entry == nil {
+		return false, fmt.Errorf("%w: %s/%s/%s", ErrSessionNotFound, appName, userID, sessionID)
+	}
+	if acl.Owner == "" && entry.ACL().Owner != "" {
+		return false, errors.New("attach: SetACL: owner cannot be cleared (transfer it to another identity instead)")
+	}
+
+	if aclStore != nil && acl.Owner != "" {
+		// Put is a whole-row Save, and it defaults a zero CreatedAt
+		// to now — so amending an ACL without carrying the existing
+		// timestamps forward would quietly re-date the session and
+		// jump it to the top of every LastTouchedAt ordering. Read
+		// them back first; a missing row just means this session was
+		// never persisted, and the defaults are then correct.
+		row := SessionACLRow{
+			AppName:      appName,
+			UserID:       userID,
+			SessionID:    sessionID,
+			Owner:        acl.Owner,
+			Viewers:      acl.Viewers,
+			Contributors: acl.Contributors,
+		}
+		switch prior, err := aclStore.Get(ctx, appName, userID, sessionID); {
+		case err == nil:
+			row.CreatedAt = prior.CreatedAt
+			row.LastTouchedAt = prior.LastTouchedAt
+		case errors.Is(err, ErrSessionACLNotFound):
+			// First persisted write for this session (it was
+			// registered before the store was wired, or under a
+			// Register that had no owner to persist).
+		default:
+			return false, fmt.Errorf("attach: read session ACL before amending: %w", err)
+		}
+		if err := aclStore.Put(ctx, row); err != nil {
+			return false, fmt.Errorf("attach: persist amended session ACL: %w", err)
+		}
+		persisted = true
+	}
+	entry.setACL(acl)
+	return persisted, nil
 }
 
 // Lookup returns the entry for the qualified (appName, sessionID) form.
@@ -684,7 +786,7 @@ func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL, ca
 		UserID:        key.User,
 		SessionID:     key.SID,
 		Agent:         ag,
-		ACL:           acl,
+		acl:           acl,
 		regSeq:        r.regSeq,
 		cancelOnEvict: cancelOnEvict,
 	}
@@ -746,7 +848,7 @@ func (r *SessionRegistry) ListAuthorized(c auth.Caller) []*Entry {
 	all := r.List()
 	out := make([]*Entry, 0, len(all))
 	for _, e := range all {
-		if auth.Authorize(c, auth.ActionSessionRead, e.ACL) {
+		if auth.Authorize(c, auth.ActionSessionRead, e.ACL()) {
 			out = append(out, e)
 		}
 	}

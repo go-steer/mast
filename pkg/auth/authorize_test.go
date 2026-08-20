@@ -23,7 +23,7 @@ import (
 )
 
 // TestAuthorize_Matrix walks the full action × role grid documented in
-// docs/multi-session-design.md §"Authorization rules". Every cell of
+// core-agent's docs/multi-session-design.md §"Authorization rules". Every cell of
 // the matrix must match what the design doc promises — operators read
 // that table and assume the code enforces it.
 func TestAuthorize_Matrix(t *testing.T) {

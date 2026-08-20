@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **A session's ACL can be amended, not just granted.**
+  `auth.ActionSessionAdmin` has documented itself as covering "ACL /
+  metadata mutations on the session" since the authorization matrix was
+  written, and the only route behind it was `DELETE`. An ACL was set once
+  at session creation and never afterwards: adding a viewer to a running
+  session meant deleting the session and making a new one, and a departed
+  contributor kept write access until someone did.
+
+  `GET /sessions/{id}/acl` reads the list back and `PUT` replaces it.
+  `GET` sits at the **read** bar rather than the admin bar — everyone the
+  ACL admits can already read the transcript, so the membership list is
+  not the sensitive part, and a viewer who wants write access needs to
+  know whom to ask. `PUT` is a whole-document replace: omission clears,
+  because omission-means-leave-alone would leave no way to remove the
+  last viewer, and revocation is half the point.
+
+  A `PUT` against a daemon that does not enforce ACLs is **refused with
+  501**, not accepted. An amendment nothing consults would report success
+  for an access restriction that does not exist — the same defect shape
+  as an allowlist axis with no subsystem behind it. `GET` still answers
+  there, and its `enforced` and `persisted` fields are how an operator
+  learns that the ACL governs nothing, or that the grant they just made
+  lives only until the next restart.
+
+  Ownership **transfer** is daemon-admin only, for the case where the
+  owner left, and a non-admin who sends an `owner` field gets a 403
+  rather than a silently dropped field — an ignored field in an accepted
+  request reads as a completed transfer. An owner cannot be cleared at
+  all: a session nobody owns is reachable by admins alone, which is a
+  lockout rather than an edit.
+
+  Behind it, `Entry.ACL` stopped being an exported field. It was written
+  once at registration and read without a lock by every authorizing
+  request, which a runtime amendment turns from a stale read into a torn
+  one. It is now an accessor returning cloned slices, written only
+  through `SessionRegistry.SetACL`, which persists before it touches
+  memory and carries the row's timestamps forward so an ACL edit does not
+  re-date the session.
+
 - **An unattended turn is now one trace instead of several orphans.**
   ADK's spans parent off whatever context reaches `runner.Run`, and mast
   only sometimes handed it one with a span on it. Turns driven by a

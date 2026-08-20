@@ -154,7 +154,7 @@ func TestDeriveForSession_ModeIsolatedFromTemplate(t *testing.T) {
 
 func TestDeriveForSession_PolicyAndScopeAreSharedByDesign(t *testing.T) {
 	t.Parallel()
-	// Documented limitation per docs/multi-session-design.md: /allow
+	// Documented limitation per core-agent's docs/multi-session-design.md: /allow
 	// + /deny + always-allow scope decisions apply daemon-wide because
 	// every sub-gate shares the template's *Policy and *PathScope
 	// pointers. Per-session policy / scope carve-outs are deferred.

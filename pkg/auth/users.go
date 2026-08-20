@@ -32,7 +32,7 @@ const UsersFileSchemaVersion = 1
 
 // UsersFile is the on-disk shape of attach.multi_session.auth.table_file.
 // Operators populate this directly today; an OIDC / IDP-backed loader
-// is layered in later (see docs/multi-session-design.md §"Migration story").
+// is layered in later (see core-agent's docs/multi-session-design.md §"Migration story").
 type UsersFile struct {
 	Version int    `json:"version"`
 	Users   []User `json:"users"`
