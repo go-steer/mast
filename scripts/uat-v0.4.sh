@@ -397,15 +397,20 @@ assert_http() {
   if [ "$2" = "$3" ]; then ok "$1 (HTTP $2)"; else bad "$1 (HTTP $2, want $3)"; fi
 }
 
+# Here-strings, not `printf ... | grep -Fq`: this script runs under
+# `pipefail`, `grep -q` exits on its first match, and the writer's resulting
+# SIGPIPE (141) is then promoted over grep's 0 — so a match can read as a
+# miss. assert_hasnt is the direction that matters, because there a matched
+# needle IS the violation and the promotion turns it into `ok`.
 assert_has() {
-  if printf '%s' "$2" | grep -Fq -- "$3"; then ok "$1"; else bad "$1 — missing: $3"; fi
+  if grep -Fq -- "$3" <<<"$2"; then ok "$1"; else bad "$1 — missing: $3"; fi
 }
 
 # assert_hasnt fails CLOSED on an empty haystack: absence proves nothing
 # when there is nothing to search.
 assert_hasnt() {
   if [ -z "$2" ]; then bad "$1 — nothing to search (empty)"; return 0; fi
-  if printf '%s' "$2" | grep -Fq -- "$3"; then bad "$1 — present: $3"; else ok "$1"; fi
+  if grep -Fq -- "$3" <<<"$2"; then bad "$1 — present: $3"; else ok "$1"; fi
 }
 
 assert_state() {

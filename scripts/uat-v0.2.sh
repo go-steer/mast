@@ -139,14 +139,64 @@ assert_http() {
   if [ "$2" = "$3" ]; then ok "$1 (HTTP $2)"; else bad "$1 (HTTP $2, want $3)"; fi
 }
 
+# scrape_has <text> <exact line> — true when <text> contains <exact line>.
+#
+# Deliberately NOT `... | grep -Fxq`. This script runs under `pipefail`, and
+# `grep -q` exits the instant it matches, which closes the pipe under its
+# writer: curl then fails its next write and exits 23, printf takes SIGPIPE
+# and exits 141, and pipefail promotes either of those over grep's own 0.
+# The pipeline reports "no match" for a line that is right there. That was
+# the whole of the intermittent /metrics failure this script showed roughly
+# once in a dozen runs — the match sits near the top of an alphabetically
+# sorted scrape, so the writer almost always had more to write, and whether
+# it got EPIPE came down to how the body happened to be chunked. A here-string
+# is not a pipeline, so its status is grep's status and nothing else's.
+scrape_has() { grep -Fxq -- "$2" <<<"$1"; }
+
 # assert_metric <label> <exact metric line> — the line must appear verbatim
 # in a fresh /metrics scrape (proves both priming and value).
+#
+# On failure it says WHY, because "the line is absent" has three very
+# different causes and the bare message conflates them: the scrape never
+# arrived (curl error/timeout), it arrived without the family at all
+# (priming regression), or the family is there at another value (a counting
+# bug). The distinction is not academic — the flake above was unidentifiable
+# for as long as it was precisely because all three printed one sentence.
+# Same fail-closed discipline assert_no_session_label already has: an empty
+# scrape proves nothing, so it is a FAIL that says so.
 assert_metric() {
-  if curl -s -m 5 "${BASE}/metrics" | grep -Fxq "$2"; then
+  local scrape rc fam
+  # `|| rc=$?` and not `; rc=$?`: this script runs under `set -e`, so a bare
+  # assignment from a failing command substitution kills the run before the
+  # branch below can say why — which would make the diagnostic dead code.
+  rc=0
+  scrape="$(curl -s -m 5 "${BASE}/metrics")" || rc=$?
+  if scrape_has "${scrape}" "$2"; then
     ok "$1"
-  else
-    bad "$1 — missing metric line: $2"
+    return 0
   fi
+  if [ "${rc}" -ne 0 ] || [ -z "${scrape}" ]; then
+    bad "$1 — /metrics scrape failed (curl rc=${rc}, ${#scrape} bytes); wanted: $2"
+    return 0
+  fi
+  bad "$1 — missing metric line: $2"
+  # Strip the label set and the value to get the family name, then show
+  # every series in it: that is what distinguishes "never primed" from
+  # "primed and standing at a different number".
+  fam="${2%% *}"; fam="${fam%%\{*}"
+  # `|| true`: with no series the `grep -v` exits 1, and `set -e` would kill
+  # the run inside its own failure diagnostic.
+  local series; series="$(grep -F -- "${fam}" <<<"${scrape}" | grep -v '^#' || true)"
+  if [ -n "${series}" ]; then
+    sed 's/^/        got: /' <<<"${series}"
+  elif grep -Fq -- "${fam}" <<<"${scrape}"; then
+    # HELP/TYPE present, no samples: the family is registered but Prime()
+    # never materialized this label set. Distinct from both other causes.
+    printf '        got: %s is declared (HELP/TYPE) but has no series — not primed\n' "${fam}"
+  else
+    printf '        got: no %s series in the scrape at all (%d bytes)\n' "${fam}" "${#scrape}"
+  fi
+  return 0
 }
 
 # assert_state <label> <session-id> <want> — read the SQLite DB directly
@@ -163,16 +213,25 @@ assert_state() {
 # absence, so it is a FAIL, not a vacuous pass. Always returns 0 so a real
 # leak records a FAIL without aborting the run under `set -e` (this is the
 # one helper whose final command isn't an ok/bad printf).
+#
+# The here-strings are load-bearing for the same reason as scrape_has: piped
+# into `grep -Fq`, the leak check would fail OPEN — a match makes grep exit,
+# printf takes SIGPIPE, pipefail promotes 141 over grep's 0, and the branch
+# that records the leak is never taken. A guarantee that reports a violation
+# as a pass is worse than not having it.
 assert_no_session_label() {
   local label="$1"; shift
-  local scrape; scrape="$(curl -s -m 5 "${BASE}/metrics")"
-  if ! printf '%s' "${scrape}" | grep -Fq 'workload="uat"'; then
+  # `|| true` so a failed scrape reaches the FAIL below instead of taking
+  # the run down under `set -e` — this helper's contract is that it never
+  # passes vacuously, which it cannot honour if it never runs.
+  local scrape; scrape="$(curl -s -m 5 "${BASE}/metrics" || true)"
+  if ! grep -Fq -- 'workload="uat"' <<<"${scrape}"; then
     bad "${label} — /metrics scrape empty or missing workload label"
     return 0
   fi
   local sid leaked=""
   for sid in "$@"; do
-    if printf '%s' "${scrape}" | grep -Fq "${sid}"; then
+    if grep -Fq -- "${sid}" <<<"${scrape}"; then
       leaked="${leaked} ${sid}"
     fi
   done
@@ -196,7 +255,10 @@ wait_for() {
   return 1
 }
 
-metric_has() { curl -s -m 5 "${BASE}/metrics" | grep -Fxq "$1"; }
+# Same pipefail/SIGPIPE hazard as assert_metric — see scrape_has. Benign
+# here only because wait_for retries, which is exactly what made the bug
+# hard to see: the polling caller absorbed it and the one-shot caller did not.
+metric_has() { scrape_has "$(curl -s -m 5 "${BASE}/metrics")" "$1"; }
 
 # boot_scan_done <daemon-log> — true once the boot auto-resume pass has logged
 # a TERMINAL line. The pass runs in a goroutine the serving path does NOT await

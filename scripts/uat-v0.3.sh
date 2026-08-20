@@ -310,8 +310,15 @@ assert_http() {
 }
 
 # assert_has <label> <haystack> <needle> — literal substring must appear.
+#
+# Here-string rather than `printf ... | grep -Fq`, for the reason show_field
+# already documents above: `grep -q` exits on its first match, the writer
+# then takes SIGPIPE, and `pipefail` promotes that 141 over grep's own 0.
+# Piped, a match can read as a miss. assert_hasnt is the dangerous
+# direction — there a matched needle is the violation, so the SIGPIPE turns
+# a detected violation into `ok`, silently. Not a pipeline, no hazard.
 assert_has() {
-  if printf '%s' "$2" | grep -Fq -- "$3"; then ok "$1"; else bad "$1 — missing: $3"; fi
+  if grep -Fq -- "$3" <<<"$2"; then ok "$1"; else bad "$1 — missing: $3"; fi
 }
 
 # assert_hasnt <label> <haystack> <needle> — literal substring must not.
@@ -319,7 +326,7 @@ assert_has() {
 # nothing to search.
 assert_hasnt() {
   if [ -z "$2" ]; then bad "$1 — nothing to search (empty)"; return 0; fi
-  if printf '%s' "$2" | grep -Fq -- "$3"; then bad "$1 — present: $3"; else ok "$1"; fi
+  if grep -Fq -- "$3" <<<"$2"; then bad "$1 — present: $3"; else ok "$1"; fi
 }
 
 # assert_state <label> <session-id> <want>

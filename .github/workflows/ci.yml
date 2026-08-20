@@ -86,6 +86,11 @@ jobs:
         run: dev/ci/presubmits/vuln.sh
       - name: slim-deps guarantee
         run: dev/ci/presubmits/slim-deps.sh
+      # No Go needed, but this job is the hygiene bucket and the check
+      # takes under a second — a separate job would cost more in runner
+      # startup than it saves.
+      - name: shell-lint
+        run: dev/ci/presubmits/shell-lint.sh
 
   docs-lint:
     runs-on: ubuntu-latest
