@@ -121,6 +121,45 @@ func TestWatchdogEnforceCutsAnIntraTurnLoopShort(t *testing.T) {
 	}
 }
 
+// What the operator is actually handed. runTurn returns the halt in
+// place of the runner's "context canceled", and that error goes
+// straight to attach.ClassifyTurnError on the way to a turn-error
+// frame — so this is the last link in the chain pkg/watchdog and
+// pkg/attach each pin from their own side (#208).
+//
+// Both halt-shaped errors are checked: the turn that trips, and the
+// refusal every turn after it gets, which arrives wrapped in
+// inject.ErrConflict and must not lose its kind on the way.
+func TestAHaltReachesTheOperatorAsAHalt(t *testing.T) {
+	m := &loopingModel{rounds: 60}
+	h := newTurnHarnessOpts(t, m, watchdog.ModeEnforce, pokeTool(t))
+	ctx := context.Background()
+
+	tripped := h.turn(ctx, "s-classify")
+	refused := h.turn(ctx, "s-classify")
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"the turn that tripped", tripped},
+		{"the refusal that follows", refused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := attach.ClassifyTurnError(tc.err)
+			if got.Kind != attach.TurnErrorWatchdogHalt {
+				t.Errorf("kind = %q, want %q for %v", got.Kind, attach.TurnErrorWatchdogHalt, tc.err)
+			}
+			if got.Retryable {
+				t.Error("retryable = true — a client offering a re-run re-drives the loop the halt just broke")
+			}
+			if !strings.Contains(got.Hint, "guardrails/reset") {
+				t.Errorf("hint = %q, want the reset endpoint", got.Hint)
+			}
+		})
+	}
+}
+
 // The same loop under the default posture must run: warn annotates, it
 // does not stop. A watchdog that halts when it was asked to log is the
 // failure mode that makes operators turn the whole thing off.

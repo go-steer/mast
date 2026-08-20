@@ -122,6 +122,17 @@ type TrippedError struct {
 
 func (e *TrippedError) Error() string { return e.Reason }
 
+// TurnErrorKind declares how a host's operator surface should label
+// this, implementing attach.SelfClassifyingError without importing it —
+// this package stays stdlib-only, and the string is pinned against
+// attach's constant in enforce_test.go.
+//
+// It exists because Error() is the wrong thing to classify a halt by:
+// Reason is built from the offending tool's name and its model-supplied
+// arguments, and a substring scan over that let the agent choose its
+// own label (#208).
+func (e *TrippedError) TurnErrorKind() string { return "watchdog_halt" }
+
 // IsTripped reports whether err is a watchdog halt. Uses errors.As, so
 // a caller may wrap it with turn context without losing the
 // classification.
