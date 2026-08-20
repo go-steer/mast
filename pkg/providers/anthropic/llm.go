@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"iter"
 	"log"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	adkmodel "google.golang.org/adk/v2/model"
@@ -160,10 +161,26 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, str
 			// back over the one we asked for; they normally agree, and
 			// where they do not the server's answer is the billed one.
 			//
+			// Two echoes fall back to what we asked for, because this
+			// field is read as a pricing key and the requested ID is one
+			// that resolves. An empty echo, which a well-formed Message
+			// cannot produce (`model` is required on the response) but a
+			// stream that died before message_start can. And a **resource
+			// path**: the Vertex backend can name the model as
+			// projects/{p}/locations/{l}/publishers/anthropic/models/
+			// claude-opus-4-5, while pricing.Catalog resolves by exact
+			// match and then longest prefix *anchored at the start of the
+			// string* — so `claude-opus-4-5@20251101` finds the
+			// `claude-opus-4-5` key and a path finds nothing. The cost of
+			// missing is not a wrong bill (Meter.priceOf falls back to the
+			// flat per-1k rate and counts the miss) but it is the loss of
+			// every per-model rate including cache-read, which is the
+			// largest term on a cache-warm agent (#210).
+			//
 			// anthropic.Model is an alias for string, so neither read
 			// needs a conversion.
 			modelVersion := final.Model
-			if modelVersion == "" {
+			if modelVersion == "" || strings.Contains(modelVersion, "/") {
 				modelVersion = params.Model
 			}
 			yield(&adkmodel.LLMResponse{
