@@ -64,6 +64,9 @@
 //	# Ask "have any RATES moved?" without writing anything:
 //	go run ./dev/regen-builtin-pricing --check
 //
+//	# Same, plus a markdown "what moved" fragment for a PR body:
+//	go run ./dev/regen-builtin-pricing --check --report=/tmp/moved.md
+//
 // --check reports its answer on STDOUT as a single line, either
 // `drift=true` or `drift=false`, and exits 0 either way. Human-readable
 // detail (which models moved, and how) goes to stderr. A non-zero exit
@@ -192,10 +195,20 @@ func main() {
 		"write nothing; print drift=true/drift=false on stdout depending on whether "+
 			"--out matches LiteLLM's current catalog. UpdatedAt stamps are ignored, "+
 			"so a merely-old file is not drift")
+	reportPath := flag.String("report", "",
+		"with --check, also write a markdown summary of which rows changed VALUE "+
+			"(as opposed to merely being re-stamped) to this path, for an auto-PR body")
 	flag.Parse()
 
 	if *check && *toStdout {
 		die("--check and --stdout are mutually exclusive")
+	}
+	// --report is a description of a comparison, and only --check
+	// compares. Refusing here rather than silently writing nothing keeps
+	// a typo in the workflow from producing an empty PR body that reads
+	// as "nothing moved".
+	if *reportPath != "" && !*check {
+		die("--report requires --check")
 	}
 
 	body, err := load(*source)
@@ -238,7 +251,7 @@ func main() {
 	}
 
 	if *check {
-		checkDrift(*outPath, src)
+		checkDrift(*outPath, *reportPath, src)
 		return
 	}
 	if *toStdout {
@@ -311,13 +324,27 @@ func normalize(src []byte) []byte {
 // for callers to branch on; the itemized explanation goes to stderr for
 // humans reading CI logs. Genuine failures exit non-zero via die, which
 // is what callers must treat as "could not determine".
-func checkDrift(outPath string, generated []byte) {
+//
+// reportPath, when non-empty, additionally gets a markdown rendering of
+// the same itemization for pricing-regen.yml to paste into the auto-PR
+// body — see writeReport.
+func checkDrift(outPath, reportPath string, generated []byte) {
 	existing, err := os.ReadFile(outPath) //nolint:gosec // caller-supplied path
 	if err != nil {
 		die("read %s for --check: %v", outPath, err)
 	}
 	want, got := normalize(generated), normalize(existing)
-	if bytes.Equal(want, got) {
+	rows := diffRows(got, want)
+	total := len(entryMap(want))
+	drift := !bytes.Equal(want, got)
+
+	if reportPath != "" {
+		if err := writeReport(reportPath, rows, total, drift); err != nil {
+			die("write --report %s: %v", reportPath, err)
+		}
+	}
+
+	if !drift {
 		fmt.Fprintf(os.Stderr,
 			"regen-builtin-pricing: %s is up to date — rates match LiteLLM (UpdatedAt ignored)\n",
 			outPath)
@@ -326,7 +353,7 @@ func checkDrift(outPath string, generated []byte) {
 	}
 	fmt.Fprintf(os.Stderr,
 		"regen-builtin-pricing: %s is stale — LiteLLM rates have moved.\n\n", outPath)
-	lines := diffEntries(got, want)
+	lines := formatRows(rows)
 	if len(lines) == 0 {
 		// Non-empty diff with no per-entry change means the header or
 		// the accessor block moved (e.g. the generator's own template
@@ -340,10 +367,70 @@ func checkDrift(outPath string, generated []byte) {
 	fmt.Println("drift=true")
 }
 
+// writeReport renders the drift itemization as a markdown fragment for
+// the auto-PR body.
+//
+// The point is not decoration. Every regen re-stamps UpdatedAt on every
+// row, so the raw diff of a regen PR is dominated by rows that did not
+// move: 2026-08-19's regen (#184) touched 32 rows of which exactly ONE —
+// gemini-3.6-flash, $1.50/$7.50 -> $0.75/$3.75 — was a real rate change,
+// and the PR body read identically to a body with no rate change at all.
+// The only way to tell them apart was to diff by hand. A reviewer facing
+// a wall of timestamp churn either reads none of it or reads all of it;
+// neither is the check the review checklist asks for (#188).
+//
+// This report is computed from the NORMALIZED renderings, which is what
+// makes it worth writing down: timestamps are already gone, so a row
+// appears here only if a number changed. That also makes silence
+// meaningful — "no row changed value" is a claim, where an empty PR body
+// was merely an absence.
+func writeReport(path string, rows []entryRow, total int, drift bool) error {
+	var b strings.Builder
+	b.WriteString("## What moved\n\n")
+	switch {
+	case len(rows) > 0:
+		fmt.Fprintf(&b, "**%d of %d generated rows changed value.** ", len(rows), total)
+		b.WriteString("The rest of this diff is a fresh `UpdatedAt` on an unchanged number — " +
+			"the itemization below is computed with timestamps normalized away, so a row " +
+			"appears here only if a rate, a context window, or the set of models moved.\n\n")
+		b.WriteString("```\n")
+		for _, l := range formatRows(rows) {
+			b.WriteString(l)
+			b.WriteString("\n")
+		}
+		b.WriteString("```\n")
+	case drift:
+		fmt.Fprintf(&b, "**No row of the %d generated rows changed value**, and yet the file "+
+			"is stale — so the change is outside the two generated maps (the header, the "+
+			"accessor block, or the generator's own template). Review the diff directly.\n", total)
+	default:
+		fmt.Fprintf(&b, "**No row of the %d generated rows changed value.** "+
+			"Nothing to regenerate.\n", total)
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644) //nolint:gosec // CI scratch file, not user data
+}
+
 // diffEntries itemizes per-model differences between two normalized
 // renderings, so CI logs name the models whose rates moved instead of
 // dumping a whole-file diff.
 func diffEntries(oldSrc, newSrc []byte) []string {
+	return formatRows(diffRows(oldSrc, newSrc))
+}
+
+// entryRow is one generated row that differs between two normalized
+// renderings. Kind is "added", "removed" or "changed"; Was/Now carry the
+// rendered row text, empty on the side where the row is absent.
+type entryRow struct {
+	Name string
+	Kind string
+	Was  string
+	Now  string
+}
+
+// diffRows is diffEntries' structured half. Split out because the PR-body
+// report needs to COUNT what moved, not just print it, and counting
+// formatted lines would be wrong — a `changed` row prints three of them.
+func diffRows(oldSrc, newSrc []byte) []entryRow {
 	oldE, newE := entryMap(oldSrc), entryMap(newSrc)
 	names := make(map[string]struct{}, len(oldE)+len(newE))
 	for n := range oldE {
@@ -358,20 +445,36 @@ func diffEntries(oldSrc, newSrc []byte) []string {
 	}
 	sort.Strings(sorted)
 
-	var out []string
+	var out []entryRow
 	for _, n := range sorted {
 		o, inOld := oldE[n]
 		w, inNew := newE[n]
 		switch {
 		case inOld && !inNew:
-			out = append(out, fmt.Sprintf("removed %s: %s", n, o))
+			out = append(out, entryRow{Name: n, Kind: "removed", Was: o})
 		case !inOld && inNew:
-			out = append(out, fmt.Sprintf("added   %s: %s", n, w))
+			out = append(out, entryRow{Name: n, Kind: "added", Now: w})
 		case o != w:
+			out = append(out, entryRow{Name: n, Kind: "changed", Was: o, Now: w})
+		}
+	}
+	return out
+}
+
+// formatRows renders diffRows' output as the itemized stderr report.
+func formatRows(rows []entryRow) []string {
+	var out []string
+	for _, r := range rows {
+		switch r.Kind {
+		case "removed":
+			out = append(out, fmt.Sprintf("removed %s: %s", r.Name, r.Was))
+		case "added":
+			out = append(out, fmt.Sprintf("added   %s: %s", r.Name, r.Now))
+		default:
 			out = append(out,
-				fmt.Sprintf("changed %s:", n),
-				fmt.Sprintf("    was %s", o),
-				fmt.Sprintf("    now %s", w))
+				fmt.Sprintf("changed %s:", r.Name),
+				fmt.Sprintf("    was %s", r.Was),
+				fmt.Sprintf("    now %s", r.Now))
 		}
 	}
 	return out

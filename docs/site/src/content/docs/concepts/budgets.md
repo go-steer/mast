@@ -81,6 +81,27 @@ precedence). A model with no row anywhere is metered at a flat fallback
 rate and counted as unpriced rather than billed at zero — a ceiling still
 trips on it, just less precisely.
 
+### Some rates have an expiry date, and the catalog cannot say so
+
+A launch price is often introductory, and a `max_cost_usd` sized against
+one buys fewer tokens once it lapses — without anything looking wrong,
+because the number in the table is still the number the vendor is
+currently charging. LiteLLM's catalog carries no expiry field on any row,
+so mast records the known ones itself and fails its own build if a lapsed
+rate is still in the table.
+
+The two that matter as of 2026-08-20:
+
+| Model | Rate now | Changes to | On |
+|---|---|---|---|
+| `gemini-3.7-flash` (the gemini/vertex frontier default) | $0.75 / $3.75 per MTok | $1.50 / $7.50 | 2027-01-01 |
+| `gemini-3.6-flash` | $0.75 / $3.75 per MTok | $1.50 / $7.50 | 2027-01-01 |
+
+Cache reads double alongside. If you are sizing a ceiling that will still
+be in force in 2027 on either model, size it against the later number.
+(`claude-sonnet-5`'s introductory $2 / $10 was scheduled to rise on
+2026-09-01 and will not — Anthropic made it the standard price.)
+
 ## Two limits worth knowing
 
 **1. A ceiling is crossed *by* the call that reports it.** Cost and token

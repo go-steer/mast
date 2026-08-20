@@ -544,6 +544,109 @@ func TestDiffEntries_ReportsAddedAndRemoved(t *testing.T) {
 	}
 }
 
+// --- --report / "what moved" ----------------------------------------
+
+// The shape #188 is about, and the one 2026-08-19's regen (#184) actually
+// had: the file is re-stamped end to end and exactly one row moved. The
+// PR body has to be able to say which — a reviewer told "32 rows changed"
+// learns nothing they could act on, and the checklist item "any rate
+// change that halves or doubles is real" is unanswerable without a
+// by-hand diff.
+func TestReport_NamesTheOneRowThatMovedAmongAWholeFileRestamp(t *testing.T) {
+	t.Parallel()
+	onDisk := renderDay(t, threeEntries(), 2026, time.August, 15)
+
+	moved := threeEntries()
+	moved[1].InputPerMTok = 3.0 / 2 // bbb: 3 -> 1.5, a halving
+	generated := renderDay(t, moved, 2026, time.August, 16)
+
+	report := runReport(t, onDisk, generated)
+
+	// The row that moved is named, with both values.
+	if !strings.Contains(report, "changed bbb") {
+		t.Errorf("report does not name the moved row:\n%s", report)
+	}
+	if !strings.Contains(report, "1.5") {
+		t.Errorf("report does not carry the new rate:\n%s", report)
+	}
+	// The rows that only got a new stamp are not.
+	for _, quiet := range []string{"aaa", "ccc"} {
+		if strings.Contains(report, quiet) {
+			t.Errorf("report blames %s, which only got a new UpdatedAt:\n%s", quiet, report)
+		}
+	}
+	// Counted as one row, not as the three lines a `changed` entry
+	// prints. threeEntries renders 3 rate rows + 3 window rows.
+	if !strings.Contains(report, "1 of 6") {
+		t.Errorf("report miscounts what moved; want \"1 of 6\":\n%s", report)
+	}
+}
+
+// A regen on a later day with no rate movement is the common case — most
+// Mondays. The report has to say so positively rather than being empty,
+// because an empty section reads as "the tooling had nothing to say",
+// which is exactly the ambiguity #188 filed.
+func TestReport_DateOnlyRestampSaysNothingMoved(t *testing.T) {
+	t.Parallel()
+	entries := threeEntries()
+	onDisk := renderDay(t, entries, 2026, time.August, 15)
+	generated := renderDay(t, entries, 2026, time.August, 16)
+
+	report := runReport(t, onDisk, generated)
+
+	if !strings.Contains(report, "No row") {
+		t.Errorf("report is silent on a no-movement regen:\n%s", report)
+	}
+	if strings.Contains(report, "```") {
+		t.Errorf("report itemizes on a no-movement regen:\n%s", report)
+	}
+}
+
+// Added and removed models are movement too — membership is a rule, so a
+// regen can drop a model an in-tree default still names.
+func TestReport_CountsAddedAndRemovedRows(t *testing.T) {
+	t.Parallel()
+	onDisk := renderDay(t, threeEntries(), 2026, time.August, 15)
+
+	churned := []generatedEntry{
+		{Name: "aaa", InputPerMTok: 1, OutputPerMTok: 2, ContextWindowTokens: 200_000, Provider: "fake"},
+		{Name: "ccc", InputPerMTok: 5, OutputPerMTok: 6, ContextWindowTokens: 200_000, Provider: "fake"},
+		{Name: "ddd", InputPerMTok: 7, OutputPerMTok: 8, ContextWindowTokens: 200_000, Provider: "fake"},
+	}
+	generated := renderDay(t, churned, 2026, time.August, 16)
+
+	report := runReport(t, onDisk, generated)
+
+	for _, want := range []string{"removed bbb", "added   ddd"} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report missing %q:\n%s", want, report)
+		}
+	}
+	// bbb and ddd each move a rate row AND a window row: 4 of 6.
+	if !strings.Contains(report, "4 of 6") {
+		t.Errorf("report miscounts membership churn; want \"4 of 6\":\n%s", report)
+	}
+}
+
+// runReport drives checkDrift with a --report path and returns the file
+// it wrote. Stdout is captured and discarded — the verdict line has its
+// own test.
+func runReport(t *testing.T, onDisk, generated []byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "builtin.go")
+	if err := os.WriteFile(path, onDisk, 0o600); err != nil {
+		t.Fatalf("seed %s: %v", path, err)
+	}
+	reportPath := filepath.Join(dir, "moved.md")
+	captureStdout(t, func() { checkDrift(path, reportPath, generated) })
+	b, err := os.ReadFile(reportPath) //nolint:gosec // test tempdir
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	return string(b)
+}
+
 // checkDrift's stdout line is a machine contract: pricing-regen.yml,
 // release.yml, cut-dev-tag.sh and cut-ga-tag.sh all branch on the exact
 // strings "drift=true" / "drift=false". Drift can't ride on the exit
@@ -573,7 +676,7 @@ func TestCheckDrift_StdoutVerdictIsTheCallerContract(t *testing.T) {
 			if err := os.WriteFile(path, onDisk, 0o600); err != nil {
 				t.Fatalf("seed %s: %v", path, err)
 			}
-			if got := captureStdout(t, func() { checkDrift(path, tc.generated) }); got != tc.want {
+			if got := captureStdout(t, func() { checkDrift(path, "", tc.generated) }); got != tc.want {
 				t.Errorf("stdout = %q, want %q", got, tc.want)
 			}
 		})
