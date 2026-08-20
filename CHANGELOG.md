@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **The judged board names the questions a different tool choice would have
+  answered — and there are four of them, not twenty-nine.** The obvious
+  thing to measure is whether a run called the tools that had data for its
+  scenario. That was computed against both v0.4.0 boards before being
+  rejected, and the data is the whole argument: it flags 11 of 31 scenarios
+  on Claude and 18 of 31 on Gemini, and the flagged rows score *better* on
+  `response_quality`, not worse. Most skipped tools were redundant with one
+  that had already answered the question — 14 of the intent table's 19
+  intents are satisfiable by two or three different tools, which is mast's
+  consolidated read path showing up in the measurement rather than a defect
+  in it.
+
+  What the board reports instead is a **consequential miss**: a question the
+  corpus expected answered, that a tool in the catalog would have answered,
+  that the run never asked. Across both boards that is four rows, all node
+  or pod saturation, so it is printed as a list — the scenario, the intent,
+  and the tools that would have served it — with a tally by intent, because
+  the same intent recurring across rows is one tool's description or
+  discoverability rather than several unrelated incidents. The nightly delta
+  names each one that arrives and each one that clears.
+
+  An unsatisfied question no read-only tool can answer is deliberately not
+  in that list. LC-13 expects a rollback, lookout excludes write tools by
+  design, and it is already reported as a structural ceiling; counting it
+  here would publish a deliberate scope decision as a permanent
+  tool-selection failure. An expected tool name the intent table has never
+  seen is a third thing again — a gap in the fixture, which deflates
+  `intent_coverage` on purpose but is nobody's miss. The score and the list
+  are now derived from one shared reading of the corpus, so a board cannot
+  say one thing in its number and another in its enumeration.
+
 - **The judged board says how a tool was called, not just that it was.** It
   recorded which tools a run reached for and nothing about how, which left
   two different failures looking identical: the model never called the tool,

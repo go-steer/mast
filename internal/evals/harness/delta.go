@@ -159,7 +159,43 @@ func (s Summary) WriteDelta(w io.Writer, prev Summary) {
 	}
 
 	writeValidityDelta(p, prev.Judge.Validity, s.Judge.Validity)
+	writeMissDelta(p, prev.Judge.Misses, s.Judge.Misses)
 	p("")
+}
+
+// writeMissDelta reports #170's list run over run.
+//
+// Named individually in both directions, because a consequential miss is
+// small-N by construction: four across two whole boards at v0.4.0. At
+// that size "3 → 4" tells a reader nothing and "LC-05 inspect.pod_
+// saturation is new" tells them where to look. A miss that cleared is
+// worth the same line — otherwise the only news this section ever
+// carries is bad, and a section like that stops being read.
+func writeMissDelta(p func(string, ...any), before, after MissBoard) {
+	if before.Scenarios == 0 && after.Scenarios == 0 {
+		return
+	}
+	gone, arrived := diffSets(missKeys(before), missKeys(after))
+	if len(gone) == 0 && len(arrived) == 0 {
+		p("")
+		p("  consequential misses: unchanged (%d)", len(after.Consequential))
+		return
+	}
+	p("")
+	if len(arrived) > 0 {
+		p("  newly missed, and a tool in the catalog would have answered: %s", strings.Join(arrived, "; "))
+	}
+	if len(gone) > 0 {
+		p("  no longer missed: %s", strings.Join(gone, "; "))
+	}
+}
+
+func missKeys(b MissBoard) []string {
+	out := make([]string, 0, len(b.Consequential))
+	for _, m := range b.Consequential {
+		out = append(out, m.Scenario+" "+m.Intent)
+	}
+	return out
 }
 
 // writeValidityDelta reports #169's counts run over run.

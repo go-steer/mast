@@ -413,6 +413,22 @@ which tool, which argument, which scope. Rows where every completed read
 came back empty are named as such, because a score on one of those measures
 what the model already knew about Kubernetes rather than what it read.
 
+The companion question — which unanswered questions a different tool choice
+would have answered — turned out to have a much smaller answer than the
+obvious metric suggests, and the obvious metric points the wrong way. Counting
+scenarios that skipped a tool holding data flags a third of one board and more
+than half of the other, and **the flagged rows score higher**, because most of
+those tools were redundant with one that had already answered: 14 of the 19
+intents in the table are satisfiable by two or three different tools, which is
+the consolidated read path showing up in the measurement. What the board
+reports instead is a **consequential miss** — a question the corpus expected
+answered, that a tool in the catalog would have answered, that the run never
+asked. Across both v0.4.0 boards that is four rows, all of them node or pod
+saturation. Four is a list, so it is printed as one, with the row, the intent
+and the tools that would have served it. An unsatisfied question no read-only
+tool can answer stays out: LC-13 expects a rollback, lookout excludes write
+tools by design, and that is already reported as a structural ceiling.
+
 ## Further out
 
 - **AG-UI remaining slices** — the `agui://` federation client, per-key

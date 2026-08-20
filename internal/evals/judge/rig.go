@@ -156,6 +156,11 @@ type Outcome struct {
 	// rather than averaged — see the note at the top of
 	// internal/evals/validity.go.
 	Violations []evals.Violation `json:"violations,omitempty"`
+	// Misses explains this row's intent_coverage: which unanswered
+	// questions the catalog would have answered (tool selection) and
+	// which it could not (the ceiling). See internal/evals/misses.go for
+	// why the count of uncalled tools is not the thing to measure.
+	Misses evals.MissReport `json:"misses"`
 	// Quality is the judge's grade. Zero value when grading was not
 	// requested.
 	Quality *Grade `json:"quality,omitempty"`
@@ -283,6 +288,7 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 		Answering:  cluster.AnsweringTools(),
 		Calls:      evals.RecordCalls(trace.Calls),
 		Violations: evals.ValidateCalls(schemas, trace.Calls, calls.emptyReads()),
+		Misses:     evals.ClassifyMisses(r.tbl, sc, trace),
 		Results:    evals.EvaluateAll(r.tbl, sc, trace),
 		Ceiling:    r.ceiling(sc),
 		Authored:   !obs.Derived,

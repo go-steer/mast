@@ -203,6 +203,53 @@ func TestWriteDelta_ValidityMovesWhileTheScoresDoNot(t *testing.T) {
 	}
 }
 
+// TestWriteDelta_MissesAreNamedInBothDirections: a consequential miss
+// is small-N by construction — four across two whole v0.4.0 boards — so
+// "3 → 4" tells a reader nothing and the row plus the intent tells them
+// where to look. A miss that cleared earns the same line, or the only
+// news this section ever carries is bad news.
+func TestWriteDelta_MissesAreNamedInBothDirections(t *testing.T) {
+	board := func(m MissBoard) Summary {
+		return Summary{Tier: TierJudge, Judge: &JudgeSummary{
+			Model: "claude-opus-4-7", Grader: "claude-haiku-4-5",
+			Scenes:    []JudgeScenario{row("LC-01", 1, 1)},
+			Aggregate: []MetricSummary{{Metric: evals.MetricIntentCoverage, Mean: 1, Scored: 1}},
+			Misses:    m,
+		}}
+	}
+	prev := board(MissBoard{Scenarios: 31, Consequential: []ScenarioMiss{
+		{Scenario: "LC-05", Intent: "inspect.node_saturation", ServedBy: []string{"k8s_resource_top"}},
+	}})
+	cur := board(MissBoard{Scenarios: 31, Consequential: []ScenarioMiss{
+		{Scenario: "LC-03", Intent: "inspect.pod_saturation", ServedBy: []string{"k8s_resource_top"}},
+		{Scenario: "LC-05", Intent: "inspect.node_saturation", ServedBy: []string{"k8s_resource_top"}},
+	}})
+
+	out := delta(t, prev, cur)
+	if !strings.Contains(out, "newly missed, and a tool in the catalog would have answered: LC-03 inspect.pod_saturation") {
+		t.Errorf("a new consequential miss was not named:\n%s", out)
+	}
+	if strings.Contains(out, "no longer missed") {
+		t.Errorf("a miss that is still there was reported as cleared:\n%s", out)
+	}
+
+	back := delta(t, cur, prev)
+	if !strings.Contains(back, "no longer missed: LC-03 inspect.pod_saturation") {
+		t.Errorf("a cleared miss was not reported:\n%s", back)
+	}
+
+	same := delta(t, cur, cur)
+	if !strings.Contains(same, "consequential misses: unchanged (2)") {
+		t.Errorf("an unchanged list was not reported as such:\n%s", same)
+	}
+
+	// Two boards where no row ran get no section, rather than a count of
+	// zero that would read as a measurement that happened.
+	if out := delta(t, board(MissBoard{}), board(MissBoard{})); strings.Contains(out, "consequential misses") {
+		t.Errorf("a delta between two boards with no rows printed a miss section:\n%s", out)
+	}
+}
+
 // TestLoadSummary_RoundTripsARealBoard is the nightly's actual sequence:
 // yesterday's JSON on disk, today's run, one delta.
 func TestLoadSummary_RoundTripsARealBoard(t *testing.T) {
