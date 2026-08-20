@@ -117,3 +117,29 @@ func ProxyByFromContext(ctx context.Context) (by string, ok bool) {
 	}
 	return by, true
 }
+
+// Attribution renders who is behind ctx as the single string an audit
+// field records — the effective identity, qualified by the credential
+// that asserted it when the request came through the proxy path
+// ("alice@example.com (asserted by sa:switchboard)"). Both halves are
+// kept because either alone answers the wrong question after an
+// incident: the effective identity omits which relay minted the
+// approval, and the proxy omits the human.
+//
+// fallback is returned when ctx carries no Caller. That is not an error
+// condition — the in-process callers (the timed-pause scheduler,
+// boot-time auto-resume, an embedder calling the library directly) have
+// no request to take an identity from, and naming the mechanism is the
+// truthful answer there. Pass a fallback that says which mechanism;
+// "unknown" is never the honest one, because the code always knows how
+// it was reached.
+func Attribution(ctx context.Context, fallback string) string {
+	c, ok := CallerFromContext(ctx)
+	if !ok || c.Identity == "" {
+		return fallback
+	}
+	if by, ok := ProxyByFromContext(ctx); ok && by != "" {
+		return c.Identity + " (asserted by " + by + ")"
+	}
+	return c.Identity
+}

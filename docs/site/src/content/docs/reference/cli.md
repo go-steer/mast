@@ -116,6 +116,33 @@ audited recovery, then resume again.
 only**, and only on a DB no daemon is serving; an interrupt-pause
 resume always needs the daemon that owns the runner.
 
+### Who a resume names
+
+Every consumed token records **who spent it** — the `consumed_by` on the
+pause record, which is what a replay of the same token reports back
+(`already consumed at 2026-08-19T14:02:11Z by shared-bearer-token`) and
+what the daemon logs. It comes from the **credential the resume presented**,
+never from a name in the request body:
+
+| How the resume arrived | `consumed_by` |
+|---|---|
+| Over HTTP with `MAST_INJECT_TOKEN` set | `shared-bearer-token` |
+| The daemon's timed-pause scheduler | `timer` |
+| `resume --token --session-db=...` (no daemon) | `operator resume --token --session-db` |
+
+`shared-bearer-token` is what a shared credential can honestly prove: that
+*someone* holding it resumed the session. Per-person attribution needs a
+per-person credential — an embedder that gives the inject server an
+`auth.Authenticator` gets `alice@example.com` in this field instead, and a
+relay answering on a human's behalf (`X-Asserted-Caller`) gets both halves,
+`alice@example.com (asserted by sa:switchboard)`. Wiring a user table into
+the daemon's own inject listener is not shipped yet.
+
+There is deliberately **no approver field in the resume body**. An
+attribution a caller writes about itself is worth nothing after an
+incident, so mast takes it from the credential instead — the same rule the
+[write gate](/reference/write-gate/) applies to its own approver.
+
 ### Abort (terminal since v0.2)
 
 `abort` writes a durable abort marker with a reason, **cancels the

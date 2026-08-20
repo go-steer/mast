@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- **Every durable approval named the channel instead of the human.** The
+  audit answer to "who approved this?" is `PauseRecord.ConsumedBy`, and it is
+  most of the reason a durable gate is worth more than an in-memory prompt.
+  The daemon wrote the literal `"operator resume --token"` into it on every
+  HTTP resume, and `{"resumed_by": "operator"}` into the response the resumed
+  turn sees — so an incident review could establish that a session was
+  resumed over HTTP and nothing else. Both now name the caller the request
+  authenticated as.
+
+  The identity is read from the credential, and never from the request body.
+  `ResumeRequest` deliberately has no approver field: an attribution a caller
+  writes about itself is worth nothing after an incident, the same reasoning
+  that makes attach's `GuardrailResetRequest.Caller` `json:"-"`. It is not in
+  the token either — a token is a bearer capability, so a claim minted at
+  pause time is a claim about whoever *later* holds it, and a token handed to
+  a colleague has to attribute the colleague. Both halves of the plumbing
+  already existed (`pkg/inject` resolves the caller onto the request context;
+  `cmd/mast` renders it); the daemon just never read them.
+
+  New `auth.Attribution(ctx, fallback)` renders the three shapes — an
+  identity, `alice@example.com (asserted by sa:switchboard)` on the
+  `X-Asserted-Caller` proxy path a chat relay needs, and the fallback. The
+  fallback is a **mechanism name**, not `"unknown"`: a context with no caller
+  is an in-process path (the timed-pause scheduler, boot auto-resume, an
+  embedder calling the library), and the code always knows which. `"timer"`
+  and the direct-DB CLI's `"operator resume --token --session-db"` keep their
+  literals for that reason — the first is pinned normatively in
+  `docs/durable-execution-design.md`, and the second is honest about a path
+  with no credential to read. `mast.ResumeByToken` picks up an embedder's
+  `auth.WithCaller` identity and otherwise says `library ResumeByToken`.
+
+  What this does **not** do: nothing wires an `auth.Authenticator` into the
+  daemon's inject listener, so a CLI-launched daemon records
+  `shared-bearer-token` — honest about what a shared credential proves, which
+  is that *someone* holding it resumed. Per-person attribution is reachable
+  by embedders today and needs a config surface to reach the daemon.
+  `newResumeByToken` was lifted out of `serve()` to a top-level constructor
+  so the identity it records is asserted without standing up a daemon; an
+  audit field nobody tests is a field that drifts back.
+
 - **The intermittent `/metrics` failure in the v0.2 UAT was never about
   metrics: `pipefail` was reporting a match as a miss.** `assert_metric` ran
   `curl -s "$BASE/metrics" | grep -Fxq "$want"`. `grep -q` exits the instant it

@@ -95,7 +95,8 @@ looks small on paper:
 - **The approver is the authenticated caller, not the payload.** Whatever
   name arrives in the request body is overwritten by the identity that
   actually authenticated. An audit trail an agent could write into is not
-  an audit trail.
+  an audit trail. The same rule governs who a resumed pause names — see
+  [who a resume names](/reference/cli/#who-a-resume-names).
 - **An edit is recorded durably.** The substrate re-fires the *original*
   call on resume, so the edited arguments are persisted as their own record
   and re-applied — the thing that ran and the thing the operator authorized

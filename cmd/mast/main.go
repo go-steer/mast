@@ -344,6 +344,83 @@ func newTimedFireCallback(
 	}
 }
 
+// newResumeByToken builds the token-keyed resume path (v0.2 pause/abort
+// design, "Resume tokens"): gate pause → consume IS the resume (no turn
+// runs — nothing was parked); interrupt pause → the normal resume path,
+// with consumption keyed on the durable append of the resume
+// FunctionResponse.
+//
+// Top-level and dependency-injected, the same shape as
+// newTimedFireCallback above, so the identity it records is testable
+// without standing up a daemon — the point of #194 is an audit field,
+// and an audit field nobody asserts on is a field that drifts.
+func newResumeByToken(
+	store *transcript.Store,
+	logger *slog.Logger,
+	resumeByInterrupt func(context.Context, inject.ResumeRequest) error,
+) func(context.Context, inject.ResumeRequest) error {
+	return func(reqCtx context.Context, req inject.ResumeRequest) error {
+		// Who is spending this token. pkg/inject resolves the caller onto
+		// the request context before it reaches us (handleResume →
+		// callerContext), so on this path `by` is a real identity — or
+		// "shared-bearer-token" when the daemon runs without a user
+		// table, which is honest about what one shared credential can
+		// prove. Deliberately taken from the context and not from the
+		// request body: an attribution a caller writes about itself is
+		// worth nothing after an incident, the same reasoning that makes
+		// attach's GuardrailResetRequest.Caller `json:"-"`.
+		by := approverFromContext(reqCtx)
+		rec, err := store.FindToken(reqCtx, req.Token)
+		if err != nil {
+			return fmt.Errorf("%v: %w", err, inject.ErrBadPayload)
+		}
+		if !rec.ConsumedAt.IsZero() {
+			// already_resumed is a structured no-op, not an error: the
+			// resume the token asked for has happened.
+			logger.Info("resume token already consumed; no-op",
+				"session", rec.SessionID, "consumed_at", rec.ConsumedAt.Format(time.RFC3339), "consumed_by", rec.ConsumedBy)
+			return nil
+		}
+		if rec.Expired(time.Now().UTC()) {
+			return fmt.Errorf("resume token expired %s (the pause remains; `mast sessions extend-token` is the recovery): %w",
+				rec.ExpiresAt.Format(time.RFC3339), inject.ErrConflict)
+		}
+		if rec.Plane == transcript.PlaneGate {
+			_, err := store.ConsumeToken(reqCtx, req.Token, by)
+			if errors.Is(err, transcript.ErrAlreadyResumed) {
+				return nil
+			}
+			return err
+		}
+		response := req.Response
+		if response == nil {
+			// The default answer the resumed turn sees. It used to say
+			// "operator" — the same "a human did this and we cannot say
+			// which" placeholder as the consumed-by literal, in a second
+			// place, and this one is visible to the model.
+			response = map[string]any{"resumed_by": by}
+		}
+		inner := inject.ResumeRequest{
+			SessionID:   rec.SessionID,
+			InterruptID: rec.InterruptID,
+			Response:    response,
+			AckEffects:  req.AckEffects,
+		}
+		rerr := resumeByInterrupt(reqCtx, inner)
+		// Consumption keys on the durable append, not turn success: use
+		// a fresh short-lived context so a request-scope cancellation
+		// cannot strand an answered interrupt with a live token.
+		//
+		// WithoutCancel, not a bare Background: it keeps the request's
+		// values, which is what carries the caller identity `by` was
+		// read from into anything the consume path logs.
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), storeWriteTimeout)
+		defer cancel()
+		consumeIfAnswered(cctx, store, logger, rec, by)
+		return rerr
+	}
+}
+
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
@@ -768,53 +845,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		att.ensure(req.SessionID)
 		return resume(reqCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req, preTurn)
 	}
-	// resumeByToken resolves a resume token to its pause and resumes it
-	// (v0.2 pause/abort design, "Resume tokens"): gate pause → consume
-	// IS the resume (no turn runs — nothing was parked); interrupt
-	// pause → the normal resume path, with consumption keyed on the
-	// durable append of the resume FunctionResponse.
-	resumeByToken := func(reqCtx context.Context, req inject.ResumeRequest) error {
-		rec, err := store.FindToken(reqCtx, req.Token)
-		if err != nil {
-			return fmt.Errorf("%v: %w", err, inject.ErrBadPayload)
-		}
-		if !rec.ConsumedAt.IsZero() {
-			// already_resumed is a structured no-op, not an error: the
-			// resume the token asked for has happened.
-			logger.Info("resume token already consumed; no-op",
-				"session", rec.SessionID, "consumed_at", rec.ConsumedAt.Format(time.RFC3339), "consumed_by", rec.ConsumedBy)
-			return nil
-		}
-		if rec.Expired(time.Now().UTC()) {
-			return fmt.Errorf("resume token expired %s (the pause remains; `mast sessions extend-token` is the recovery): %w",
-				rec.ExpiresAt.Format(time.RFC3339), inject.ErrConflict)
-		}
-		if rec.Plane == transcript.PlaneGate {
-			_, err := store.ConsumeToken(reqCtx, req.Token, "operator resume --token")
-			if errors.Is(err, transcript.ErrAlreadyResumed) {
-				return nil
-			}
-			return err
-		}
-		response := req.Response
-		if response == nil {
-			response = map[string]any{"resumed_by": "operator"}
-		}
-		inner := inject.ResumeRequest{
-			SessionID:   rec.SessionID,
-			InterruptID: rec.InterruptID,
-			Response:    response,
-			AckEffects:  req.AckEffects,
-		}
-		rerr := resumeByInterrupt(reqCtx, inner)
-		// Consumption keys on the durable append, not turn success: use
-		// a fresh short-lived context so a request-scope cancellation
-		// cannot strand an answered interrupt with a live token.
-		cctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), storeWriteTimeout)
-		defer cancel()
-		consumeIfAnswered(cctx, store, logger, rec, "operator resume --token")
-		return rerr
-	}
+	resumeByToken := newResumeByToken(store, logger, resumeByInterrupt)
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
 		if tracker.isDraining() {
 			return inject.ErrUnavailable
@@ -2272,14 +2303,7 @@ func verdictFor(ctx context.Context, req inject.ResumeRequest) (approval.Verdict
 // in-process callers — the timed-pause scheduler, boot-time auto-resume
 // — where naming the mechanism is the truthful answer.
 func approverFromContext(ctx context.Context) string {
-	c, ok := auth.CallerFromContext(ctx)
-	if !ok || c.Identity == "" {
-		return "mast:internal"
-	}
-	if by, ok := auth.ProxyByFromContext(ctx); ok && by != "" {
-		return c.Identity + " (asserted by " + by + ")"
-	}
-	return c.Identity
+	return auth.Attribution(ctx, "mast:internal")
 }
 
 // consumeIfAnswered consumes a plane-A pause token iff the resume
