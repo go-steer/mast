@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **The intermittent `/metrics` failure in the v0.2 UAT was never about
+  metrics: `pipefail` was reporting a match as a miss.** `assert_metric` ran
+  `curl -s "$BASE/metrics" | grep -Fxq "$want"`. `grep -q` exits the instant it
+  matches, which closes the pipe under curl; curl fails its next write and
+  exits 23; `pipefail` reports the highest-numbered failure in the pipeline, so
+  it promotes curl's 23 over grep's own 0 and the assertion fails on a metric
+  line that is right there in the scrape. Whether it happened came down to
+  whether the body had been fully written when grep quit — which is why it
+  needed a loaded box to show up, and why it moved between assertions from run
+  to run instead of sitting on one. Measured against the real 5,566-byte scrape
+  with the match at line 12 of 89: **30 wrong in 600** for the piped form, **0
+  in 600** for a here-string. End to end under `nproc` busy loops, the pre-fix
+  script failed 3 of 4 runs; the fixed script, same load, 0 of 4.
+
+  Nine sites across five scripts had the shape, and the interesting ones are
+  not the UAT's. In `assert_hasnt` (v0.3, v0.4) and `assert_no_session_label`
+  (v0.2) a *match* is the violation, so the promoted status turns a detected
+  violation into a pass — these were failing **open**. So was the preflight in
+  `scripts/live-kind-v0.4.sh`: `kind get clusters | grep -qx "$CLUSTER" && die
+  ...` is a refusal to adopt a cluster the script did not create, and the `&&`
+  could not fire, so the script would have gone on to adopt it. Every site now
+  captures first and matches with a here-string, which is not a pipeline and so
+  carries grep's status and nothing else's.
+
+  `dev/tools/shell-lint` (wired into `dev/ci/presubmits/all.sh` and the
+  `hygiene` CI job, with a `--self-test` that fails if the rule is ever
+  defanged) keeps the shape out. It is deliberately one rule rather than a
+  shellcheck adoption: this one has a measured failure rate and a fail-open
+  direction behind it, and a second rule should have to clear the same bar.
+  `scripts/uat-v0.3.sh` already carried a comment documenting this exact hazard
+  for `awk`, written when one instance of it was fixed in `show_field` — a note
+  next to one occurrence is not a guard against the other eight.
+
 - **A pricing regen said 32 rows changed and could not say which one mattered,
   and the answer turned out to be two scheduled price doublings nobody had
   written down.** Every regen re-stamps `UpdatedAt` on every row, so the diff a

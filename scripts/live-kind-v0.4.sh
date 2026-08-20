@@ -113,10 +113,14 @@ die()  { printf '\n\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
 assert_eq()   { if [ "$2" = "$3" ]; then ok "$1 (${2})"; else bad "$1 (got '${2:-<none>}', want '$3')"; fi; }
 assert_http() { if [ "$2" = "$3" ]; then ok "$1 (HTTP $2)"; else bad "$1 (HTTP $2, want $3)"; fi; }
-assert_has()  { if printf '%s' "$2" | grep -Fq -- "$3"; then ok "$1"; else bad "$1 — missing: $3"; fi; }
+# Here-strings, not `printf ... | grep -Fq`: under `pipefail`, `grep -q`
+# exits on its first match and the writer's resulting SIGPIPE (141) is
+# promoted over grep's 0, so a match can read as a miss. assert_hasnt is
+# the direction that bites — there a matched needle IS the violation.
+assert_has()  { if grep -Fq -- "$3" <<<"$2"; then ok "$1"; else bad "$1 — missing: $3"; fi; }
 assert_hasnt() {
   if [ -z "$2" ]; then bad "$1 — nothing to search (empty)"; return 0; fi
-  if printf '%s' "$2" | grep -Fq -- "$3"; then bad "$1 — present: $3"; else ok "$1"; fi
+  if grep -Fq -- "$3" <<<"$2"; then bad "$1 — present: $3"; else ok "$1"; fi
 }
 assert_log_count() {
   local got
@@ -270,9 +274,14 @@ say "Preflight"
 for t in kind kubectl curl go; do
   command -v "${t}" >/dev/null 2>&1 || die "${t} is not on PATH"
 done
-env -u KUBECONFIG kind get clusters 2>/dev/null | grep -qx "${CLUSTER}" \
+# Capture first, THEN match. Piped into `grep -qx`, this refusal failed
+# open: a match exits grep, `kind` takes EPIPE, pipefail promotes its
+# status over grep's 0, the `&&` never fires — and the script goes on to
+# adopt the very cluster the message says it refuses to adopt.
+EXISTING_CLUSTERS="$(env -u KUBECONFIG kind get clusters 2>/dev/null || true)"
+grep -qx -- "${CLUSTER}" <<<"${EXISTING_CLUSTERS}" \
   && die "cluster ${CLUSTER} already exists — refusing to adopt a cluster this script did not create"
-note "kind $(kind version 2>/dev/null | head -1), kubectl present"
+note "kind $(kind version 2>/dev/null | awk 'NR == 1'), kubectl present"
 
 rm -rf "${WORK}" && mkdir -p "${WORK}"
 [ -e "${KUBECONFIG_FILE}" ] && die "${KUBECONFIG_FILE} exists — kind merges into an existing kubeconfig"

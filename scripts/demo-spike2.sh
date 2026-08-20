@@ -91,7 +91,10 @@ DB="${WORK}/sessions.db"
 start "${WORK}/hitl-1.log" "${REPO}/examples/workloads/gke-triage" --session-db="${DB}"
 inject demo-hitl ImagePullBackOff >/dev/null
 sleep 1
-note "paused: $(grep -o '"interrupt_id":"[^"]*"' "${WORK}/hitl-1.log" | head -1)"
+# awk-first-match rather than `| head -1`: head exits after one line,
+# grep takes SIGPIPE, and pipefail promotes that over the match. Cosmetic
+# in a demo's note, but it is the same shape that made the v0.2 UAT flake.
+note "paused: $(grep -o '"interrupt_id":"[^"]*"' "${WORK}/hitl-1.log" | awk 'NR == 1')"
 note "killing the process with -9 ..."
 kill -9 "${PID}"; wait "${PID}" 2>/dev/null || true; PID=""
 note "restarting a FRESH process on the same SQLite DB ..."

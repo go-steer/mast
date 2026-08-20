@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# shell-lint — one rule, for one bug that shipped and hid for a week.
+#
+# In a script running under `set -o pipefail`, a pipeline whose LAST
+# stage exits early on success — `grep -q`, `grep -m N`, `head`, `awk
+# ... {exit}` — closes the pipe under whatever is still writing to it.
+# The writer then dies: curl exits 23 ("failed writing body"), most
+# other programs take SIGPIPE and exit 141. `pipefail` reports the
+# highest-numbered failure in the pipeline, so it promotes the writer's
+# 23/141 over the early-exiting consumer's own 0, and the pipeline
+# reports FALSE for a pattern that was right there in the input.
+#
+# Measured, not theorised (2026-08-20, against the real mast /metrics
+# body at 5,566 bytes with the box under contention):
+#
+#     curl -s "$BASE/metrics" | grep -Fxq LINE     30 of 600 wrong
+#     grep -Fxq -- LINE <<<"$scrape"                0 of 600 wrong
+#
+# scripts/uat-v0.2.sh had this in assert_metric, which is why the UAT
+# failed roughly one run in a dozen on an assertion whose metric was
+# correct — and the same shape in assert_no_session_label and in the
+# v0.3/v0.4 assert_hasnt, where a MATCH is the violation, so the
+# promoted exit status turned a detected violation into a pass. That
+# direction fails open, which is what makes this worth a presubmit
+# rather than a comment.
+#
+# The fix is always the same: don't make it a pipeline. Use a
+# here-string (`grep -Fq -- "$needle" <<<"$haystack"`), or drop -q so
+# the consumer reads to EOF, or match with bash's own `[[ == ]]`.
+#
+# Deliberately narrow. This is not a shellcheck replacement — it is one
+# rule with a measured failure rate and a fail-open direction. Add a
+# second rule only with the same evidence behind it.
+#
+# Usage: dev/tools/shell-lint              scan
+#        dev/tools/shell-lint --self-test  verify the rule still fires
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+scoped_paths() {
+  # Every shell script we own. Scripts without `pipefail` are skipped
+  # by the check itself rather than here, so a script that adopts
+  # pipefail later is covered the day it does.
+  find scripts dev -type f -name '*.sh' 2>/dev/null | sort
+  find dev/tools -type f -perm -u+x ! -name '*.sh' ! -name '*.py' 2>/dev/null | sort
+}
+
+# check_pipefail_early_exit <path> — flag pipelines that end in a
+# consumer known to exit before EOF, in a file that sets pipefail.
+check_pipefail_early_exit() {
+  local path="$1"
+  grep -q 'set -[a-z]*o\? *pipefail\|set -o pipefail' "$path" 2>/dev/null || return 0
+
+  awk -v p="$path" '
+    # Heredoc bodies are data, not code — a fixture, a PR body, a YAML
+    # blob. This tool would otherwise flag its own self-test fixture,
+    # which is the kind of self-inflicted noise that gets a rule muted.
+    # `<<<` is a here-STRING, not a heredoc: it must not open a skip.
+    inheredoc {
+      if ($0 ~ ("^[ \t]*" term "[ \t]*$")) inheredoc = 0
+      next
+    }
+    # \047 (octal) rather than \x27 for the quote: mawk is the default
+    # awk on the CI runners and its \x support is not dependable.
+    match($0, /<<-?[ \t]*[\047"]?[A-Za-z_][A-Za-z0-9_]*/) && $0 !~ /<<</ {
+      term = substr($0, RSTART, RLENGTH)
+      sub(/^<<-?[ \t]*/, "", term)
+      sub(/^[^A-Za-z_]+/, "", term)
+      inheredoc = 1
+      next
+    }
+
+    # Comments are where we EXPLAIN this hazard; do not flag the prose.
+    /^[ \t]*#/ { next }
+
+    # A pipeline ending in an early-exiting consumer. The consumer must
+    # be the last stage — an early exit in the middle is the same
+    # hazard, but the shapes we actually write put it last, and
+    # matching mid-pipeline drives false positives through `| head |
+    # wc -l` idioms that nobody reads a status from.
+    #
+    #   | grep -q / -qF / -Fq / -Fxq ...     quiet grep
+    #   | grep -m N                          bounded grep
+    #   | head ...                           bounded head
+    #
+    # A trailing redirect or `;`/`then`/`&&` after the consumer is
+    # allowed; anything else piped after it means it is not last.
+    {
+      line = $0
+      sub(/#.*$/, "", line)          # strip trailing comments
+      if (line !~ /\|/) next
+
+      # last pipeline stage
+      n = split(line, seg, /\|/)
+      last = seg[n]
+      if (last ~ /^[ \t]*grep[^|]*[ \t]-[A-Za-z]*q/ ||
+          last ~ /^[ \t]*grep[^|]*[ \t]-m[ \t]*[0-9]/ ||
+          last ~ /^[ \t]*head([ \t]|$)/) {
+        printf "%s:%d: pipeline into an early-exiting consumer under pipefail — the writer takes EPIPE/SIGPIPE and pipefail promotes its status, so a MATCH can report as a miss. Use a here-string (grep -Fq -- \"$n\" <<<\"$h\"), drop -q, or match with [[ == ]].\n", p, NR
+      }
+    }
+  ' "$path"
+}
+
+run_all_checks() {
+  local findings=0 path out
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    out=$(check_pipefail_early_exit "$path")
+    if [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+      findings=$((findings + $(printf '%s\n' "$out" | wc -l)))
+    fi
+  done < <(scoped_paths)
+
+  if (( findings > 0 )); then
+    echo ""
+    echo "shell-lint: $findings finding(s). See the remediation hint above."
+    echo "Reference: dev/tools/shell-lint --self-test to see the rule in action."
+    return 1
+  fi
+  echo "shell-lint: OK"
+  return 0
+}
+
+# ---- self-test --------------------------------------------------------
+#
+# A fixture with both a positive and a negative case, so an edit that
+# defangs the regex fails here rather than going quiet in the scan.
+
+self_test() {
+  local tmp
+  tmp=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+
+  cat > "$tmp/bad.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if curl -s "$BASE/metrics" | grep -Fxq "$want"; then echo yes; fi
+printf '%s' "$haystack" | grep -Fq -- "$needle" && echo present
+cat big.txt | head -5
+EOF
+
+  cat > "$tmp/good.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# A comment mentioning curl | grep -Fxq must not be flagged.
+scrape="$(curl -s "$BASE/metrics")"
+if grep -Fxq -- "$want" <<<"$scrape"; then echo yes; fi
+printf '%s' "$haystack" | grep -Fx -- "$needle" >/dev/null && echo present
+printf '%s\n' "$list" | grep -c foo
+EOF
+
+  cat > "$tmp/nopipefail.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+curl -s "$BASE/metrics" | grep -Fxq "$want"
+EOF
+
+  local out=0 n
+  n=$(check_pipefail_early_exit "$tmp/bad.sh" | wc -l)
+  (( n == 3 )) || { echo "self-test: expected 3 findings in bad.sh, got $n"; out=1; }
+
+  n=$(check_pipefail_early_exit "$tmp/good.sh" | wc -l)
+  (( n == 0 )) || { echo "self-test: expected 0 findings in good.sh, got $n"; out=1; }
+
+  # No pipefail, no promotion, no hazard — and flagging it would train
+  # people to ignore the rule.
+  n=$(check_pipefail_early_exit "$tmp/nopipefail.sh" | wc -l)
+  (( n == 0 )) || { echo "self-test: expected 0 findings in nopipefail.sh, got $n"; out=1; }
+
+  if (( out == 0 )); then
+    echo "shell-lint self-test: OK (rule fired on all 3 hazards, silent on 4 safe forms)"
+  fi
+  return $out
+}
+
+# ---- entry point ------------------------------------------------------
+
+case "${1:-}" in
+  --self-test) self_test ;;
+  "") run_all_checks ;;
+  *) echo "usage: dev/tools/shell-lint [--self-test]" >&2; exit 2 ;;
+esac
