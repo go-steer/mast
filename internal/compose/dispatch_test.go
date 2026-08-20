@@ -16,15 +16,19 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 
 	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
 
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/graph"
+	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/specialists"
+	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -98,7 +102,7 @@ func readOnlyCatalog() workload.ToolCatalog {
 }
 
 func TestBuildRootFanoutFromBundleDispatch(t *testing.T) {
-	root, err := BuildRoot(context.Background(), RootConfig{
+	root, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle: workload.Bundle{
 			Name:        "ns-audit",
 			Dispatch:    workload.DispatchFanout,
@@ -120,7 +124,7 @@ func TestBuildRootFanoutFromBundleDispatch(t *testing.T) {
 // library default: a programmatic caller declares specialists, not a
 // dispatch string.
 func TestBuildRootAutoPicksFanoutFromTheRoster(t *testing.T) {
-	root, err := BuildRoot(context.Background(), RootConfig{
+	root, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle:   workload.Bundle{Name: "w", ToolCatalog: readOnlyCatalog()},
 		Specs:    fanoutSpecs("alpha"),
 		Model:    mastagent.NewEchoModel("echo"),
@@ -145,7 +149,7 @@ func TestBuildRootAutoPicksFanoutFromTheRoster(t *testing.T) {
 // agent's sub-agents (ADK refuses an agent with two parents), so the
 // root registers the fan and the merger and nothing else.
 func TestBuildRootFanoutExcludesSynthesisFromTheBranches(t *testing.T) {
-	root, err := BuildRoot(context.Background(), RootConfig{
+	root, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle:   workload.Bundle{Name: "w", ToolCatalog: readOnlyCatalog()},
 		Specs:    fanoutSpecs("alpha", "beta"),
 		Model:    mastagent.NewEchoModel("echo"),
@@ -184,7 +188,7 @@ func agentNames(agents []adkagent.Agent) []string {
 // until the bundle says otherwise, so an empty catalog makes the very
 // same roster unbuildable.
 func TestBuildRootFanoutCarriesTheCatalogClassifications(t *testing.T) {
-	_, err := BuildRoot(context.Background(), RootConfig{
+	_, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle: workload.Bundle{
 			Name:     "w",
 			Dispatch: workload.DispatchFanout,
@@ -235,7 +239,7 @@ func TestRosterShape(t *testing.T) {
 }
 
 func TestBuildRootRejectsUnknownDispatch(t *testing.T) {
-	_, err := BuildRoot(context.Background(), RootConfig{
+	_, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle: workload.Bundle{Name: "w", Dispatch: "sideways"},
 		Specs:  fanoutSpecs("alpha"),
 		Model:  mastagent.NewEchoModel("echo"),
@@ -243,4 +247,122 @@ func TestBuildRootRejectsUnknownDispatch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "sideways") {
 		t.Fatalf("want an unknown-dispatch error naming the value, got %v", err)
 	}
+}
+
+// The daemon's /tools endpoint reports what mast wired, and mast's
+// non-MCP tools are the planner's control plane (#137). Before this, a
+// planner-dispatch daemon with no MCP servers answered with an empty
+// catalog — true of its MCP tools, and the wrong answer to "what can
+// this daemon do".
+//
+// The names are asserted rather than the count, because the count is
+// what a hand-maintained list would also get right.
+func TestBuildRootReportsThePlannerVocabulary(t *testing.T) {
+	root, builtin, err := BuildRoot(context.Background(), RootConfig{
+		Bundle: workload.Bundle{
+			Name:        "triage",
+			ToolCatalog: readOnlyCatalog(),
+			Planner:     workload.Planner{Enabled: true},
+		},
+		Specs: plannerSpecs(),
+		Model: mastagent.NewEchoModel("echo"),
+	})
+	if err != nil {
+		t.Fatalf("BuildRoot: %v", err)
+	}
+	if root == nil {
+		t.Fatal("BuildRoot returned no root")
+	}
+	want := []string{
+		planner.ToolInvokeSpecialist,
+		planner.ToolRunShapeLLMRouter,
+		planner.ToolRunShapeFanOutFanIn,
+		planner.ToolRequestOperatorInput,
+	}
+	if got := toolNames(builtin); !slices.Equal(got, want) {
+		t.Fatalf("builtin tools = %v, want %v", got, want)
+	}
+}
+
+// pause_session is registered only when a PauseRecorder is wired, so
+// the catalog has to follow the config rather than a fixed list — a
+// daemon with no durable store must not advertise a pause it cannot
+// take.
+func TestBuildRootReportsPauseSessionOnlyWhenItIsWired(t *testing.T) {
+	build := func(rec planner.PauseRecorder) []string {
+		t.Helper()
+		_, builtin, err := BuildRoot(context.Background(), RootConfig{
+			Bundle: workload.Bundle{
+				Name:        "triage",
+				ToolCatalog: readOnlyCatalog(),
+				Planner:     workload.Planner{Enabled: true},
+			},
+			Specs:         plannerSpecs(),
+			Model:         mastagent.NewEchoModel("echo"),
+			PauseRecorder: rec,
+		})
+		if err != nil {
+			t.Fatalf("BuildRoot: %v", err)
+		}
+		return toolNames(builtin)
+	}
+	if got := build(nil); slices.Contains(got, planner.ToolPauseSession) {
+		t.Errorf("no recorder wired, but the catalog offers %s: %v", planner.ToolPauseSession, got)
+	}
+	if got := build(stubPauseRecorder{}); !slices.Contains(got, planner.ToolPauseSession) {
+		t.Errorf("a recorder is wired, but %s is missing from %v", planner.ToolPauseSession, got)
+	}
+}
+
+// Every other shape reports nothing, and that is the honest answer
+// rather than a hole: compose wires no tools of its own onto them, and
+// what ADK installs (finish_task, a coordinator's delegation tools) is
+// behind an accessor that does not exist — #51 / adk-go#1229. Claiming
+// otherwise here would be the drift a hand-maintained list produces.
+func TestBuildRootReportsNoBuiltinsUnderOtherDispatch(t *testing.T) {
+	for _, d := range []Dispatch{DispatchFanout, DispatchCoordinator} {
+		t.Run(string(d), func(t *testing.T) {
+			_, builtin, err := BuildRoot(context.Background(), RootConfig{
+				Bundle:   workload.Bundle{Name: "w", ToolCatalog: readOnlyCatalog()},
+				Specs:    fanoutSpecs("alpha"),
+				Model:    mastagent.NewEchoModel("echo"),
+				Dispatch: d,
+			})
+			if err != nil {
+				t.Fatalf("BuildRoot: %v", err)
+			}
+			if len(builtin) != 0 {
+				t.Errorf("builtin tools = %v, want none under %s dispatch", toolNames(builtin), d)
+			}
+		})
+	}
+}
+
+// plannerSpecs is a one-specialist roster that satisfies the read/write
+// split: an empty mcp allowlist means "needs no cluster tools", which is
+// true of a stand-in and keeps CheckCapabilitySplit out of the way of
+// what this file is testing.
+func plannerSpecs() []specialists.Spec {
+	return []specialists.Spec{{
+		Name:        "alpha",
+		Instruction: "look",
+		Mode:        specialists.ModeTask,
+		Tools:       specialists.ToolAllowlist{MCP: []specialists.MCPAllowlist{}},
+	}}
+}
+
+func toolNames(tools []tool.Tool) []string {
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, t.Name())
+	}
+	return out
+}
+
+// stubPauseRecorder is enough to register pause_session; it is never
+// called, because nothing here runs a turn.
+type stubPauseRecorder struct{}
+
+func (stubPauseRecorder) PauseInterrupt(context.Context, string, string, string, transcript.PauseSpec) (transcript.PauseHandle, error) {
+	return transcript.PauseHandle{}, errors.New("compose test: pause recorder is a stub and must not be called")
 }

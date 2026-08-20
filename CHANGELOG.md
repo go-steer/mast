@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **`GET /sessions/{id}/tools` now lists the daemon's own tools, not just the
+  MCP servers'.** A planner-dispatch daemon with no MCP servers used to answer
+  with an empty catalog — accurate about its MCP tools, and wrong as an answer
+  to "what can this thing do", since the planner's dispatch vocabulary is most
+  of what it can do. Builtins carry `source: "builtin"`, no `server`, and the
+  same `gate_state` projection as anything else, and they sort ahead of the
+  servers.
+
+  They are also listed unconditionally: unlike an MCP server, a builtin cannot
+  fail to answer or go away between polls, so it needs neither the 30-second
+  TTL nor the partial-failure handling — and it stays in the response when
+  every server is down, which is the case that made the gap worth closing.
+
+  The enumeration is not a second list. `planner.Vocabulary` is the function
+  `planner.New` itself calls to attach the tools, and `compose.BuildRoot` now
+  returns what it wired alongside the root, so a tool added to the planner
+  joins the catalog without anyone remembering to add it. What is still
+  missing is the handful ADK installs itself — `finish_task`, a coordinator's
+  transfer tools — which stay out rather than being hand-listed, because a
+  catalog naming tools that do not exist is worse than one omitting tools that
+  do.
+
 - **A resume against the daemon can name the person who approved it.** Point
   `MAST_INJECT_USERS_FILE` at a users file and `/resume` accepts each row's
   token as well as the shared one, recording `alice@example.com` on the pause

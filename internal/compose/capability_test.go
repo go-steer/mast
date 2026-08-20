@@ -207,7 +207,7 @@ func TestCheckCapabilitySplitLogsTheWriteSurface(t *testing.T) {
 // covers the coordinator shape; the fan-out shape's fixtures in
 // dispatch_test.go cover the other.
 func TestBuildRootRefusesADiagnoserThatCanMutate(t *testing.T) {
-	_, err := BuildRoot(context.Background(), RootConfig{
+	_, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle:   triageCatalog(),
 		Specs:    []specialists.Spec{readOnlySpec("OOMKilled", "patch_resource")},
 		Model:    mastagent.NewEchoModel("echo"),

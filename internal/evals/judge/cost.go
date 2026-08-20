@@ -240,7 +240,7 @@ func RunCost(ctx context.Context, root adkmodel.LLM, rootName, provider, scratch
 		return nil, fmt.Errorf("judge: cost: migrate session store: %w", err)
 	}
 
-	agent, err := compose.BuildRoot(ctx, compose.RootConfig{
+	agent, _, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle: workload.Bundle{
 			Name:        "j-cost-tier",
 			Description: "two specialists on two tiers, to price them",
