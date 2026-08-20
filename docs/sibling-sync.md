@@ -122,7 +122,7 @@ Ranked by what it costs mast to keep not doing them.
 | Commit | Subject | State |
 |---|---|---|
 | `e7a21da` | eventlog: `BEGIN IMMEDIATE` on SQLite (#576) | **ported 2026-08-17** ([#157](https://github.com/go-steer/mast/pull/157)). See "What this triage changed" — this one is live in mast for a reason upstream's commit message doesn't mention. |
-| `9f81626` | attach: durable peer registry across hub restarts (#688) | **open.** mast's `PeerRegistry` is in-memory: a daemon restart drops every registration and every peer has to re-register before federation works again. mast is the *unattended* sibling, so this bites harder here than upstream. |
+| `9f81626` | attach: durable peer registry across hub restarts (#688) | **ported 2026-08-19, library half only** ([#180](https://github.com/go-steer/mast/issues/180)). `NewPeerRegistryWithState` and the snapshot/reload path landed as upstream wrote them. Upstream's `cmd/`+`pkg/config` half did not: mast's daemon has no `--attach-peer-hub`, so `Options.PeerRegistry` is an embedder-only surface here and there is no flag for a state-file flag to hang off. Adding one is a feature, not a port. One deliberate divergence: mast re-clamps every reloaded lease to the *running* max TTL — see below. |
 | `c319565` | vertexcache: retry a failed `Caches.Create` on a bounded backoff (#723) | **ported 2026-08-17** ([#161](https://github.com/go-steer/mast/pull/161)) — the vertexcache half. Upstream squashed three unrelated changes into this SHA; the `pkg/attach` + `pkg/eventlog` `BranchLister` half is subagent-branch resolution, which mast does not have, and the `pkg/models/gemini` touch is a comment. So `c319565` keeps reporting under `pkg/eventlog`, correctly. |
 | `ef9b9b5` | telemetry: Go runtime metrics + Gemini API-key otelhttp wrap (#525) | **open, low.** mast has neither. Runtime metrics are the more useful half for a long-lived daemon; the otelhttp wrap only covers the API-key Gemini path, which mast uses less than Vertex. |
 | `b1101f9` | mcp: surface JSON-RPC error body on 4xx/5xx (#305) | **ported 2026-08-17, narrowed** ([#167](https://github.com/go-steer/mast/pull/167)). The triage called this a re-implementation; it turned out to be a re-implementation of *less than half*, because the MCP SDK closed most of the gap in the interval. See below. |
@@ -279,6 +279,43 @@ only change to `lifecycle.go` is the eight-line transport-wrap hunk — which ma
 `newHTTPToolset` rather than `transportFor`. The report drops from 36 commits to **35**; the
 three left on `pkg/mcp` are `daa78fc`, `49c8415`, and `6a4119b`, all triaged elsewhere on this
 page.
+
+### `9f81626` — a durable grant is still a grant
+
+Upstream's durable peer registry ported almost verbatim: the same separate on-disk record type
+(so `Peer.Owner`, which is `json:"-"` on the wire, still reaches disk and the #384 redaction
+survives a restart), the same temp+rename snapshot, the same edge-triggered failure logging. Two
+things came out differently.
+
+**The `cmd/` half has nothing to attach to.** Upstream added `--attach-peer-state-file` next to
+its existing `--attach-peer-hub`, plus the `pkg/config` and `pkg/compose` fields that flag needs.
+mast has no `--attach-peer-hub`: `attach.Options.PeerRegistry` is reachable only from an
+embedding program, and `cmd/mast` never sets it. Porting the flag would mean inventing the hub
+flag first, which is a feature with its own design question (does an unattended daemon default to
+being a hub?), not a port. The library half is where the defect #180 describes actually lives for
+mast today, so that is what landed.
+
+**A reloaded lease is re-clamped to the running config's ceiling.** #180 asked whoever took it to
+check "whether a registration that outlives the process should also outlive a config change that
+would no longer admit that peer," and the answer is no, for the reason [#166] gave about budget
+grants: replaying a grant against a configuration that no longer supports it is arithmetic on a
+number that stopped meaning anything. A lease is a grant — it says a peer counts as live until
+*T* without needing to say anything further — and upstream reloads the recorded expiry as
+written. Lower `WithMaxTTL` from five minutes to thirty seconds and restart, and the old grant
+gets honored twice: once because its expiry is still four minutes out, and then indefinitely,
+because `Heartbeat` re-derives the TTL from `LeaseExpiresAt - LastHeartbeat` and renews at the
+ceiling the operator just deleted. mast clamps on load, before the expired-lease drop, so a peer
+that is only still live under the withdrawn ceiling is not live at all; and the eager first
+snapshot writes the narrowed lease down, so the clamp survives its own process.
+
+The narrowing direction gets no such treatment and needs none. An owner is a restriction, so
+carrying one forward can only ever restrict — that is why it is replayed as written while the
+lease is not.
+
+This is a candidate to send upstream: the same code has the same behavior there, and their
+operator is no more likely to want a withdrawn ceiling honored than mast's.
+
+[#166]: https://github.com/go-steer/mast/issues/166
 
 ### Deliberately not ported
 
@@ -597,6 +634,13 @@ report from 40 commits / 49 files to **36 / 44**.
 `b1101f9` came off next, moving `pkg/mcp` to a single `b1101f9` baseline and the report to **35 /
 44** across 198 ported files. The file count rose without the drift-file count moving, which is
 the shape a clean addition makes: `errbody.go` is new, current, and reports nothing.
+
+`9f81626` came off on 2026-08-19, taking the report from **42 commits / 50 files to 41 / 49** across
+200 ported files (35 was the floor at triage; upstream has landed commits since, which is what a
+delta-not-level count looks like from the other direction). `pkg/attach` drops from 21 commits to 20
+and now reports **two** port SHAs, `25d8531` and `9f81626`, for the same reason `pkg/eventlog` does:
+only `peers.go` was re-ported, so only `peers.go`'s trailer moved. The two new files add to the
+ported-file total without adding to the drift-file total — the shape a clean addition makes.
 
 35 is therefore the expected floor, not a backlog. The 13 n/a commits never go away either — they
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next

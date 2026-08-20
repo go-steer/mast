@@ -54,8 +54,10 @@ type Options struct {
 	// PeerRegistry, when non-nil, enables peer-registration endpoints
 	// (POST /peers, GET /peers, etc.) — turning this listener into a
 	// discovery hub for other agents. Nil means the peer endpoints
-	// are not registered and POST /peers returns 404. See
-	// docs/peer-registration-design.md.
+	// are not registered and POST /peers returns 404. Build it with
+	// NewPeerRegistryWithState to keep registrations across a
+	// restart. See
+	// https://github.com/go-steer/core-agent/blob/main/docs/peer-registration-design.md.
 	PeerRegistry *PeerRegistry
 
 	// Auth controls TLS + bearer + read-only enforcement. Zero value

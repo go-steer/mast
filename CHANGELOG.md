@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **A hub restart un-federated the deployment, silently.** `attach.PeerRegistry`
+  was memory-only: every registration went with the process, and each peer
+  stayed invisible until its own heartbeat failed and it re-registered. That is
+  a 20-60 second window in which "who is in the fleet?" answers wrong rather
+  than answering slowly — recoverable where somebody is watching, and mast's
+  premise is that nobody is. `attach.NewPeerRegistryWithState` snapshots the
+  registry to a JSONL file on every mutation and reloads it at startup, so the
+  hub comes back already knowing its fleet. Ported from core-agent
+  `9f81626`; registrations are still in-memory by default, and
+  `NewPeerRegistry` is unchanged.
+
+  Two things the state file is careful about. It is **not** the wire shape:
+  `Peer.Owner` is `json:"-"` because discovery responses must not leak it, so
+  persisting `Peer` directly would reload every registration ownerless and
+  quietly undo the enumerate-then-delete hardening — a separate on-disk record
+  carries the owner, and the restart is tested through the HTTP handlers to
+  prove the redaction survives it. And **a lease is re-clamped to the running
+  configuration's ceiling**, not replayed at the width it was granted: this is
+  what #166 settled for budget grants, arrived at again. Lower the max TTL and
+  restart, and an unclamped reload would honour the withdrawn ceiling twice —
+  once for the outstanding lease, then indefinitely, because a heartbeat renews
+  at whatever width it reloaded. That divergence from upstream is mast's; the
+  clamp runs before the expired-lease drop and is written back, so a peer only
+  live under the old ceiling is not live at all.
+
+  The daemon is unaffected: `cmd/mast` has no peer-hub flag, so
+  `attach.Options.PeerRegistry` remains an embedder-only surface. Upstream's
+  `--attach-peer-state-file` half of the port has nothing to hang on here and
+  did not land.
+
 - **`severity_accuracy` was partly measuring markdown, and the rest of it
   cannot be acted on.** Two findings, one metric.
 
