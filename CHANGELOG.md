@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **A specialist's `tools.skills` allowlist is refused rather than
+  silently ignored.** A specialist spec is the file that states what a
+  sub-agent may touch, and two of its three allowlist axes are enforced
+  code — `builtin` by the write gate and the capability-split check,
+  `mcp` by `filterToolsets`. `skills` was read by no production code at
+  all, because mast ships no skills subsystem for it to narrow: there is
+  no `pkg/skills`, no SKILL.md loader, no `invoke_skill`. So
+  `skills: [a, b]` looked exactly like a whitelist and granted the same
+  as an absent field.
+
+  A non-empty list now fails the load naming the file, the same way a
+  misspelled `capability` or `tier` already does. `skills: []` still
+  loads — present-but-empty means deny-all on every axis, and deny-all
+  is what this build does. Two adjacent declarations, the
+  `tools` wire's `skill` source and the `skill` plan-exempt namespace,
+  are annotated in place rather than removed: an embedder can still
+  produce the first, and the second should be re-decided when a loader
+  lands. `docs/skills-design.md` now records that its v0.1 loader has
+  not shipped through v0.4.
+
 - **A Vertex resource-path model echo no longer costs a session its
   per-model rates.** `ModelVersion` is stamped from the model the API
   echoes back, because where that disagrees with the request the server's

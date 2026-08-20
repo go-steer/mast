@@ -146,7 +146,8 @@ type Gate struct {
 //     asks before deciding what to plan.
 //
 // Note on namespaces: skill tools (list_skills / load_skill /
-// load_skill_resource) and MCP tools are registered through
+// load_skill_resource — none of which this build registers, see the
+// table entry) and MCP tools are registered through
 // GateToolset in pkg/tools/gate.go, which routes every underlying
 // tool through gate.CheckGeneric with the namespace as the toolName.
 // That's why the entry below is "skill" (the namespace) rather than
@@ -187,8 +188,17 @@ var planExemptTools = map[string]bool{
 
 	// Read-only skill introspection (namespace-level exempt: covers
 	// list_skills / load_skill / load_skill_resource, all of which
-	// only READ from the skills registry). See pkg/skills/load.go
-	// where the toolset gets wrapped with GateToolset(ts, gate, "skill").
+	// only READ from the skills registry). Upstream wraps the toolset
+	// with GateToolset(ts, gate, "skill") at its skills loader.
+	//
+	// Inert here, and unlike fetch_url above that is not a reason to
+	// drop it: mast has no skills subsystem at all — no pkg/skills, no
+	// invoke_skill, nothing that could register the namespace (#211) —
+	// so this is a table entry waiting on a subsystem rather than one
+	// left behind by a removed tool. It stays so the namespace keeps
+	// its decided answer, but the decision is worth re-taking when the
+	// loader actually lands: the exemption is written for three
+	// read-only tools, and it exempts the whole namespace.
 	"skill": true,
 
 	// Read-only subagent introspection (individual tool names,
