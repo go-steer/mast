@@ -164,10 +164,38 @@ func TestRun_JudgeTierRunsTheWholeCorpus(t *testing.T) {
 	if v := sum.Judge.Validity; v.Calls != 0 || len(v.Malformed) != 0 {
 		t.Errorf("echo produced tool calls: %+v", v)
 	}
+	// A run that calls nothing answers nothing, so every reachable
+	// expected intent is a consequential miss — and LC-13's rollback is
+	// not one of them, on a board where literally every other question
+	// went unasked. That is the partition working at its least
+	// forgiving.
+	m := sum.Judge.Misses
+	if m.Scenarios != len(sum.Judge.Scenes) {
+		t.Errorf("miss board drawn from %d rows, want all %d", m.Scenarios, len(sum.Judge.Scenes))
+	}
+	if len(m.Consequential) == 0 {
+		t.Error("a board where nothing was called reported no consequential miss")
+	}
+	if m.OutOfCatalog != 1 {
+		t.Errorf("out of catalog = %d, want only LC-13's rollback", m.OutOfCatalog)
+	}
+	for _, c := range m.Consequential {
+		if c.Intent == "remediate.rollback" {
+			t.Errorf("%s: the write intent lookout excludes by design was charged as a miss", c.Scenario)
+		}
+		if len(c.ServedBy) == 0 {
+			t.Errorf("%s %s: listed as consequential with no tool that would have served it", c.Scenario, c.Intent)
+		}
+	}
+
 	var buf bytes.Buffer
 	sum.WriteText(&buf)
-	if out := buf.String(); !strings.Contains(out, "no calls were recorded at all") {
+	out := buf.String()
+	if !strings.Contains(out, "no calls were recorded at all") {
 		t.Errorf("a board with no tool calls did not say so:\n%s", out)
+	}
+	if !strings.Contains(out, "the structural ceiling below, not a miss by the model") {
+		t.Errorf("the miss section did not separate the ceiling from the misses:\n%s", out)
 	}
 }
 
@@ -313,6 +341,113 @@ func TestJudgeSummary_WriteValidity(t *testing.T) {
 	clean.writeValidity(func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) })
 	if out := buf.String(); !strings.Contains(out, "malformed: none") {
 		t.Errorf("a clean board did not state that it was clean:\n%s", out)
+	}
+}
+
+// missScenes is one board of each shape #170 distinguishes: a row that
+// left a catalog-answerable question unasked, a row whose only gap is
+// the write tool lookout excludes, a clean row, and a row that never
+// ran.
+func missScenes() []JudgeScenario {
+	return []JudgeScenario{{
+		ID: "missed-saturation",
+		Misses: evals.MissReport{Consequential: []evals.ConsequentialMiss{
+			{Intent: "inspect.node_saturation", ServedBy: []string{"k8s_resource_top"}},
+		}},
+	}, {
+		ID: "missed-it-too",
+		Misses: evals.MissReport{Consequential: []evals.ConsequentialMiss{
+			{Intent: "inspect.node_saturation", ServedBy: []string{"k8s_resource_top"}},
+			{Intent: "inspect.events", ServedBy: []string{"k8s_event_timeline", "k8s_triage_workload"}},
+		}},
+	}, {
+		ID:     "capped-by-the-catalog",
+		Misses: evals.MissReport{OutOfCatalog: []string{"remediate.rollback"}},
+	}, {
+		ID: "clean",
+	}, {
+		ID:    "did-not-run",
+		Error: "provider refused",
+		// Whatever this row managed to classify before failing is not a
+		// measurement, the same way its calls are not.
+		Misses: evals.MissReport{Consequential: []evals.ConsequentialMiss{
+			{Intent: "inspect.logs", ServedBy: []string{"k8s_triage_logs"}},
+		}},
+	}}
+}
+
+// TestSummarizeMisses_KeepsTheCatalogsGapOutOfTheModelsColumn is the
+// partition #170 turns on, at board level: three unsatisfied intents
+// across the rows that ran, and only two of them are the model's.
+func TestSummarizeMisses_KeepsTheCatalogsGapOutOfTheModelsColumn(t *testing.T) {
+	got := summarizeMisses(missScenes())
+
+	if got.Scenarios != 4 {
+		t.Errorf("board drawn from %d rows, want 4 (the row that did not run contributes none)", got.Scenarios)
+	}
+	if len(got.Consequential) != 3 {
+		t.Fatalf("consequential = %+v, want the three from the rows that ran", got.Consequential)
+	}
+	if got.OutOfCatalog != 1 {
+		t.Errorf("out of catalog = %d, want 1", got.OutOfCatalog)
+	}
+	for _, c := range got.Consequential {
+		if c.Scenario == "did-not-run" {
+			t.Error("a row that did not run contributed a miss")
+		}
+		if c.Intent == "remediate.rollback" {
+			t.Error("the structural ceiling was filed as a tool-selection miss")
+		}
+	}
+	// Sorted by row then intent, because this is a list a human reads
+	// and an unstable order makes two boards impossible to compare.
+	if got.Consequential[0].Scenario != "missed-it-too" || got.Consequential[0].Intent != "inspect.events" {
+		t.Errorf("first entry = %+v, want missed-it-too/inspect.events", got.Consequential[0])
+	}
+	// The recurring intent is the actionable pattern: one tool nobody
+	// reaches for, not two unrelated rows.
+	if strings.Join(got.ByIntent, " ") != "inspect.events=1 inspect.node_saturation=2" {
+		t.Errorf("by intent = %v, want the recurring intent tallied", got.ByIntent)
+	}
+}
+
+// TestJudgeSummary_WriteMisses checks the section answers the question
+// its reader arrives with. Everyone comes to it expecting "tools the run
+// skipped", which is a bigger number pointing the other way, so the
+// section has to say which question it answers before it lists anything.
+func TestJudgeSummary_WriteMisses(t *testing.T) {
+	j := &JudgeSummary{Scenes: missScenes()}
+	j.Misses = summarizeMisses(j.Scenes)
+
+	var buf bytes.Buffer
+	j.writeMisses(func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) })
+	out := buf.String()
+	for _, want := range []string{
+		"consequential misses (#170) — 3 across 4 scenario(s)",
+		"that a tool in the catalog would have answered, that the run never asked",
+		"a skipped tool is not one of these",
+		"missed-saturation inspect.node_saturation — k8s_resource_top would have answered it",
+		"missed-it-too inspect.events — k8s_event_timeline, k8s_triage_workload would have answered it",
+		"by intent: inspect.events=1  inspect.node_saturation=2",
+		"1 further unsatisfied intent(s) no read-only tool serves",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the miss section is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "remediate.rollback") {
+		t.Errorf("the section named the excluded write intent as a miss:\n%s", out)
+	}
+
+	// A board with nothing to report says so, for the same reason the
+	// validity section does: an absent section reads as a pass, and this
+	// one is meant to be empty most nights.
+	clean := &JudgeSummary{Scenes: []JudgeScenario{{ID: "fine"}}}
+	clean.Misses = summarizeMisses(clean.Scenes)
+	buf.Reset()
+	clean.writeMisses(func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) })
+	if out := buf.String(); !strings.Contains(out, "none across 1 scenario(s)") {
+		t.Errorf("a board with no misses did not state it:\n%s", out)
 	}
 }
 

@@ -68,6 +68,10 @@ type JudgeSummary struct {
 	// whether they found anything.
 	Validity ValidityBoard `json:"validity"`
 
+	// Misses is #170's: of the questions intent_coverage marked
+	// unanswered, the ones a tool in the catalog would have answered.
+	Misses MissBoard `json:"misses"`
+
 	// Cost is J-cost-tier: a two-tier roster run live, then priced off
 	// the meter. Nil when the check could not run at all, which is
 	// itself reported as a Problem.
@@ -104,6 +108,13 @@ type JudgeScenario struct {
 	// learn anything" have different answers often enough to matter.
 	Calls      []evals.CallRecord `json:"calls,omitempty"`
 	Violations []evals.Violation  `json:"violations,omitempty"`
+
+	// Misses is this row's unsatisfied intents, partitioned into the ones
+	// tool selection could have fixed and the ones the catalog cannot
+	// serve. Persisted per row because the board's list is an enumeration
+	// and a reader who wants one row's detail should not have to re-derive
+	// it from the score.
+	Misses evals.MissReport `json:"misses"`
 }
 
 // ValidityBoard is the corpus-wide view of how the runs used their
@@ -160,6 +171,51 @@ type ValidityBoard struct {
 // is how readers learn to skip warnings.
 const argumentsNote = "recorded verbatim (the W8 answer, pkg/transcript's argumentsWarning); the corpus is a synthetic fixture, " +
 	"so this board carries no cluster data — running the tier against real cluster reads would make it as sensitive as that cluster"
+
+// MissBoard is the corpus-wide view of what the runs failed to ask.
+//
+// A list, not a rate, and for a sharper reason than #169's: the rate was
+// measured and it points the wrong way. Counting scenarios that skipped
+// a tool holding data flags a third of the Claude board and more than
+// half the Gemini one, and the flagged rows score *higher* on
+// response_quality than the rows that called everything — because most
+// skipped tools were redundant with one that had already answered. See
+// the note at the top of internal/evals/misses.go for the numbers.
+//
+// What survives that filter is small enough to enumerate: four rows
+// across both v0.4.0 boards. So the board names each one and says which
+// tool would have served it, which is what a reader can act on.
+type MissBoard struct {
+	// Scenarios is how many rows this board is drawn from — the ones that
+	// ran. A row that errored is not a row that missed nothing.
+	Scenarios int `json:"scenarios"`
+	// Consequential is every unanswered question the catalog could have
+	// answered, one entry per (row, intent).
+	Consequential []ScenarioMiss `json:"consequential,omitempty"`
+	// ByIntent tallies them by intent, because a miss that recurs across
+	// rows is a description-or-discoverability problem with one tool
+	// rather than three unrelated incidents.
+	ByIntent []string `json:"by_intent,omitempty"`
+	// OutOfCatalog is how many unsatisfied intents no lookout tool serves.
+	// Counted, not listed: they are the structural ceiling, already
+	// enumerated under [CeilingFinding], and repeating them here would
+	// read as the model's failure rather than the surface's.
+	OutOfCatalog int `json:"out_of_catalog"`
+	// Untabled is how many expected tool names intents.yaml has never
+	// seen. They deflate intent_coverage deliberately, but a gap in the
+	// table is not a miss by the model and is not counted as one.
+	Untabled int `json:"untabled"`
+}
+
+// ScenarioMiss is one consequential miss with the row it came from.
+type ScenarioMiss struct {
+	Scenario string `json:"scenario"`
+	Intent   string `json:"intent"`
+	// ServedBy are the catalog tools that would have answered it. Every
+	// one is a tool this run did not call — had it called one, the intent
+	// would be satisfied and this would not be a miss.
+	ServedBy []string `json:"served_by"`
+}
 
 // ScenarioViolation is one violation with the row it came from.
 type ScenarioViolation struct {
@@ -328,6 +384,7 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		row.Authored = out.Authored
 		row.Calls = out.Calls
 		row.Violations = out.Violations
+		row.Misses = out.Misses
 		if out.Authored {
 			board.Authored++
 		}
@@ -345,6 +402,7 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 
 	board.Aggregate = aggregate(board.Scenes)
 	board.Validity = summarizeValidity(board.Scenes)
+	board.Misses = summarizeMisses(board.Scenes)
 	sum.Judge = board
 	return sum, nil
 }
@@ -480,6 +538,50 @@ func summarizeValidity(scenes []JudgeScenario) ValidityBoard {
 	return b
 }
 
+// summarizeMisses collects #170's list across the board.
+//
+// Rows that did not run are skipped for the same reason
+// [summarizeValidity] skips them, and it matters more here: a row with
+// no run has no unsatisfied intents to classify, so counting it would
+// make a board that lost rows read as a board that missed nothing.
+func summarizeMisses(scenes []JudgeScenario) MissBoard {
+	var b MissBoard
+	byIntent := map[string]int{}
+	for _, s := range scenes {
+		if s.Error != "" {
+			continue
+		}
+		b.Scenarios++
+		b.OutOfCatalog += len(s.Misses.OutOfCatalog)
+		b.Untabled += len(s.Misses.Untabled)
+		for _, m := range s.Misses.Consequential {
+			b.Consequential = append(b.Consequential, ScenarioMiss{
+				Scenario: s.ID, Intent: m.Intent, ServedBy: m.ServedBy,
+			})
+			byIntent[m.Intent]++
+		}
+	}
+	sort.Slice(b.Consequential, func(i, j int) bool {
+		if b.Consequential[i].Scenario != b.Consequential[j].Scenario {
+			return b.Consequential[i].Scenario < b.Consequential[j].Scenario
+		}
+		return b.Consequential[i].Intent < b.Consequential[j].Intent
+	})
+	for _, id := range sortedKeys(byIntent) {
+		b.ByIntent = append(b.ByIntent, fmt.Sprintf("%s=%d", id, byIntent[id]))
+	}
+	return b
+}
+
+func sortedKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // writeJudge renders the metered board.
 func (j *JudgeSummary) write(p func(string, ...any)) {
 	p("")
@@ -530,6 +632,7 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 	}
 
 	j.writeValidity(p)
+	j.writeMisses(p)
 
 	if len(j.Ceilings) > 0 {
 		p("")
@@ -585,6 +688,42 @@ func (j *JudgeSummary) writeValidity(p func(string, ...any)) {
 		p("    a score on these rows measures what the model already knew about Kubernetes, not what it read")
 	}
 	p("  arguments: %s", v.Arguments)
+}
+
+// writeMisses renders what the runs did not ask.
+//
+// The line under the heading is doing real work. Every reader of this
+// section arrives expecting "tools the run skipped", which is a much
+// larger number pointing the other way, so the section says up front
+// which question it answers and prints the out-of-catalog count beside
+// it — the difference between the two is the whole content of #170.
+func (j *JudgeSummary) writeMisses(p func(string, ...any)) {
+	m := j.Misses
+	p("")
+	if m.Scenarios == 0 {
+		p("consequential misses (#170) — no scenario ran, so there is nothing to classify")
+		return
+	}
+	if len(m.Consequential) == 0 {
+		p("consequential misses (#170) — none across %d scenario(s)", m.Scenarios)
+	} else {
+		p("consequential misses (#170) — %d across %d scenario(s)", len(m.Consequential), m.Scenarios)
+	}
+	p("  a question the corpus expected answered, that a tool in the catalog would have answered, that the run never asked")
+	p("  a skipped tool is not one of these: most are redundant with a tool that already answered, and the rows that skip them score higher")
+	for _, c := range m.Consequential {
+		p("    %s %s — %s would have answered it", c.Scenario, c.Intent, strings.Join(c.ServedBy, ", "))
+	}
+	if len(m.ByIntent) > 0 {
+		p("  by intent: %s", strings.Join(m.ByIntent, "  "))
+		p("  an intent that recurs here is one tool's description or discoverability, not several unrelated rows")
+	}
+	if m.OutOfCatalog > 0 {
+		p("  %d further unsatisfied intent(s) no read-only tool serves — the structural ceiling below, not a miss by the model", m.OutOfCatalog)
+	}
+	if m.Untabled > 0 {
+		p("  %d expected tool name(s) intents.yaml has never seen — a gap in the table; it deflates intent_coverage but is not a miss", m.Untabled)
+	}
 }
 
 // writeCost renders the cost board, or says why there isn't one. The

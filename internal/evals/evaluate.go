@@ -97,8 +97,9 @@ func EvaluateAll(tbl IntentTable, sc Scenario, tr Trace) []Result {
 // the denominator: a table gap should deflate the metric visibly rather
 // than quietly shrink what is being measured.
 func IntentCoverage(tbl IntentTable, sc Scenario, tr Trace) Result {
-	want, unknown := tbl.IntentsFor(sc.Outputs.ExpectedTools)
-	denom := len(want) + len(unknown)
+	cov := readCoverage(tbl, sc, tr)
+	unknown, missing := cov.unknown, cov.missing
+	denom := len(cov.want) + len(unknown)
 	if denom == 0 {
 		return Result{
 			Metric:  MetricIntentCoverage,
@@ -107,21 +108,7 @@ func IntentCoverage(tbl IntentTable, sc Scenario, tr Trace) Result {
 			Comment: "scenario declares no expected tools; nothing to cover",
 		}
 	}
-
-	got := make(map[string]bool)
-	for _, id := range tbl.SatisfiedBy(tr.CalledTools()) {
-		got[id] = true
-	}
-
-	var missing []string
-	hit := 0
-	for _, id := range want {
-		if got[id] {
-			hit++
-			continue
-		}
-		missing = append(missing, id)
-	}
+	hit := len(cov.want) - len(missing)
 
 	res := Result{
 		Metric: MetricIntentCoverage,
