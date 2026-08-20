@@ -15,6 +15,8 @@
 package evals
 
 import (
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -220,4 +222,95 @@ func TestToolsSatisfying_IsOrderedAndHonestAboutNothing(t *testing.T) {
 	if out := tbl.ToolsSatisfying("no.such.intent"); len(out) != 0 {
 		t.Errorf("an intent no tool declares came back as %v", out)
 	}
+}
+
+// TestGatingBy_IsTheCatalogsFactNotTheBoards: gating is computed from the
+// intent table and the corpus alone, so it is the same number on a night
+// when every tool was called and on a night when none was. That is what
+// makes it the leverage half of the ranking — the miss count is one
+// model on one night, this is a property of the fixture.
+func TestGatingBy_IsTheCatalogsFactNotTheBoards(t *testing.T) {
+	tbl := loadTable(t)
+	ds := loadLangChain(t)
+
+	g := GatingBy(tbl, ds)
+	if len(g) == 0 {
+		t.Fatal("no tool in the catalog is the sole answer to anything; #171 has nothing to rank")
+	}
+
+	top, ok := g["k8s_resource_top"]
+	if !ok {
+		t.Fatalf("k8s_resource_top is not sole-source for anything; the finding #171 exists to surface is gone (have %v)", keysOf(g))
+	}
+	// Three of the four consequential misses across both v0.4.0 boards are
+	// this tool, and it is sole-source for both saturation intents. If a
+	// second tool ever declares one of them, the attribution stops being
+	// attribution and this test should be the thing that says so.
+	want := []string{"inspect.node_saturation", "inspect.pod_saturation"}
+	if !slices.Equal(top.SoleSource, want) {
+		t.Errorf("k8s_resource_top sole-source for %v, want %v", top.SoleSource, want)
+	}
+	if len(top.Gates) == 0 {
+		t.Error("k8s_resource_top gates no scenario, so skipping it costs the corpus nothing")
+	}
+
+	for name, entry := range g {
+		if entry.Tool != name {
+			t.Errorf("%s is keyed under %s", entry.Tool, name)
+		}
+		if len(entry.SoleSource) == 0 {
+			t.Errorf("%s is in the ranking with no sole-source intent — it can be skipped for free and can never move", name)
+		}
+		for _, id := range entry.SoleSource {
+			if servers := tbl.ToolsSatisfying(id); len(servers) != 1 || servers[0] != name {
+				t.Errorf("%s claims sole source of %s, but %v serve it", name, id, servers)
+			}
+		}
+		for i := 1; i < len(entry.Gates); i++ {
+			if entry.Gates[i-1] >= entry.Gates[i] {
+				t.Errorf("%s gates are not ordered and deduplicated: %v", name, entry.Gates)
+				break
+			}
+		}
+	}
+}
+
+// TestGatingBy_CountsAScenarioOnceHoweverManyWaysItNeedsTheTool: a row
+// that expects both saturation intents is one row that cannot be covered
+// without k8s_resource_top, not two. Double-counting would inflate the
+// leverage of exactly the tools the ranking puts on top.
+func TestGatingBy_CountsAScenarioOnceHoweverManyWaysItNeedsTheTool(t *testing.T) {
+	tbl := loadTable(t)
+
+	sole := tbl.ToolsSatisfying("inspect.node_saturation")
+	if len(sole) != 1 {
+		t.Fatalf("inspect.node_saturation is served by %v; this test needs a sole-source intent", sole)
+	}
+	other := tbl.ToolsSatisfying("inspect.pod_saturation")
+	if len(other) != 1 || other[0] != sole[0] {
+		t.Fatalf("the two saturation intents no longer share one sole source: %v and %v", sole, other)
+	}
+
+	// One scenario expecting both saturation intents, named the way the
+	// corpus names them: upstream kubectl tools, one intent each.
+	ds := Dataset{Scenarios: []Scenario{{
+		ID:      "T-01",
+		Outputs: ScenarioOutputs{ExpectedTools: []string{"kubectl_top_nodes", "kubectl_top_pods"}},
+	}}}
+	if want, unknown := tbl.IntentsFor(ds.Scenarios[0].Outputs.ExpectedTools); len(unknown) != 0 || len(want) != 2 {
+		t.Fatalf("the fixture no longer maps both saturation intents: want %v, unknown %v", want, unknown)
+	}
+	g := GatingBy(tbl, ds)
+	if got := g[sole[0]].Gates; len(got) != 1 {
+		t.Errorf("gates = %v, want the one scenario counted once", got)
+	}
+}
+
+func keysOf(m map[string]ToolGating) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

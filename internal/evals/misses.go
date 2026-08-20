@@ -129,6 +129,75 @@ func readCoverage(tbl IntentTable, sc Scenario, tr Trace) coverage {
 	return cov
 }
 
+// ToolGating is what one tool's absence costs the corpus (#171).
+//
+// A miss is only attributable to a tool when that tool is the only
+// answer to the question. Fourteen of the table's nineteen intents have
+// two or three servers, so skipping any one of those tools costs
+// nothing — something else answers. The remaining few have no
+// substitute, and skipping one of those *guarantees* the miss. That is
+// the difference between a model that chose differently and a model
+// that failed to reach for the one thing that would have worked.
+type ToolGating struct {
+	Tool string `json:"tool"`
+	// SoleSource is every intent this tool alone satisfies — a fact
+	// about the catalog, independent of any run or any scenario.
+	SoleSource []string `json:"sole_source_for"`
+	// Gates is the corpus scenarios that expect at least one of those
+	// intents, so they cannot reach full intent_coverage unless this tool
+	// is called. Scenario count is the leverage half of the ranking: an
+	// unreachable-for tool that gates one row is a curiosity, and one
+	// that gates a third of the corpus is the next thing to fix.
+	Gates []string `json:"gates"`
+}
+
+// GatingBy indexes the corpus by sole-source tool.
+//
+// Only tools with at least one sole-source intent appear. A tool whose
+// every intent has an alternative can be skipped without consequence by
+// construction, so it has no leverage to report and listing it at zero
+// would pad the ranking with rows that can never move.
+func GatingBy(tbl IntentTable, ds Dataset) map[string]ToolGating {
+	sole := make(map[string]string, len(tbl.Intents))
+	out := make(map[string]ToolGating)
+	for _, in := range tbl.Intents {
+		servers := tbl.ToolsSatisfying(in.ID)
+		if len(servers) != 1 {
+			continue
+		}
+		sole[in.ID] = servers[0]
+		g := out[servers[0]]
+		g.Tool = servers[0]
+		g.SoleSource = append(g.SoleSource, in.ID)
+		out[servers[0]] = g
+	}
+
+	for _, sc := range ds.Scenarios {
+		want, _ := tbl.IntentsFor(sc.Outputs.ExpectedTools)
+		counted := make(map[string]bool, len(want))
+		for _, id := range want {
+			name, ok := sole[id]
+			if !ok || counted[name] {
+				continue
+			}
+			// Once per scenario per tool: a row expecting both saturation
+			// intents is one row that cannot be covered without
+			// k8s_resource_top, not two.
+			counted[name] = true
+			g := out[name]
+			g.Gates = append(g.Gates, sc.ID)
+			out[name] = g
+		}
+	}
+
+	for name, g := range out {
+		sort.Strings(g.SoleSource)
+		sort.Strings(g.Gates)
+		out[name] = g
+	}
+	return out
+}
+
 // ToolsSatisfying returns the lookout tools that satisfy an intent, in
 // name order. Empty means the read-only catalog cannot answer that
 // question at all, which is a ceiling rather than a miss.

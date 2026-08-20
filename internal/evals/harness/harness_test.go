@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -30,6 +31,18 @@ import (
 )
 
 const repoRoot = "../../.."
+
+// loadIntentTable reads the same table the harness reads, so a test that
+// checks an attribution against the catalog is checking the shipped
+// catalog rather than a copy of it that can drift.
+func loadIntentTable(t *testing.T) evals.IntentTable {
+	t.Helper()
+	tbl, err := evals.LoadIntentTable(filepath.Join(repoRoot, "testdata", "evals", "intents.yaml"))
+	if err != nil {
+		t.Fatalf("loading the intent table: %v", err)
+	}
+	return tbl
+}
 
 // TestRun_Deterministic is the W0.4 done-when: the gating tier runs
 // green against today's tree, with the known-red scenarios accounted for
@@ -188,6 +201,31 @@ func TestRun_JudgeTierRunsTheWholeCorpus(t *testing.T) {
 		}
 	}
 
+	// #171 on the real table: a board that called nothing misses every
+	// sole-source tool, so the ranking is the catalog's own list of
+	// choke points and every entry on it has to be genuinely sole-source.
+	if len(m.Attribution) == 0 {
+		t.Error("a board that called nothing attributed no miss to any tool")
+	}
+	tbl := loadIntentTable(t)
+	for _, a := range m.Attribution {
+		if len(a.SoleSourceFor) == 0 {
+			t.Errorf("%s is in the ranking with no intent it alone answers", a.Tool)
+		}
+		for _, id := range a.SoleSourceFor {
+			if got := tbl.ToolsSatisfying(id); len(got) != 1 || got[0] != a.Tool {
+				t.Errorf("%s is credited as sole answer to %s, but %v serve it", a.Tool, id, got)
+			}
+		}
+		if a.Gates < len(a.Misses) {
+			t.Errorf("%s gates %d scenario(s) but was charged %d miss(es); a miss it does not gate is not its own",
+				a.Tool, a.Gates, len(a.Misses))
+		}
+	}
+	if len(m.Attribution)+m.Shared == 0 {
+		t.Error("no miss was either attributed or counted as shared; the partition dropped them")
+	}
+
 	var buf bytes.Buffer
 	sum.WriteText(&buf)
 	out := buf.String()
@@ -196,6 +234,12 @@ func TestRun_JudgeTierRunsTheWholeCorpus(t *testing.T) {
 	}
 	if !strings.Contains(out, "the structural ceiling below, not a miss by the model") {
 		t.Errorf("the miss section did not separate the ceiling from the misses:\n%s", out)
+	}
+	if !strings.Contains(out, "attributable to one tool (#171), most leverage first:") {
+		t.Errorf("the board did not rank the misses by tool:\n%s", out)
+	}
+	if !strings.Contains(out, "it guarantees them: no other tool in the catalog answers") {
+		t.Errorf("the ranking did not say why a sole-source skip is different:\n%s", out)
 	}
 }
 
@@ -376,11 +420,31 @@ func missScenes() []JudgeScenario {
 	}}
 }
 
+// missGating is the catalog fact #171 reads: which tools are the only
+// answer to something, and how much of the corpus that gates. It is a
+// property of the table and the dataset, so it names tools the board
+// above never charged — k8s_triage_logs is sole-source too, and the only
+// row that missed it never ran.
+func missGating() map[string]evals.ToolGating {
+	return map[string]evals.ToolGating{
+		"k8s_resource_top": {
+			Tool:       "k8s_resource_top",
+			SoleSource: []string{"inspect.node_saturation", "inspect.pod_saturation"},
+			Gates:      []string{"LC-03", "LC-05", "LC-20", "LC-22", "LC-29"},
+		},
+		"k8s_triage_logs": {
+			Tool:       "k8s_triage_logs",
+			SoleSource: []string{"inspect.logs"},
+			Gates:      []string{"LC-01", "LC-02"},
+		},
+	}
+}
+
 // TestSummarizeMisses_KeepsTheCatalogsGapOutOfTheModelsColumn is the
 // partition #170 turns on, at board level: three unsatisfied intents
 // across the rows that ran, and only two of them are the model's.
 func TestSummarizeMisses_KeepsTheCatalogsGapOutOfTheModelsColumn(t *testing.T) {
-	got := summarizeMisses(missScenes())
+	got := summarizeMisses(missScenes(), missGating())
 
 	if got.Scenarios != 4 {
 		t.Errorf("board drawn from %d rows, want 4 (the row that did not run contributes none)", got.Scenarios)
@@ -411,13 +475,82 @@ func TestSummarizeMisses_KeepsTheCatalogsGapOutOfTheModelsColumn(t *testing.T) {
 	}
 }
 
+// TestSummarizeMisses_ChargesOnlyWhatOneToolCouldHaveAnswered is #171's
+// attribution rule. Two of the three misses are the same sole-source
+// tool and are charged to it; the third had two possible answers, so
+// naming either as the cause would be a guess and the board counts it
+// instead.
+func TestSummarizeMisses_ChargesOnlyWhatOneToolCouldHaveAnswered(t *testing.T) {
+	got := summarizeMisses(missScenes(), missGating())
+
+	if len(got.Attribution) != 1 {
+		t.Fatalf("attribution = %+v, want only the sole-source tool", got.Attribution)
+	}
+	a := got.Attribution[0]
+	if a.Tool != "k8s_resource_top" {
+		t.Errorf("charged tool = %s, want k8s_resource_top", a.Tool)
+	}
+	if want := []string{"missed-it-too inspect.node_saturation", "missed-saturation inspect.node_saturation"}; !slices.Equal(a.Misses, want) {
+		t.Errorf("misses = %v, want both rows named in order %v", a.Misses, want)
+	}
+	// The leverage half comes from the catalog, not from this board: the
+	// tool is the only answer to a second intent no row here missed, and
+	// it gates five scenarios of which only two show up as misses.
+	if !slices.Equal(a.SoleSourceFor, []string{"inspect.node_saturation", "inspect.pod_saturation"}) {
+		t.Errorf("sole source for = %v, want both saturation intents", a.SoleSourceFor)
+	}
+	if a.Gates != 5 {
+		t.Errorf("gates = %d, want the corpus count (5), not the count of misses on this board", a.Gates)
+	}
+	if got.Shared != 1 {
+		t.Errorf("shared = %d, want the two-server miss counted rather than charged", got.Shared)
+	}
+	// A tool that is sole-source but was only missed by a row that never
+	// ran has nothing to answer for. Ranking it at zero would put a tool
+	// on the list that no evidence points at.
+	for _, x := range got.Attribution {
+		if x.Tool == "k8s_triage_logs" {
+			t.Error("a tool charged only by a row that did not run was ranked")
+		}
+	}
+}
+
+// TestRankAttribution_LeadsWithTheCorpusNotTheNight orders by the
+// durable fact first. How many misses a tool collected is one model on
+// one night; how much of the corpus it gates is a property of the corpus,
+// and it is what says whether fixing the tool is worth the afternoon.
+func TestRankAttribution_LeadsWithTheCorpusNotTheNight(t *testing.T) {
+	charged := map[string][]string{
+		"noisy": {"a x", "b x", "c x"},
+		"heavy": {"d y"},
+		"tied":  {"e z"},
+	}
+	gating := map[string]evals.ToolGating{
+		"noisy": {Tool: "noisy", Gates: []string{"LC-01"}},
+		"heavy": {Tool: "heavy", Gates: []string{"LC-01", "LC-02", "LC-03"}},
+		"tied":  {Tool: "tied", Gates: []string{"LC-01"}},
+	}
+	got := rankAttribution(charged, gating)
+
+	var order []string
+	for _, a := range got {
+		order = append(order, a.Tool)
+	}
+	// heavy first on gating despite one miss; then noisy over tied on
+	// misses at equal gating; name breaks nothing here, but two boards
+	// with identical numbers must still render identically.
+	if want := []string{"heavy", "noisy", "tied"}; !slices.Equal(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+}
+
 // TestJudgeSummary_WriteMisses checks the section answers the question
 // its reader arrives with. Everyone comes to it expecting "tools the run
 // skipped", which is a bigger number pointing the other way, so the
 // section has to say which question it answers before it lists anything.
 func TestJudgeSummary_WriteMisses(t *testing.T) {
 	j := &JudgeSummary{Scenes: missScenes()}
-	j.Misses = summarizeMisses(j.Scenes)
+	j.Misses = summarizeMisses(j.Scenes, missGating())
 
 	var buf bytes.Buffer
 	j.writeMisses(func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) })
@@ -430,6 +563,10 @@ func TestJudgeSummary_WriteMisses(t *testing.T) {
 		"missed-it-too inspect.events — k8s_event_timeline, k8s_triage_workload would have answered it",
 		"by intent: inspect.events=1  inspect.node_saturation=2",
 		"1 further unsatisfied intent(s) no read-only tool serves",
+		"attributable to one tool (#171), most leverage first:",
+		"k8s_resource_top — sole answer to inspect.node_saturation and inspect.pod_saturation, gates 5 of the corpus's scenarios, missed 2 time(s) here",
+		"skipping it does not risk those misses, it guarantees them",
+		"1 miss(es) had more than one tool that would have answered, so none is attributable to a tool",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the miss section is missing %q:\n%s", want, out)
@@ -443,7 +580,7 @@ func TestJudgeSummary_WriteMisses(t *testing.T) {
 	// validity section does: an absent section reads as a pass, and this
 	// one is meant to be empty most nights.
 	clean := &JudgeSummary{Scenes: []JudgeScenario{{ID: "fine"}}}
-	clean.Misses = summarizeMisses(clean.Scenes)
+	clean.Misses = summarizeMisses(clean.Scenes, missGating())
 	buf.Reset()
 	clean.writeMisses(func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) })
 	if out := buf.String(); !strings.Contains(out, "none across 1 scenario(s)") {
