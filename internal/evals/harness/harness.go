@@ -115,6 +115,15 @@ type CorpusSummary struct {
 	Intents   int                 `json:"intents"`
 	Reach     []evals.MetricReach `json:"reach"`
 	Dead      []string            `json:"dead_metrics,omitempty"`
+	// DeadDiagnostics names the diagnostic columns that score nothing
+	// anywhere. Separate from Dead because it does not gate — a
+	// diagnostic is not a parity claim, so a dead one is not a red run —
+	// and separate from silence because a constant that nobody names is
+	// read as a measurement. tool_coverage lives here permanently: the
+	// ported corpus expects upstream's tool names and mast cannot emit
+	// them, which is a fact about the two surfaces and not a defect to
+	// fix (#174).
+	DeadDiagnostics []string `json:"dead_diagnostics,omitempty"`
 }
 
 // ScenarioSummary is one differentiator's outcome, flattened so the
@@ -269,10 +278,16 @@ func summarizeCorpus(tbl evals.IntentTable, ds evals.Dataset) (CorpusSummary, []
 	// nothing. severity_accuracy is why this is not hypothetical — it was
 	// demoted to diagnostic by #179 while remaining the metric whose
 	// extractor has broken twice.
+	//
+	// This list is deliberately not appended to problems. #179 landed it
+	// there while describing it as non-gating, which was true only
+	// because no diagnostic was dead at the time; Summary.OK reads
+	// problems, so the first dead diagnostic would have turned a
+	// permanent property of the ported corpus into a red suite. #174's
+	// tool_coverage fix is that first one.
 	for _, r := range reach {
 		if r.Diagnostic && r.Dead() {
-			problems = append(problems, fmt.Sprintf(
-				"diagnostic metric %q scores nothing anywhere in the corpus: it does not gate, but it is reporting a constant", r.Metric))
+			sum.DeadDiagnostics = append(sum.DeadDiagnostics, r.Metric)
 		}
 	}
 	return sum, problems
@@ -322,6 +337,12 @@ func (s Summary) WriteText(w io.Writer) {
 	p("corpus: %s (%d scenarios, %d intents)", s.Corpus.Dataset, s.Corpus.Scenarios, s.Corpus.Intents)
 	for _, r := range s.Corpus.Reach {
 		p("  %s", r)
+	}
+	for _, m := range s.Corpus.DeadDiagnostics {
+		// Not under FAIL, and not silent. The reach row above already
+		// carries the number; this is the sentence that keeps a reader
+		// from taking the column for a measurement.
+		p("  note: %s is a dead diagnostic — it does not gate, and any value it prints is a constant", m)
 	}
 
 	if s.Judge != nil {

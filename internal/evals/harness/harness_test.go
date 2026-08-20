@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -489,21 +490,50 @@ func TestSummarizeCorpus_DiagnosticDeathIsReported(t *testing.T) {
 		ds.Scenarios[i].Outputs.ExpectedResponse = "the cluster looks unwell"
 	}
 
-	sum, problems := summarizeCorpus(tbl, ds)
+	sum, _ := summarizeCorpus(tbl, ds)
 	if len(sum.Dead) != 0 {
 		t.Errorf("Dead = %v, want empty: no gating metric died here", sum.Dead)
 	}
-	var found string
+	if !slices.Contains(sum.DeadDiagnostics, evals.MetricSeverityAccuracy) {
+		t.Errorf("DeadDiagnostics = %v, want it to name %s", sum.DeadDiagnostics, evals.MetricSeverityAccuracy)
+	}
+}
+
+// TestSummarizeCorpus_DeadDiagnosticDoesNotGate is the half of the line
+// above that #179 described and did not implement. It appended the dead
+// diagnostic to problems, which Summary.OK reads, so the report said
+// "does not gate" while the code gated. Nothing caught it because no
+// diagnostic was dead yet; #174's tool_coverage fix makes one dead
+// permanently, so the whole E tier would have gone red on a fact about
+// the ported corpus.
+func TestSummarizeCorpus_DeadDiagnosticDoesNotGate(t *testing.T) {
+	ds, tbl, err := loadFixtures(repoRoot)
+	if err != nil {
+		t.Fatalf("loadFixtures: %v", err)
+	}
+
+	sum, problems := summarizeCorpus(tbl, ds)
+	if !slices.Contains(sum.DeadDiagnostics, evals.MetricToolCoverage) {
+		t.Fatalf("DeadDiagnostics = %v, want it to name %s on the shipped corpus", sum.DeadDiagnostics, evals.MetricToolCoverage)
+	}
 	for _, p := range problems {
-		if strings.Contains(p, evals.MetricSeverityAccuracy) {
-			found = p
+		if strings.Contains(p, evals.MetricToolCoverage) {
+			t.Errorf("problem %q gates on a dead diagnostic; a diagnostic is not a parity claim, so it cannot redden the suite", p)
 		}
 	}
-	if found == "" {
-		t.Fatalf("problems = %v, want one naming %s", problems, evals.MetricSeverityAccuracy)
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want none on the shipped corpus", problems)
 	}
-	if !strings.Contains(found, "diagnostic") || !strings.Contains(found, "does not gate") {
-		t.Errorf("problem %q does not say the column is a dead diagnostic rather than a failed parity claim", found)
+
+	// And the report still says it, on a line of its own.
+	var buf bytes.Buffer
+	Summary{Tier: TierDeterministic, Corpus: sum}.WriteText(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "dead diagnostic") || !strings.Contains(out, evals.MetricToolCoverage) {
+		t.Errorf("report does not name the dead diagnostic:\n%s", out)
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Errorf("a dead diagnostic failed the report:\n%s", out)
 	}
 }
 
