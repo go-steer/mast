@@ -61,10 +61,35 @@ returns text is not a provider that works.
 | **R5** | **Tiered in both directions**: `modeltier.Classify` knows the model, `taskclass.ModelForTier` can name it | Without the reverse direction `--task` is inert and the small-tier-parent guard goes quiet; without the forward direction `tier:` rosters cannot run on the provider at all |
 | **R6** | **Budget-enforceable**: `RatePer1K` resolves and `budget.Meter` prices the turn from the catalog rather than the flat fallback | A `max_cost_usd` ceiling on an unpriced model is a ceiling in name only |
 | **R7** | **Observable**: `/usage` per-turn rows, `/stats`, `mast_*` metrics, and the per-specialist cost attribution `MeterScopes` produces | v0.4's `J-cost-tier` check asserts tier resolution against *reported* `ModelVersion`; a provider that doesn't populate it can't be checked |
-| **R8** | **Testable offline first**: a recorded-turn fixture that runs credential-free in the U tier, and tool-calling metrics from the E/J tiers before the provider is called supported | [`./v0.3-plan.md`](./v0.3-plan.md) §2's tiers. Issues [#168–#172](https://github.com/go-steer/mast/issues/172) are building exactly the tool-calling measurement a new provider needs to pass |
+| **R8** | **Testable offline first**: a recorded-turn fixture that runs credential-free in the U tier, and tool-calling metrics from the E/J tiers before the provider is called supported | [`./v0.3-plan.md`](./v0.3-plan.md) §2's tiers. Issues [#168–#172](https://github.com/go-steer/mast/issues/172) are building exactly the tool-calling measurement a new provider needs to pass. The gating layer is in: [#168](https://github.com/go-steer/mast/issues/168) shipped `internal/toolcatalog`, and **a new adapter's first test is its `toolwire_test.go`** — see below |
 
 R2 and R8 are the ones that will actually cost time. Transport is a week;
 proving a model drives mast's tool loop correctly is the rest of the slice.
+
+**The R2/R8 floor a new adapter has to clear on day one** is
+`internal/toolcatalog` (#168). It assembles the tool catalog a real mast turn
+puts in front of a model — driving a coordinator+MCP rig and a planner rig
+through an ADK runner with a recording model, so the catalog is *captured*
+rather than enumerated — and `toolcatalog.Verify` states the invariant over
+it: every tool arrives, with every argument it declares, with the required
+ones still required, and with each argument's own schema intact.
+
+An adapter supplies one thing: a reader that pulls its own wire spelling out
+of a captured request body (`input_schema` for Anthropic,
+`parameters`/`parametersJsonSchema` for Gemini) and hands it over as a
+`toolcatalog.Wire`. See `pkg/providers/anthropic/toolwire_test.go` for the
+pattern. Writing that reader is an hour; it is the difference between an
+adapter that has been asserted against every construction path mast uses and
+one that has been asserted against whichever tool its author happened to
+think of — which is precisely how the empty-schema P0 above reached a
+release.
+
+The invariant is deliberately shared rather than reimplemented per adapter:
+an adapter held to a weaker check than its siblings is how a defect hides.
+Gemini's copy of the test is a dependency probe, not a test of mast code —
+nothing in mast converts schemas on that path — and it is worth its keep for
+the same reason, since `ParametersJsonSchema` is a pass-through `any` that
+nothing would complain about losing.
 
 ---
 

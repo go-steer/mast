@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- **The tool-schema invariant is now stated over every construction path, not
+  the one that was noticed.** #154 was a total tool-calling outage: every
+  mast-authored tool and every MCP tool reached Claude as a bare name with an
+  empty input schema, because the converter handled only the typed
+  `genai.Schema` spelling while ADK v2 populates `ParametersJsonSchema`. The
+  regression test that shipped with the fix covers `functiontool.New` — the
+  shape of that bug, not the shape of the bug class.
+
+  New `internal/toolcatalog` assembles the tool catalog a real turn puts in
+  front of a model, and it is **captured rather than enumerated**: a
+  coordinator+MCP rig and a planner rig are driven through an ADK runner with
+  a recording model, and what the model was handed is what gets asserted.
+  Nothing lists the construction paths, so none can be forgotten — a tool
+  wired into either shape is covered the next time the test runs. Today that
+  is ten tools spanning all three paths: typed `Parameters` (`finish_task`,
+  the delegation tool), `ParametersJsonSchema` via `functiontool.New` (the
+  planner vocabulary, `pause_session`, the federation invoke tool), and
+  `ParametersJsonSchema` via `pkg/mcp`. Expectations are derived from each
+  declaration rather than written down, so they cannot go stale.
+
+  `toolcatalog.Verify` states the invariant once, shared by every provider's
+  test: every tool arrives, a tool with arguments arrives with a non-empty
+  properties map, every argument name survives and none is invented, every
+  required argument is still required, and each argument's own schema is
+  still a non-empty object. An adapter held to a weaker check than its
+  siblings is how a defect hides — the Gemini path was fine throughout #154,
+  so nothing measured against it would have caught the Anthropic converter.
+
+  Both adapters now have one. Anthropic's asserts the real Messages request
+  body and fails on eight of ten tools with the #154 fix reverted. Gemini's
+  is a dependency probe — mast converts nothing there, and
+  `ParametersJsonSchema` is a pass-through `any` that nothing would complain
+  about losing — plus a separate check that built-in tool injection sits
+  alongside function declarations instead of replacing them. Both run
+  offline, credential-free, in the ordinary `go test ./...` presubmit.
+
 - **Every durable approval named the channel instead of the human.** The
   audit answer to "who approved this?" is `PauseRecord.ConsumedBy`, and it is
   most of the reason a durable gate is worth more than an in-memory prompt.
