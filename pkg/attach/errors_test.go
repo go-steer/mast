@@ -211,20 +211,20 @@ func TestClassifyTurnError_LongMessageCapped(t *testing.T) {
 	}
 }
 
-// TestProtocolV1_5_0_IsAdditive pins what the #206 bump did and did
-// not do. The version moved because a client negotiating on it needs
-// to know a new turn-error kind exists; nothing else about the wire
-// changed, and a future edit that adds an event type or a field under
-// cover of "we already bumped for canceled" fails here.
+// TestProtocolV1_6_0_IsAdditive pins what the #206 and #208 bumps did
+// and did not do. The version moved twice because a client negotiating
+// on it needs to know two new turn-error kinds exist; nothing else
+// about the wire changed, and a future edit that adds an event type or
+// a field under cover of "we already bumped" fails here.
 //
 // The existing v1.4.0 conformance fixtures deliberately keep their
 // literal "1.4.0": they pin the shape that shipped under that version,
-// which this change does not touch.
-func TestProtocolV1_5_0_IsAdditive(t *testing.T) {
+// which neither change touches.
+func TestProtocolV1_6_0_IsAdditive(t *testing.T) {
 	t.Parallel()
 
-	if protocolVersion != "1.5.0" {
-		t.Errorf("protocolVersion = %q, want 1.5.0 — a wire change needs its own entry in the version log above the constant", protocolVersion)
+	if protocolVersion != "1.6.0" {
+		t.Errorf("protocolVersion = %q, want 1.6.0 — a wire change needs its own entry in the version log above the constant", protocolVersion)
 	}
 
 	want := []string{
@@ -238,20 +238,113 @@ func TestProtocolV1_5_0_IsAdditive(t *testing.T) {
 		"tool-result",
 	}
 	if !slices.Equal(supportedEventTypes, want) {
-		t.Errorf("supportedEventTypes = %v, want %v — canceled is a new value in an existing enum, not a new frame", supportedEventTypes, want)
+		t.Errorf("supportedEventTypes = %v, want %v — canceled and watchdog_halt are new values in an existing enum, not new frames", supportedEventTypes, want)
 	}
 
 	// §2.6 requires a consumer to fall back to unknown on a kind it
-	// does not recognize, which is the whole reason this is additive
-	// rather than breaking. Pin that canceled is a distinct value and
-	// not an alias of something a 1.4.0 client already handles.
-	for _, existing := range []string{
-		TurnErrorConfig, TurnErrorAuth, TurnErrorModelNotFound,
-		TurnErrorRateLimited, TurnErrorTransientNet, TurnErrorCostCeiling,
-		TurnErrorUnknown,
-	} {
-		if TurnErrorCanceled == existing {
-			t.Errorf("TurnErrorCanceled collides with %q", existing)
+	// does not recognize, which is the whole reason these are additive
+	// rather than breaking. Pin that every kind is a distinct value, so
+	// a new one can never arrive as an alias of something a 1.4.0
+	// client already handles differently.
+	kinds := map[string]string{
+		"TurnErrorConfig":        TurnErrorConfig,
+		"TurnErrorAuth":          TurnErrorAuth,
+		"TurnErrorModelNotFound": TurnErrorModelNotFound,
+		"TurnErrorRateLimited":   TurnErrorRateLimited,
+		"TurnErrorTransientNet":  TurnErrorTransientNet,
+		"TurnErrorCostCeiling":   TurnErrorCostCeiling,
+		"TurnErrorCanceled":      TurnErrorCanceled,
+		"TurnErrorWatchdogHalt":  TurnErrorWatchdogHalt,
+		"TurnErrorUnknown":       TurnErrorUnknown,
+	}
+	seen := make(map[string]string, len(kinds))
+	for name, value := range kinds {
+		if other, dup := seen[value]; dup {
+			t.Errorf("%s and %s are both %q", name, other, value)
 		}
+		seen[value] = name
+	}
+}
+
+// declaredKindError is a stand-in for a mast-raised error that knows
+// its own kind. The tests below use it rather than *watchdog.TrippedError
+// so pkg/attach keeps no dependency on the watchdog, even in test
+// builds; that the real type says the same thing is pinned from the
+// other side, in pkg/watchdog/enforce_test.go.
+type declaredKindError struct {
+	kind string
+	msg  string
+}
+
+func (e *declaredKindError) Error() string         { return e.msg }
+func (e *declaredKindError) TurnErrorKind() string { return e.kind }
+
+// A watchdog halt's message is assembled from the looping tool's name
+// and up to 200 bytes of its arguments, so before #208 the classifier's
+// patterns were matching on text the model wrote: a tool called
+// parse_manifest made the halt a config_error and sent the operator to
+// check vertex.location. Every message here is a real halt reason shape
+// with a decoy in it.
+func TestClassifyTurnError_DeclaredKindBeatsTheMessageText(t *testing.T) {
+	t.Parallel()
+
+	reasons := []struct {
+		name string
+		msg  string
+	}{
+		{
+			name: "tool name matches the config patterns",
+			msg:  `watchdog halted this session (repeated-tool-call): agent has called parse_manifest with identical args 5 times in a row — possible tool loop. Args: {"path":"/etc/x"}. The session refuses new turns until an operator resets it (POST /sessions/s1/guardrails/reset).`,
+		},
+		{
+			name: "tool args echo a provider not-found",
+			msg:  `watchdog halted this session (repeated-tool-call): agent has called k8s_get with identical args 5 times in a row — possible tool loop. Args: {"name":"api","error":"not found"}.`,
+		},
+		{
+			name: "failure streak quotes a permission denied",
+			msg:  `watchdog halted this session (tool-failure-streak): three calls in a row returned errors: k8s_get: permission denied on namespace prod.`,
+		},
+		{
+			name: "nothing in the text to match on",
+			msg:  `watchdog halted this session (alternating-tool-cycle): agent has repeated the same 2-call sequence (list_pods -> get_pod) 3 times with identical args.`,
+		},
+	}
+
+	for _, r := range reasons {
+		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
+			got := ClassifyTurnError(&declaredKindError{kind: TurnErrorWatchdogHalt, msg: r.msg})
+			if got.Kind != TurnErrorWatchdogHalt {
+				t.Errorf("Kind = %q, want %q — the error said what it was and the patterns overrode it", got.Kind, TurnErrorWatchdogHalt)
+			}
+			if got.Retryable {
+				t.Error("Retryable = true — a retry re-drives the loop the halt exists to break")
+			}
+			if !strings.Contains(got.Hint, "guardrails/reset") {
+				t.Errorf("Hint = %q, want the reset endpoint — the halt reason carries it too, past where firstSentence cuts", got.Hint)
+			}
+		})
+	}
+}
+
+// The kind travels through wrapping, because a caller adding turn
+// context to a halt must not silently un-classify it.
+func TestClassifyTurnError_DeclaredKindSurvivesWrapping(t *testing.T) {
+	t.Parallel()
+	err := fmt.Errorf("turn 3: %w", &declaredKindError{kind: TurnErrorWatchdogHalt, msg: "watchdog halted this session (repeated-tool-call): parse loop"})
+	if got := ClassifyTurnError(err); got.Kind != TurnErrorWatchdogHalt {
+		t.Errorf("Kind = %q, want %q", got.Kind, TurnErrorWatchdogHalt)
+	}
+}
+
+// A kind this package does not ship falls back to the patterns rather
+// than reaching the wire. §2.6's unknown fallback is a promise about
+// values mast ships, not cover for a typo in a raiser.
+func TestClassifyTurnError_UnknownDeclaredKindFallsBack(t *testing.T) {
+	t.Parallel()
+	err := &declaredKindError{kind: "watchdog-halt", msg: "rpc error: code = PermissionDenied desc = caller lacks aiplatform.user"}
+	got := ClassifyTurnError(err)
+	if got.Kind != TurnErrorAuth {
+		t.Errorf("Kind = %q, want %q — an unrecognized declared kind should not shadow the heuristics", got.Kind, TurnErrorAuth)
 	}
 }

@@ -83,6 +83,17 @@ import "time"
 // input, and deliberately so: a client keying a retry affordance off
 // `retryable` stops offering one after an interrupt.
 //
+// v1.6.0 (#208): new `watchdog_halt` value in the turn-error `kind`
+// enum (§2.6), carrying `retryable: false`. v1.5.0 covered the turn the
+// watchdog cancels in flight; this covers the refusal that follows it —
+// the halt every subsequent turn hits until an operator resets. Those
+// used to be classified by substring-scanning a reason built out of the
+// looping tool's name and its model-supplied arguments, which reported
+// a guardrail halt as `config_error`, `model_not_found` or `auth_error`
+// depending on what the agent had decided to call things. Additive on
+// the same terms as 1.5.0: a new kind value, no new event type, no new
+// field, §2.6's `unknown` fallback intact.
+//
 // The two version lines have diverged, and a client should not read
 // across them. core-agent shipped the same `canceled` value at its
 // 1.8.0, having spent 1.5.0-1.7.0 on session titles, ACLs and wake
@@ -91,7 +102,7 @@ import "time"
 // `features` map rather than inferring a kind's existence from a
 // number. Both servers do agree on the fallback that makes this safe:
 // §2.6 requires an unrecognized kind to read as `unknown`.
-const protocolVersion = "1.5.0"
+const protocolVersion = "1.6.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -364,7 +375,16 @@ const (
 	// one of those is somebody deciding the turn should stop, and a
 	// client that re-drives it is undoing that decision.
 	TurnErrorCanceled = "canceled"
-	TurnErrorUnknown  = "unknown"
+	// TurnErrorWatchdogHalt fires when the behavioral watchdog halted
+	// the session (#208) — the refusal Preflight returns for the turn
+	// that tripped it and for every turn after, until an operator
+	// resets. Retryable=false, and more emphatically than the rest: a
+	// retry re-drives the loop the halt exists to break. Distinct from
+	// cost_ceiling because the remedy differs (fix what looped, then
+	// reset) and distinct from canceled because that one describes the
+	// in-flight cancel, not the standing refusal that follows it.
+	TurnErrorWatchdogHalt = "watchdog_halt"
+	TurnErrorUnknown      = "unknown"
 )
 
 // TurnError is emitted on a pipeline failure that should reach the

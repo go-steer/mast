@@ -138,6 +138,15 @@ would be the wrong end of the decision. A turn that ran out of *time* is
 still `transient_network` and still retryable, because nobody asked for that
 one.
 
+The halt itself — the refusal the tripping turn returns, and the one every
+turn after it gets until a reset — comes back as kind **`watchdog_halt`**,
+also `retryable: false`, with a hint naming the reset endpoint. It is a
+separate kind from `canceled` because it describes a standing state rather
+than one stopped turn: retrying a `canceled` turn is arguably the operator's
+call, while retrying a `watchdog_halt` fails identically until somebody
+clears it. Both are separate from `cost_ceiling`, whose remedy is a bigger
+budget rather than a fixed loop.
+
 `enforce` including `feedback` is deliberate. An enforce halt is cleared
 by an operator reset, and a reset resumes a model whose context still ends
 in the loop it was halted for; without the injected observation the very

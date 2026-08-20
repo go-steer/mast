@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **A watchdog halt reports as a watchdog halt, not as a Vertex config
+  error.** `turn-error` gains a `watchdog_halt` kind carrying
+  `retryable: false` and a hint naming the reset endpoint, and the attach
+  protocol goes to **1.6.0**. A halt's message is assembled from the looping
+  tool's name and up to 200 bytes of its arguments, and the classifier was
+  substring-scanning that text — so a tool called `parse_manifest` made the
+  halt a `config_error` advising the operator to check `model.vertex.location`,
+  arguments echoing "not found" made it `model_not_found`, and a failure
+  streak quoting "permission denied" made it `auth_error` with an IAM hint.
+  Three of four realistic halts sent an operator to debug the wrong
+  subsystem mid-incident; the reason's own "how to clear this" sentence sat
+  past the message cap and never arrived.
+
+  Errors mast raises itself now declare their kind (`SelfClassifyingError`,
+  consulted before every heuristic). String matching stays the default for
+  errors that arrive from a provider, where wrapper churn makes a type
+  switch fragile — it was only ever wrong for the errors mast wrote.
+
 - **A turn somebody stopped on purpose no longer reports as a retryable
   network fault.** `turn-error` gains a `canceled` kind carrying
   `retryable: false`, and the attach protocol goes to **1.5.0**. An operator

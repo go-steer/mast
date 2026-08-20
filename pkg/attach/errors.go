@@ -23,6 +23,54 @@ import (
 	"strings"
 )
 
+// SelfClassifyingError is implemented by an error mast raised itself,
+// which already knows which turn-error kind it is and should not have
+// that read back out of its own prose.
+//
+// It carries the kind and nothing else on purpose. Code, hint and
+// retryability are wire text, and wire text belongs here: a raiser
+// would have to import this package to name a TurnError, and the two
+// raisers that matter are leaf packages that shouldn't. pkg/watchdog is
+// stdlib-only; pulling in pkg/attach — and with it auth, eventlog and
+// permissions — to spell one constant is the same coupling
+// ClassifyTurnError already refused in the other direction for
+// pkg/budget (#135). A bare string is a weaker contract than a type, so
+// the implementations pin theirs against these constants in their own
+// tests, and classifyDeclaredKind ignores a value it doesn't recognize.
+//
+// Kinds not covered here stay on the patterns below, which is where
+// pkg/budget's ErrExceeded remains: it is a wrapped sentinel rather
+// than a named type, so there is nothing to hang a method on.
+type SelfClassifyingError interface {
+	error
+
+	// TurnErrorKind returns one of the TurnError* kind constants in
+	// this package.
+	TurnErrorKind() string
+}
+
+// classifyDeclaredKind renders the TurnError for a kind an error
+// declared about itself. Reports false for a kind this package does not
+// ship, leaving the caller to fall back on the heuristics.
+func classifyDeclaredKind(kind string, err error) (TurnError, bool) {
+	// One kind today; an if rather than a switch only because gocritic
+	// says so about a switch with one case.
+	if kind == TurnErrorWatchdogHalt {
+		return TurnError{
+			Kind:      TurnErrorWatchdogHalt,
+			Code:      "WATCHDOG_HALT",
+			Message:   firstSentence(err.Error()),
+			Retryable: false,
+			// The halt reason carries this remedy too, but at the end
+			// of a sentence long enough that firstSentence cuts it off
+			// — the tool name and arguments come first. Repeat it
+			// where it survives.
+			Hint: "The watchdog halted this session and every further turn refuses the same way. Fix what looped, then clear it with POST /sessions/{id}/guardrails/reset.",
+		}, true
+	}
+	return TurnError{}, false
+}
+
 // ClassifyTurnError maps a raw error from a turn to a TurnError
 // payload conforming to the SSE event-stream protocol's kind enum
 // (spec section 2.6). Most of what reaches it comes off the model
@@ -36,12 +84,34 @@ import (
 // status names (gRPC code names, HTTP status numbers, well-known
 // substrings) survives wrapper churn.
 //
+// That reasoning covers errors that arrive from outside. It does not
+// cover the ones mast raises itself, which know what they are and
+// should not be guessed at: those implement SelfClassifyingError and
+// are honored ahead of every pattern below.
+//
 // The hint field is populated with the most actionable next step
 // when one is obvious — operators reading these in a chat-bubble
 // shouldn't need to leave the TUI to know what to try.
 func ClassifyTurnError(err error) TurnError {
 	if err == nil {
 		return TurnError{Kind: TurnErrorUnknown, Message: "nil error", Retryable: false}
+	}
+
+	// An error that names its own kind wins over anything the patterns
+	// below could find in its text — and the watchdog case shows why
+	// that ordering is not merely tidy. A halt's message is built from
+	// the looping tool's name and its model-supplied arguments, so a
+	// substring scan lets the agent pick its own label: a tool called
+	// parse_manifest classified as config_error, arguments echoing
+	// "not found" as model_not_found (#208).
+	var sc SelfClassifyingError
+	if errors.As(err, &sc) {
+		if te, ok := classifyDeclaredKind(sc.TurnErrorKind(), err); ok {
+			return te
+		}
+		// An unrecognized kind falls through rather than reaching the
+		// wire: §2.6's `unknown` fallback is a contract with clients
+		// about values mast ships, not a place to put a typo.
 	}
 
 	// Context errors come through unwrapped from cancellation /

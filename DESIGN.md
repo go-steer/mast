@@ -181,7 +181,7 @@ bundle's `scheduled:` section.
   the contract; mast-web and any attach client work against both.
   Divergence in *shape* is a bug on whichever side left the documented
   form. The version *numbers* are a different matter and have already
-  diverged — mast is on v1.5.0, core-agent on v1.8.0, and the same
+  diverged — mast is on v1.6.0, core-agent on v1.8.0, and the same
   number does not name the same feature set on both. Feature-detect
   against the capabilities frame's `event_types` / `features`, never
   against the version alone.
