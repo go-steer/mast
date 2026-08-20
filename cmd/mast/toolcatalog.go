@@ -52,17 +52,25 @@ const (
 // toolsets on rootBuild for exactly this reason, which is also why
 // this type lives in package main rather than in pkg/attachadapter.
 //
-// Scope, stated plainly: MCP tools only. mast's non-MCP tools are the
-// planner's control-plane five, and they are registered inside
-// internal/compose with no handle surviving the call. Reporting them
-// would mean either a second hand-maintained list (which drifts, and a
-// wrong catalog is worse than a partial one — see the tool_catalog
-// finding in v0.3) or a compose signature change; both are follow-up
-// work, tracked separately. A daemon running planner dispatch with no
-// MCP servers therefore reports an empty catalog, correctly: it holds
-// no MCP tools.
+// Scope: what mast wired, MCP and non-MCP both. The non-MCP half is
+// the planner's control-plane vocabulary, which compose now returns
+// alongside the root (#137) — a daemon running planner dispatch with no
+// MCP servers used to report an empty catalog, which was true of its
+// MCP tools and wrong as an answer to "what can this daemon do".
+//
+// Still out of reach: tools ADK installs on its own — finish_task, a
+// coordinator's per-sub-agent delegation tools. compose never sees
+// them, and there is no accessor for a built agent's tools (#51 /
+// adk-go#1229). Neither is offered a second, hand-maintained list: that
+// drifts, and a catalog naming tools that do not exist is worse than
+// one omitting tools that do — the v0.3 tool_catalog finding.
 type toolCatalog struct {
-	toolsets   []tool.Toolset
+	toolsets []tool.Toolset
+	// builtin are the tools compose wired directly onto the root. They
+	// are listed unconditionally: unlike an MCP server, they cannot
+	// fail to answer and cannot go away between polls, so they need
+	// neither the TTL nor the partial-failure handling below.
+	builtin    []tool.Tool
 	mutating   effects.Predicate
 	onMutation workload.OnMutation
 	logger     *slog.Logger
@@ -78,13 +86,14 @@ type toolCatalog struct {
 
 // newToolCatalog builds the catalog for a wired daemon. A nil bundle
 // (no workload) resolves on_mutation the same way the write gate does.
-func newToolCatalog(logger *slog.Logger, toolsets []tool.Toolset, pred effects.Predicate, bundle *workload.Bundle) *toolCatalog {
+func newToolCatalog(logger *slog.Logger, toolsets []tool.Toolset, builtin []tool.Tool, pred effects.Predicate, bundle *workload.Bundle) *toolCatalog {
 	onMutation := workload.OnMutationRequireApproval
 	if bundle != nil {
 		onMutation = bundle.HITL.EffectiveOnMutation()
 	}
 	return &toolCatalog{
 		toolsets:   toolsets,
+		builtin:    builtin,
 		mutating:   pred,
 		onMutation: onMutation,
 		logger:     logger,
@@ -100,8 +109,11 @@ func (tc *toolCatalog) clock() time.Time {
 	return time.Now()
 }
 
-// snapshot lists every wired MCP tool, sorted by (server, name) so
-// polling clients see a stable order rather than map iteration noise.
+// snapshot lists every wired tool, sorted by (server, name) so polling
+// clients see a stable order rather than map iteration noise. Builtins
+// carry no server, so they sort ahead of every MCP tool as one group —
+// which is also the order an operator wants to read them in: the
+// daemon's own control plane first, then each server's catalog.
 //
 // The lock is held across the tools/list calls. That serializes
 // concurrent /tools requests behind one refresh — which is the point:
@@ -121,7 +133,15 @@ func (tc *toolCatalog) snapshot(ctx context.Context) []attach.ToolInfo {
 	ctx, cancel := context.WithTimeout(ctx, tc.timeout)
 	defer cancel()
 
-	out := make([]attach.ToolInfo, 0, len(tc.toolsets)*8)
+	out := make([]attach.ToolInfo, 0, len(tc.builtin)+len(tc.toolsets)*8)
+	for _, t := range tc.builtin {
+		out = append(out, attach.ToolInfo{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Source:      attach.ToolSourceBuiltin,
+			GateState:   tc.gateState(t.Name()),
+		})
+	}
 	listed := 0
 	for _, ts := range tc.toolsets {
 		tools, err := ts.Tools(toolCatalogCtx{Context: ctx})
@@ -154,10 +174,12 @@ func (tc *toolCatalog) snapshot(ctx context.Context) []attach.ToolInfo {
 	})
 
 	// Don't cache a total wipeout. If every server failed — the shape
-	// of a transport blip or a timeout — caching the empty result
+	// of a transport blip or a timeout — caching the partial result
 	// would hold the lie for a full TTL past recovery, and would let
-	// the next poll report "no tools" for a daemon that has them. Serve
-	// the last good answer if there is one, and retry on the next call.
+	// the next poll report a builtin-only daemon that has more. Serve
+	// the last good answer if there is one, and retry on the next call;
+	// either way the builtins in `out` are still reported, because
+	// nothing about them failed.
 	if len(tc.toolsets) > 0 && listed == 0 {
 		if tc.cached != nil {
 			return append([]attach.ToolInfo(nil), tc.cached...)

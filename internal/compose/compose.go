@@ -260,12 +260,21 @@ type RootConfig struct {
 //     one (see Dispatch.Resolve); otherwise fanout when the roster has
 //     a synthesis specialist, graph when it has both a SingleTurn
 //     classifier and a graph.FallbackName specialist, else coordinator.
-func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
+//
+// The second return is the non-MCP tools this call wired onto the root,
+// for an operator catalog to report (#137). It is what compose itself
+// registered and nothing more: the planner's control-plane vocabulary
+// under planner dispatch, and empty under every other shape. Tools ADK
+// installs on its own — finish_task, a coordinator's per-sub-agent
+// delegation tools — are not in it, because compose never sees them and
+// there is no accessor for a built agent's tools (#51 / adk-go#1229).
+// A caller with no catalog to feed discards it.
+func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool, error) {
 	dispatch := cfg.Dispatch.Resolve(cfg.Bundle)
 	switch dispatch {
 	case DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchBounded, DispatchAuto:
 	default:
-		return nil, fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, fanout, bounded, or auto)", dispatch)
+		return nil, nil, fmt.Errorf("compose: unknown dispatch %q (want coordinator, graph, fanout, bounded, or auto)", dispatch)
 	}
 
 	// The read/write split is checked before anything is built, on every
@@ -275,7 +284,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	// builds the same one with cfg.Logger, and the audited-override
 	// lines are worth exactly one appearance in a startup log.
 	if err := CheckCapabilitySplit(cfg.Bundle, cfg.Specs, MutationPredicate(cfg.Bundle, nil), cfg.Logger); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// The bounded roster is checked before anything is constructed, not
@@ -286,7 +295,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	if dispatch == DispatchBounded {
 		var err error
 		if bounded, err = boundedSpec(cfg.Bundle, cfg.Specs); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -315,7 +324,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 		}
 		a, err := specialists.Build(spec, opts)
 		if err != nil {
-			return nil, fmt.Errorf("build specialist %q: %w", spec.Name, err)
+			return nil, nil, fmt.Errorf("build specialist %q: %w", spec.Name, err)
 		}
 		byName[spec.Name] = a
 		if isTask {
@@ -353,14 +362,27 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 		if cfg.Logger != nil {
 			cfg.Logger.Info("planner enabled; --dispatch ignored", "dispatch_flag", string(cfg.Dispatch))
 		}
-		return planner.NewRoot(planner.Config{
+		pcfg := planner.Config{
 			Name:          cfg.Bundle.Name,
 			Description:   cfg.Bundle.Description,
 			Model:         cfg.Model,
 			Specialists:   byName,
 			Order:         cfg.Bundle.Specialists,
 			PauseRecorder: cfg.PauseRecorder,
-		})
+		}
+		root, err := planner.NewRoot(pcfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Rebuilt rather than plucked off the agent, because ADK gives
+		// no way to pluck. planner.Vocabulary is the function New itself
+		// calls, so the same config yields the same set — the catalog
+		// cannot list a tool this planner does not have.
+		builtin, err := planner.Vocabulary(pcfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("compose: enumerate the planner's tools: %w", err)
+		}
+		return root, builtin, nil
 	}
 
 	if dispatch == DispatchAuto {
@@ -368,36 +390,40 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, error) {
 	}
 
 	if dispatch == DispatchFanout {
-		return graph.BuildFanout(graph.FanoutConfig{
+		root, err := graph.BuildFanout(graph.FanoutConfig{
 			Bundle:    cfg.Bundle,
 			Analysts:  analysts,
 			Synthesis: taskOnly[graph.SynthesisName],
 			Mutating:  MutationPredicate(cfg.Bundle, cfg.Logger),
 		})
+		return root, nil, err
 	}
 
 	if dispatch == DispatchBounded {
-		return buildBounded(cfg.Bundle, bounded, byName[bounded.Name])
+		root, err := buildBounded(cfg.Bundle, bounded, byName[bounded.Name])
+		return root, nil, err
 	}
 
 	if dispatch == DispatchGraph {
 		if classifier == nil {
-			return nil, fmt.Errorf("--dispatch=graph requires a SingleTurn classifier specialist in the roster")
+			return nil, nil, fmt.Errorf("--dispatch=graph requires a SingleTurn classifier specialist in the roster")
 		}
-		return graph.Build(graph.Config{
+		root, err := graph.Build(graph.Config{
 			Bundle:            cfg.Bundle,
 			Classifier:        classifier,
 			Specialists:       taskOnly,
 			ApprovedChangeSet: ApprovedChangeSet(cfg.Logger),
 			Logger:            cfg.Logger,
 		})
+		return root, nil, err
 	}
 
-	return router.Build(router.Config{
+	root, err := router.Build(router.Config{
 		Bundle:      cfg.Bundle,
 		Specialists: byName,
 		Model:       cfg.Model,
 	})
+	return root, nil, err
 }
 
 // MutationPredicate builds the tool mutation classifier for a bundle:

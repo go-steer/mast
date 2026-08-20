@@ -41,14 +41,27 @@ answer a parked approval. It needs `--session-db`, since the live tail
 pumps from the event log.
 
 `GET /sessions/{id}/tools` lists the tools the daemon actually holds, each
-with the MCP server it came from and a `gate_state` — what the
-[write gate](/concepts/approvals/) would do to a call of it: `allowed`,
-`prompted` (it parks for approval), or `denied` (`on_mutation: dry_run`, so
-it will never run). The list is read from the live MCP servers, not from
-the bundle's declaration, and refreshed at most every 30 seconds; a server
-that fails to answer is left out and logged rather than blanking the rest.
-Tools registered outside MCP — the planner's own dispatch calls — are not
-listed yet.
+with a `source`, the MCP `server` it came from if it has one, and a
+`gate_state` — what the [write gate](/concepts/approvals/) would do to a
+call of it: `allowed`, `prompted` (it parks for approval), or `denied`
+(`on_mutation: dry_run`, so it will never run).
+
+Two sources appear. `builtin` is the daemon's own control plane — under
+planner dispatch, `invoke_specialist`, `run_shape_llm_router`,
+`run_shape_fan_out_fan_in`, `request_operator_input`, and
+`pause_session`. `mcp` is everything a server
+declared. Builtins sort ahead of the servers and are always listed: unlike
+a server, they cannot fail to answer or vanish between polls. The MCP half
+is read from the live servers rather than from the bundle's declaration,
+and refreshed at most every 30 seconds; a server that fails to answer is
+left out and logged rather than blanking the rest — including the
+builtins, which stay listed when every server is down.
+
+What is still missing is the handful of tools ADK installs itself:
+`finish_task`, and a coordinator's per-specialist transfer tools. mast
+never wires those, so it cannot enumerate them without keeping a
+hand-written list — and a catalog naming tools that do not exist is worse
+than one omitting tools that do.
 
 `GET /sessions/{id}/subagents` lists the roster the daemon **loaded** —
 what this thing can do. (`/agents` lists what has been *spawned*, which for

@@ -251,7 +251,7 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 		HITL: workload.HITL{OnMutation: onMutationOr(cfg.onMutation, workload.OnMutationApply)},
 	}
 
-	root, err := compose.BuildRoot(ctx, compose.RootConfig{
+	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:    bundle,
 		Specs:     specs,
 		Model:     r.model,

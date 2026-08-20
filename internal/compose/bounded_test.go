@@ -52,7 +52,7 @@ func boundedBundleFixture() workload.Bundle {
 // `bt_bounded` and `bt_fanout` are the same workload spending very
 // different money.
 func TestBuildRootBounded(t *testing.T) {
-	root, err := BuildRoot(context.Background(), RootConfig{
+	root, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle: boundedBundleFixture(),
 		Specs:  []specialists.Spec{boundedSpecFixture()},
 		Model:  mastagent.NewEchoModel("echo"),
@@ -134,7 +134,7 @@ func TestBuildRootBoundedRefusals(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := BuildRoot(context.Background(), RootConfig{Bundle: tc.bundle, Specs: tc.specs})
+			_, _, err := BuildRoot(context.Background(), RootConfig{Bundle: tc.bundle, Specs: tc.specs})
 			if err == nil {
 				t.Fatal("BuildRoot accepted the roster; want a refusal")
 			}
@@ -160,7 +160,7 @@ func TestRosterShapeNeverInfersBounded(t *testing.T) {
 	// And auto builds that same roster as a coordinator, not a bounded
 	// root: the shape inference and the build have to agree, or `auto`
 	// means one thing to the resolver and another to the operator.
-	root, err := BuildRoot(context.Background(), RootConfig{
+	root, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle:   workload.Bundle{Name: "bt"},
 		Specs:    specs,
 		Model:    mastagent.NewEchoModel("echo"),
@@ -179,7 +179,7 @@ func TestRosterShapeNeverInfersBounded(t *testing.T) {
 // because that is how `--dispatch=bounded` reaches a bundle an operator
 // is trying the shape against.
 func TestBuildRootBoundedFromTheCaller(t *testing.T) {
-	root, err := BuildRoot(context.Background(), RootConfig{
+	root, _, err := BuildRoot(context.Background(), RootConfig{
 		Bundle:   workload.Bundle{Name: "bt"},
 		Specs:    []specialists.Spec{boundedSpecFixture()},
 		Model:    mastagent.NewEchoModel("echo"),

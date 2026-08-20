@@ -127,6 +127,51 @@ func New(cfg Config) (adkagent.Agent, error) {
 
 	roster := rosterOrder(cfg)
 
+	tools, err := Vocabulary(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	instruction := cfg.Instruction
+	if instruction == "" {
+		instruction, err = renderInstruction(cfg, roster)
+		if err != nil {
+			return nil, fmt.Errorf("planner: render instruction: %w", err)
+		}
+	}
+
+	return mastagent.NewTaskAgent(mastagent.TaskAgentConfig{
+		Name:        cfg.Name + "_planner",
+		Description: cfg.Description,
+		Instruction: instruction,
+		Model:       cfg.Model,
+		Tools:       tools,
+	})
+}
+
+// Vocabulary builds the tools the planner is given for cfg, in the
+// order [New] attaches them.
+//
+// It is exported so an operator catalog can report the planner's
+// control-plane tools (GET /sessions/{id}/tools, #137). ADK exposes no
+// accessor for a built agent's tools — llmagent keeps them behind an
+// internal Reveal, the gap behind #51 / adk-go#1229 — so by the time a
+// caller holds the agent, the list is gone. The alternative was a
+// hand-maintained list in the daemon, which drifts, and a catalog that
+// names tools the planner does not have is worse than one that omits
+// tools it does.
+//
+// [New] calls this rather than duplicating it, which is the property
+// that matters: the enumeration and the wiring are the same code, so a
+// tool added to the vocabulary appears in the catalog without anyone
+// remembering to add it twice.
+//
+// The set is config-dependent, not fixed: pause_session is present only
+// when cfg.PauseRecorder is wired. finish_task is absent because ADK
+// installs it, not mast.
+func Vocabulary(cfg Config) ([]tool.Tool, error) {
+	roster := rosterOrder(cfg)
+
 	dispatchers := make(map[string]adkagent.Agent, len(cfg.Specialists))
 	for _, name := range roster {
 		d, err := newDispatcher(name, cfg.Specialists[name])
@@ -176,22 +221,7 @@ func New(cfg Config) (adkagent.Agent, error) {
 		}
 		tools = append(tools, pauseTool)
 	}
-
-	instruction := cfg.Instruction
-	if instruction == "" {
-		instruction, err = renderInstruction(cfg, roster)
-		if err != nil {
-			return nil, fmt.Errorf("planner: render instruction: %w", err)
-		}
-	}
-
-	return mastagent.NewTaskAgent(mastagent.TaskAgentConfig{
-		Name:        cfg.Name + "_planner",
-		Description: cfg.Description,
-		Instruction: instruction,
-		Model:       cfg.Model,
-		Tools:       tools,
-	})
+	return tools, nil
 }
 
 // rosterOrder yields specialist names in cfg.Order first (restricted

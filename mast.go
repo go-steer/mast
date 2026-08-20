@@ -177,7 +177,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	if err != nil {
 		return nil, err
 	}
-	root, err := compose.BuildRoot(ctx, compose.RootConfig{
+	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:        bundle,
 		Specs:         specs,
 		Model:         llm,
@@ -263,7 +263,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 	if err != nil {
 		return nil, err
 	}
-	root, err := compose.BuildRoot(ctx, compose.RootConfig{
+	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:        bundle,
 		Specs:         specs,
 		Model:         llm,

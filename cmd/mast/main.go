@@ -693,10 +693,9 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			baseContext: turnCtx,
 			modelName:   llm.Name(),
 			description: attachDescription(bundle),
-			// GET /sessions/{sid}/tools, off the MCP toolsets buildRoot
-			// wired — the only place their server attribution survives
-			// (#133).
-			tools: newToolCatalog(logger, built.toolsets, effPred, bundle),
+			// GET /sessions/{sid}/tools, off what buildRoot wired — the
+			// only place a tool's attribution still exists (#133, #137).
+			tools: built.catalog(logger, effPred),
 			// GET /sessions/{sid}/subagents: the roster the daemon
 			// loaded, which is what "what can this thing do" asks for —
 			// /agents answers "what is running", and that is empty most
@@ -1432,7 +1431,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		return rootBuild{}, err
 	}
 
-	a, err := compose.BuildRoot(ctx, compose.RootConfig{
+	a, builtin, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:        bundle,
 		Specs:         loaded,
 		Model:         llm,
@@ -1451,6 +1450,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		bundle:   &bundle,
 		specs:    loaded,
 		toolsets: toolsets,
+		builtin:  builtin,
 		dispatch: resolved,
 	}, nil
 }
@@ -1466,7 +1466,24 @@ type rootBuild struct {
 	bundle   *workload.Bundle
 	specs    []specialists.Spec
 	toolsets []tool.Toolset
+	// builtin are the non-MCP tools compose wired onto the root — the
+	// planner's control-plane vocabulary, empty under every other
+	// dispatch shape. Same reason as toolsets: the wiring site is the
+	// only place the list still exists (#137).
+	builtin  []tool.Tool
 	dispatch string
+}
+
+// catalog builds the operator tool catalog for this build.
+//
+// A method rather than an inline call in serve because the bug behind
+// #133 was a field serve never assigned — the endpoint answered 200
+// with an empty list on every daemon while the code that would have
+// filled it sat unreferenced. Two sources of tools means two arguments
+// that can silently be left out, so the assembly is somewhere a test
+// can call.
+func (b rootBuild) catalog(logger *slog.Logger, pred effects.Predicate) *toolCatalog {
+	return newToolCatalog(logger, b.toolsets, b.builtin, pred, b.bundle)
 }
 
 // validateDispatch rejects a --dispatch value the binary cannot build.

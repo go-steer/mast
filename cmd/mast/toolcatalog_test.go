@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -243,8 +244,9 @@ func TestToolCatalogDoesNotCacheATotalFailure(t *testing.T) {
 	}
 }
 
-// A daemon with no MCP servers reports an empty catalog rather than
-// panicking on a nil receiver — and it does so without a refresh loop.
+// A daemon with no MCP servers and no builtins reports an empty catalog
+// rather than panicking on a nil receiver — and it does so without a
+// refresh loop.
 func TestToolCatalogEmptyIsStable(t *testing.T) {
 	if got := (*toolCatalog)(nil).snapshot(context.Background()); got != nil {
 		t.Errorf("nil catalog snapshot = %+v, want nil", got)
@@ -252,6 +254,113 @@ func TestToolCatalogEmptyIsStable(t *testing.T) {
 	tc := testCatalog(t, workload.OnMutationApply)
 	if got := tc.snapshot(context.Background()); len(got) != 0 {
 		t.Errorf("snapshot = %+v, want empty", got)
+	}
+}
+
+// #137: a planner-dispatch daemon with no MCP servers used to answer
+// with an empty catalog. That was true of its MCP tools and wrong as an
+// answer to "what can this daemon do" — the planner's control plane is
+// the whole dispatch surface such a daemon has.
+func TestToolCatalogListsTheDaemonsOwnTools(t *testing.T) {
+	tc := testCatalog(t, workload.OnMutationRequireApproval)
+	tc.builtin = []tool.Tool{
+		catalogTool{name: "invoke_specialist", desc: "dispatch to a roster specialist"},
+		catalogTool{name: "request_operator_input", desc: "ask an operator"},
+	}
+
+	got := tc.snapshot(context.Background())
+	want := []attach.ToolInfo{
+		{Name: "invoke_specialist", Description: "dispatch to a roster specialist", Source: attach.ToolSourceBuiltin, GateState: attach.ToolGateAllowed},
+		{Name: "request_operator_input", Description: "ask an operator", Source: attach.ToolSourceBuiltin, GateState: attach.ToolGateAllowed},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("snapshot mismatch\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+// Builtins carry no server, so they group ahead of every MCP tool. The
+// order matters only in that it is stable — a polling client must not
+// see the list reshuffle — but reading the daemon's own control plane
+// first and then each server's catalog is also the order an operator
+// wants.
+func TestToolCatalogSortsBuiltinsAheadOfServers(t *testing.T) {
+	tc := testCatalog(t, workload.OnMutationApply,
+		&catalogToolset{name: "aaa-sorts-first", tools: []tool.Tool{catalogTool{name: "get_pods"}}})
+	tc.builtin = []tool.Tool{catalogTool{name: "invoke_specialist"}}
+
+	got := tc.snapshot(context.Background())
+	if len(got) != 2 || got[0].Name != "invoke_specialist" || got[1].Name != "get_pods" {
+		t.Fatalf("snapshot = %+v, want the builtin first even though its server name would sort last", got)
+	}
+	if got[0].Server != "" {
+		t.Errorf("builtin reported server %q; a tool mast wired itself came from no server", got[0].Server)
+	}
+}
+
+// The gate projection is the same predicate for both sources. A builtin
+// that mutates must not read as allowed just because mast registered it
+// — and the planner's spawning tools, which are neither read-only nor
+// mutating, must not read as prompted.
+func TestToolCatalogGatesBuiltinsLikeAnythingElse(t *testing.T) {
+	tc := testCatalog(t, workload.OnMutationRequireApproval)
+	tc.builtin = []tool.Tool{
+		catalogTool{name: "invoke_specialist"},
+		catalogTool{name: "scale_deployment"}, // mutatingNames covers this one
+	}
+
+	got := tc.snapshot(context.Background())
+	byName := map[string]string{}
+	for _, ti := range got {
+		byName[ti.Name] = ti.GateState
+	}
+	if byName["invoke_specialist"] != attach.ToolGateAllowed {
+		t.Errorf("invoke_specialist gate = %q, want %q", byName["invoke_specialist"], attach.ToolGateAllowed)
+	}
+	if byName["scale_deployment"] != attach.ToolGatePrompted {
+		t.Errorf("a mutating builtin gate = %q, want %q", byName["scale_deployment"], attach.ToolGatePrompted)
+	}
+}
+
+// Both halves have to survive the trip from buildRoot to the endpoint.
+// #133 was not a broken projection but an argument serve never passed,
+// and #137 adds a second one that could go the same way — silently,
+// because a catalog missing its builtins still answers 200 with a
+// plausible list.
+func TestRootBuildCatalogCarriesBothSources(t *testing.T) {
+	b := rootBuild{
+		toolsets: []tool.Toolset{&catalogToolset{name: "gke", tools: []tool.Tool{catalogTool{name: "get_pods"}}}},
+		builtin:  []tool.Tool{catalogTool{name: "invoke_specialist"}},
+		bundle:   &workload.Bundle{},
+	}
+
+	got := b.catalog(discardLogger(), mutatingNames()).snapshot(context.Background())
+	names := make([]string, 0, len(got))
+	for _, ti := range got {
+		names = append(names, ti.Name)
+	}
+	if !slices.Equal(names, []string{"invoke_specialist", "get_pods"}) {
+		t.Fatalf("catalog = %v, want the daemon's own tools and the server's", names)
+	}
+}
+
+// An MCP outage says nothing about the daemon's own tools, so it must
+// not blank them. The pre-#137 shape of this bug is the reverse — an
+// empty answer that looked like "no tools" — and reporting nothing
+// during a blip would recreate it for a planner daemon.
+func TestToolCatalogBuiltinsSurviveATotalMCPFailure(t *testing.T) {
+	broken := &catalogToolset{name: "gke", err: errors.New("transport closed")}
+	tc := testCatalog(t, workload.OnMutationApply, broken)
+	tc.builtin = []tool.Tool{catalogTool{name: "invoke_specialist"}}
+
+	got := tc.snapshot(context.Background())
+	if len(got) != 1 || got[0].Name != "invoke_specialist" {
+		t.Fatalf("snapshot during an outage = %+v, want the daemon's own tools", got)
+	}
+	// And the outage is still not cached: the next call retries.
+	before := broken.calls
+	tc.snapshot(context.Background())
+	if broken.calls != before+1 {
+		t.Errorf("server listed %d more times, want a fresh attempt", broken.calls-before)
 	}
 }
 
