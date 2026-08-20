@@ -115,7 +115,7 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | `tools.builtin` | []string | inherit all | Allowlist (not denylist) of core-agent built-in tools. Absent = inherit all; present-but-empty = deny all builtins (see the normative table below — empty and absent are NOT equivalent, revised 2026-07-25). |
 | `tools.mcp[].server` | string | required if `mcp` set | MCP server name as configured under `.agents/mcp/` (path per [`./config-layout-design.md`](./config-layout-design.md), which is authoritative for layout; an earlier `.agents/mcp.json` reference here was stale). |
 | `tools.mcp[].tools` | []string | all from this server | Allowlist of tools from this MCP server. Absent = whole server; non-empty = narrowed to those names (enforced via stock `tool.FilterToolset`, verified 2026-07-25). |
-| `tools.skills` | []string | inherit all | Allowlist of skills (SKILL.md bundles per [`./skills-design.md`](./skills-design.md)) the specialist may invoke. References resolve the same way as workload-bundle `skills:` entries (local name or registry URL). Absent = inherit the bundle's `skills:` roster; present-but-empty = deny skill access (normative table below). Skill invocation from a specialist follows the standard three-way policy layering: skill's `allowed_tools` ∩ specialist's `tools` ∩ workload bundle's `tool_catalog` — narrowest wins. Skill budget *hints* are advisory (per [`./skills-design.md`](./skills-design.md) — hints are not enforcement); the enforced ceiling is the specialist's `budget.max_cost_usd`, itself bounded by the bundle's. |
+| `tools.skills` | []string | inherit all | **Not implemented as of v0.4 — a non-empty list fails the load ([status](#the-skills-axis-does-not-exist-yet-2026-08-20)).** Allowlist of skills (SKILL.md bundles per [`./skills-design.md`](./skills-design.md)) the specialist may invoke. References resolve the same way as workload-bundle `skills:` entries (local name or registry URL). Absent = inherit the bundle's `skills:` roster; present-but-empty = deny skill access (normative table below). Skill invocation from a specialist follows the standard three-way policy layering: skill's `allowed_tools` ∩ specialist's `tools` ∩ workload bundle's `tool_catalog` — narrowest wins. Skill budget *hints* are advisory (per [`./skills-design.md`](./skills-design.md) — hints are not enforcement); the enforced ceiling is the specialist's `budget.max_cost_usd`, itself bounded by the bundle's. |
 
 ### Why `output_schema` must be an object at the top level (2026-08-13)
 
@@ -140,6 +140,26 @@ Two smaller load-time refusals are worth naming for the same reason — each is 
 Cross-axis independence: each axis resolves on its own (e.g. `mcp` listed + `builtin` absent → all builtins, only the listed MCP surface). Composition with bundles and skills is intersection, narrowest wins: skill `allowed_tools` ∩ specialist `tools` ∩ bundle `tool_catalog`.
 
 This is allowlist-by-design: enumerating the few tools a specialist *should* see is much easier than excluding the many it shouldn't.
+
+### The skills axis does not exist yet (2026-08-20)
+
+Two of the three axes above are enforced code. The third is not, and the table read as though it were.
+
+`builtin` is read by the write gate (`internal/compose/writegate.go`) and the capability-split check; `mcp` is enforced by `filterToolsets` via stock `tool.FilterToolset`. `skills` is read by **no production code at all** — because there is nothing for it to narrow. mast ships no skills subsystem: no `pkg/skills`, no SKILL.md loader, no `invoke_skill`, no `mast skills` CLI. [`./skills-design.md`](./skills-design.md) schedules the loader for **v0.1**; four releases have shipped without it and nothing in this corpus said so (#211).
+
+So as of v0.4, on the one file whose job is to state what a sub-agent may touch:
+
+| Frontmatter | What the table above promises | What the loader does |
+|---|---|---|
+| `skills:` absent | inherit the bundle roster | inherits nothing, because there is no roster — same outcome |
+| `skills: []` | deny all skills | loads; deny-all is what this build does anyway — **honest** |
+| `skills: [a, b]` | whitelist a and b | **refused at load**, naming the file |
+
+The refusal is the same discipline the loader already applies to a misspelled `capability` or `tier`: a declaration that cannot take fails on startup rather than reading like it worked. Accepting it would let an allowlist that grants nothing look identical to one that grants three things.
+
+Two adjacent surfaces are declared-but-inert for the same reason and are documented in place rather than removed: `attach.ToolSourceSkill` (a shared wire enum an embedder or core-agent's daemon can still produce) and the `"skill"` namespace entry in `pkg/permissions`' plan-exempt table (whose exemption should be re-decided when the loader lands — it is written for three read-only tools and exempts a whole namespace).
+
+**None of this is a broken user promise:** the docs site never advertised skills, and no shipped spec, example, or fixture uses the axis. It is a corpus-vs-code gap, now recorded in both places.
 
 **Two enforcement corrections, both found on 2026-08-14 while building the capability split (mast W2.4).** The table above was normative and the code did not implement it:
 

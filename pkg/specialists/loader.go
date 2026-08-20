@@ -105,6 +105,24 @@ func LoadFile(path string) (Spec, error) {
 				path, fm.Model, fm.Tier)
 		}
 	}
+	if len(fm.Tools.Skills) > 0 {
+		// Same reasoning as the two refusals above, one step further
+		// out: this is a tool grant that cannot take, because mast
+		// ships no skills runtime for it to narrow. There is no
+		// pkg/skills in this fork, no loader, no invoke_skill — the
+		// axis is documented in docs/specialists-design.md and
+		// scheduled by docs/skills-design.md, and neither has landed
+		// through v0.4 (#211).
+		//
+		// Accepting it would make an allowlist that grants nothing
+		// read exactly like one that grants three things, on the one
+		// file in the tree whose whole job is to say what a
+		// sub-agent may touch. `skills: []` is still accepted: on
+		// every axis a present-but-empty list means deny-all, and
+		// deny-all is what mast actually does here.
+		return Spec{}, fmt.Errorf("specialists: %q: tools.skills lists %d skill(s), and this build has no skills subsystem to grant them from — the field would be silently inert (remove it, or write `skills: []` to state deny-all explicitly)",
+			path, len(fm.Tools.Skills))
+	}
 	var schema *genai.Schema
 	var schemaPath string
 	if fm.OutputSchema != "" {

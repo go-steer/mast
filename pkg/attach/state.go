@@ -36,6 +36,15 @@ var ErrCapabilityNotRegistered = errors.New("attach: capability not registered o
 // Bare strings (not a typed enum) so JSON clients downstream — the
 // TUI, an eventual WebUI, operator scripts — don't have to know a
 // Go type to reason about them.
+//
+// A mast daemon emits only "builtin" and "mcp" today: cmd/mast's
+// catalog is built from what compose wired, and mast has no skills
+// subsystem for "skill" to describe (#211). The constant stays because
+// this is a shared wire contract — an embedder supplying its own
+// ToolsProvider, and core-agent's daemon, both produce it — and a
+// client that already handles four sources should not have to care
+// which daemon it is talking to. Read an unlisted source the way §2.6
+// says to read an unknown enum value, not as proof mast omits skills.
 const (
 	ToolSourceBuiltin = "builtin"
 	ToolSourceMCP     = "mcp"

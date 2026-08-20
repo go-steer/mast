@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	adkmodel "google.golang.org/adk/v2/model"
@@ -339,6 +340,42 @@ func TestLoadFile_EmptyMCPListIsNotAbsent(t *testing.T) {
 	}
 	if len(empty.Tools.MCP) != 0 {
 		t.Errorf("`mcp: []` decoded to %d entries, want 0", len(empty.Tools.MCP))
+	}
+}
+
+// A specialist spec is the file that says what a sub-agent may touch,
+// and two of its three axes are enforced. The third is not — mast has
+// no skills subsystem for `tools.skills` to narrow — so a non-empty
+// list is a grant that cannot take, and the loader refuses it for the
+// same reason it refuses a misspelled capability rather than
+// defaulting: a declaration that did not take should fail at startup
+// naming the file, not read like it worked (#211).
+//
+// `skills: []` stays loadable. Present-but-empty means deny-all on
+// every axis, and deny-all is exactly what this build does.
+func TestLoadFile_NonEmptySkillsAllowlistIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	writeTempTmpl(t, dir, "granting.tmpl", "---\ndescription: d\ntools:\n  skills:\n    - k8s-triage\n---\nbody\n")
+	writeTempTmpl(t, dir, "denying.tmpl", "---\ndescription: d\ntools:\n  skills: []\n---\nbody\n")
+	writeTempTmpl(t, dir, "silent.tmpl", "---\ndescription: d\n---\nbody\n")
+
+	_, err := specialists.LoadFile(filepath.Join(dir, "granting.tmpl"))
+	if err == nil {
+		t.Fatal("a spec granting a skill loaded clean; the allowlist reads as a whitelist and narrows nothing")
+	}
+	// The operator has to be able to act on it: the message must say
+	// what to write instead, or the refusal just moves the confusion.
+	for _, want := range []string{"skills", "skills: []"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not mention %q", err, want)
+		}
+	}
+
+	if _, err := specialists.LoadFile(filepath.Join(dir, "denying.tmpl")); err != nil {
+		t.Errorf("`skills: []` was refused (%v); the documented deny-all spelling must stay loadable", err)
+	}
+	if _, err := specialists.LoadFile(filepath.Join(dir, "silent.tmpl")); err != nil {
+		t.Errorf("a spec with no skills axis was refused: %v", err)
 	}
 }
 

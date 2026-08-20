@@ -132,7 +132,22 @@ type MCPAllowlist struct {
 type ToolAllowlist struct {
 	Builtin []string       `yaml:"builtin,omitempty"`
 	MCP     []MCPAllowlist `yaml:"mcp,omitempty"`
-	Skills  []string       `yaml:"skills,omitempty"`
+
+	// Skills is the third axis of the normative table, and it is the
+	// one nothing enforces: Builtin is read by the write gate and the
+	// capability-split check, MCP by filterToolsets, and Skills by no
+	// production code at all. mast ships no skills runtime — the
+	// subsystem docs/skills-design.md schedules for v0.1 has not
+	// landed through v0.4 (#211).
+	//
+	// So the field is parsed and then refused: LoadFile rejects a
+	// non-empty list rather than accept a grant it cannot narrow.
+	// It stays declared because the wire and file formats are shared
+	// with the design corpus and with embedders, and because a
+	// silently-dropped unknown key is a worse failure than a named
+	// one — but read "present here" as "the format has a place for
+	// it", not as "mast honors it".
+	Skills []string `yaml:"skills,omitempty"`
 }
 
 // InheritsAllMCP reports whether this allowlist leaves the MCP axis
