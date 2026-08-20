@@ -171,6 +171,60 @@ func TestCluster_AnsweringToolWithAnEmptyHalfSaysNothingFound(t *testing.T) {
 	}
 }
 
+// TestCluster_ReadResultAddsASignalWithoutMovingTheBoard is the
+// non-perturbation check for #169.
+//
+// The empty-read signal exists so the board can tell "never called the
+// tool" from "called it against a scope that held nothing". Every way
+// of surfacing that through the tool's own payload — a found flag in
+// the JSON, a different wording for a clean reading — changes what the
+// model reads and moves every score on the board, which would make the
+// new column and the old ones un-comparable in the same run that
+// introduced it. So the prose is asserted byte-identical to what Read
+// has always returned, and the signal rides beside it.
+func TestCluster_ReadResultAddsASignalWithoutMovingTheBoard(t *testing.T) {
+	ds := loadCorpus(t)
+	tbl := loadIntents(t)
+	fx, err := Fixtures(ds, loadOverrides(t))
+	if err != nil {
+		t.Fatalf("Fixtures: %v", err)
+	}
+
+	var found, empty int
+	for _, s := range ds.Scenarios {
+		c, err := NewCluster(tbl, s, fx[s.ID])
+		if err != nil {
+			continue
+		}
+		for name := range tbl.LookoutTools {
+			for _, scope := range []string{"", "default/some-pod"} {
+				reading, ok := c.ReadResult(name, scope)
+				if plain := c.Read(name, scope); plain != reading {
+					t.Fatalf("%s/%s: Read and ReadResult disagree on what the agent sees:\n%q\nvs\n%q",
+						s.ID, name, plain, reading)
+				}
+				// The two halves have to agree, or the signal is worse
+				// than nothing: a clean reading reported as a find would
+				// hide exactly the runs #169 is looking for.
+				clean := strings.Contains(reading, "no abnormal findings")
+				if ok == clean {
+					t.Errorf("%s/%s: found=%v for a reading that %s:\n%s",
+						s.ID, name, ok, map[bool]string{true: "found nothing", false: "carried observations"}[clean], reading)
+				}
+				if ok {
+					found++
+				} else {
+					empty++
+				}
+			}
+		}
+	}
+	if found == 0 || empty == 0 {
+		t.Fatalf("found=%d empty=%d — one side never happened, so the signal is not being exercised", found, empty)
+	}
+	t.Logf("readings across the corpus: %d with observations, %d empty", found, empty)
+}
+
 // TestNewCluster_RefusesUnreachableEvidence is the neutralize-verification
 // for the reachability check: a scenario whose expected intents reach
 // only spec-shaped tools must not be allowed to carry log-line evidence.

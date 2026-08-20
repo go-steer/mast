@@ -68,6 +68,16 @@ type Call struct {
 	Completed bool
 	// ResponseIndex is the event index of the completion, or -1.
 	ResponseIndex int
+
+	// Response is the payload the tool answered with, nil until a
+	// completion is recorded. Retained for #169: the arguments say what
+	// the model asked for and only the result says whether it learned
+	// anything, and the difference between "never called the tool" and
+	// "called it against a scope that matched nothing" is invisible
+	// without it. ADK puts a handler error under the "error" key here,
+	// which is what makes a failed call distinguishable from an empty
+	// one.
+	Response map[string]any
 }
 
 // Mutating reports whether this call is one the outbox guards.
@@ -234,12 +244,14 @@ func TraceFromEvents(events adksession.Events, pred effects.Predicate, subAgents
 						EventIndex:    -1,
 						Completed:     true,
 						ResponseIndex: evIdx,
+						Response:      fr.Response,
 					})
 					byID[fr.ID] = len(tr.Calls) - 1
 					continue
 				}
 				tr.Calls[i].Completed = true
 				tr.Calls[i].ResponseIndex = evIdx
+				tr.Calls[i].Response = fr.Response
 			}
 		}
 	}

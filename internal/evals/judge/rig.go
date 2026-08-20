@@ -16,6 +16,7 @@ package judge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -145,6 +146,16 @@ type Outcome struct {
 	// board because the share of the corpus resting on authored fixtures
 	// is the honest reader's first question about a judge score.
 	Authored bool `json:"authored_fixture,omitempty"`
+	// Calls are the recorded calls with their arguments and a digest of
+	// what each returned. Tools above says which tools were reached;
+	// this says how, which is the difference between an intent the run
+	// never pursued and one it pursued against a scope that held
+	// nothing (#169).
+	Calls []evals.CallRecord `json:"calls,omitempty"`
+	// Violations are the things wrong with those calls, enumerated
+	// rather than averaged — see the note at the top of
+	// internal/evals/validity.go.
+	Violations []evals.Violation `json:"violations,omitempty"`
 	// Quality is the judge's grade. Zero value when grading was not
 	// requested.
 	Quality *Grade `json:"quality,omitempty"`
@@ -216,6 +227,13 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
+	// Read the schemas off the built tools before the run, so a rig that
+	// cannot describe its own tools fails here rather than reporting
+	// every call the model makes as unknown.
+	schemas, err := toolSchemas(tools)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("judge: %s: %w", sc.ID, err)
+	}
 
 	agent, err := mastagent.NewCoordinator(mastagent.CoordinatorConfig{
 		Name:        agentName,
@@ -258,14 +276,16 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 	trace := evals.TraceFromEvents(resp.Session.Events(), r.pred, nil)
 
 	return Outcome{
-		ID:        sc.ID,
-		Category:  sc.Category,
-		Response:  trace.FinalText,
-		Tools:     calls.names(),
-		Answering: cluster.AnsweringTools(),
-		Results:   evals.EvaluateAll(r.tbl, sc, trace),
-		Ceiling:   r.ceiling(sc),
-		Authored:  !obs.Derived,
+		ID:         sc.ID,
+		Category:   sc.Category,
+		Response:   trace.FinalText,
+		Tools:      calls.names(),
+		Answering:  cluster.AnsweringTools(),
+		Calls:      evals.RecordCalls(trace.Calls),
+		Violations: evals.ValidateCalls(schemas, trace.Calls, calls.emptyReads()),
+		Results:    evals.EvaluateAll(r.tbl, sc, trace),
+		Ceiling:    r.ceiling(sc),
+		Authored:   !obs.Derived,
 	}, nil
 }
 
@@ -352,8 +372,9 @@ func buildTools(c *Cluster, calls *callLog) ([]tool.Tool, error) {
 			Name:        name,
 			Description: desc + " Scope is a namespace, a namespace/name, or empty for the whole cluster.",
 		}, func(_ adkagent.Context, args scopeArgs) (map[string]any, error) {
-			calls.record(name)
-			return map[string]any{"reading": c.Read(name, args.Scope)}, nil
+			reading, found := c.ReadResult(name, args.Scope)
+			calls.record(name, args.Scope, found)
+			return map[string]any{"reading": reading}, nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("judge: build tool %q: %w", name, err)
@@ -363,26 +384,113 @@ func buildTools(c *Cluster, calls *callLog) ([]tool.Tool, error) {
 	return out, nil
 }
 
+// toolSchemas reads back the schema each fixture tool declares, for
+// [evals.ValidateCalls]. Read from the built tools rather than written
+// out beside them: an expectation maintained by hand next to the thing
+// it describes is an expectation that goes stale, and here it would go
+// stale silently — every recorded call would validate against a
+// catalog that no longer matches what the model was shown.
+func toolSchemas(tools []tool.Tool) (evals.ToolSchemas, error) {
+	out := make(evals.ToolSchemas, len(tools))
+	for _, t := range tools {
+		d, ok := t.(interface {
+			Declaration() *genai.FunctionDeclaration
+		})
+		if !ok {
+			return nil, fmt.Errorf("judge: tool %T does not expose Declaration(); its calls could not be validated", t)
+		}
+		decl := d.Declaration()
+		if decl == nil || decl.Name == "" {
+			return nil, fmt.Errorf("judge: tool %T declared nothing", t)
+		}
+		var src any
+		switch {
+		case decl.Parameters != nil:
+			src = decl.Parameters
+		case decl.ParametersJsonSchema != nil:
+			src = decl.ParametersJsonSchema
+		default:
+			out[decl.Name] = map[string]any{"type": "object"}
+			continue
+		}
+		raw, err := json.Marshal(src)
+		if err != nil {
+			return nil, fmt.Errorf("judge: tool %q: marshal declaration: %w", decl.Name, err)
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			return nil, fmt.Errorf("judge: tool %q: unmarshal declaration: %w", decl.Name, err)
+		}
+		out[decl.Name] = schema
+	}
+	return out, nil
+}
+
 // callLog records tool calls in order. The trace adapter also sees them,
 // but this is the fixture's own count, so a disagreement between the two
 // is visible rather than assumed away.
+//
+// It also records what only the fixture knows: whether the read found
+// anything. The trace can see the reading, but "no abnormal findings in
+// this scope" is prose the agent is meant to read as a real cluster's
+// silence, and pattern-matching it back out downstream would couple the
+// scorer to the fixture's wording. The cluster says so directly instead.
 type callLog struct {
 	mu sync.Mutex
-	in []string
+	in []fixtureCall
 }
 
-func (l *callLog) record(name string) {
+// fixtureCall is one call as the fixture served it.
+type fixtureCall struct {
+	name  string
+	scope string
+	found bool
+}
+
+func (l *callLog) record(name, scope string, found bool) {
 	l.mu.Lock()
-	l.in = append(l.in, name)
+	l.in = append(l.in, fixtureCall{name: name, scope: scope, found: found})
 	l.mu.Unlock()
 }
 
 func (l *callLog) names() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out := make([]string, len(l.in))
-	copy(out, l.in)
+	out := make([]string, 0, len(l.in))
+	for _, c := range l.in {
+		out = append(out, c.name)
+	}
 	return out
+}
+
+// emptyReads returns a predicate reporting whether a recorded call
+// found nothing, matching a trace call to the fixture's own record by
+// (tool, scope) in order.
+//
+// Matching in order rather than by identity is deliberate: the same
+// tool called twice on the same scope is two entries here, and
+// collapsing them would hide the second. A trace call with no fixture
+// entry — an unknown tool the runtime rejected before it reached the
+// fixture — is not claimed to be empty; ValidateCalls has already
+// reported it as unknown, and adding a second line about the same call
+// would inflate the count.
+func (l *callLog) emptyReads() func(evals.Call) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	remaining := make([]fixtureCall, len(l.in))
+	copy(remaining, l.in)
+
+	return func(c evals.Call) bool {
+		scope, _ := c.Args["scope"].(string)
+		for i, f := range remaining {
+			if f.name != c.Name || f.scope != scope {
+				continue
+			}
+			remaining = append(remaining[:i], remaining[i+1:]...)
+			return !f.found
+		}
+		return false
+	}
 }
 
 // staticToolset offers a fixed tool list, the minimum tool.Toolset a

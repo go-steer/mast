@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -155,6 +156,19 @@ func TestRun_JudgeTierRunsTheWholeCorpus(t *testing.T) {
 	if sum.Judge.CostSkipped == "" {
 		t.Error("J-cost-tier was skipped without saying so; a silent skip reads as a pass")
 	}
+	// echo answers with the prompt and never calls a tool, so the
+	// validity board is empty — and has to say so out loud. "No
+	// malformed calls" and "no calls at all" are the same JSON and very
+	// different facts, and this configuration is the one that produces
+	// the second.
+	if v := sum.Judge.Validity; v.Calls != 0 || len(v.Malformed) != 0 {
+		t.Errorf("echo produced tool calls: %+v", v)
+	}
+	var buf bytes.Buffer
+	sum.WriteText(&buf)
+	if out := buf.String(); !strings.Contains(out, "no calls were recorded at all") {
+		t.Errorf("a board with no tool calls did not say so:\n%s", out)
+	}
 }
 
 // TestAggregate_ExcludesVacuousRows pins the averaging rule. Counting a
@@ -172,6 +186,133 @@ func TestAggregate_ExcludesVacuousRows(t *testing.T) {
 	}
 	if got[0].Mean != 0.75 || got[0].Scored != 2 || got[0].Vacuous != 1 {
 		t.Errorf("aggregate = %+v, want mean 0.75 over 2 scored with 1 vacuous", got[0])
+	}
+}
+
+// validityScenes is one board of each shape #169 distinguishes: a row
+// that read well, a row whose every read came back empty, and a row
+// that called a tool that does not exist.
+func validityScenes() []JudgeScenario {
+	return []JudgeScenario{{
+		ID: "read-well",
+		Calls: []evals.CallRecord{
+			{Index: 0, Tool: "k8s_triage_workload", Args: map[string]any{"scope": "production/api"}, Result: "restart count 18", Completed: true},
+			{Index: 1, Tool: "k8s_triage_logs", Args: map[string]any{"scope": "production/api"}, Result: "no abnormal findings", Completed: true},
+		},
+		Violations: []evals.Violation{
+			{CallIndex: 1, Tool: "k8s_triage_logs", Kind: evals.ViolationEmptyResult, Detail: "scope=production/api"},
+		},
+	}, {
+		ID: "ran-blind",
+		Calls: []evals.CallRecord{
+			{Index: 0, Tool: "k8s_cloud_quota", Args: map[string]any{"scope": "kube-system"}, Result: "no abnormal findings", Completed: true},
+		},
+		Violations: []evals.Violation{
+			{CallIndex: 0, Tool: "k8s_cloud_quota", Kind: evals.ViolationEmptyResult, Detail: "scope=kube-system"},
+		},
+	}, {
+		ID: "invented-a-tool",
+		Calls: []evals.CallRecord{
+			{Index: 0, Tool: "kubectl_delete_pod", Args: map[string]any{"scope": "production"}, Completed: true},
+		},
+		Violations: []evals.Violation{
+			{CallIndex: 0, Tool: "kubectl_delete_pod", Kind: evals.ViolationUnknownTool, Detail: "no such tool in the catalog"},
+		},
+	}, {
+		ID: "did-not-run", Error: "provider refused",
+	}}
+}
+
+// TestSummarizeValidity_SeparatesMalformedFromEmpty pins the split the
+// board is built on. An empty read is ordinary — a hypothesis ruled out
+// — and a malformed call is a defect; folding them into one number
+// would bury the rare actionable thing under the common expected one.
+func TestSummarizeValidity_SeparatesMalformedFromEmpty(t *testing.T) {
+	got := summarizeValidity(validityScenes())
+
+	if got.Calls != 4 {
+		t.Errorf("counted %d calls, want 4 (the row that did not run contributes none)", got.Calls)
+	}
+	if got.EmptyReads != 2 {
+		t.Errorf("empty reads = %d, want 2", got.EmptyReads)
+	}
+	if len(got.Malformed) != 1 || got.Malformed[0].Scenario != "invented-a-tool" {
+		t.Fatalf("malformed = %+v, want the one unknown-tool call attributed to its row", got.Malformed)
+	}
+	if got.Malformed[0].Violation.Kind != evals.ViolationUnknownTool {
+		t.Errorf("an empty read was filed as malformed: %+v", got.Malformed[0])
+	}
+	// ran-blind only: read-well found something on its first call, so
+	// its diagnosis rests on evidence even though its second read was
+	// clean.
+	if len(got.Blind) != 1 || got.Blind[0] != "ran-blind" {
+		t.Errorf("blind runs = %v, want only ran-blind", got.Blind)
+	}
+	if strings.Join(got.Counts, " ") != "empty_result=2 unknown_tool=1" {
+		t.Errorf("counts = %v", got.Counts)
+	}
+}
+
+// TestSummarizeValidity_ARowThatDidNotRunIsNotACleanRow. A board that
+// lost rows to a provider outage must not read as better than one that
+// finished — the missing rows have no calls to be right or wrong about.
+func TestSummarizeValidity_ARowThatDidNotRunIsNotACleanRow(t *testing.T) {
+	got := summarizeValidity([]JudgeScenario{{
+		ID:    "lost",
+		Error: "provider refused",
+		// A row can carry both an error and whatever it managed to
+		// record before failing; neither may be counted.
+		Calls:      []evals.CallRecord{{Index: 0, Tool: "k8s_triage_logs", Completed: true}},
+		Violations: []evals.Violation{{CallIndex: 0, Kind: evals.ViolationEmptyResult}},
+	}})
+	if got.Calls != 0 || got.EmptyReads != 0 || len(got.Counts) != 0 {
+		t.Errorf("a row that did not run contributed to the tally: %+v", got)
+	}
+}
+
+// TestJudgeSummary_WriteValidity checks the section says the things a
+// reader acts on: every malformed call named, and the blind rows called
+// out as rows whose score is not measuring what it appears to.
+func TestJudgeSummary_WriteValidity(t *testing.T) {
+	j := &JudgeSummary{Scenes: validityScenes()}
+	j.Validity = summarizeValidity(j.Scenes)
+
+	var buf bytes.Buffer
+	j.writeValidity(func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) })
+	out := buf.String()
+	for _, want := range []string{
+		"call validity (#169)",
+		"4 call(s) recorded",
+		"empty_result=2",
+		"malformed calls (1)",
+		"invented-a-tool call 0 kubectl_delete_pod: unknown_tool",
+		"empty reads: 2 of 4",
+		"ran blind (1)",
+		"ran-blind",
+		"rests on no evidence",
+		// W8's answer, restated on the artifact rather than left to be
+		// assumed: a consumer who received this file second-hand is told
+		// what was kept verbatim and what the exposure is.
+		"recorded verbatim",
+		"synthetic fixture",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the validity section is missing %q:\n%s", want, out)
+		}
+	}
+
+	// A clean board must say so rather than dropping the section: an
+	// absent section reads as one that passed, which is the same
+	// mistake J-cost-tier's skip line exists to avoid.
+	clean := &JudgeSummary{Scenes: []JudgeScenario{{
+		ID:    "fine",
+		Calls: []evals.CallRecord{{Index: 0, Tool: "k8s_triage_workload", Result: "restart count 18", Completed: true}},
+	}}}
+	clean.Validity = summarizeValidity(clean.Scenes)
+	buf.Reset()
+	clean.writeValidity(func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) })
+	if out := buf.String(); !strings.Contains(out, "malformed: none") {
+		t.Errorf("a clean board did not state that it was clean:\n%s", out)
 	}
 }
 

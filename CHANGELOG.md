@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **The judged board says how a tool was called, not just that it was.** It
+  recorded which tools a run reached for and nothing about how, which left
+  two different failures looking identical: the model never called the tool,
+  and the model called the right tool against a namespace that held nothing,
+  read the empty result as "no problem here", and reported anyway. Both
+  landed as an unsatisfied intent; only the first is a tool-*selection*
+  problem, and the fix for the second is not the same one.
+
+  The trace now retains each call's result alongside its arguments — the
+  arguments say what the model asked for, and only the result says whether
+  it learned anything. ADK's `error` key rides in the same payload, which is
+  what keeps a failed call distinguishable from an empty one. Both are
+  persisted onto the board with the arguments, so a run can be read after
+  the fact rather than re-run.
+
+  Every recorded call is then checked against the schema the model was
+  actually shown — read off the built tools rather than written beside them,
+  so it cannot go stale — and the violations are **listed, not averaged**:
+  an unknown tool name, a missing required argument, a wrong type, a value
+  outside a declared enum, an invented argument, an errored call, a call
+  with no completion, and a well-formed call that found nothing. A rate over
+  rows that call different numbers of tools is not comparable to itself
+  between runs, and the actionable part is never the mean — it is which
+  tool, which argument, which scope. Malformed calls are printed one by one
+  and empty reads are counted, because an empty read is ordinary triage
+  right up until *every* completed read in a row is empty; those rows are
+  now named, since a score on one of them measures what the model already
+  knew about Kubernetes rather than what it read. The nightly delta reports
+  the same counts, which move when no mean does.
+
+  The fixture's clean reading is unchanged, deliberately. The signal that a
+  read found nothing is returned beside the prose rather than encoded in it:
+  a flag in the tool's payload would change what the model reads and move
+  every score on the board in the same run that introduced the column.
+  Arguments and results are recorded verbatim, which is the answer v0.4's
+  W8 already settled for decision exports — a violation whose scope has been
+  redacted is one nobody can act on — and the board states its own exposure,
+  which for a corpus of synthetic fixtures is none.
+
 - **The tool-schema invariant is now stated over every construction path, not
   the one that was noticed.** #154 was a total tool-calling outage: every
   mast-authored tool and every MCP tool reached Claude as a bare name with an

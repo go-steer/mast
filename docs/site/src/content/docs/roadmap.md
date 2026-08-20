@@ -397,6 +397,22 @@ reported as what it is. The v0.3 promise that a green board cannot come
 from a measurement that never ran still holds — this is the other half of
 it, that a measurement can reach every row and still not support a claim.
 
+Also on the way there, the judged board now records **how** each tool was
+called, not just which ones were reached for. It could not previously tell
+two failures apart: a run that never called the tool, and a run that called
+the right tool against a namespace holding nothing, read the empty result as
+"no problem here", and reported anyway. Both landed on the board as an
+unsatisfied intent, and only the first is a tool-*selection* problem. Every
+call's arguments and a digest of its result are now kept and checked against
+the schema the model was actually shown — an unknown tool name, a missing or
+invented argument, a value outside a declared enum, a call that errored —
+and the violations are listed rather than averaged into a score. A rate over
+rows that call different numbers of tools is not comparable to itself
+between runs, and the part a reader can act on is never the average: it is
+which tool, which argument, which scope. Rows where every completed read
+came back empty are named as such, because a score on one of those measures
+what the model already knew about Kubernetes rather than what it read.
+
 ## Further out
 
 - **AG-UI remaining slices** — the `agui://` federation client, per-key

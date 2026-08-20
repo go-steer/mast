@@ -63,6 +63,11 @@ type JudgeSummary struct {
 	Notes     []string         `json:"notes,omitempty"`
 	Ceilings  []CeilingFinding `json:"ceilings,omitempty"`
 
+	// Validity is #169's half of the board: not how many tools the run
+	// reached for, but whether the calls it made were well formed and
+	// whether they found anything.
+	Validity ValidityBoard `json:"validity"`
+
 	// Cost is J-cost-tier: a two-tier roster run live, then priced off
 	// the meter. Nil when the check could not run at all, which is
 	// itself reported as a Problem.
@@ -91,6 +96,75 @@ type JudgeScenario struct {
 	Ceiling   float64        `json:"intent_coverage_ceiling"`
 	Authored  bool           `json:"authored_fixture,omitempty"`
 	Error     string         `json:"error,omitempty"`
+
+	// Calls are the row's tool calls with their arguments and a digest
+	// of each result, and Violations what was wrong with them. Both are
+	// persisted rather than summarized away: Tools above answers "which
+	// tools", and #169 exists because that question and "did the run
+	// learn anything" have different answers often enough to matter.
+	Calls      []evals.CallRecord `json:"calls,omitempty"`
+	Violations []evals.Violation  `json:"violations,omitempty"`
+}
+
+// ValidityBoard is the corpus-wide view of how the runs used their
+// tools.
+//
+// Deliberately counts and lists, not a mean. A malformed-call *rate*
+// over rows that call different numbers of tools is not comparable to
+// itself between runs, and the number a reader can act on is never the
+// average — it is which tool, which argument, which scope.
+type ValidityBoard struct {
+	// Calls is every recorded call across the corpus.
+	Calls int `json:"calls"`
+	// Malformed are the calls the tool could not accept as sent: an
+	// unknown name, a missing or invented argument, a type or enum the
+	// schema does not allow, an error result, a call with no completion.
+	// Every one is listed — they should be rare, and a rare thing
+	// summarized as a count is a thing nobody investigates.
+	Malformed []ScenarioViolation `json:"malformed,omitempty"`
+	// EmptyReads is how many well-formed calls came back with nothing.
+	// Not a defect: checking a hypothesis and ruling it out is the job.
+	EmptyReads int `json:"empty_reads"`
+	// Blind are scenarios where every completed call came back empty —
+	// the run read the cluster, saw nothing anywhere, and reported
+	// anyway. This is the shape #169 was opened for: on the old board
+	// these rows were indistinguishable from rows that read well.
+	Blind []string `json:"blind_runs,omitempty"`
+	// Counts is the tally by kind, for a one-line comparison between
+	// runs.
+	Counts []string `json:"counts,omitempty"`
+	// Arguments states how the recorded arguments and results were
+	// treated, so a reader who received this file second-hand is told
+	// rather than left to assume. See [argumentsNote].
+	Arguments string `json:"arguments"`
+}
+
+// argumentsNote is #169's redaction answer, and it is W8's answer
+// rather than a new one.
+//
+// W8 settled this for decision exports (pkg/transcript's
+// argumentsWarning): tool arguments go out verbatim, because the
+// proposed-versus-executed pair is the entire signal, and an export
+// with the arguments stripped records only that somebody called
+// something. The identical reasoning applies here — an empty read whose
+// scope has been redacted is a violation nobody can act on — so the
+// answer is the same.
+//
+// What differs is the exposure, and the artifact says so instead of
+// inheriting a warning that would be false. W8's export carries an
+// approver identity and a live fleet's arguments, so it digests the
+// first and warns about the second. This board's calls are made against
+// a synthetic corpus checked into the repo: there is no operator
+// identity in an eval run to digest, and the scopes are fixture names.
+// Stating that is the point — a warning printed where it cannot be true
+// is how readers learn to skip warnings.
+const argumentsNote = "recorded verbatim (the W8 answer, pkg/transcript's argumentsWarning); the corpus is a synthetic fixture, " +
+	"so this board carries no cluster data — running the tier against real cluster reads would make it as sensitive as that cluster"
+
+// ScenarioViolation is one violation with the row it came from.
+type ScenarioViolation struct {
+	Scenario  string          `json:"scenario"`
+	Violation evals.Violation `json:"violation"`
 }
 
 // MetricSummary is one metric's mean across the rows that could score
@@ -252,6 +326,8 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		row.Response = out.Response
 		row.Ceiling = out.Ceiling
 		row.Authored = out.Authored
+		row.Calls = out.Calls
+		row.Violations = out.Violations
 		if out.Authored {
 			board.Authored++
 		}
@@ -268,6 +344,7 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 	}
 
 	board.Aggregate = aggregate(board.Scenes)
+	board.Validity = summarizeValidity(board.Scenes)
 	sum.Judge = board
 	return sum, nil
 }
@@ -357,6 +434,52 @@ func aggregate(scenes []JudgeScenario) []MetricSummary {
 	return out
 }
 
+// summarizeValidity collects #169's counts across the board.
+//
+// A row that did not run contributes nothing rather than a zero: it has
+// no calls to be right or wrong about, and counting it as clean would
+// make a board that lost half its rows look better than one that
+// finished.
+func summarizeValidity(scenes []JudgeScenario) ValidityBoard {
+	var b ValidityBoard
+	var all []evals.Violation
+	for _, s := range scenes {
+		if s.Error != "" {
+			continue
+		}
+		b.Calls += len(s.Calls)
+		all = append(all, s.Violations...)
+
+		empties := 0
+		for _, v := range s.Violations {
+			switch v.Kind {
+			case evals.ViolationEmptyResult:
+				empties++
+				b.EmptyReads++
+			default:
+				b.Malformed = append(b.Malformed, ScenarioViolation{Scenario: s.ID, Violation: v})
+			}
+		}
+
+		// Blind counts against the calls that completed, not against all
+		// of them: a run whose one call was declined at a gate never saw
+		// the cluster, and calling that "read everything and found
+		// nothing" would blame the model for the harness.
+		completed := 0
+		for _, c := range s.Calls {
+			if c.Completed {
+				completed++
+			}
+		}
+		if completed > 0 && empties == completed {
+			b.Blind = append(b.Blind, s.ID)
+		}
+	}
+	b.Counts = evals.ViolationCounts(all)
+	b.Arguments = argumentsNote
+	return b
+}
+
 // writeJudge renders the metered board.
 func (j *JudgeSummary) write(p func(string, ...any)) {
 	p("")
@@ -406,6 +529,8 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 		p("%s", line)
 	}
 
+	j.writeValidity(p)
+
 	if len(j.Ceilings) > 0 {
 		p("")
 		p("structural ceilings (reported, never folded into the score):")
@@ -422,6 +547,44 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 	p("")
 	p("a low score here is a finding, not a red build: this tier's scoring reports and does not gate.")
 	p("J-cost-tier is the exception — its verdict is arithmetic, so a mispriced tier is a Problem.")
+}
+
+// writeValidity renders how the runs used their tools.
+//
+// Two sections, because the two halves are read differently. A
+// malformed call is something to fix and every one is printed. An empty
+// read is ordinary — a hypothesis checked and ruled out — right up
+// until every read in a row is empty, at which point the row's
+// diagnosis rests on nothing and the score above it is not measuring
+// what it appears to.
+func (j *JudgeSummary) writeValidity(p func(string, ...any)) {
+	v := j.Validity
+	p("")
+	p("call validity (#169) — %d call(s) recorded across the board", v.Calls)
+	if v.Calls == 0 {
+		p("  no calls were recorded at all; nothing on this board was scored against a tool the model actually used")
+		return
+	}
+	if len(v.Counts) > 0 {
+		p("  %s", strings.Join(v.Counts, "  "))
+	}
+
+	if len(v.Malformed) == 0 {
+		p("  malformed: none — every call named a declared tool, and matched its schema")
+	} else {
+		p("  malformed calls (%d) — enumerated, never averaged into a score:", len(v.Malformed))
+		for _, m := range v.Malformed {
+			p("    %s %s", m.Scenario, m.Violation)
+		}
+	}
+
+	p("  empty reads: %d of %d call(s) were well formed and found nothing", v.EmptyReads, v.Calls)
+	if len(v.Blind) > 0 {
+		p("  ran blind (%d) — every completed call came back empty, so the row's diagnosis rests on no evidence:", len(v.Blind))
+		p("    %s", strings.Join(v.Blind, ", "))
+		p("    a score on these rows measures what the model already knew about Kubernetes, not what it read")
+	}
+	p("  arguments: %s", v.Arguments)
 }
 
 // writeCost renders the cost board, or says why there isn't one. The
