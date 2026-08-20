@@ -167,7 +167,18 @@ type PauseRecord struct {
 	ExpiresAt   time.Time      `json:"expires_at"`
 	ResumeAt    time.Time      `json:"resume_at,omitzero"`
 	ConsumedAt  time.Time      `json:"consumed_at,omitzero"`
-	ConsumedBy  string         `json:"consumed_by,omitempty"`
+
+	// ConsumedBy names who spent the token — the audit answer to "who
+	// approved this?", which is the whole reason a durable HITL record
+	// beats an in-memory prompt. Callers pass an authenticated identity
+	// where they have one ("alice@example.com", or "alice@example.com
+	// (asserted by sa:switchboard)" when a relay asserted it via the
+	// proxy path); where there is no request behind the consume they
+	// pass the mechanism instead — "mast:scheduler", "library
+	// ResumeByToken", "operator resume --token --session-db". Never a
+	// client-supplied string: an attribution a caller writes about
+	// itself proves nothing. See pkg/auth.Attribution.
+	ConsumedBy string `json:"consumed_by,omitempty"`
 }
 
 // Active reports whether the record still gates/awaits a resume.

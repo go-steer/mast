@@ -72,6 +72,7 @@ import (
 
 	"github.com/go-steer/mast/internal/compose"
 	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/planner"
@@ -333,7 +334,10 @@ func Pause(ctx context.Context, cfg Config, sessionID string, spec transcript.Pa
 // helper). A gate-pause resume clears the gate and runs no turn —
 // nothing was parked; the returned Result carries only the session ID.
 // An interrupt-pause resume drives the normal resume turn (response
-// nil defaults to {"resumed_by": "operator"}), and the token is
+// nil defaults to {"resumed_by": <the ctx Caller, or "library
+// ResumeByToken">}, the same string recorded as the pause record's
+// ConsumedBy — put a logged-in user on ctx with auth.WithCaller and the
+// audit record names them), and the token is
 // consumed once the resume FunctionResponse is durably appended — a
 // turn that fails before the append leaves the token live for retry.
 // Expired tokens refuse with transcript.ErrTokenExpired (the pause
@@ -356,14 +360,21 @@ func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		return nil, fmt.Errorf("mast: token expired %s (the pause remains; ExtendToken via the transcript store is the recovery): %w",
 			rec.ExpiresAt.Format(time.RFC3339), transcript.ErrTokenExpired)
 	}
+	// Who is spending this token. An embedder that has a logged-in user
+	// puts them on ctx with auth.WithCaller and the audit record names
+	// them; one that doesn't gets "library ResumeByToken", which names
+	// the mechanism truthfully rather than guessing at a human. The
+	// daemon's twin resolves the same way from its request context
+	// (cmd/mast/main.go, resumeByToken).
+	by := auth.Attribution(ctx, "library ResumeByToken")
 	if rec.Plane == transcript.PlaneGate {
-		if _, err := store.ConsumeToken(ctx, token, "library ResumeByToken"); err != nil {
+		if _, err := store.ConsumeToken(ctx, token, by); err != nil {
 			return nil, fmt.Errorf("mast: %w", err)
 		}
 		return &Result{SessionID: rec.SessionID}, nil
 	}
 	if response == nil {
-		response = map[string]any{"resumed_by": "operator"}
+		response = map[string]any{"resumed_by": by}
 	}
 	res, rerr := ResumeSession(ctx, cfg, bundle, specs, rec.SessionID, rec.InterruptID, response)
 	// Consumption keys on the durable append of the resume
@@ -385,7 +396,7 @@ func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 			// bookkeeping consume and strand an answered interrupt with a
 			// live-looking record — the daemon twin (consumeIfAnswered)
 			// does the same.
-			if _, cerr := store.ConsumeScheduled(ctx, rec.Token, "library ResumeByToken"); cerr != nil &&
+			if _, cerr := store.ConsumeScheduled(ctx, rec.Token, by); cerr != nil &&
 				!errors.Is(cerr, transcript.ErrAlreadyResumed) && !errors.Is(cerr, transcript.ErrTokenNotFound) && cfg.Logger != nil {
 				cfg.Logger.Error("mast: failed to consume resume token after answered interrupt",
 					"session", rec.SessionID, "error", cerr.Error())

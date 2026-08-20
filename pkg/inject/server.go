@@ -69,6 +69,16 @@ type Handler func(ctx context.Context, payload envelope.InjectPayload) error
 // (keyed by session + interrupt ID), or a token-keyed resume of a v0.2
 // pause (Token alone suffices; the daemon resolves it to the session
 // and, for interrupt pauses, the pending call ID).
+//
+// There is deliberately no approver field on the wire. Who approved is
+// resolved from the request's credential (handleResume → callerContext)
+// and recorded on the pause record's ConsumedBy; a body-supplied
+// approver would be an attribution a caller writes about itself, which
+// is exactly the thing an audit record must not accept. A relay that
+// answers on a human's behalf — a chat bot with an approve button —
+// names them with the X-Asserted-Caller header, which works only for a
+// credential provisioned as a proxy. Same reasoning as attach's
+// GuardrailResetRequest.Caller (`json:"-"`).
 type ResumeRequest struct {
 	// SessionID identifies the paused session (e.g. "incident-<uid>").
 	// Not required when Token is set.
