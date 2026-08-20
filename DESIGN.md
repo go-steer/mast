@@ -140,7 +140,11 @@ one-shot construction, the `bounded` single-node build),
 `internal/evals` (the deterministic eval suite and the judged
 nightly's scoring, including the tiered-cost check),
 `internal/version` (ldflags-injected build identity, reported by
-`--version` and the attach capabilities frame). The scheduled-trigger
+`--version` and the attach capabilities frame), `internal/toolcatalog`
+(the tool declarations a real turn puts in front of a model, captured
+by driving two agent rigs through an ADK runner, plus the shared
+invariant every provider adapter's wire test is held to — see
+`docs/model-support-design.md` R2/R8). The scheduled-trigger
 loop is daemon-side in `cmd/mast/schedtrigger.go`, reading the
 bundle's `scheduled:` section.
 
