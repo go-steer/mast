@@ -70,7 +70,28 @@ import "time"
 // Decoding is unaffected in both directions — encoding/json matches
 // field names case-insensitively — so session rows written by either
 // version still load.
-const protocolVersion = "1.4.0"
+//
+// v1.5.0 (#206): new `canceled` value in the turn-error `kind` enum
+// (§2.6), carrying `retryable: false`. A cancelled turn used to be
+// reported as `transient_network` / `retryable: true`, which told a
+// client to offer a re-run of work an operator — or the watchdog —
+// had just deliberately stopped. Additive in the same way
+// `cost_ceiling` was: no new event type, no new field, and §2.6
+// already requires a consumer to treat an unrecognized kind as
+// `unknown`, so an older client has a defined fallback rather than
+// undefined behavior. It is still a behavior change for this one
+// input, and deliberately so: a client keying a retry affordance off
+// `retryable` stops offering one after an interrupt.
+//
+// The two version lines have diverged, and a client should not read
+// across them. core-agent shipped the same `canceled` value at its
+// 1.8.0, having spent 1.5.0-1.7.0 on session titles, ACLs and wake
+// frames that mast does not have. So "≥1.5.0" is a statement about a
+// mast server only; feature-detect against `event_types` and the
+// `features` map rather than inferring a kind's existence from a
+// number. Both servers do agree on the fallback that makes this safe:
+// §2.6 requires an unrecognized kind to read as `unknown`.
+const protocolVersion = "1.5.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -336,7 +357,14 @@ const (
 	// (typically via a slash command). Retryable=false on this kind
 	// — the host should surface the message + halt automated retry.
 	TurnErrorCostCeiling = "cost_ceiling"
-	TurnErrorUnknown     = "unknown"
+	// TurnErrorCanceled fires when the turn's context was cancelled
+	// (#206): an operator interrupt over attach, the watchdog halting
+	// a runaway loop in flight under --watchdog=enforce, or the
+	// parent context going away at shutdown. Retryable=false — every
+	// one of those is somebody deciding the turn should stop, and a
+	// client that re-drives it is undoing that decision.
+	TurnErrorCanceled = "canceled"
+	TurnErrorUnknown  = "unknown"
 )
 
 // TurnError is emitted on a pipeline failure that should reach the

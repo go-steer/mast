@@ -177,10 +177,14 @@ bundle's `scheduled:` section.
   `Output` payload is its only durable record — so mutating tools (and
   `request_operator_input`) are refused in a branch's allowlist at
   construction.
-- **Attach is wire-compatible with core-agent.** The protocol
-  (v1.4.0) is the contract; mast-web and any attach client work
-  against both. Divergence is a bug on whichever side left the
-  documented shape.
+- **Attach is wire-compatible with core-agent.** The protocol shape is
+  the contract; mast-web and any attach client work against both.
+  Divergence in *shape* is a bug on whichever side left the documented
+  form. The version *numbers* are a different matter and have already
+  diverged — mast is on v1.5.0, core-agent on v1.8.0, and the same
+  number does not name the same feature set on both. Feature-detect
+  against the capabilities frame's `event_types` / `features`, never
+  against the version alone.
 - **Ports carry provenance.** Adapter packages derive from
   core-agent at per-stage pinned SHAs (`83ec0713` / `b8dd225e` /
   `25d8531c`), one derivation header per file. Shared-infrastructure

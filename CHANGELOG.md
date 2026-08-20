@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **A turn somebody stopped on purpose no longer reports as a retryable
+  network fault.** `turn-error` gains a `canceled` kind carrying
+  `retryable: false`, and the attach protocol goes to **1.5.0**. An operator
+  interrupt and a `--watchdog=enforce` halt both cancel the turn's context,
+  and both used to arrive on the stream as `transient_network` /
+  `retryable: true` — which is the one decision that flag exists to drive,
+  driven backwards. A client keying a re-run affordance off it was being
+  invited to re-drive the very loop the watchdog had just stopped.
+
+  A turn that ran out of *time* is unchanged and still retryable: nobody
+  asked for that one.
+
+  Additive in the same way `cost_ceiling` was — no new event type, no new
+  field, and §2.6 already requires a consumer to read an unrecognized kind
+  as `unknown`. Note that the version numbers on the two attach
+  implementations have diverged: core-agent shipped the same value at its
+  1.8.0. Feature-detect against the capabilities frame, not the number.
+
 - **`GET /sessions/{id}/tools` now lists the daemon's own tools, not just the
   MCP servers'.** A planner-dispatch daemon with no MCP servers used to answer
   with an empty catalog — accurate about its MCP tools, and wrong as an answer
