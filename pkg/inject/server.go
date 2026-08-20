@@ -255,8 +255,13 @@ type Config struct {
 	// Authenticator, when set, resolves the caller identity behind a
 	// /resume request and puts it on the handler's context
 	// (auth.CallerFromContext). It runs IN ADDITION to BearerToken, not
-	// instead of it: the shared token still admits the request, and
-	// this says who presented it.
+	// instead of it: a resume presenting the shared token is still
+	// admitted and recorded as [SharedCredentialIdentity], and one
+	// presenting a token from the user table is recorded as the person.
+	// Both credentials arrive in the same Authorization header, so
+	// /resume tries the table first and falls back to the shared token
+	// (see [Server.resumeAuthOK]); a token that is neither is refused
+	// rather than downgraded.
 	//
 	// Only /resume consults it, deliberately. An approval is the one
 	// place in v0.3 where identity is load-bearing — "who authorized
@@ -420,7 +425,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
-	if !s.authOK(r) {
+	if !s.resumeAuthOK(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -696,18 +701,33 @@ const SharedCredentialIdentity = "shared-bearer-token"
 // log.
 func (s *Server) callerContext(r *http.Request) (context.Context, error) {
 	ctx := r.Context()
-	if s.cfg.Authenticator == nil {
-		return auth.WithCaller(ctx, auth.Caller{Identity: SharedCredentialIdentity}), nil
-	}
-	caller, err := s.cfg.Authenticator.Authenticate(r)
-	if err != nil {
-		return nil, err
-	}
 	header := s.cfg.AssertedCallerHeader
 	if header == "" {
 		header = auth.HeaderAssertedCaller
 	}
 	asserted := r.Header.Get(header)
+
+	if s.cfg.Authenticator == nil {
+		return auth.WithCaller(ctx, auth.Caller{Identity: SharedCredentialIdentity}), nil
+	}
+	caller, err := s.cfg.Authenticator.Authenticate(r)
+	if err != nil {
+		if !s.sharedTokenPresented(r) {
+			return nil, err
+		}
+		// The shared token is not a failed user credential, it is a
+		// different valid one, so this is not the silent downgrade the
+		// rule above forbids — the operator configured both doors and
+		// this request came through the one that cannot name a person.
+		if asserted != "" {
+			// ...and a credential that cannot name its own holder
+			// certainly cannot vouch for someone else's. Ignoring the
+			// header instead would attribute the approval to a shared
+			// token while the relay believed it had named a human.
+			return nil, auth.ErrAssertedCallerForbidden
+		}
+		return auth.WithCaller(ctx, auth.Caller{Identity: SharedCredentialIdentity}), nil
+	}
 	if asserted == "" {
 		return auth.WithCaller(ctx, caller), nil
 	}
@@ -726,6 +746,41 @@ func (s *Server) callerContext(r *http.Request) (context.Context, error) {
 		return nil, auth.ErrAssertedCallerUnknown
 	}
 	return auth.WithProxyBy(auth.WithCaller(ctx, effective), caller.Identity), nil
+}
+
+// resumeAuthOK gates /resume, the one route that takes a per-person
+// credential as well as the daemon's shared token.
+//
+// The two arrive in the same Authorization header, so a gate that only
+// compared against the shared token made the two mutually exclusive: a
+// user token failed the gate and never reached [Server.callerContext],
+// and the shared token passed the gate and then failed authentication.
+// Configuring an Authenticator alongside a BearerToken therefore made
+// /resume unreachable by either credential, which is why nothing wired
+// one. The route accepts whichever the operator issued.
+//
+// This deliberately does not widen the other routes. An Authenticator
+// says who approved; it is not a second way in.
+func (s *Server) resumeAuthOK(r *http.Request) bool {
+	if s.authOK(r) {
+		return true
+	}
+	if s.cfg.Authenticator == nil {
+		return false
+	}
+	_, err := s.cfg.Authenticator.Authenticate(r)
+	return err == nil
+}
+
+// sharedTokenPresented reports whether this request carried the daemon's
+// shared token specifically.
+//
+// Not the same question as [Server.authOK], which also answers true when
+// no token is configured at all. With a user table and no shared token,
+// an unauthenticated resume must be refused rather than attributed to a
+// credential that does not exist.
+func (s *Server) sharedTokenPresented(r *http.Request) bool {
+	return s.cfg.BearerToken != "" && s.authOK(r)
 }
 
 func (s *Server) authOK(r *http.Request) bool {

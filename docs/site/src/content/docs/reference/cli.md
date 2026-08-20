@@ -127,16 +127,51 @@ never from a name in the request body:
 | How the resume arrived | `consumed_by` |
 |---|---|
 | Over HTTP with `MAST_INJECT_TOKEN` set | `shared-bearer-token` |
+| Over HTTP with a token from `MAST_INJECT_USERS_FILE` | that row's identity, e.g. `alice@example.com` |
+| A relay in `MAST_INJECT_PROXY_IDENTITIES` sending `X-Asserted-Caller` | `alice@example.com (asserted by sa:switchboard)` |
 | The daemon's timed-pause scheduler | `timer` |
 | `resume --token --session-db=...` (no daemon) | `operator resume --token --session-db` |
 
 `shared-bearer-token` is what a shared credential can honestly prove: that
 *someone* holding it resumed the session. Per-person attribution needs a
-per-person credential — an embedder that gives the inject server an
-`auth.Authenticator` gets `alice@example.com` in this field instead, and a
-relay answering on a human's behalf (`X-Asserted-Caller`) gets both halves,
-`alice@example.com (asserted by sa:switchboard)`. Wiring a user table into
-the daemon's own inject listener is not shipped yet.
+per-person credential.
+
+#### Naming people on the daemon
+
+Point `MAST_INJECT_USERS_FILE` at a users file and `/resume` starts
+accepting each row's token as well as the shared one, recording the person
+behind it:
+
+```json
+{
+  "version": 1,
+  "users": [
+    {"identity": "alice@example.com", "token": "..."},
+    {"identity": "sa:switchboard",    "token": "..."}
+  ]
+}
+```
+
+It holds bearer tokens, so it must be mode `0600` or stricter; the daemon
+refuses to start otherwise. `MAST_INJECT_PROXY_IDENTITIES` is a
+comma-separated list of identities in that table allowed to answer on
+someone else's behalf via `X-Asserted-Caller` — a chat relay with an
+approve button is the case it exists for. Both are checked at startup: a
+proxy list with no table, or one naming an identity the table doesn't
+have, refuses to boot rather than issuing 403s later.
+
+The table only says **who approved**; it is not a second way in. `/inject`,
+`/abort` and the rest still take `MAST_INJECT_TOKEN` and nothing else.
+
+`MAST_INJECT_TOKEN` keeps working alongside the table, and a resume that
+presents it is still recorded as `shared-bearer-token` — configuring a
+table does not retroactively attribute anything, and an emitter you
+haven't migrated keeps working. To require attribution, **leave
+`MAST_INJECT_TOKEN` unset**: `/resume` then admits only the table's
+tokens, and there is no unattributed way to answer a gate. (A request
+presenting the shared token *and* `X-Asserted-Caller` is refused outright
+rather than silently recorded as the shared credential — a token that
+can't name its own holder doesn't get to vouch for someone else's.)
 
 There is deliberately **no approver field in the resume body**. An
 attribution a caller writes about itself is worth nothing after an

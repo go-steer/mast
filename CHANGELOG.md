@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **A resume against the daemon can name the person who approved it.** Point
+  `MAST_INJECT_USERS_FILE` at a users file and `/resume` accepts each row's
+  token as well as the shared one, recording `alice@example.com` on the pause
+  instead of `shared-bearer-token`. `MAST_INJECT_PROXY_IDENTITIES` grants
+  named identities the right to answer on someone's behalf via
+  `X-Asserted-Caller`, for a chat relay with an approve button.
+
+  Per-person attribution was already reachable by embedders; the daemon could
+  not get there, and the reason turns out to be a defect rather than missing
+  wiring. The shared-token gate and the authenticator both read
+  `Authorization: Bearer`, so configuring both made `/resume` unreachable by
+  *either* credential — the user token failed the gate, and the shared token
+  cleared the gate and then failed authentication. The gate is now split for
+  that one route.
+
+  The other routes are deliberately not widened. A user table says who
+  approved; it is not a second way in, and `/inject` and `/abort` still take
+  `MAST_INJECT_TOKEN` and nothing else. The shared token also keeps working
+  on `/resume` and is still recorded as `shared-bearer-token` — configuring a
+  table must not retroactively attribute an unmigrated emitter's approvals to
+  a person. Requiring attribution is done by leaving `MAST_INJECT_TOKEN`
+  unset, and is then total: there is no unattributed way to answer a gate. A
+  request presenting the shared token *and* `X-Asserted-Caller` is refused
+  rather than quietly recorded as the shared credential, because a token that
+  cannot name its own holder does not get to vouch for someone else's.
+
+  Both variables are checked at startup — a proxy list with no table, or one
+  naming an identity the table does not have, refuses to boot rather than
+  turning into 403s with no explanation attached.
+
 - **Three of the four consequential misses are the same tool, and the board
   now says so.** `k8s_resource_top` is the only tool in the catalog that
   answers either saturation question, and two unrelated model families
