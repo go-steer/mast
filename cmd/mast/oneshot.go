@@ -40,6 +40,7 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/eventlog"
+	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/taskclass"
 	"github.com/go-steer/mast/pkg/transcript"
@@ -74,7 +75,7 @@ type oneShotOptions struct {
 // writes the final result to out. The session persists through the
 // same session service the daemon uses: with --session-db set, the
 // turn's events are durable and inspectable via `mast sessions`.
-func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, out io.Writer) error {
+func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, out io.Writer) (err error) {
 	// Whole-turn deadline (--timeout, default 5m): a one-shot against
 	// an unresponsive backend must fail loudly, not hang a script
 	// forever — genai's silent retry-with-backoff on quota errors
@@ -171,6 +172,16 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	logger.Info("one-shot turn starting",
 		"task", opts.Class, "model", opts.Model, "session", sessionID)
 
+	// Same root span the daemon's turns get, for the same reason: no
+	// HTTP request stands behind a one-shot, so without it ADK's
+	// invoke_agent is a trace root and the model and tool spans under
+	// it belong to a trace that starts nowhere. There is no metric
+	// registry on this path — one-shot does not feed mast_turns_total
+	// — so the span is the only record, which is exactly the argument
+	// for opening it. See turnspan.go.
+	ctx, ts := startTurnSpan(ctx, nil, "oneshot", sessionID, "oneshot")
+	defer func() { ts.end(err) }()
+
 	// One turn to completion: iterate the full event stream, keeping
 	// the last structured output (Task-mode finish_task value) and the
 	// last text part as the printable result.
@@ -221,15 +232,21 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	}), wd, onAlert) {
 		if err != nil {
 			if opts.Timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return fmt.Errorf("turn exceeded --timeout %s after %d events (raise --timeout or pass --timeout=0 to disable): %w", opts.Timeout, events, err)
+				terr := fmt.Errorf("turn exceeded --timeout %s after %d events (raise --timeout or pass --timeout=0 to disable): %w", opts.Timeout, events, err)
+				ts.complete(observability.OutcomeError, terr)
+				return terr
 			}
-			return fmt.Errorf("turn failed after %d events: %w", events, err)
+			ferr := fmt.Errorf("turn failed after %d events: %w", events, err)
+			ts.complete(observability.OutcomeError, ferr)
+			return ferr
 		}
 		// Tap drains alerts before it yields, so a halt raised by this
 		// event is already visible: returning here abandons the stream
 		// mid-turn, which is the one-shot's cancel.
 		if terr := enf.Preflight(); terr != nil {
-			return fmt.Errorf("turn halted after %d events: %w", events, terr)
+			herr := fmt.Errorf("turn halted after %d events: %w", events, terr)
+			ts.complete(observability.OutcomeWatchdogHalt, herr)
+			return herr
 		}
 		events++
 		logEvent(logger, event, sessionID)
@@ -248,6 +265,7 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 		}
 	}
 	logger.Info("one-shot turn complete", "task", opts.Class, "session", sessionID, "events", events)
+	ts.complete(observability.OutcomeOK, nil)
 
 	switch {
 	case lastOutput != nil:

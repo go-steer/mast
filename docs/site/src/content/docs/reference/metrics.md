@@ -90,6 +90,41 @@ catch up on a missed tick.
 ## Traces
 
 Trace export is env-gated OTel: a no-op unless `OTEL_EXPORTER_OTLP_*`
-endpoints are set. mast opens no spans of its own in v0.1 — ADK v2's
-runner emits the span tree; mast only exports it. There is no
-OTel-*metrics* export in v0.1 (Prometheus scrape only).
+endpoints are set. Most of the tree comes from ADK — `invoke_agent`,
+`generate_content`, `execute_tool`, `invoke_node` — and mast exports it.
+There is no OTel-*metrics* export (Prometheus scrape only).
+
+### `mast.turn`
+
+Every turn opens one span of mast's own, and ADK's tree hangs beneath
+it. This is what makes an unattended turn readable: a scheduled fire, an
+auto-resume, or a `mast run` has no HTTP request behind it, so without
+it ADK's `invoke_agent` is a **trace root** — a trace that starts
+nowhere, with nothing on it naming the session. Turns that *do* come
+from a request (inject, resume, attach, A2A, AG-UI) already have a
+server span, and `mast.turn` takes its place under that one, so the
+inject and the turn it caused are one trace.
+
+The span opens **before** the session's turn lock, so a turn refused at
+the chokepoint still leaves a record.
+
+| Attribute | Type | Meaning |
+|---|---|---|
+| `mast.session.id` | string | The session the turn ran on. Deliberately not a metric label — session-grain questions are trace questions. |
+| `mast.workload.name` | string | Same workload name the counter families are labelled by. |
+| `mast.turn.kind` | string | What drove the turn: `inject`, `attach`, `resume`, `scheduled`, `autoresume`, `a2a`, `agui`, `oneshot`. |
+| `mast.turn.detail` | string | The particulars of that one turn — the inject's reason, the interrupt ID a resume answered, the tick a scheduled fire was due at, the A2A method. Absent when the kind has no detail. |
+| `mast.turn.outcome` | string | How it ended. The `mast_turns_total` vocabulary (`ok`, `error`, `budget_exceeded`, `watchdog_halt`) plus `refused` — see below. |
+| `mast.turn.queued_ms` | int | How long the turn waited for the session's turn lock. One session runs one turn at a time, so on a busy session this is latency that otherwise reads as a slow model. |
+| `mast.cost.usd` | float | What *this turn* added, not the session total. Absent on a turn refused before the runner. |
+
+The span status is `Error` on any failing outcome, with the error
+recorded as a span event.
+
+`refused` is a span-only outcome. `mast_turns_total` has only ever
+counted turns that started, and a turn stopped at the chokepoint — an
+aborted session, a gate pause, a watchdog halt on entry — never started
+one. Changing that would move every dashboard's denominator, so the
+counter is left alone and the span carries the refusal instead. If
+you're asking "why didn't my inject run", that is a trace query, not a
+metrics one.

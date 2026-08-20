@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **An unattended turn is now one trace instead of several orphans.**
+  ADK's spans parent off whatever context reaches `runner.Run`, and mast
+  only sometimes handed it one with a span on it. Turns driven by a
+  request — inject, resume, attach, A2A, AG-UI — landed under otelhttp's
+  server span and read correctly. The turns that define the product did
+  not: a scheduled trigger firing, a boot-time auto-resume, and `mast run`
+  all start from a daemon or process context with no span, so ADK's
+  `invoke_agent` became a **trace root**, and every model call, tool call
+  and MCP call in that turn hung off a trace that started nowhere and
+  named no session.
+
+  Every turn now opens one `mast.turn` span at the shared chokepoint,
+  with ADK's tree beneath it. It carries what an operator needs to find
+  the turn again — `mast.session.id`, `mast.workload.name`,
+  `mast.turn.kind`/`.detail` (the existing turn label, split so the
+  bounded half is groupable), `mast.turn.outcome`, `mast.cost.usd` for
+  the turn's own spend, and `mast.turn.queued_ms`, since one session
+  runs one turn at a time and queueing behind another turn otherwise
+  reads as a slow model.
+
+  The span opens **before** the turn lock, so a turn refused at the
+  chokepoint leaves a record under a span-only `refused` outcome.
+  `mast_turns_total` is deliberately unchanged: it has only ever counted
+  turns that started, and moving that would move every dashboard's
+  denominator. Span outcome and metric outcome now come from one call,
+  so they cannot drift.
+
 - **A specialist's `tools.skills` allowlist is refused rather than
   silently ignored.** A specialist spec is the file that states what a
   sub-agent may touch, and two of its three allowlist axes are enforced

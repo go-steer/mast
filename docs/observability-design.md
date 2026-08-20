@@ -79,6 +79,8 @@ Every span carries a common attribute set:
 
 Additional per-node attributes as appropriate (`mast.tool.name`, `mast.tool.args_digest`, etc.). Values that could contain secrets (tool args, provider responses) go through the same redaction pipeline as snapshot export (see [`./durable-execution-design.md`](./durable-execution-design.md) open question #7).
 
+*(Shipped v0.5, 2026-08-20: the first span mast opens itself, `mast.turn`, one per turn at the shared chokepoint. It carries `mast.session.id`, `mast.workload.name` and `mast.cost.usd` from the table above — the cost being this turn's delta, which for a span that **is** one turn is what "cumulative for the span" means — plus four turn-shaped attributes this table did not anticipate: `mast.turn.kind` and `mast.turn.detail` (the existing `kind:detail` turn label, split so the bounded half is groupable), `mast.turn.outcome`, and `mast.turn.queued_ms` (wait for the session's turn lock). The rest of this vocabulary is still unimplemented — ADK's spans carry ADK's attributes, and mast does not decorate them. See the [metrics reference](https://go-steer.github.io/mast/reference/metrics/#mastturn) for the shipped surface.)*
+
 ### Trace propagation across MCP
 
 MCP calls carry standard W3C `traceparent` / `tracestate` headers if the MCP server supports them. Servers that don't propagate context surface as leaf spans (opaque duration); servers that do propagate surface as parent spans over the underlying protocol call (kubectl request, Prometheus query, etc.). Distributed traces across mast → MCP → downstream infrastructure work out of the box for OTel-instrumented consumers.
@@ -205,6 +207,8 @@ Prometheus is cardinality-sensitive. Guidance:
 `/metrics` on the same HTTP listener as attach mode (or on a separate port; configurable). Standard OpenMetrics format. Multi-instance deployments: each mast pod exposes its own `/metrics`; Prometheus scrapes each; aggregation happens Prometheus-side.
 
 *(Shipped v0.1, 2026-07-26: `/metrics` is served on the **shared inject listener** (`pkg/inject` mounts the registry's handler at `GET /metrics`) — no separate port in v0.1. This resolves open question #1 for now; the separate-port default gets revisited at v0.2 alongside the fuller metric catalog. Also shipped: **no OTel-metrics export in v0.1** — metrics are Prometheus-scrape only; the OTel path in v0.1 is env-gated *trace* export (`SetupOTel` installs the OTLP trace exporter + W3C propagator only when the standard `OTEL_EXPORTER_OTLP_*` env vars ask for it, and mast opens no custom spans — ADK v2's runner emits the span tree, mast only makes it leave the process).)*
+
+*(Amended v0.5, 2026-08-20: "mast opens no custom spans" stopped being true, and it had stopped being harmless before that. ADK's spans parent off whatever context reaches `runner.Run`, so the turns with an HTTP request behind them were a tree and the unattended ones — a scheduled fire, a boot auto-resume, `mast run` — were not: `invoke_agent` became a trace root, on a trace that named no session. mast now opens one `mast.turn` span per turn; see the attribute-vocabulary annotation above.)*
 
 ## Logs
 

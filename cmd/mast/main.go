@@ -2381,7 +2381,17 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *
 // onEvent, when non-nil, is invoked for each runner event after it is
 // logged and metered — the A2A message/send path uses it to capture the
 // final assistant answer and any HITL-pause signal for its reply.
-func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error, onEvent func(*session.Event)) error {
+func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error, onEvent func(*session.Event)) (err error) {
+	// The turn's own span, opened before anything can refuse the turn
+	// so a refusal is traceable too, and before the lock so the queue
+	// wait is inside it. Everything ADK emits below — invoke_agent,
+	// generate_content, execute_tool — parents off the ctx returned
+	// here; on the paths with no HTTP request behind them (scheduled
+	// fire, auto-resume) that is the difference between a trace and a
+	// pile of roots. See turnspan.go.
+	ctx, ts := startTurnSpan(ctx, obs, workloadName, sessionID, label)
+	defer func() { ts.end(err) }()
+
 	// One turn per session (#62): ADK's stale-session check makes a
 	// second concurrent runner turn on the same row fatal to one of
 	// them, so same-session turns queue here. The wait genuinely
@@ -2398,6 +2408,7 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		return err
 	}
 	defer unlock()
+	ts.locked()
 
 	// The cancel handle doubles as the budget-trip cancel below and the
 	// abort / hard-pause sweep target.
@@ -2471,6 +2482,9 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	defer func() {
 		_, costAfter, _ := meter.Snapshot()
 		obs.AddCost(workloadName, costAfter-costBefore)
+		// Same delta onto the span. Registered after the span's own
+		// defer, so it runs first and the span is still open.
+		ts.cost(costAfter - costBefore)
 	}()
 
 	// Feedback mode (--watchdog=feedback and up): whatever the session's
@@ -2527,11 +2541,11 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 			// error here is "context canceled" — reporting that would
 			// bury the reason under a symptom.
 			if terr := enf.Preflight(); terr != nil {
-				obs.TurnComplete(workloadName, observability.OutcomeWatchdogHalt)
+				ts.complete(observability.OutcomeWatchdogHalt, terr)
 				return terr
 			}
 			logger.Error("runner emitted error", "turn", label, "session", sessionID, "error", err.Error(), "events_before_error", events)
-			obs.TurnComplete(workloadName, observability.OutcomeError)
+			ts.complete(observability.OutcomeError, err)
 			return err
 		}
 		events++
@@ -2549,7 +2563,7 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 			)
 			cancel()
 			obs.BudgetTrip(workloadName)
-			obs.TurnComplete(workloadName, observability.OutcomeBudgetExceeded)
+			ts.complete(observability.OutcomeBudgetExceeded, berr)
 			return berr
 		}
 	}
@@ -2557,13 +2571,13 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// error. Either way the turn stopped because the watchdog stopped
 	// it, and the caller has to hear that rather than "ok".
 	if terr := enf.Preflight(); terr != nil {
-		obs.TurnComplete(workloadName, observability.OutcomeWatchdogHalt)
+		ts.complete(observability.OutcomeWatchdogHalt, terr)
 		return terr
 	}
 	tokens, cost, calls := meter.Snapshot()
 	logger.Info("turn complete", "turn", label, "session", sessionID, "events", events,
 		"session_tokens", tokens, "session_cost_usd", fmt.Sprintf("%.4f", cost), "session_model_calls", calls)
-	obs.TurnComplete(workloadName, observability.OutcomeOK)
+	ts.complete(observability.OutcomeOK, nil)
 	return nil
 }
 
