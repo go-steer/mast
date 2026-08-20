@@ -646,9 +646,164 @@ ported-file total without adding to the drift-file total — the shape a clean a
 are upstream commits on files mast owns a diverged copy of, and they will still be listed next
 Monday. **Read the count as a delta, not a level.**
 
+## Triage of 2026-08-20
+
+The report reads **54 commits / 70 of 200 ported files** against core-agent `3de4134`. **19 SHAs
+are new since 2026-08-17** and had no verdict here; upstream shipped all nineteen in two days, most
+of them on the attach surface. Every one is verdicted below. Two have already come off.
+
+The verdicts are not all the same strength, and the section says which is which. A verdict that
+rests on reading mast's code is stated as a finding; one that rests on upstream's commit message
+alone is stated as a candidate with the question that would settle it. **The instrument cannot tell
+these apart and neither can a reader who only has the count** — that is what this ledger is for.
+
+### Ported — 2 commits
+
+| SHA | Upstream | mast |
+|---|---|---|
+| `04e54a3` | classify a cancelled turn as `canceled`, not retryable transient net (#817) | **Ported 2026-08-20**, [#206](https://github.com/go-steer/mast/issues/206) / PR #207. Ported for mast's own reasons: upstream's motivating producer is a TUI's ESC key, mast's is `--watchdog=enforce`. Protocol 1.4.0 → 1.5.0 |
+| `6d30f9b` | label guardrail-refused turns instead of recording `error.type` unknown (#822) | **Ported by analogue 2026-08-20**, [#208](https://github.com/go-steer/mast/issues/208) / PR #209. Same defect, different fix shape — see below. Protocol 1.5.0 → 1.6.0 |
+
+`6d30f9b` is worth recording as a *shape* divergence rather than a clean port. Upstream's
+`SelfClassifyingError` returns a full classified error because its raisers already import the
+attach package. mast's do not: `pkg/watchdog` is stdlib-only, and dragging `auth`, `eventlog` and
+`permissions` into a leaf guardrail package to name one constant is the coupling
+`pkg/attach/errors.go` already refused in the other direction for `pkg/budget`
+([#135](https://github.com/go-steer/mast/issues/135)). mast's interface therefore carries the kind
+string and nothing else, with the wire text owned by `pkg/attach` and the constant pinned from
+`pkg/watchdog`'s own tests. **A future port of upstream's file will not apply cleanly here, and
+should not be made to.**
+
+### Absorbed or ahead — 3 commits
+
+| SHA | Upstream | Why mast needs nothing |
+|---|---|---|
+| `1695fc9` | attribute approvals to the caller the daemon verified (#832) | **Convergent, same day.** mast shipped this as [#194](https://github.com/go-steer/mast/issues/194) (a durable approval names the authenticated caller, not `"operator resume --token"`) and [#198](https://github.com/go-steer/mast/issues/198) (wiring an `auth.Authenticator` into the inject listener so the name is not always `shared-bearer-token`). Independent arrivals at the same conclusion — worth noting because it is the second time this month |
+| `6e609f3` | attribute each turn to the model that served it (#829) | **mast is ahead.** `pkg/providers/anthropic/llm.go:153` already stamps `LLMResponse.ModelVersion`, preferring the server's echo over the requested ID, with the same reasoning upstream wrote down. One residual, below |
+| `b087eb6` | report MCP and skill tools in `/tools` with real attribution (#827) | **Convergent, opposite half.** mast's [#137](https://github.com/go-steer/mast/issues/137) (PR #205) fixed the *builtin* half of the same catalog on the same day; upstream fixed the MCP/skill half. One residual, below |
+
+Two residuals fell out of reading those, and neither is covered by the commit that surfaced it:
+
+- **`6e609f3` residual — a Vertex resource-path echo would go unpriced.** Upstream additionally
+  rejects an echo shaped like `projects/…/models/claude-opus-4-5`, because it resolves to nothing
+  in a pricing catalog and prices the turn at $0. mast ships `anthropic-vertex`
+  (`pkg/providers/anthropic/anthropic.go:51`) and takes `final.Model` verbatim unless it is empty.
+  `pricing.Catalog.LookupWithSource` prefix-matches *from the start of the string*
+  (`strings.HasPrefix(low, k)`), so the documented `claude-opus-4-5@20251101` shape resolves and a
+  resource path cannot. **mast's exposure is bounded and mast's failure mode is the better one**:
+  `Meter.priceOf` falls back to the flat per-1k rate and increments `unpriced` rather than billing
+  zero, so the budget still moves and the degradation is counted. Still worth the two-line guard.
+  Filed as [#210](https://github.com/go-steer/mast/issues/210).
+- **`b087eb6` residual — `ToolSourceSkill` is declared and never produced.** `pkg/attach/state.go:42`
+  defines the constant; nothing in the repo emits it. Either mast's skills reach the catalog under
+  another source or they do not reach it at all, and an unexercised declarative constant is not a
+  feature ([adversarial-review lesson](./README.md)). Filed as
+  [#211](https://github.com/go-steer/mast/issues/211).
+
+### Confirmed analogues — port candidates with the finding, not the guess
+
+Each of these was checked against mast's code, and the gap is real.
+
+| SHA | Upstream | The mast finding |
+|---|---|---|
+| `6d1afd1` | let a session's ACL actually be set (#797) (#831) | mast has the ACL — `auth.SessionACL` with Owner / Viewers / Contributors, enforced by `auth.Authorize`, persisted through `SessionACLStore`, and the owner is filled from the authenticated caller at registration since #194. What it has no door for is *amendment*: `auth.ActionSessionAdmin` documents itself as covering "ACL / metadata mutations on the session" and is wired to exactly one route, `DELETE /sessions/{id}`. **Less severe than upstream's** (mast's ACL is enforced, not inert) — but a viewer cannot be added to a running session |
+| `453e3f0` | report each subagent's configured tool grant on `/subagents` (#828) | `attach.SubagentCatalogInfo` carries Name, Description, Model, Root and Modes, and no tool grant. The operator question "what is this specialist allowed to touch" has no answer on the surface built to answer questions about specialists |
+| `a58fdcc` | root each turn in its own span and link the injects it answers (#807) | mast wires OTel for real (`pkg/observability/otel.go` builds a `TracerProvider` and an OTLP exporter) and then starts **one** span in the entire runtime, `digest.process`. There is no per-turn root span, so nothing links a turn to the inject that caused it. For the unattended product this is the audit artifact, which makes it a worse gap here than upstream |
+
+### Design calls, not ports — 2 commits
+
+`6c2c5c8` (park the loop on interrupt instead of cancelling and carrying on) and `0a6a056`
+(pause/resume over HTTP, and `/interrupt` that actually holds the loop) are one change in two
+commits, and mast already has all three endpoints. What upstream changed is the *semantics*:
+interrupt stops meaning "cancel the turn" and starts meaning "park the loop".
+
+**mast should not port this without deciding it.** mast's interrupt is precisely a cancel — that is
+the producer #206 was about, and it is now load-bearing in two shipped behaviors: `turn-error`
+kind `canceled` with `retryable: false`, and the `--watchdog=enforce` halt that rides the same
+cancel. Parking instead would change what an operator's interrupt *means* on the wire two days
+after mast documented what it means. Needs an owner and a decision recorded in
+[`docs/README.md`](./README.md), not a port.
+
+### Not applicable to the lean scope — 3 commits
+
+| SHA | Upstream | Why |
+|---|---|---|
+| `d2bde30` | give sessions a short display name (attach protocol **1.6.0**) (#809) | A TUI/session-list affordance. mast's session identity is the workload and the session ID; no consumer has asked for a display name |
+| `da3c006` | let an operator rename a session (#808) (#833) | The mutation half of `d2bde30`. Same verdict, same absence of a consumer |
+| `05d730c` | make wake notifications actually reach an attached TUI (#814) | The defect is in `internal/coretuiremote` and core-tui's silent type assertion; mast has neither. mast does have `POST /wake`, but the fix's shipped half — a `wake` frame on the SSE stream, upstream's **1.7.0** — has no mast consumer today. A mast-web ask would change this verdict |
+
+**`d2bde30` is the concrete proof of something [`DESIGN.md`](../DESIGN.md) now warns about.** Both
+projects shipped a "1.6.0" this week: upstream's is session display names, mast's is the
+`watchdog_halt` kind. The numbers collide and name different things. A client that reads a version
+number as a feature set is wrong on both servers; `event_types` and `features` in the capabilities
+frame are the only honest detection.
+
+### Parity features — 3 commits, no verdict beyond "not in mast"
+
+`c590015` (declare a whole MCP server read-only), `7dba589` (return the `prompt_id` an inject
+assigned) and `e28dde1` (let `POST /inject` queue context without driving a turn). mast has the
+surfaces all three extend — `pkg/mcp`, `pkg/inject` — and none of the extensions. No design doc
+defers them, so house rule #7 does not apply; they are v0.5 parity candidates that want a consumer
+argument before anyone spends a PR on them. `7dba589` is the cheapest and the most obviously
+missing: an inject that drives a turn and tells the caller nothing about which turn it drove is
+hard to build a client against.
+
+### One that does not port as written — `32aed49`
+
+Upstream's fix routes `spawn_agent` through the permissions gate. **mast has no `spawn_agent`** —
+the only occurrence in the repo is a comment in `pkg/permissions/gate.go:160` describing the
+upstream family. The commit does not apply.
+
+The *general* claim behind it does deserve a look, and it is a bigger question than this commit.
+mast consults its gate from exactly one place — `pkg/approval/plugin.go`'s two
+`CheckMutatingToolCall` calls — while delegation happens through ADK-installed dispatch tools
+(`task`, `single_turn`, `invoke_specialist`) that meet no gate. Whether that is a hole or a correct
+reading of mast's allowlist story is a question for
+[`docs/spike-findings.md`](./spike-findings.md)'s verified allowlist semantics and
+[`docs/specialists-design.md`](./specialists-design.md), **not for a port of upstream's patch**.
+Recorded here so the next triage does not re-derive it from scratch.
+
+### `3de4134` — the baseline commit, and a port candidate
+
+`fix(usage): carry the digest subagent's cache buckets to the paying session (#845)` is both the
+SHA this report was generated against and an unverdicted change to a subsystem mast has
+(`pkg/digest`, with its own usage path at `digest.go:333`). Not investigated in this pass. Listed
+so it is not mistaken for triaged simply by being the baseline.
+
+### Baseline after this triage
+
+Two commits came off (`04e54a3`, `6d30f9b`), but **neither moves the report**, and the reason is
+the same one the 2026-08-17 section records for the watchdog cluster: mast's fixes landed in files
+whose derivation trailers still name `25d8531c`. A port that does not re-port the file does not
+bump the file's baseline, and inventing a trailer SHA mast never ported from would be a lie in the
+one record this scheme rests on. `pkg/attach` will keep reporting both commits until it is next
+re-ported wholesale.
+
+That is the second time this quarter the count has failed to reward real work, and it is worth
+saying plainly: **the count measures re-ports, not fixes.** Nine of the nineteen commits above are
+verdicted as needing nothing from mast, and three of those are places mast arrived first. Read the
+"port candidate" rows, not the number.
+
 ## Next triage
 
 The weekly report regenerates [#153](https://github.com/go-steer/mast/issues/153) in place. Triage
 again when the counts move materially, or when a security commit appears upstream — whichever comes
 first. Start from the "port" and "watch" rows above rather than from a fresh count; the absorbed and
 n/a verdicts do not need re-deriving unless the trailer they hang on changed.
+
+Carried into the next pass from 2026-08-20, in the order they are worth doing:
+
+1. **`a58fdcc` — a per-turn root span.** The largest confirmed gap, and the one whose absence is
+   least visible: mast exports traces and emits one span. Unattended is the deployment where the
+   trace *is* the record.
+2. **`6d1afd1` — a route that amends a session ACL.** `ActionSessionAdmin` already documents the
+   mutation it has no door for.
+3. **`453e3f0` — subagent tool grants on `/subagents`.** Cheap, and the catalog is already there.
+4. **`3de4134`** — unverdicted, and the baseline the last report was generated against.
+5. **[#210](https://github.com/go-steer/mast/issues/210) / [#211](https://github.com/go-steer/mast/issues/211)** — the two residuals this triage found, each smaller than the commit that surfaced it.
+
+Two open questions that are not ports and need an owner: whether mast follows upstream's
+park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it collides with what
+[#206](https://github.com/go-steer/mast/issues/206) just documented), and whether ADK-installed
+dispatch tools should meet the permissions gate (raised by `32aed49`, answerable only from mast's
+own allowlist story).
