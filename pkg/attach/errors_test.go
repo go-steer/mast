@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -100,16 +101,30 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 			wantRetry: false,
 		},
 		{
+			// Pinned deliberately alongside the canceled case below:
+			// a turn that ran out of time is worth retrying because
+			// nobody asked for it to stop. The two context errors are
+			// adjacent in the classifier and must not converge.
 			name:      "transient_network from context deadline",
 			err:       context.DeadlineExceeded,
 			wantKind:  TurnErrorTransientNet,
 			wantRetry: true,
 		},
 		{
-			name:      "transient_network from context canceled",
+			name:      "canceled from context canceled",
 			err:       context.Canceled,
-			wantKind:  TurnErrorTransientNet,
-			wantRetry: true,
+			wantKind:  TurnErrorCanceled,
+			wantRetry: false,
+		},
+		{
+			// Wrapped, because neither producer hands the bare
+			// sentinel over: an interrupt comes back through ADK's
+			// runner and the watchdog's halt through the enforcing
+			// caller's cancel.
+			name:      "canceled through a wrapper",
+			err:       fmt.Errorf("run turn: %w", context.Canceled),
+			wantKind:  TurnErrorCanceled,
+			wantRetry: false,
 		},
 		{
 			name:        "cost_ceiling from a session budget trip",
@@ -193,5 +208,50 @@ func TestClassifyTurnError_LongMessageCapped(t *testing.T) {
 	}
 	if !strings.HasSuffix(got.Message, "...") {
 		t.Errorf("Capped message should end with ellipsis; got %q", got.Message)
+	}
+}
+
+// TestProtocolV1_5_0_IsAdditive pins what the #206 bump did and did
+// not do. The version moved because a client negotiating on it needs
+// to know a new turn-error kind exists; nothing else about the wire
+// changed, and a future edit that adds an event type or a field under
+// cover of "we already bumped for canceled" fails here.
+//
+// The existing v1.4.0 conformance fixtures deliberately keep their
+// literal "1.4.0": they pin the shape that shipped under that version,
+// which this change does not touch.
+func TestProtocolV1_5_0_IsAdditive(t *testing.T) {
+	t.Parallel()
+
+	if protocolVersion != "1.5.0" {
+		t.Errorf("protocolVersion = %q, want 1.5.0 — a wire change needs its own entry in the version log above the constant", protocolVersion)
+	}
+
+	want := []string{
+		EventStatusUpdate,
+		EventUsageUpdate,
+		EventInbox,
+		EventTurnComplete,
+		EventTurnError,
+		"stream-chunk",
+		"tool-call",
+		"tool-result",
+	}
+	if !slices.Equal(supportedEventTypes, want) {
+		t.Errorf("supportedEventTypes = %v, want %v — canceled is a new value in an existing enum, not a new frame", supportedEventTypes, want)
+	}
+
+	// §2.6 requires a consumer to fall back to unknown on a kind it
+	// does not recognize, which is the whole reason this is additive
+	// rather than breaking. Pin that canceled is a distinct value and
+	// not an alias of something a 1.4.0 client already handles.
+	for _, existing := range []string{
+		TurnErrorConfig, TurnErrorAuth, TurnErrorModelNotFound,
+		TurnErrorRateLimited, TurnErrorTransientNet, TurnErrorCostCeiling,
+		TurnErrorUnknown,
+	} {
+		if TurnErrorCanceled == existing {
+			t.Errorf("TurnErrorCanceled collides with %q", existing)
+		}
 	}
 }

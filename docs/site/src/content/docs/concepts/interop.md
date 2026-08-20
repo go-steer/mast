@@ -129,6 +129,15 @@ each rung includes the one below it:
   turn, and a reaction that waits for the turn to end waits for the thing
   it is supposed to stop.
 
+A turn cancelled that way — and a turn an operator stops with
+`POST /sessions/{id}/interrupt` — comes back on the stream as a `turn-error`
+of kind `canceled`, with `retryable: false`. That is the flag a client keys
+its "run it again" affordance off, and both of these are somebody deciding
+the turn should stop; offering to re-drive the loop the watchdog just halted
+would be the wrong end of the decision. A turn that ran out of *time* is
+still `transient_network` and still retryable, because nobody asked for that
+one.
+
 `enforce` including `feedback` is deliberate. An enforce halt is cleared
 by an operator reset, and a reset resumes a model whose context still ends
 in the loop it was halted for; without the injected observation the very

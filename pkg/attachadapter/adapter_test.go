@@ -492,3 +492,59 @@ func TestResetGuardrailRunsDuringATurn(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestInterruptedTurnIsNotReportedAsRetryable is the wire-level half
+// of the classifier change (#206). A turn stopped on purpose emits a
+// turn-error frame like any other failure, and what a client keys its
+// retry affordance off is that frame — so the interesting assertion is
+// not what ClassifyTurnError returns in isolation but what the adapter
+// actually puts on the stream after AttachInterrupt. It used to be
+// transient_network / retryable:true, i.e. an invitation to re-run the
+// work the operator had just stopped.
+func TestInterruptedTurnIsNotReportedAsRetryable(t *testing.T) {
+	started := make(chan struct{})
+	ad, err := New(baseConfig(t, func(ctx context.Context, _ string) (TurnResult, error) {
+		close(started)
+		<-ctx.Done()
+		return TurnResult{}, ctx.Err()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	frames := make(chan attach.TurnError, 1)
+	ad.SetOperatorEventEmitter(func(eventType string, payload any) {
+		if eventType != attach.EventTurnError {
+			return
+		}
+		te, ok := payload.(attach.TurnError)
+		if !ok {
+			t.Errorf("turn-error payload is %T, want attach.TurnError", payload)
+			return
+		}
+		select {
+		case frames <- te:
+		default:
+		}
+	})
+
+	if err := ad.Inject("long turn"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if !ad.AttachInterrupt() {
+		t.Fatal("AttachInterrupt with a turn in flight returned false")
+	}
+
+	select {
+	case te := <-frames:
+		if te.Kind != attach.TurnErrorCanceled {
+			t.Errorf("kind = %q, want %q", te.Kind, attach.TurnErrorCanceled)
+		}
+		if te.Retryable {
+			t.Error("an interrupted turn was advertised as retryable; a client would offer to re-run what the operator stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no turn-error frame after the interrupt")
+	}
+}
