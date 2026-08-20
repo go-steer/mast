@@ -237,6 +237,55 @@ Attach can read transcripts and drive turns, so it gets its own token
 so an operator watching a finishing turn sees its last events rather than a
 dropped connection.
 
+### Who can see a session
+
+A session created over attach is owned by the caller who created it, and
+that ownership is what the per-session authorization matrix is built on:
+the owner reads and writes, *viewers* read, *contributors* read and write,
+and everyone else gets a 404 — not a 403, so an unauthorized caller cannot
+enumerate which sessions exist by the shape of the refusal.
+
+`GET /sessions/{id}/acl` reads that list back and `PUT` replaces it:
+
+```json
+{"owner": "alice@example.com",
+ "viewers": ["carol@example.com"],
+ "contributors": ["bob@example.com"],
+ "enforced": true, "persisted": true}
+```
+
+The `PUT` is a whole-document replace, not a patch. A list you omit is a
+list you cleared — which is the only sane reading, because the alternative
+(omission means "leave it alone") would leave no way to *remove* the last
+viewer, and revocation is half of why the endpoint exists. Identities are
+trimmed and de-duplicated; a blank one is a 400 rather than a stored grant
+that could never match a caller.
+
+`GET` sits at the read bar, not the admin bar. Anyone the ACL already
+admits can read the whole transcript, so the membership list is not the
+sensitive part — and a viewer who wants write access needs to know whom to
+ask. `PUT` is admin: the owner, or a daemon admin.
+
+Two things the response tells you that the ACL itself cannot:
+
+- **`enforced`** is false when the daemon is not running multi-session, in
+  which case the ACL governs nothing and every authenticated caller gets
+  in. A `PUT` against such a daemon is **refused with 501** rather than
+  accepted: an amendment nothing consults would report success for an
+  access restriction that does not exist.
+- **`persisted`** is false when the amendment lives only in this process —
+  no ACL store wired, or a session registered without an owner (the
+  daemon's own bootstrap session is one). The grant works until the daemon
+  restarts, and saying so is the difference between a durable decision and
+  one that quietly evaporates overnight.
+
+Ownership **transfer** — sending a different `owner` — is daemon-admin
+only. It is there for the case where the owner left, and it fails with a
+403 for anyone else rather than being silently dropped, because an ignored
+field in an accepted request reads as a completed transfer. An owner
+cannot be cleared at all: a session with no owner is reachable by admins
+alone, which is a lockout rather than an edit.
+
 ## A2A — other agents
 
 `--a2a-listen` publishes an [A2A](https://a2a-protocol.org) agent card and

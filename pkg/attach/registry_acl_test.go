@@ -33,8 +33,8 @@ func TestRegister_DefaultsToEmptyACL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if entry.ACL.Owner != "" {
-		t.Errorf("Register stamped Owner %q; legacy path must leave it empty", entry.ACL.Owner)
+	if entry.ACL().Owner != "" {
+		t.Errorf("Register stamped Owner %q; legacy path must leave it empty", entry.ACL().Owner)
 	}
 }
 
@@ -46,8 +46,8 @@ func TestRegisterOwned_StampsOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterOwned: %v", err)
 	}
-	if entry.ACL.Owner != "alice@example.com" {
-		t.Errorf("ACL.Owner: got %q, want %q", entry.ACL.Owner, "alice@example.com")
+	if entry.ACL().Owner != "alice@example.com" {
+		t.Errorf("ACL.Owner: got %q, want %q", entry.ACL().Owner, "alice@example.com")
 	}
 }
 

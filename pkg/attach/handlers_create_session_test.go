@@ -130,7 +130,7 @@ func TestCreateSession_HappyPathStampsOwner(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("registry should have 1 entry, got %d", len(entries))
 	}
-	if got := entries[0].ACL.Owner; got != "alice@example.com" {
+	if got := entries[0].ACL().Owner; got != "alice@example.com" {
 		t.Errorf("ACL.Owner: got %q, want %q (handler must call RegisterOwned with the caller)", got, "alice@example.com")
 	}
 	// And confirm the factory saw alice.

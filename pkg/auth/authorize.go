@@ -19,7 +19,7 @@ package auth
 // Action enumerates the authorization decisions the multi-session
 // attach layer makes. The matrix is intentionally small in α.1; finer
 // scoping (per-tool, per-MCP-server, per-session-sub-area) is deferred
-// per docs/multi-session-design.md §"Out of scope".
+// per core-agent's docs/multi-session-design.md §"Out of scope".
 //
 // Handlers don't enforce these in α.1 — enforcement wiring is α.2.
 // The function is here so the type surface is settled before the
@@ -82,7 +82,7 @@ type SessionACL struct {
 }
 
 // Authorize reports whether c may perform a against the given session
-// ACL. The matrix follows docs/multi-session-design.md §"Authorization
+// ACL. The matrix follows core-agent's docs/multi-session-design.md §"Authorization
 // rules":
 //
 //	| Action          | Admin | Owner | Viewers | Contributors |

@@ -73,7 +73,7 @@ const (
 // daemon-wide configuration (policy / scope / requirePlanArtifact)
 // but carry their own per-session mutable state (sessionAllow /
 // sessionAllowTools / sessionAllowVerbs / approvals / planRecorded /
-// prompter / mode). See docs/multi-session-design.md.
+// prompter / mode). See core-agent's docs/multi-session-design.md.
 type Gate struct {
 	mu sync.Mutex
 
@@ -395,7 +395,7 @@ func (g *Gate) SetMode(m Mode) {
 //   - Policy mutations via AddAllowPatterns / AddDenyPatterns mutate
 //     the shared template Policy and therefore affect every derived
 //     sub-gate. /allow + /deny are intentionally daemon-wide today
-//     per docs/multi-session-design.md §"Per-substrate isolation
+//     per core-agent's docs/multi-session-design.md §"Per-substrate isolation
 //     rules"; per-session policy carve-outs are a follow-up.
 //   - PathScope mutations via AddAlwaysAllow (triggered by
 //     DecisionAllowAlways) similarly mutate the shared scope.
