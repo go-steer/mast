@@ -39,6 +39,15 @@ import "fmt"
 // score it produces cannot be acted on however completely it reaches
 // (#179, which demoted it to diagnostic). A metric that scores every row
 // has cleared this bar and no other.
+//
+// tool_coverage is the same lesson from the other side: this table
+// reported it 31/31 scorable while it returned 0.000 on every row of
+// every board, because reach asked whether a scenario had *declared* an
+// expectation rather than whether the expectation could be *met*. A
+// guard that measures the wrong property is the defect it exists to
+// catch, so it caught nothing about itself. Fixed in ToolCoverage (#174)
+// rather than here, because vacuity is the evaluator's judgement and
+// this table only counts it.
 type MetricReach struct {
 	Metric string
 	// Diagnostic mirrors Result.Diagnostic: a diagnostic metric is
@@ -79,6 +88,12 @@ func (r MetricReach) String() string {
 // means. TestCorpusReach_IsTraceIndependent pins the property the probe
 // relies on.
 //
+// Since #174 the expectation is read against the intent table's tool
+// catalog as well as against the scenario, which is why the table is a
+// parameter rather than only intent_coverage's business. That is still a
+// fact about the corpus and not about the run: which names exist is
+// fixed before any agent starts, so the empty-trace probe holds.
+//
 // effect_ordering and exactly_once are deliberately absent: their
 // vacuity is a property of the run (no mutating effects to order), not
 // of the corpus, so there is nothing here for them to be measured
@@ -95,7 +110,7 @@ func CorpusReach(tbl IntentTable, ds Dataset) []MetricReach {
 	for _, sc := range ds.Scenarios {
 		probes := []Result{
 			IntentCoverage(tbl, sc, Trace{}),
-			ToolCoverage(sc, Trace{}),
+			ToolCoverage(tbl, sc, Trace{}),
 			SeverityAccuracy(sc, Trace{}),
 		}
 		for i := range reach {
@@ -111,6 +126,14 @@ func CorpusReach(tbl IntentTable, ds Dataset) []MetricReach {
 // DeadMetrics returns the gating metrics that score nothing anywhere.
 // A non-empty result is a harness failure, not a red scoreboard row:
 // the measurement is broken, so the board says nothing either way.
+//
+// Diagnostics are deliberately absent, and that omission is load-bearing
+// in both directions. A diagnostic is not a claim about mast, so a dead
+// one must not fail the build — tool_coverage has been dead by
+// construction since the corpus was ported and always will be. But a
+// dead column still has to be *said*, or the reader takes a constant for
+// a measurement, so harness.summarizeCorpus reports it on a non-gating
+// line of its own.
 func DeadMetrics(reach []MetricReach) []string {
 	var dead []string
 	for _, r := range reach {

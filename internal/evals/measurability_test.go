@@ -30,8 +30,8 @@ func reachByMetric(t *testing.T, reach []MetricReach) map[string]MetricReach {
 	return out
 }
 
-// TestCorpusReach_RealCorpus pins that every corpus metric can actually
-// score the ported dataset — the property upstream's harness lacks on
+// TestCorpusReach_RealCorpus pins what each corpus metric can actually
+// score on the ported dataset — the property upstream's harness lacks on
 // both of its custom-code metrics.
 //
 // Reach is asserted for the diagnostics too. A diagnostic does not gate,
@@ -48,18 +48,35 @@ func TestCorpusReach_RealCorpus(t *testing.T) {
 	}
 	by := reachByMetric(t, reach)
 
-	for _, metric := range []string{MetricIntentCoverage, MetricToolCoverage, MetricSeverityAccuracy} {
+	for _, metric := range []string{MetricIntentCoverage, MetricSeverityAccuracy} {
 		r, ok := by[metric]
 		if !ok {
 			t.Fatalf("%s missing from the reach table", metric)
 		}
 		// Every scenario declares expected tools and every expected
-		// response opens with a severity token, so all three reach the
-		// whole corpus. A drop here means the fixture or the extractor
-		// moved.
+		// response opens with a severity token, so both reach the whole
+		// corpus. A drop here means the fixture or the extractor moved.
 		if r.Reaches != 31 || r.Scenarios != 31 {
 			t.Errorf("%s reaches %d/%d scenarios, want 31/31", metric, r.Reaches, r.Scenarios)
 		}
+	}
+
+	// tool_coverage reaches nothing, and saying so is the fix (#174).
+	// The corpus expects upstream's 23 kubectl_* names; mast emits k8s_*;
+	// the intersection is empty on every row, so the column is 0.000 for
+	// any run by any model. It read 31/31 here until the vacuity check
+	// asked whether an expectation could be met rather than whether one
+	// had been written down.
+	tc, ok := by[MetricToolCoverage]
+	if !ok {
+		t.Fatalf("%s missing from the reach table", MetricToolCoverage)
+	}
+	if tc.Reaches != 0 || tc.Scenarios != 31 {
+		t.Errorf("%s reaches %d/%d scenarios, want 0/31 — the ported corpus names a surface mast does not have",
+			MetricToolCoverage, tc.Reaches, tc.Scenarios)
+	}
+	if !tc.Dead() {
+		t.Errorf("%s is not reported dead; a column that is 0.000 by construction must not read as a measurement", MetricToolCoverage)
 	}
 	if by[MetricIntentCoverage].Diagnostic {
 		t.Errorf("%s must stay gating: it is the trajectory claim the parity comparison rests on", MetricIntentCoverage)
@@ -158,6 +175,29 @@ func TestCorpusReach_DetectsUpstreamDefects(t *testing.T) {
 	}
 }
 
+// TestCorpusReach_ToolCoverageWouldReachAMatchingCorpus is the control
+// for the 0/31 above. tool_coverage is dead because of what this corpus
+// expects, not because a diagnostic can never reach: point the same
+// scenarios at names mast can emit and the column comes back to life.
+//
+// Without this, "make the guard report tool_coverage as dead" has a
+// trivial wrong solution — mark every diagnostic vacuous — and the reach
+// table would go quiet about the one thing it exists to notice.
+func TestCorpusReach_ToolCoverageWouldReachAMatchingCorpus(t *testing.T) {
+	ds := loadLangChain(t)
+	tbl := loadTable(t)
+	for i := range ds.Scenarios {
+		ds.Scenarios[i].Outputs.ExpectedTools = []string{"k8s_cluster_health"}
+	}
+
+	by := reachByMetric(t, CorpusReach(tbl, ds))
+	if got := by[MetricToolCoverage]; got.Reaches != 31 {
+		t.Errorf("%s reaches %d/%d on a corpus written in this runtime's own tool names, want 31/31: "+
+			"the vacuity check is suppressing the metric rather than measuring satisfiability",
+			MetricToolCoverage, got.Reaches, got.Scenarios)
+	}
+}
+
 // TestCorpusReach_IsTraceIndependent pins the property the probe relies
 // on: for the three corpus metrics, whether there is anything to score
 // is a fact about the scenario, not about the run. CorpusReach passes an
@@ -185,7 +225,7 @@ func TestCorpusReach_IsTraceIndependent(t *testing.T) {
 			empty, busy Result
 		}{
 			{MetricIntentCoverage, IntentCoverage(tbl, sc, Trace{}), IntentCoverage(tbl, sc, busy)},
-			{MetricToolCoverage, ToolCoverage(sc, Trace{}), ToolCoverage(sc, busy)},
+			{MetricToolCoverage, ToolCoverage(tbl, sc, Trace{}), ToolCoverage(tbl, sc, busy)},
 			{MetricSeverityAccuracy, SeverityAccuracy(sc, Trace{}), SeverityAccuracy(sc, busy)},
 		}
 		for _, p := range pairs {

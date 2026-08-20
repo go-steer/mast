@@ -163,12 +163,20 @@ func TestIntentCoverage(t *testing.T) {
 // TestToolCoverage_PenalisesConsolidation pins the reason the name-level
 // metric is a diagnostic: on the exact scenario intent_coverage scores
 // 1.0, it scores 0.
+//
+// It also pins the half of that which #174 changed. The 0 stays — the
+// consolidation penalty is the point and is still legible in the
+// comment — but it is now marked Vacuous, because no run could have
+// produced anything else. Both halves have to hold together: a fix that
+// suppressed the 0 would have hidden the penalty, and a fix that left it
+// unmarked is what let the reach table call a constant healthy.
 func TestToolCoverage_PenalisesConsolidation(t *testing.T) {
+	tbl := loadTable(t)
 	sc := scenario([]string{"kubectl_describe_pod", "kubectl_get_events", "kubectl_get_pod_logs"}, "")
 	tr := callsTo("k8s_triage_workload")
 
-	intent := IntentCoverage(loadTable(t), sc, tr)
-	tool := ToolCoverage(sc, tr)
+	intent := IntentCoverage(tbl, sc, tr)
+	tool := ToolCoverage(tbl, sc, tr)
 
 	if !approx(intent.Score, 1) {
 		t.Fatalf("intent_coverage = %v, want 1 (%s)", intent.Score, intent.Comment)
@@ -179,30 +187,96 @@ func TestToolCoverage_PenalisesConsolidation(t *testing.T) {
 	if !tool.Diagnostic {
 		t.Fatal("tool_coverage must be flagged Diagnostic; it is never a comparison number")
 	}
+	if !tool.Vacuous {
+		t.Error("tool_coverage scored 0 on names no runtime can emit and did not mark it Vacuous; " +
+			"CorpusReach then counts the row as scorable and the board averages a constant (#174)")
+	}
+	for _, name := range []string{"kubectl_describe_pod", "kubectl_get_events", "kubectl_get_pod_logs"} {
+		if !strings.Contains(tool.Comment, name) {
+			t.Errorf("Comment = %q, want it to name the unemittable %q — the penalty has to stay readable", tool.Comment, name)
+		}
+	}
+}
+
+// TestToolCoverage_SatisfiableExpectationsStillReach is the other side of
+// #174, and the reason the fix cannot degenerate into "diagnostics never
+// reach": a scenario that expects a name this runtime can emit is scored
+// normally, whether or not the run emitted it.
+func TestToolCoverage_SatisfiableExpectationsStillReach(t *testing.T) {
+	tbl := loadTable(t)
+	for _, tc := range []struct {
+		name  string
+		trace Trace
+		want  float64
+	}{
+		{"called", callsTo("k8s_cluster_health"), 1},
+		{"not called", callsTo("k8s_triage_logs"), 0},
+		{"nothing called at all", Trace{}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ToolCoverage(tbl, scenario([]string{"k8s_cluster_health"}, ""), tc.trace)
+			if got.Vacuous {
+				t.Fatalf("Vacuous = true on a satisfiable expectation (%s)", got.Comment)
+			}
+			if !approx(got.Score, tc.want) {
+				t.Fatalf("Score = %v, want %v (%s)", got.Score, tc.want, got.Comment)
+			}
+		})
+	}
 }
 
 func TestToolCoverage(t *testing.T) {
+	tbl := loadTable(t)
+	// Real lookout names, because since #174 the metric asks whether the
+	// runtime could emit the name at all and a made-up "a" cannot.
+	const (
+		a = "k8s_cluster_health"
+		b = "k8s_triage_logs"
+		z = "k8s_resource_top"
+	)
 	tests := []struct {
-		name     string
-		expected []string
-		called   []string
-		want     float64
-		vacuous  bool
+		name      string
+		expected  []string
+		called    []string
+		want      float64
+		vacuous   bool
+		inComment string
 	}{
-		{"all names called verbatim", []string{"a", "b"}, []string{"a", "b"}, 1, false},
-		{"half", []string{"a", "b"}, []string{"a", "z"}, 0.5, false},
-		{"extra calls are not penalised", []string{"a"}, []string{"a", "b", "c"}, 1, false},
-		{"duplicate expected names count once", []string{"a", "a", "b"}, []string{"a"}, 0.5, false},
-		{"nothing expected is vacuous", nil, []string{"a"}, 1, true},
+		{name: "all names called verbatim", expected: []string{a, b}, called: []string{a, b}, want: 1},
+		{name: "half", expected: []string{a, b}, called: []string{a, z}, want: 0.5},
+		{name: "extra calls are not penalised", expected: []string{a}, called: []string{a, b, z}, want: 1},
+		{name: "duplicate expected names count once", expected: []string{a, a, b}, called: []string{a}, want: 0.5},
+		{name: "nothing expected is vacuous", expected: nil, called: []string{a}, want: 1, vacuous: true},
+		{
+			// One emittable name is enough to make the row scorable; the
+			// unemittable one stays in the denominator and is named, the
+			// same way intent_coverage keeps an unmapped name in its own.
+			name:      "a mixed expectation is scored, not skipped",
+			expected:  []string{a, "kubectl_get_pods"},
+			called:    []string{a},
+			want:      0.5,
+			inComment: "kubectl_get_pods",
+		},
+		{
+			name:      "no emittable name is vacuous at zero",
+			expected:  []string{"kubectl_get_pods", "kubectl_top_nodes"},
+			called:    []string{a},
+			want:      0,
+			vacuous:   true,
+			inComment: "no expected name is one this runtime can emit",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ToolCoverage(scenario(tc.expected, ""), callsTo(tc.called...))
+			got := ToolCoverage(tbl, scenario(tc.expected, ""), callsTo(tc.called...))
 			if !approx(got.Score, tc.want) {
 				t.Fatalf("Score = %v, want %v (%s)", got.Score, tc.want, got.Comment)
 			}
 			if got.Vacuous != tc.vacuous {
-				t.Fatalf("Vacuous = %v, want %v", got.Vacuous, tc.vacuous)
+				t.Fatalf("Vacuous = %v, want %v (%s)", got.Vacuous, tc.vacuous, got.Comment)
+			}
+			if tc.inComment != "" && !strings.Contains(got.Comment, tc.inComment) {
+				t.Fatalf("Comment = %q, want it to name %q", got.Comment, tc.inComment)
 			}
 		})
 	}

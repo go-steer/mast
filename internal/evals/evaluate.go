@@ -52,11 +52,18 @@ type Result struct {
 	// path as a regression by construction.
 	Diagnostic bool `json:"diagnostic,omitempty"`
 
-	// Vacuous marks a score that is 1.0 because there was nothing to
-	// measure, not because anything was demonstrated. Upstream's
-	// tool_coverage is 1.0 on all 31 rows for exactly this reason
-	// (it reads a key no row has), and a harness that cannot tell the
-	// two apart reports a perfect score for a metric that never ran.
+	// Vacuous marks a score that carries no information about the run:
+	// its value is fixed by the corpus and the tool surface, not by
+	// anything the agent did. Upstream's tool_coverage is 1.0 on all 31
+	// rows for exactly this reason (it reads a key no row has), and a
+	// harness that cannot tell the two apart reports a perfect score for
+	// a metric that never ran.
+	//
+	// The value is usually 1.0 and for a while it was only ever that.
+	// It is not always: mast's own tool_coverage is pinned at 0 on a
+	// scenario whose expected names the runtime cannot emit (#174). Both
+	// are constants. Which direction a constant points is not the
+	// property this field is about.
 	Vacuous bool `json:"vacuous,omitempty"`
 }
 
@@ -68,7 +75,7 @@ func (r Result) Passed() bool { return r.Score >= 1 }
 func EvaluateAll(tbl IntentTable, sc Scenario, tr Trace) []Result {
 	return []Result{
 		IntentCoverage(tbl, sc, tr),
-		ToolCoverage(sc, tr),
+		ToolCoverage(tbl, sc, tr),
 		SeverityAccuracy(sc, tr),
 		EffectOrdering(tr),
 		ExactlyOnce(tr),
@@ -146,7 +153,30 @@ func IntentCoverage(tbl IntentTable, sc Scenario, tr Trace) Result {
 // k8s_triage_workload call answers completely, and this metric scores
 // that 0/3. Keeping it visible keeps the consolidation penalty legible
 // instead of scored.
-func ToolCoverage(sc Scenario, tr Trace) Result {
+//
+// # Vacuity is satisfiability, not declaration (#174)
+//
+// A scenario reaches this metric only when at least one name it expects
+// is a name the runtime can emit. That is a stronger test than "the
+// scenario declared something", and the difference is the whole corpus:
+// the ported dataset names upstream's kubectl_* surface, mast's is
+// k8s_*, and the intersection is empty on all 31 rows. Under the
+// declaration-shaped test every row reached, so CorpusReach reported
+// 31/31 scorable for a metric that is 0.000 by construction — the guard
+// against a constant function calling a constant function healthy.
+//
+// The neighbouring intent_coverage never had this problem, because it
+// builds its denominator after mapping names through the intent table.
+// Two definitions of reach sat side by side in one file and only the
+// declaration-shaped one was wrong; that asymmetry was the bug, rather
+// than any single line.
+//
+// Note what does not change: the score. An unsatisfiable expectation
+// still reports 0/N and still names the tools, because the consolidation
+// penalty is the reason this metric exists. What changes is that the
+// harness stops averaging that 0 into a board, and says out loud that
+// the column is a constant.
+func ToolCoverage(tbl IntentTable, sc Scenario, tr Trace) Result {
 	want := sc.Outputs.ExpectedTools
 	if len(want) == 0 {
 		return Result{
@@ -163,21 +193,41 @@ func ToolCoverage(sc Scenario, tr Trace) Result {
 	}
 	seen := make(map[string]bool, len(want))
 	hit, denom := 0, 0
+	var unemittable []string
 	for _, name := range want {
 		if seen[name] {
 			continue
 		}
 		seen[name] = true
 		denom++
+		if !tbl.Emittable(name) {
+			unemittable = append(unemittable, name)
+		}
 		if called[name] {
 			hit++
 		}
+	}
+	if len(unemittable) == denom {
+		return Result{
+			Metric:     MetricToolCoverage,
+			Score:      0,
+			Diagnostic: true,
+			Vacuous:    true,
+			Comment: fmt.Sprintf(
+				"0/%d — no expected name is one this runtime can emit (%s), so no run can move this score; excluded from the mean, not earned",
+				denom, strings.Join(unemittable, ", ")),
+		}
+	}
+	comment := fmt.Sprintf("%d/%d expected tool names called verbatim (diagnostic only)", hit, denom)
+	if len(unemittable) > 0 {
+		comment += fmt.Sprintf("; %d of the %d cannot be emitted by this runtime (%s)",
+			len(unemittable), denom, strings.Join(unemittable, ", "))
 	}
 	return Result{
 		Metric:     MetricToolCoverage,
 		Score:      float64(hit) / float64(denom),
 		Diagnostic: true,
-		Comment:    fmt.Sprintf("%d/%d expected tool names called verbatim (diagnostic only)", hit, denom),
+		Comment:    comment,
 	}
 }
 

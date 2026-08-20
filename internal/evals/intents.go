@@ -189,3 +189,18 @@ func (t IntentTable) SatisfiedBy(calledTools []string) []string {
 func (t IntentTable) Unreachable(upstreamTool string) bool {
 	return t.UpstreamTools[upstreamTool].UnreachableUpstream
 }
+
+// Emittable reports whether a tool name is one a run under this table
+// can actually call.
+//
+// lookout_tools is that catalog by construction rather than by
+// convention: judge.Rig builds its fixture tools from these keys, and
+// judge.NewCluster refuses to start when the table names one it has no
+// shape for. So a name absent from lookout_tools cannot appear in any
+// trace, and an expectation written in terms of it can never be met —
+// which is the difference between a metric that scored badly and one
+// that never ran (#174).
+func (t IntentTable) Emittable(name string) bool {
+	_, ok := t.LookoutTools[name]
+	return ok
+}

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **The guard against a constant metric was reporting a constant metric as
+  healthy.** `internal/evals/measurability.go` exists to catch a column that
+  is green because it never ran, and its own doc comment names upstream's two
+  constant functions as the cautionary case. mast's `tool_coverage` has been
+  0.000 on all 31 rows of every board since the corpus was ported — the
+  dataset expects upstream's `kubectl_*` names, mast emits `k8s_*`, and the
+  intersection is empty — and the reach table read `31/31 scenarios scorable`
+  for it throughout.
+
+  The cause was a definition, not a line: reach asked whether a scenario had
+  *declared* an expectation, when the question is whether the expectation can
+  be *met*. `intent_coverage` sitting beside it never had the bug, because it
+  builds its denominator after mapping names through the intent table — two
+  definitions of reach in one file, and only the declaration-shaped one was
+  wrong. `ToolCoverage` now marks a scenario vacuous when no expected name is
+  one the runtime can emit, which the intent table's `lookout_tools` answers
+  by construction. The score does not move: an unsatisfiable expectation still
+  reports 0/N and still names the tools, because the consolidation penalty is
+  why the metric is on the board. What changes is that the harness stops
+  averaging that 0 and says the column is a constant.
+
+  A dead **diagnostic** is now reported on a line of its own rather than
+  appended to the run's problems. The previous release described that line as
+  non-gating and implemented it as gating; nothing caught it because no
+  diagnostic was dead yet. With `tool_coverage` permanently dead — a fact
+  about two tool surfaces, not a defect — that would have turned the whole
+  deterministic tier red.
+
 - **A hub restart un-federated the deployment, silently.** `attach.PeerRegistry`
   was memory-only: every registration went with the process, and each peer
   stayed invisible until its own heartbeat failed and it re-registered. That is
