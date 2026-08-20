@@ -75,11 +75,16 @@ jobs:
       # The check also normalizes away UpdatedAt and the header date,
       # so an un-regenerated Monday is not itself drift — otherwise
       # this would open a no-op date-churn PR every week forever.
+      #
+      # --report reuses that same normalized comparison to write the PR
+      # body's "What moved" section. It has to be produced HERE, before
+      # the regen writes builtin.go, because afterwards the only record
+      # of what the file used to say is in git.
       - name: Detect catalog drift
         id: drift
         run: |
           set -euo pipefail
-          verdict="$(go run ./dev/regen-builtin-pricing --check)"
+          verdict="$(go run ./dev/regen-builtin-pricing --check --report="${RUNNER_TEMP}/moved.md")"
           case "$verdict" in
             drift=true|drift=false) echo "$verdict" >> "$GITHUB_OUTPUT" ;;
             *) echo "::error::unexpected --check output: ${verdict}"; exit 1 ;;
@@ -112,6 +117,61 @@ jobs:
         if: steps.drift.outputs.drift == 'true'
         id: meta
         run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      # The body is assembled here rather than inlined into the action's
+      # `body:` because the middle of it is generated. Every regen
+      # re-stamps UpdatedAt on every row, so the diff a reviewer opens is
+      # mostly rows that did not move: 2026-08-19's regen touched 32 and
+      # exactly one — gemini-3.6-flash, halved — was a real rate change,
+      # with nothing in the PR to distinguish that from a week where
+      # nothing moved at all. The generated section names the movers and
+      # counts them, and says so explicitly when there are none, so an
+      # empty "What moved" is a claim rather than an absence (#188).
+      #
+      # Heredocs are unindented relative to this block because YAML
+      # strips the common prefix before bash sees it — the terminators
+      # land at column 0.
+      - name: Compose PR body
+        if: steps.drift.outputs.drift == 'true'
+        run: |
+          set -euo pipefail
+          body="${RUNNER_TEMP}/pr-body.md"
+          cat > "$body" <<'HEAD'
+          Automated pricing regen — LiteLLM's `model_prices_and_context_window.json` shifted since the last time `pkg/pricing/builtin.go` was regenerated.
+
+          **Regen date**: ${{ steps.meta.outputs.date }}
+          **Source**: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+          **Membership rule**: `eligible()` in `dev/regen-builtin-pricing/main.go` (edit + re-run to change what qualifies)
+
+          HEAD
+          cat "${RUNNER_TEMP}/moved.md" >> "$body"
+          cat >> "$body" <<'TAIL'
+
+          ## Review checklist
+
+          - [ ] **New and removed models are intentional.** Membership is a rule, not a list, so this diff can add or drop whole models — not just move numbers. For each added key: is it a real GA/preview id an operator would plausibly pin, or catalog noise that `eligible()` should be excluding? For each removed key: upstream deprecated it or pulled it, and nothing in-tree still names it (`git grep` the id — task-class defaults, example workloads, docs and UAT scripts all hardcode model ids).
+          - [ ] Diff on `pkg/pricing/builtin.go` is confined to the two generated maps (no spurious formatting churn)
+          - [ ] Any rate change that halves or doubles is real (spot-check the provider's public pricing page — LiteLLM has occasionally shipped bad entries). "What moved" above is the list to check; a row not named there did not change value.
+          - [ ] Context-window changes in `builtinContextWindows` are real. These are what a compaction threshold is a fraction of: a window that grows makes compaction fire later, and an over-large one lets a session run past a limit the provider hard-fails on.
+          - [ ] `UpdatedAt` dates on all entries are today
+          - [ ] The workflow log's rejection report ("N Gemini/Anthropic entries rejected") lists nothing that should have been kept — a model can vanish from this table because upstream stopped publishing its price or window, not only because it was deprecated
+          - [ ] A newly-added model that belongs in a tier default is promoted deliberately, not automatically. `pkg/taskclass.ModelForTier` names the LATEST model in each line (see the POLICY block on that function) and `TestModelForTier_ReturnsLatestInLine` fails this PR when a newer same-line model lands here — promote it in a follow-up once it has been UAT'd, don't ship an unexercised model as everyone's default.
+          - [ ] A rate that moved ONTO a promotional number, or a promotional rate that failed to move OFF one, is recorded in `introductoryRates` (`pkg/pricing/introductory_rates_test.go`). LiteLLM publishes no expiry metadata, so a known end date only exists here if someone writes it down.
+
+          ## Verification
+
+          The two Go presubmits (`lint.sh`, `test.sh`) already ran green in this workflow before the PR opened. Full CI runs on push here.
+
+          ## Manual regen
+
+          ```
+          go run ./dev/regen-builtin-pricing
+          ```
+
+          Context: the generator and this workflow are ports of the parent project's answer to go-steer/core-agent#259. Hand-authored builtin rates drifted 20-30x silently there before the generator + weekly PR existed.
+          TAIL
+          echo "--- composed PR body ---"
+          cat "$body"
 
       # Authenticate as the go-steer-bot GitHub App rather than with
       # GITHUB_TOKEN. Two independent reasons, both fatal:
@@ -182,34 +242,9 @@ jobs:
             Membership is a rule — adjust eligible() in
             dev/regen-builtin-pricing/main.go.
           title: 'chore(pricing): regenerate builtin.go from LiteLLM (${{ steps.meta.outputs.date }})'
-          body: |
-            Automated pricing regen — LiteLLM's `model_prices_and_context_window.json` shifted since the last time `pkg/pricing/builtin.go` was regenerated.
-
-            **Regen date**: ${{ steps.meta.outputs.date }}
-            **Source**: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
-            **Membership rule**: `eligible()` in `dev/regen-builtin-pricing/main.go` (edit + re-run to change what qualifies)
-
-            ## Review checklist
-
-            - [ ] **New and removed models are intentional.** Membership is a rule, not a list, so this diff can add or drop whole models — not just move numbers. For each added key: is it a real GA/preview id an operator would plausibly pin, or catalog noise that `eligible()` should be excluding? For each removed key: upstream deprecated it or pulled it, and nothing in-tree still names it (`git grep` the id — task-class defaults, example workloads, docs and UAT scripts all hardcode model ids).
-            - [ ] Diff on `pkg/pricing/builtin.go` is confined to the two generated maps (no spurious formatting churn)
-            - [ ] Any rate change that halves or doubles is real (spot-check the provider's public pricing page — LiteLLM has occasionally shipped bad entries)
-            - [ ] Context-window changes in `builtinContextWindows` are real. These are what a compaction threshold is a fraction of: a window that grows makes compaction fire later, and an over-large one lets a session run past a limit the provider hard-fails on.
-            - [ ] `UpdatedAt` dates on all entries are today
-            - [ ] The workflow log's rejection report ("N Gemini/Anthropic entries rejected") lists nothing that should have been kept — a model can vanish from this table because upstream stopped publishing its price or window, not only because it was deprecated
-            - [ ] A newly-added model that belongs in a tier default is promoted deliberately, not automatically. `pkg/taskclass.ModelForTier` names the LATEST model in each line (see the POLICY block on that function) and `TestModelForTier_ReturnsLatestInLine` fails this PR when a newer same-line model lands here — promote it in a follow-up once it has been UAT'd, don't ship an unexercised model as everyone's default.
-
-            ## Verification
-
-            The two Go presubmits (`lint.sh`, `test.sh`) already ran green in this workflow before the PR opened. Full CI runs on push here.
-
-            ## Manual regen
-
-            ```
-            go run ./dev/regen-builtin-pricing
-            ```
-
-            Context: the generator and this workflow are ports of the parent project's answer to go-steer/core-agent#259. Hand-authored builtin rates drifted 20-30x silently there before the generator + weekly PR existed.
+          # body-path, not an inline body: the middle of it is
+          # generated by --report above. See the compose step.
+          body-path: ${{ runner.temp }}/pr-body.md
           # No `labels:` — mast's label set has no `pricing` /
           # `automated` pair yet (the parent project's does), and
           # labelling with one that doesn't exist is a failure mode

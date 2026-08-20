@@ -235,15 +235,24 @@ func ModelForTier(provider, tier string) string {
 		switch tier {
 		case TierFrontier:
 			// gemini-3.7-flash: the current top of the flash-first
-			// agentic line, and half the per-token price of the
-			// gemini-3.6-flash it replaced ($0.75/$3.75 per MTok
-			// against $1.50/$7.50). Promoted 2026-08-17 off a live
+			// agentic line. Promoted 2026-08-17 off a live
 			// Vertex UAT — all 31 judged corpus scenarios ran through
 			// it, scoring within noise of the 3.6-era board, with no
 			// mid-plan stall. That UAT is the bar: the parent project
 			// shipped an un-UAT'd frontier bump on the strength of a
 			// spec sheet (core-agent#579) and reverted it a day later
 			// (#580) when the parent agent stopped mid-plan.
+			//
+			// This entry USED to justify itself partly on price — "half
+			// the per-token cost of the gemini-3.6-flash it replaced,
+			// $0.75/$3.75 against $1.50/$7.50". That was wrong by
+			// 2026-08-19 and was never a durable argument. Google put
+			// 3.6-flash onto the same $0.75/$3.75 introductory rate, and
+			// BOTH revert to $1.50/$7.50 on 2027-01-01 (recorded in
+			// pkg/pricing's introductoryRates, which fails the build if
+			// the table has not moved by then). Promotion here rests on
+			// the UAT; price parity between the two is temporary and
+			// price is not what a frontier default is chosen on.
 			//
 			// The ported table originally said gemini-3.5-pro — a
 			// model id that never shipped (inherited from core-agent,

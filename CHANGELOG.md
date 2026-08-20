@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **A pricing regen said 32 rows changed and could not say which one mattered,
+  and the answer turned out to be two scheduled price doublings nobody had
+  written down.** Every regen re-stamps `UpdatedAt` on every row, so the diff a
+  reviewer opens is dominated by rows that did not move. On 2026-08-19 that was
+  31 of 32; the one that did — `gemini-3.6-flash`, halved — read exactly like
+  the other 31 from the PR body. `dev/regen-builtin-pricing --report` now writes
+  a "What moved" section that `pricing-regen.yml` puts at the top of the
+  auto-PR: the rows whose *values* changed, counted and itemized, computed from
+  the same timestamp-normalized comparison `--check` already used. Silence in
+  that section is now a claim rather than an absence.
+
+  Chasing that one row is what turned up the rest. `gemini-3.6-flash` had not
+  been permanently cut — Google had moved it onto `gemini-3.7-flash`'s
+  introductory rate, and **both revert from $0.75/$3.75 to $1.50/$7.50 on
+  2027-01-01**, cache reads doubling alongside. `gemini-3.7-flash` is the
+  gemini/vertex frontier default, so that is a `max_cost_usd` ceiling buying
+  half the tokens it is budgeted for, silently, from the day the rate changes.
+  Both rows are now in `introductoryRates` with the date. `pkg/taskclass`'s
+  frontier comment justified the promotion partly on 3.7-flash being "half the
+  price" of 3.6-flash, which stopped being true the day after it was written —
+  rewritten to rest on the UAT, which is what actually chose the model.
+
+  In the other direction, `claude-sonnet-5`'s increase to $3/$15 was
+  **cancelled**: the introductory $2/$10 is now Anthropic's standard price. The
+  dated assertion shipped in v0.4.x would have failed CI on 2026-09-01 over a
+  rate that is correct — a guard firing in the direction that gets guards
+  deleted. `introductoryRate.resolved` records that outcome as data, and
+  inverts the assertion to pin the rate at the former promotional number
+  instead. A table whose only exits are "fires" and "gets deleted" cannot say
+  that a price was provisional and then became standard.
+
 - **The guard against a constant metric was reporting a constant metric as
   healthy.** `internal/evals/measurability.go` exists to catch a column that
   is green because it never ran, and its own doc comment names upstream's two
