@@ -155,6 +155,54 @@ func TestWriteDelta_RowStoppedRunning(t *testing.T) {
 	}
 }
 
+// TestWriteDelta_ValidityMovesWhileTheScoresDoNot is why #169's counts
+// are in the delta at all: the two boards below score identically, and
+// the second one reached that score without reading anything.
+func TestWriteDelta_ValidityMovesWhileTheScoresDoNot(t *testing.T) {
+	board := func(v ValidityBoard) Summary {
+		return Summary{Tier: TierJudge, Judge: &JudgeSummary{
+			Model: "claude-opus-4-7", Grader: "claude-haiku-4-5",
+			Scenes:    []JudgeScenario{row("LC-01", 1, 1)},
+			Aggregate: []MetricSummary{{Metric: evals.MetricIntentCoverage, Mean: 1, Scored: 1}},
+			Validity:  v,
+		}}
+	}
+	prev := board(ValidityBoard{Calls: 12, EmptyReads: 2})
+	cur := board(ValidityBoard{
+		Calls: 12, EmptyReads: 9, Blind: []string{"LC-04", "LC-07"},
+		Malformed: []ScenarioViolation{{Scenario: "LC-02", Violation: evals.Violation{Kind: evals.ViolationUnknownTool}}},
+	})
+
+	out := delta(t, prev, cur)
+	if !strings.Contains(out, "no scenario moved") {
+		t.Fatalf("the scores were meant to be flat between these two boards:\n%s", out)
+	}
+	for _, want := range []string{
+		"malformed 0 → 1",
+		"empty reads 2 → 9",
+		"started running blind",
+		"LC-04, LC-07",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the delta is missing %q:\n%s", want, out)
+		}
+	}
+
+	// And back the other way: a board that stopped running blind should
+	// say so, or the only direction the delta reports is bad news.
+	back := delta(t, cur, prev)
+	if !strings.Contains(back, "no longer running blind: LC-04, LC-07") {
+		t.Errorf("the recovery was not reported:\n%s", back)
+	}
+
+	// Two boards with no calls at all get no section rather than a row
+	// of zeroes, which would read as a measurement that happened.
+	empty := delta(t, board(ValidityBoard{}), board(ValidityBoard{}))
+	if strings.Contains(empty, "malformed") {
+		t.Errorf("a delta between two boards with no calls printed a validity section:\n%s", empty)
+	}
+}
+
 // TestLoadSummary_RoundTripsARealBoard is the nightly's actual sequence:
 // yesterday's JSON on disk, today's run, one delta.
 func TestLoadSummary_RoundTripsARealBoard(t *testing.T) {

@@ -17,6 +17,7 @@ package judge
 import (
 	"context"
 	"iter"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -179,6 +180,185 @@ func TestRig_CeilingExposesTheWriteToolGap(t *testing.T) {
 	if len(capped) != 1 || capped[0] != "LC-13-rollback-needed-after-bad" {
 		t.Errorf("scenarios capped below 1.0 = %v, want only LC-13", capped)
 	}
+}
+
+// TestRig_RecordsHowEachToolWasCalledAndWhatItFound is #169's end of
+// the plumbing: the board used to record which tools a run reached for
+// and nothing else, so a run that called the right tool against a scope
+// holding nothing was indistinguishable from one that read it well. The
+// scripted model here does both in the same run, plus invents an
+// argument, and all three have to be legible in the outcome.
+func TestRig_RecordsHowEachToolWasCalledAndWhatItFound(t *testing.T) {
+	ds := loadCorpus(t)
+	tbl := loadIntents(t)
+	fx, err := Fixtures(ds, loadOverrides(t))
+	if err != nil {
+		t.Fatalf("Fixtures: %v", err)
+	}
+
+	var sc evals.Scenario
+	for _, s := range ds.Scenarios {
+		if s.ID == "LC-01-crashloopbackoff" {
+			sc = s
+		}
+	}
+	if sc.ID == "" {
+		t.Fatal("LC-01 not in the corpus")
+	}
+
+	// Pick the empty read from the fixture rather than by guessing which
+	// tool looks unrelated: a hand-picked name would quietly start
+	// answering the day the intent table grows an edge, and the test
+	// would keep passing while measuring nothing.
+	cluster, err := NewCluster(tbl, sc, fx[sc.ID])
+	if err != nil {
+		t.Fatalf("NewCluster: %v", err)
+	}
+	answering := map[string]bool{}
+	for _, name := range cluster.AnsweringTools() {
+		answering[name] = true
+	}
+	var reads, blind string
+	for _, name := range sortedShapes() {
+		switch {
+		case answering[name] && reads == "":
+			reads = name
+		case !answering[name] && blind == "":
+			blind = name
+		}
+	}
+	if reads == "" || blind == "" {
+		t.Fatalf("LC-01 needs one answering and one non-answering tool; answering=%v", cluster.AnsweringTools())
+	}
+
+	m := &scriptedModel{turns: []func(*adkmodel.LLMRequest) *adkmodel.LLMResponse{
+		func(*adkmodel.LLMRequest) *adkmodel.LLMResponse {
+			return call(reads, map[string]any{"scope": "production/api-server"})
+		},
+		func(*adkmodel.LLMRequest) *adkmodel.LLMResponse {
+			return call(blind, map[string]any{"scope": "kube-system"})
+		},
+		func(*adkmodel.LLMRequest) *adkmodel.LLMResponse {
+			// An argument the tool does not declare. ADK's functiontool
+			// rejects the whole call over it, so this one call is both an
+			// invented argument and an errored result — which is the
+			// point: the old board recorded it as a tool that was used.
+			return call(reads, map[string]any{"scope": "production", "since": "1h"})
+		},
+		func(*adkmodel.LLMRequest) *adkmodel.LLMResponse {
+			return &adkmodel.LLMResponse{
+				Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{genai.NewPartFromText("CRITICAL: the Secret has no DATABASE_URL key. Recommended action: add it.")}},
+				TurnComplete: true,
+				FinishReason: genai.FinishReasonStop,
+			}
+		},
+	}}
+
+	rig, err := NewRig(tbl, fx, m, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRig: %v", err)
+	}
+	out, err := rig.Run(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(out.Calls) != 3 {
+		t.Fatalf("recorded %d calls, want 3: %+v", len(out.Calls), out.Calls)
+	}
+	if got := out.Calls[0].Args["scope"]; got != "production/api-server" {
+		t.Errorf("the arguments did not reach the board: %v", out.Calls[0].Args)
+	}
+	// The digest has to be the reading the tool actually returned, not a
+	// label for it: the first words of the fixture's own text, collapsed
+	// onto one line.
+	reading, ok := cluster.ReadResult(reads, "production/api-server")
+	if !ok {
+		t.Fatalf("%s was chosen as the answering tool but found nothing", reads)
+	}
+	if head := strings.Join(strings.Fields(reading)[:8], " "); !strings.HasPrefix(out.Calls[0].Result, head) {
+		t.Errorf("the result digest is not the reading the tool returned:\n got %q\nwant a prefix of %q", out.Calls[0].Result, head)
+	}
+	if strings.Contains(out.Calls[0].Result, "no abnormal findings") {
+		t.Errorf("the answering tool's digest says it found nothing: %q", out.Calls[0].Result)
+	}
+	if !strings.Contains(out.Calls[1].Result, "no abnormal findings") {
+		t.Errorf("the empty read's digest did not say it found nothing: %q", out.Calls[1].Result)
+	}
+
+	byKind := map[string][]evals.Violation{}
+	for _, v := range out.Violations {
+		byKind[v.Kind] = append(byKind[v.Kind], v)
+	}
+	empties := byKind[evals.ViolationEmptyResult]
+	if len(empties) != 1 {
+		t.Fatalf("want exactly one empty read (%s, not %s): %v", blind, reads, out.Violations)
+	}
+	if empties[0].CallIndex != 1 || empties[0].Tool != blind {
+		t.Errorf("the empty read was attributed to call %d %s, want call 1 %s",
+			empties[0].CallIndex, empties[0].Tool, blind)
+	}
+	if !strings.Contains(empties[0].Detail, "scope=kube-system") {
+		t.Errorf("the empty read does not name the scope it read, which is the whole finding: %s", empties[0])
+	}
+	if extra := byKind[evals.ViolationUndeclaredArg]; len(extra) != 1 || extra[0].Arg != "since" {
+		t.Errorf("the invented argument was not reported: %v", out.Violations)
+	}
+	// ADK refuses the call over the undeclared property, so the same
+	// call is also an errored result. Both are reported: the argument
+	// says what the model did wrong, the error says what it cost.
+	if failed := byKind[evals.ViolationErrorResult]; len(failed) != 1 || failed[0].CallIndex != 2 {
+		t.Errorf("the rejected call was not reported as an error result: %v", out.Violations)
+	}
+	if !strings.HasPrefix(out.Calls[2].Result, "error:") {
+		t.Errorf("the rejected call's digest hides the rejection: %q", out.Calls[2].Result)
+	}
+	if unknown := byKind[evals.ViolationUnknownTool]; len(unknown) > 0 {
+		t.Errorf("a fixture tool was validated as unknown, so the schemas did not come from the tools: %v", unknown)
+	}
+}
+
+// TestToolSchemas_DescribeEveryFixtureTool. The schemas are read off the
+// built tools rather than written beside them; if that read ever returns
+// nothing useful, every recorded call would validate against an empty
+// catalog and the board would fill with unknown_tool.
+func TestToolSchemas_DescribeEveryFixtureTool(t *testing.T) {
+	tools, err := buildTools(&Cluster{}, &callLog{})
+	if err != nil {
+		t.Fatalf("buildTools: %v", err)
+	}
+	schemas, err := toolSchemas(tools)
+	if err != nil {
+		t.Fatalf("toolSchemas: %v", err)
+	}
+	if len(schemas) != len(toolShape) {
+		t.Fatalf("described %d of %d tools", len(schemas), len(toolShape))
+	}
+	for name := range toolShape {
+		s, ok := schemas[name]
+		if !ok {
+			t.Errorf("%s has no schema", name)
+			continue
+		}
+		props, _ := s["properties"].(map[string]any)
+		spec, _ := props["scope"].(map[string]any)
+		if spec == nil {
+			t.Errorf("%s declares no scope argument, so every call naming one would be reported as invented: %v", name, s)
+			continue
+		}
+		if got, _ := spec["type"].(string); got != "string" {
+			t.Errorf("%s: scope is declared %q, want string", name, got)
+		}
+	}
+}
+
+func sortedShapes() []string {
+	out := make([]string, 0, len(toolShape))
+	for name := range toolShape {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestBuildTools_EveryShapedToolIsDescribed keeps the model from being

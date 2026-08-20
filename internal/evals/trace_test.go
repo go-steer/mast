@@ -115,6 +115,54 @@ func TestTraceFromEvents_PairsAndOrders(t *testing.T) {
 	}
 }
 
+// TestTraceFromEvents_KeepsTheResult pins #169's addition. The
+// arguments say what the model asked for; only the result says whether
+// it learned anything, and every evaluator that wants to tell "never
+// called the tool" from "called it against a scope that held nothing"
+// reads it from here.
+func TestTraceFromEvents_KeepsTheResult(t *testing.T) {
+	failed := genai.NewPartFromFunctionResponse("k8s_triage_logs", map[string]any{"error": "namespace not found"})
+	failed.FunctionResponse.ID = "c2"
+
+	events := eventList{
+		modelEvent(callPart("k8s_triage_workload", "c1", nil)),
+		userEvent(respPart("k8s_triage_workload", "c1")),
+		modelEvent(callPart("k8s_triage_logs", "c2", nil)),
+		userEvent(failed),
+		modelEvent(callPart("k8s_event_timeline", "c3", nil)),
+	}
+
+	tr := TraceFromEvents(events, readOnlyPred(), nil)
+	if len(tr.Calls) != 3 {
+		t.Fatalf("Calls = %+v, want 3", tr.Calls)
+	}
+	if got := tr.Calls[0].Response["ok"]; got != true {
+		t.Errorf("Calls[0].Response = %v, want the recorded payload", tr.Calls[0].Response)
+	}
+	// The error key is what makes a failed call distinguishable from an
+	// empty one; dropping the response would collapse the two.
+	if got := tr.Calls[1].Response["error"]; got != "namespace not found" {
+		t.Errorf("Calls[1].Response = %v, want the handler error", tr.Calls[1].Response)
+	}
+	if tr.Calls[2].Response != nil {
+		t.Errorf("a call with no completion carries a response: %v", tr.Calls[2].Response)
+	}
+}
+
+// TestTraceFromEvents_OrphanCompletionKeepsItsResult. An orphan is the
+// one call whose response arrives without its call event; it is
+// recorded, so what it answered has to be recorded with it.
+func TestTraceFromEvents_OrphanCompletionKeepsItsResult(t *testing.T) {
+	events := eventList{userEvent(respPart("k8s_triage_workload", "orphan"))}
+	tr := TraceFromEvents(events, readOnlyPred(), nil)
+	if len(tr.Calls) != 1 {
+		t.Fatalf("Calls = %+v, want the orphan recorded", tr.Calls)
+	}
+	if got := tr.Calls[0].Response["ok"]; got != true {
+		t.Errorf("the orphan's response was dropped: %v", tr.Calls[0].Response)
+	}
+}
+
 func TestTraceFromEvents_Exclusions(t *testing.T) {
 	pred := readOnlyPred()
 

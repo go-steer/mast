@@ -161,9 +161,24 @@ func (c *Cluster) AnsweringTools() []string {
 // and erroring would tell the agent it had guessed wrong, which is
 // information a real cluster does not volunteer.
 func (c *Cluster) Read(tool, scope string) string {
+	reading, _ := c.ReadResult(tool, scope)
+	return reading
+}
+
+// ReadResult is Read plus whether the reading carried any observation.
+//
+// The agent is given only the prose, exactly as before — the fixture's
+// no-findings reading is deliberately indistinguishable from a real
+// cluster's silence, and making it self-describing would change what
+// the model reads and move every score on the board. The second return
+// is for the recorder: an empty read is the difference between "never
+// called the tool" and "called it against a scope that matched
+// nothing", and #169 exists because the board could not tell those
+// apart.
+func (c *Cluster) ReadResult(tool, scope string) (string, bool) {
 	p, ok := c.answers[tool]
 	if !ok || p.empty() {
-		return c.nothing(tool, scope)
+		return c.nothing(tool, scope), false
 	}
 
 	msgs := p.messages && len(c.obs.Messages) > 0
@@ -178,7 +193,7 @@ func (c *Cluster) Read(tool, scope string) string {
 		// only the subject echo" and declined to diagnose. An empty half
 		// is the same fact as a non-answering tool, so it says the same
 		// thing.
-		return c.nothing(tool, scope)
+		return c.nothing(tool, scope), false
 	}
 
 	var b strings.Builder
@@ -196,7 +211,7 @@ func (c *Cluster) Read(tool, scope string) string {
 			fmt.Fprintf(&b, "  - %s\n", f)
 		}
 	}
-	return b.String()
+	return b.String(), true
 }
 
 func (c *Cluster) nothing(tool, scope string) string {

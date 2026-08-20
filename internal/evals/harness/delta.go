@@ -157,7 +157,34 @@ func (s Summary) WriteDelta(w io.Writer, prev Summary) {
 			p("%s", line)
 		}
 	}
+
+	writeValidityDelta(p, prev.Judge.Validity, s.Judge.Validity)
 	p("")
+}
+
+// writeValidityDelta reports #169's counts run over run.
+//
+// Call validity is not a score, so none of the means above move when it
+// changes — which is exactly why it belongs in the delta. A run that
+// started making malformed calls, or started running blind on rows it
+// used to read, can hold its intent_coverage steady while the reason
+// behind the number has changed completely.
+func writeValidityDelta(p func(string, ...any), before, after ValidityBoard) {
+	if before.Calls == 0 && after.Calls == 0 {
+		return
+	}
+	p("")
+	p("  calls %d → %d, malformed %d → %d, empty reads %d → %d",
+		before.Calls, after.Calls,
+		len(before.Malformed), len(after.Malformed),
+		before.EmptyReads, after.EmptyReads)
+	gone, arrived := diffSets(before.Blind, after.Blind)
+	if len(arrived) > 0 {
+		p("  started running blind — every completed call came back empty: %s", strings.Join(arrived, ", "))
+	}
+	if len(gone) > 0 {
+		p("  no longer running blind: %s", strings.Join(gone, ", "))
+	}
 }
 
 // move renders one number's change, with the direction spelled out
