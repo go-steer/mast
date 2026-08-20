@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -683,12 +684,23 @@ func TestCheckDrift_StdoutVerdictIsTheCallerContract(t *testing.T) {
 	}
 }
 
+// stdoutMu serializes the os.Stdout swap in captureStdout. A process
+// has one stdout, so two parallel tests redirecting it race on the
+// variable and — worse than the race detector's complaint — each
+// captures whatever the other wrote while its pipe was installed.
+// Holding the lock across fn makes the swap-run-restore sequence atomic
+// with respect to other captures, which is the only invariant needed:
+// nothing else in this package writes to stdout.
+var stdoutMu sync.Mutex
+
 // captureStdout redirects os.Stdout for the duration of fn. checkDrift
 // writes its verdict with fmt.Println, so there is no injectable writer
-// to hook instead. Not parallel-safe — the tests using it must not call
-// t.Parallel().
+// to hook instead. Safe to call from t.Parallel() tests — captures are
+// serialized, not concurrent.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
+	stdoutMu.Lock()
+	defer stdoutMu.Unlock()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
