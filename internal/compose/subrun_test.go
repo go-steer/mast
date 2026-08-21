@@ -77,20 +77,33 @@ func (m *dispatchOnceModel) GenerateContent(_ context.Context, req *model.LLMReq
 	}
 }
 
-// countingSubRun is the host end of the seam.
+// countingSubRun is the host end of the seam. One value is both the
+// observer and the sink it hands out — this test cares that the seam is
+// threaded, not how a host scopes it.
 type countingSubRun struct {
 	mu       sync.Mutex
 	events   int
 	sessions []string
 }
 
-func (c *countingSubRun) ObserveSubRun(sessionID string, ev *session.Event) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.events++
-	c.sessions = append(c.sessions, sessionID)
+func (c *countingSubRun) SubRun(sessionID, _ string) planner.SubRunSink {
+	return &countingSubRunSink{c: c, sessionID: sessionID}
+}
+
+type countingSubRunSink struct {
+	c         *countingSubRun
+	sessionID string
+}
+
+func (s *countingSubRunSink) Observe(*session.Event) error {
+	s.c.mu.Lock()
+	defer s.c.mu.Unlock()
+	s.c.events++
+	s.c.sessions = append(s.c.sessions, s.sessionID)
 	return nil
 }
+
+func (s *countingSubRunSink) Close() {}
 
 // RootConfig.SubRunObserver has to reach the planner's dispatch tool,
 // not merely exist: a declared field that nothing threads is not a

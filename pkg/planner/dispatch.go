@@ -53,17 +53,22 @@ package planner
 //    metrics registry, the watchdog tap in cmd/mast). A specialist
 //    dispatched through this door could therefore spend without limit,
 //    report no tokens, and loop without being halted (#226). The seam
-//    that closes it is Config.SubRunObserver: the tool hands the host
-//    every sub-run event, so the host folds them into exactly the
-//    consumers the outer stream feeds. Coordinator and graph dispatch
-//    never had the gap — both funnel sub-agent events upward.
+//    that closes it is Config.SubRunObserver: the tool opens a sink per
+//    dispatch and hands it every sub-run event, so the host folds them
+//    into exactly the consumers the outer stream feeds. Coordinator and
+//    graph dispatch never had the gap — both funnel sub-agent events
+//    upward.
 //
 //    Enforcement here is better-shaped than at the outer stream, and
-//    the reason is worth keeping: an observer error stops only the
-//    SUB-run and hands the planner a labelled partial it can route
-//    around, rather than cancelling the session. That is the shape
-//    pkg/budget's own package doc calls out as needing a pre-call
-//    seam — the tool body turns out to be one.
+//    the reason is worth keeping: a sink error stops only the SUB-run
+//    and hands the planner a labelled partial it can route around,
+//    rather than cancelling the session. That is the shape pkg/budget's
+//    own package doc calls out as needing a pre-call seam — the tool
+//    body turns out to be one. Whether a host also escalates is the
+//    host's call, and the two consumers answer it differently: a budget
+//    ceiling is cumulative, so stopping the dispatch is the whole
+//    remedy, while a watchdog trip is a latch that means "refuse this
+//    session until an operator resets it" and cmd/mast escalates it.
 //
 // 2. request_operator_input mechanism — long-running tool pause, NOT
 //    a workflow RequestInput interrupt.
@@ -182,23 +187,51 @@ type invokeSpecialistArgs struct {
 	Input string `json:"input"`
 }
 
-// SubRunObserver is handed every event emitted by the private
-// sub-runner an invoke_specialist dispatch runs a specialist on.
+// SubRunObserver is asked for one sink per invoke_specialist dispatch,
+// and the sink is handed every event that dispatch's private sub-runner
+// emits.
 //
 // sessionID is the OUTER session's ID — the sub-run's own session is an
 // in-memory throwaway, and attributing a dispatch to it would file the
-// spend under a session no operator can name. The event's Author is the
-// specialist's agent name, which is what lets a host's per-specialist
-// ceilings bind here the same way they bind on a coordinator's dispatch.
+// spend under a session no operator can name. specialist is the roster
+// name being dispatched, for a host that labels or scopes by it; the
+// events' own Author carries the specialist's agent name, which is what
+// lets a host's per-specialist ceilings bind here the same way they
+// bind on a coordinator's dispatch.
 //
-// Returning an error stops the sub-run: the specialist's remaining work
-// is abandoned and invoke_specialist returns a partial result labelled
-// with the reason, so the planner sees a refusal it can route around
-// instead of a cancelled session. Observers must therefore return an
-// error only when the run genuinely should stop — a metering failure
-// that is not a ceiling should be logged and swallowed.
+// A sink per dispatch rather than one flat callback, because the two
+// hosts that consume this need opposite things from the boundary. The
+// budget meter is cumulative and would be happy with a flat stream; the
+// watchdog is not — it dedups an aggregator's re-emissions within a run
+// and counts repetition across runs, so it needs to know where one
+// dispatch ends and the next begins. A flat callback cannot say, and it
+// cannot say it at all under parallel dispatch, where two sub-runs
+// interleave their events into one callback with nothing to tell them
+// apart.
+//
+// Returning nil is allowed and means the host is not interested in this
+// dispatch.
 type SubRunObserver interface {
-	ObserveSubRun(sessionID string, ev *session.Event) error
+	SubRun(sessionID, specialist string) SubRunSink
+}
+
+// SubRunSink receives one dispatch's events, in order, and is closed
+// once when the dispatch ends however it ends.
+//
+// Returning an error from Observe stops the sub-run: the specialist's
+// remaining work is abandoned and invoke_specialist returns a partial
+// result labelled with the reason, so the planner sees a refusal it can
+// route around instead of a cancelled session. Sinks must therefore
+// return an error only when the run genuinely should stop — a metering
+// failure that is not a ceiling should be logged and swallowed.
+//
+// Close is where a sink that batches gets its last word: the watchdog's
+// end-of-run drain lands here, the same one watchdog.Tap defers at the
+// end of a turn. It cannot stop anything — the run is over — but it can
+// still trip a session-level latch the host holds.
+type SubRunSink interface {
+	Observe(ev *session.Event) error
+	Close()
 }
 
 func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Agent, obs SubRunObserver) (tool.Tool, error) {
@@ -221,12 +254,33 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 			}, nil
 		}
 		// The inner runner's accounting reaches the host through obs
-		// (#226). Still outstanding on the same seam: the recorded-effect
-		// outbox plugin (pkg/effects) is not installed here, so tool
-		// calls made inside a dispatch leave no durable intent records
-		// (the sub-session is in-memory). The outbox's containment holds
-		// one level up — invoke_specialist is ClassSpawning, refused
-		// outright in ambiguous-effect mode.
+		// (#226). Its PLUGINS do not, and that is the larger hole on the
+		// same seam: runner plugins are runner-scoped, this runner is
+		// constructed here with none, so a dispatched specialist's tool
+		// calls reach neither the effect outbox (no durable intent
+		// record) nor the write gate (no HITL approval). Measured, not
+		// inferred — an outer BeforeToolCallback sees invoke_specialist
+		// and finish_task and never the mutating call the specialist
+		// made inside. Tracked as #235; installing the host's plugins
+		// here is not mechanical, because an approval park suspends a
+		// turn to be resumed from a durable session and the sub-session
+		// is in-memory.
+		//
+		// What contains it today is one level up: invoke_specialist is
+		// ClassSpawning, refused outright in ambiguous-effect mode, and
+		// CheckCapabilitySplit refuses any roster whose specialists hold
+		// undeclared mutating tools — so reaching the hole takes a
+		// roster that declares capability: change_executor.
+		var sink SubRunSink
+		if obs != nil {
+			// Opened before the runner exists, so a host that scopes per
+			// dispatch has its scope for the whole of one, and closed
+			// however the dispatch ends — including the error returns
+			// below.
+			if sink = obs.SubRun(ctx.SessionID(), args.Name); sink != nil {
+				defer sink.Close()
+			}
+		}
 		r, err := runner.New(runner.Config{
 			AppName:           "planner_dispatch",
 			Agent:             d,
@@ -283,8 +337,8 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 			// Observe last: the host sees the event that crossed its
 			// ceiling, and the partial below carries whatever the
 			// specialist had produced up to it.
-			if obs != nil {
-				if err := obs.ObserveSubRun(ctx.SessionID(), ev); err != nil {
+			if sink != nil {
+				if err := sink.Observe(ev); err != nil {
 					halted = err
 					cancelSub()
 					break

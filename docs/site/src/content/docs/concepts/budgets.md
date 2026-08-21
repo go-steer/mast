@@ -155,6 +155,13 @@ observed from inside the tool call that started the sub-run, which is the
 one place mast can stop a specialist without stopping the session. What
 the planner does next is up to the planner; it is told, not overruled.
 
+The **watchdog** deliberately does not follow that exception. It watches
+the same dispatches, but a trip there halts the session as well as the
+dispatch, because a watchdog trip is a latch an operator has to clear
+rather than a cumulative total that stopping the sub-run already settles.
+See
+[it watches inside a planner dispatch too](/concepts/interop/#it-watches-inside-a-planner-dispatch-too).
+
 Both are deliberate, and both are the conservative reading. Neither is
 something to discover during an incident.
 

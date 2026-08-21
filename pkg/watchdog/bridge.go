@@ -192,19 +192,13 @@ func toolResponseError(resp map[string]any) string {
 // defeat the per-turn scoping of the dedup set.
 func Tap(events iter.Seq2[*session.Event, error], w Watchdog, onAlert func(Alert)) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
-		defer drainAlerts(w, onAlert)
+		defer Drain(w, onAlert)
 		// Per-turn dedup for watchdog observations (#363): scoped to
 		// this turn — cross-turn repeats are exactly the signal the
 		// watchdog exists to count.
 		seen := map[string]struct{}{}
 		for ev, err := range events {
-			if w != nil && ev != nil {
-				observed := ObserveEvent(w, ev, seen)
-				observed = ObserveToolResults(w, ev, seen) || observed
-				if observed {
-					drainAlerts(w, onAlert)
-				}
-			}
+			ObserveInto(w, ev, seen, onAlert)
 			if !yield(ev, err) {
 				return
 			}
@@ -212,12 +206,42 @@ func Tap(events iter.Seq2[*session.Event, error], w Watchdog, onAlert func(Alert
 	}
 }
 
-// drainAlerts is the post-turn drain. Pulls any alerts the watchdog
+// ObserveInto is Tap's per-event body, exported for a caller that has
+// events but no stream to wrap.
+//
+// A planner dispatch is exactly that caller (#226): invoke_specialist
+// runs its specialist on a private runner inside a tool body, so
+// nothing the sub-run emits ever reaches the outer stream Tap is
+// wrapping, and a specialist looping inside one dispatch was invisible
+// to the watchdog for as long as the door existed. Such a caller pairs
+// ObserveInto with a deferred Drain and gets the same two-stage drain
+// Tap gives — in-turn as soon as an observation lands, and once more at
+// the end — from the same code, so the two paths cannot drift.
+//
+// seen is the caller's dedup set and scopes the observation the way
+// Tap's per-turn map scopes a turn's: one map per logical run. Sharing
+// one across runs would suppress the cross-run repetition the watchdog
+// exists to count; minting one per event would let an aggregator's
+// re-emission count twice.
+//
+// Nil-safe in both directions — no watchdog, or no event, is a no-op.
+func ObserveInto(w Watchdog, ev *session.Event, seen map[string]struct{}, onAlert func(Alert)) {
+	if w == nil || ev == nil {
+		return
+	}
+	observed := ObserveEvent(w, ev, seen)
+	observed = ObserveToolResults(w, ev, seen) || observed
+	if observed {
+		Drain(w, onAlert)
+	}
+}
+
+// Drain is the post-turn drain. Pulls any alerts the watchdog
 // accumulated during the just-ended turn and dispatches them to
 // onAlert. No-op when no watchdog is wired; when onAlert is nil the
 // alerts are still pulled (so they don't leak into the next turn)
 // but silently discarded.
-func drainAlerts(w Watchdog, onAlert func(Alert)) {
+func Drain(w Watchdog, onAlert func(Alert)) {
 	if w == nil {
 		return
 	}
