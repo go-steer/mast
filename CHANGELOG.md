@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- **MCP tool responses are digested before the model reads them, on by
+  default.** `pkg/digest` — a structural JSON pruner, a raw-payload
+  store, and per-method telemetry — shipped in v0.2 with no caller in
+  mast: the wrap that drives it upstream was never ported, so a triage
+  loop paid for every byte of `managedFields` on every subsequent turn,
+  and two attach protocol fields (`latency_ms` since v1.2.0, `savings`
+  since v1.3.0) plus `/usage`'s `digest_methods` block were documented
+  surfaces nothing could ever fill (#221). Both sidecars now ride
+  digested responses only.
+
+  Now every MCP toolset is wrapped. **Responses under 8000 bytes come
+  back verbatim** — upstream wraps those too, but a passthrough
+  re-serializes a small map into a JSON string and costs more tokens
+  than the map it replaced. Verbatim means mast adds nothing at all to
+  them, not even a timing field: the write gate re-reads a change-set
+  precondition and compares it to what the same read returned at
+  approval time, so a wall clock in an unchanged response would void an
+  operator's grant roughly whenever the two reads landed in different
+  milliseconds. For the same reason a precondition read runs the tool
+  underneath the wrap, never a digest of it. Larger responses are pruned
+  and arrive with `digest`, `raw_bytes`, `method`, `latency_ms`,
+  `call_id` and a `savings` breakdown. Nothing is sent to a
+  second model to do it: the port is deliberately structural-only, so
+  digesting adds no spend, no latency tail, and no new failure mode to a
+  tool call, and `savings.subagent_*` is absent by construction.
+
+  Because a digest can drop a field that mattered, Task-mode specialists
+  also get **`retrieve_raw`**, which exchanges a `call_id` for the
+  original payload. It is registered only alongside a working store, and
+  it reaches specialists as a built-in tool rather than a toolset on
+  purpose — a toolset is matched to a `tools.mcp: - server:` entry by
+  name, so the rosters that enumerate their tools, the posture mast
+  recommends, would have been exactly the ones that silently lost the
+  escape hatch. It grants no new reach: it returns bytes the specialist
+  already received. Its description spends most of its length talking
+  the model out of calling it, which is load-bearing — upstream measured
+  a ~6× cost increase on an identical triage run from a model that
+  re-inflated digests to double-check them.
+
+  Every failure degrades to the undigested response: a tool call that
+  worked does not fail because the thing meant to make it *smaller* did
+  not. Raw payloads are scratch state under the system temp directory,
+  never beside `--session-db`, and a store that cannot be created leaves
+  `retrieve_raw` unregistered with a warning rather than refusing to
+  serve.
+
+  `--mcp-digest=false` turns the whole thing off; `no_digest: true` on a
+  server in `mcp.json` opts out one server. `GET /tools` lists
+  `retrieve_raw` when it is live and omits it when it is not.
+
 - **A planner roster that holds a change executor no longer starts when
   the bundle asked for the write to be gated.** The write gate and the
   effect outbox are runner plugins, and `invoke_specialist` builds its

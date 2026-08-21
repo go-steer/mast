@@ -225,6 +225,11 @@ when the operator answers, once just before each granted call fires. If a
 watched field moved in between, the grant is voided and the call goes back
 to the operator with a question naming the field and both values.
 
+Both of those reads run the tool itself, underneath the [digest
+wrap](/reference/mcp-servers/#digesting-large-tool-responses). Digesting
+exists to shrink what a *model* reads; this read is mast's own, and a
+digest of it would drop the very field the comparison is about.
+
 `hitl.change_set_ttl` (default 10 minutes) is the backstop for everything a
 precondition cannot see. A tool that declares no precondition gets the TTL
 and nothing else — and its question **says so**, in those words, rather than

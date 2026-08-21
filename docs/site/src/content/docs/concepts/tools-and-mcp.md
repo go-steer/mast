@@ -101,10 +101,19 @@ and URL context — are wired through the provider rather than the catalog
 (`finish_task`, `transfer_to_agent`, input requests) are part of the loop
 itself, are excluded from the mutation scan, and never park.
 
+A second builtin appears only when it has something to do: `retrieve_raw`,
+the escape hatch for the [MCP response
+digest](/reference/mcp-servers/#digesting-large-tool-responses). It is
+registered on Task-mode specialists when digesting is on and a wired
+server is being digested, and it exchanges a digested response's
+`call_id` for the original payload. It sits outside the allowlist axes
+above on purpose — it returns bytes the specialist has already been
+given, so there is no reach for an allowlist to withhold.
+
 ## Reference
 
 - [`mcp.json`](/reference/mcp-servers/) — schema, transports, credentials,
-  stdio hardening.
+  stdio hardening, response digesting.
 - [Workload bundle](/reference/workload-bundle/) — `tool_catalog` and
   per-specialist `tools`.
 - [Write gate](/reference/write-gate/) — what happens to a call classified

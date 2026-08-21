@@ -133,3 +133,17 @@ one. Changing that would move every dashboard's denominator, so the
 counter is left alone and the span carries the refusal instead. If
 you're asking "why didn't my inject run", that is a trace query, not a
 metrics one.
+
+### `mcp.tool_call`
+
+Every MCP tool call that goes through the [digest
+wrap](/reference/mcp-servers/#digesting-large-tool-responses) opens one,
+carrying `mast.mcp.tool_name`. Its child, `digest.process`, is where the
+pruning happens and carries the method chosen and the reduction
+achieved.
+
+Two limits worth knowing. The span covers the *wrapped* call, so a
+server with `no_digest: true` and a daemon running `--mcp-digest=false`
+emit nothing here. And it does not yet parent the upstream HTTP round
+trip — mast has no `otelhttp` on the MCP transport, so a hosted server's
+request time shows as span duration rather than as a child.

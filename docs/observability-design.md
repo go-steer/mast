@@ -46,7 +46,7 @@ Every level of execution emits a span:
 - **Sub-workflow** — one reference-graph shape instantiation.
 - **HITL** — one `RequestInputEvent` from emit to resume.
 - **Pause** — one durable-execution pause from `Pause()` call to resume trigger.
-- **MCP call** — one MCP tool invocation, with the underlying protocol call as a child span.
+- **MCP call** — one MCP tool invocation, with the underlying protocol call as a child span. *(Half-shipped v0.5, 2026-08-21, with the MCP digest wrap: `mcp.tool_call` carries `mast.mcp.tool_name` and parents `digest.process`. The protocol call is **not** a child yet — that needs `otelhttp` on the MCP transport, which mast does not wire. A `no_digest: true` server and a `--mcp-digest=false` daemon emit no span at all, because the wrap is where the span lives.)*
 - **Provider call** — one LLM call to Gemini / Claude / Vertex (spanning the raw HTTP request).
 - **A2A server task** — one A2A task hosted by mast, from submission to terminal state (see [`./a2a-design.md`](./a2a-design.md)).
 - **A2A client call** — one outbound A2A invocation to a remote agent, with `traceparent` propagation.

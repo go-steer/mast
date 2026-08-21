@@ -41,18 +41,25 @@ import "time"
 // clock time spent in the upstream tool call. Additive — consumers
 // on older schema versions simply don't see the field. Upstream it is
 // populated by both the MCP digest wrap (pkg/mcp/digest_wrap.go) and
-// the plain rename passthrough (pkg/mcp/namespace.go), so operators
-// see per-call timing whether digest is enabled or not. **mast emits
-// neither**: it ported neither file, so the sidecar is decode-only
-// here. TurnComplete.LatencyMs is a different, turn-grain field and
-// is populated. See #221.
+// the plain rename passthrough (pkg/mcp/namespace.go). mast emits it
+// from the digest wrap only (#221), and only on a call the wrap
+// actually digested: a response mast hands back undigested is handed
+// back *verbatim*, because mast compares two reads of the same tool
+// for equality when it checks a change-set precondition (pkg/approval)
+// and a wall clock in an unchanged response would void the operator's
+// grant. So an undigested call, a `no_digest: true` server, and a
+// daemon on --mcp-digest=false all carry no sidecar.
+// TurnComplete.LatencyMs is a different, turn-grain field and is
+// populated regardless.
 //
 // v1.3.0 (core-agent#223 Phase 4): tool-result response payloads now
 // carry an optional `savings` object reporting the digest wrap's
 // per-call byte + token reduction, router path, and (agentic path
 // only) subagent usage. Sidecar rides the same response-map channel
-// as v1.2.0's latency_ms. Fully additive — and decode-only on mast
-// for the same reason, since pkg/digest has no caller here.
+// as v1.2.0's latency_ms. Fully additive. mast emits the byte + token
+// half on every digested call; the subagent keys are never present,
+// because mast's wrap is structural-only and has no subagent to
+// charge (#221).
 //
 // v1.4.0 (core-agent#329): capabilities frame extended with four optional
 // fields — `features` (feature-flag map), `slash_commands` (dynamic

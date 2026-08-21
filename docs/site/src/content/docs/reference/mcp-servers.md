@@ -88,6 +88,7 @@ Two catalog-level defenses harden stdio further, independent of the gate:
 | `servers.<name>.env_mode` | string | `stdio` only. `inherit` (default) — the child inherits the full daemon environment. `clean` — the child starts from an empty environment and receives only `env_passthrough` variables plus `env`. |
 | `servers.<name>.env_passthrough` | list of strings | `stdio` only, and only under `env_mode: "clean"`. Names of daemon environment variables to copy through to the child (each copied only if set). Rejected under `inherit`, where the child already sees everything. |
 | `servers.<name>.env` | map | `stdio` only. Environment variables layered on top (they override an inherited or passed-through variable of the same name). |
+| `servers.<name>.no_digest` | bool | Optional. `true` opts this server out of response digesting — its tool responses reach the model byte-for-byte however large they are. See [digesting large tool responses](#digesting-large-tool-responses). |
 
 Unknown fields are tolerated (forward-compatibility with richer catalogs);
 the loader validates the version, each server name, and the per-transport
@@ -135,6 +136,96 @@ than a bearer token.
   startup. It then lives for the duration of the daemon (mast holds the
   toolset for the process lifetime and does not tear individual toolsets
   down); the child exits when it closes its own stdio or the daemon exits.
+
+## Digesting large tool responses
+
+A single `get_k8s_resource` against a busy namespace can return tens of
+thousands of tokens of JSON, most of it `managedFields` and status
+history the model will never read. In an unattended loop that payload is
+paid for on every subsequent turn, because it stays in the context.
+
+So mast routes MCP tool responses through a **structural digest** before
+the model sees them. This is **on by default**; `--mcp-digest=false`
+turns it off daemon-wide.
+
+- **Responses under 8000 bytes are untouched** — verbatim, not merely
+  unpruned: mast adds no field of its own, not even a timing one. Most
+  tool calls are small, and compressing a three-field answer costs more
+  than it saves. Verbatim is also a correctness requirement: mast
+  compares two reads of the same tool for equality when it re-checks a
+  [change-set precondition](/concepts/approvals/), and a
+  wall clock in an otherwise unchanged response would void an approval
+  the operator already gave.
+- **Larger responses are pruned structurally** — long arrays are
+  sampled, deep objects collapsed — and arrive as a `digest` string with
+  `raw_bytes`, `method`, `latency_ms`, and a `savings` breakdown
+  alongside it. Nothing
+  is sent to another model to do it: the pruner is deterministic code,
+  so digesting adds no tokens, no spend, and no second failure mode to a
+  tool call.
+- **The original is kept.** Every digested response carries a `call_id`,
+  and the model gets a `retrieve_raw` tool that exchanges that id for the
+  full payload. A digest that dropped a load-bearing field is a
+  recoverable mistake rather than a silent one.
+
+`retrieve_raw` is registered only when digesting is on and at least one
+wired server is being digested, and it is handed to every Task-mode
+specialist regardless of that specialist's `tools.mcp:` allowlist — it
+returns bytes the specialist already received, so it grants no reach the
+allowlist was withholding.
+
+:::note[retrieve_raw is deliberately discouraging]
+Its description spends most of its length telling the model *not* to call
+it. That is load-bearing: a model that re-inflates every digest to
+"double-check" it turns the whole mechanism into pure overhead — measured
+upstream as a ~6× cost increase on an otherwise identical triage run.
+:::
+
+Raw payloads are scratch state. They live under the system temp
+directory for the life of the process and are never written next to
+`--session-db`; if the store cannot be created, mast logs a warning,
+keeps digesting, and leaves `retrieve_raw` unregistered.
+
+### Opting a server out
+
+Some servers return payloads that must reach the model verbatim — a
+server whose whole job is to return a file's contents, say. Set
+`no_digest` on that entry:
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "gke": {"transport": "http", "url": "https://container.googleapis.com/mcp"},
+    "filesystem": {
+      "transport": "stdio",
+      "command": "/usr/local/bin/fs-mcp-server",
+      "no_digest": true
+    }
+  }
+}
+```
+
+The opt-out is per server: `gke` above is still digested. Nothing
+validates `no_digest` against anything else in the catalog — declining a
+size optimization cannot be a misconfiguration.
+
+### Watching it work
+
+`GET /usage` on the [attach surface](/concepts/interop/) grows a
+`digest_methods` block once something has been digested — calls per
+method and cumulative bytes saved:
+
+```json
+"digest_methods": {
+  "counts": {"structural_json": 14, "passthrough": 2},
+  "bytes_saved": {"structural_json": 481203, "passthrough": 0}
+}
+```
+
+The counters are process-wide, not per session, and they count *routed*
+calls: a daemon whose tool responses are all under the threshold reports
+no block at all, and neither does one running with `--mcp-digest=false`.
 
 ## When an HTTP server rejects a call
 

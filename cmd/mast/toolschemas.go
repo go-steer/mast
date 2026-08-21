@@ -136,11 +136,19 @@ func (ts *toolSchemas) resolve(name string) (tool.Tool, error) {
 // description only), so the handle is asserted rather than imported;
 // a tool that does not satisfy it cannot be a precondition read, which
 // is reported as such rather than treated as "nothing changed".
+//
+// The handle is unwrapped first. The wired toolsets carry pkg/mcp's
+// digesting wrap, which exists to shrink what a *model* reads; this
+// read goes into a digest and a field comparison instead, so a digest
+// envelope here would be pure loss — it drops the fields the operator's
+// approval was recorded against and stamps a fresh call id on every
+// call, which reads as "the cluster moved" forever after.
 func (ts *toolSchemas) read(ctx adkagent.Context, name string, args map[string]any) (map[string]any, error) {
 	t, err := ts.resolve(name)
 	if err != nil {
 		return nil, err
 	}
+	t = unwrapTool(t)
 	runner, ok := t.(interface {
 		Run(ctx adkagent.Context, args any) (map[string]any, error)
 	})
@@ -155,6 +163,25 @@ func (ts *toolSchemas) read(ctx adkagent.Context, name string, args map[string]a
 		return nil, fmt.Errorf("precondition read %s: %w", name, err)
 	}
 	return result, nil
+}
+
+// unwrapTool peels the wrappers a caller outside the model's dispatch
+// path should see through — today that is pkg/mcp's digesting wrap.
+// Bounded rather than unbounded because an Unwrap that returns its own
+// receiver would otherwise spin; no real chain is more than one deep.
+func unwrapTool(t tool.Tool) tool.Tool {
+	for i := 0; i < 8; i++ {
+		u, ok := t.(interface{ Unwrap() tool.Tool })
+		if !ok {
+			return t
+		}
+		inner := u.Unwrap()
+		if inner == nil {
+			return t
+		}
+		t = inner
+	}
+	return t
 }
 
 // refresh re-lists every wired toolset. Called with ts.mu held, which

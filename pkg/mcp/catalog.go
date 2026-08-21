@@ -110,6 +110,18 @@ type ServerConfig struct {
 	// is rejected under inherit mode — where the child already inherits
 	// everything, a passthrough list would give a false sense of scoping.
 	EnvPassthrough []string `json:"env_passthrough,omitempty"`
+
+	// NoDigest opts this server out of the MCP digest wrap, so its tool
+	// responses reach the model exactly as the server sent them (both
+	// transports). The daemon-wide switch is --mcp-digest; this is the
+	// per-server escape hatch for a server whose responses are small
+	// enough that digesting is pure overhead, or whose exact bytes are
+	// what the specialist is there to read.
+	//
+	// It is not validated against anything: opting out of a size
+	// optimization cannot be a misconfiguration, and a catalog written
+	// for a build with the wrap disabled must still load.
+	NoDigest bool `json:"no_digest,omitempty"`
 }
 
 // AuthConfig selects an authentication method for an HTTP MCP server.

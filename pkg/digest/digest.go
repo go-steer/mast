@@ -45,15 +45,18 @@
 // the model loop. Callers pass an LLMFallback function if they want
 // one.
 //
-// And in mast there are no callers. The MCP wrapper that drives this
-// upstream (pkg/mcp/digest_wrap.go) was not ported, so nothing in the
-// daemon calls Process: `go list -deps ./cmd/mast` does not contain
-// this package. Three surfaces still read as though it were live and
-// are annotated where they are — attach.UsageInfo.DigestMethods
-// (never populated), the attach protocol's v1.2.0/v1.3.0 tool-result
-// sidecars (never emitted), and Savings.Subagent* (never filled).
-// The package is complete, tested and embeddable; it is just not on
-// mast's own path. Wire it or drop it: #221.
+// The caller is pkg/mcp's digest wrap (#221, wired 2026-08-21): every
+// MCP tool response over DefaultDigestThreshold goes through Process
+// before the model sees it, and the raw payload lands in a Store that
+// backs the model-facing retrieve_raw tool. --mcp-digest=false turns
+// the wrap off; `no_digest: true` on an mcp.json server opts that
+// server out.
+//
+// One path stays unwired, and on purpose: LLMFallback. mast supplies
+// none, so a payload the structural pruner cannot reduce takes the
+// bounded passthrough below rather than a small-tier subagent, and
+// Savings.Subagent* stay zero on this server. See DigestOptions in
+// pkg/mcp for why.
 //
 // Full design: core-agent's docs/digest-design.md. Tracking issue: core-agent#128.
 package digest
@@ -119,17 +122,21 @@ type Result struct {
 // LLM (that lives in the caller, e.g. the MCP agentic wrapper).
 // Callers populate these AFTER Process returns from the subagent's
 // ResponseUsage, then hand the Result off to whatever surfaces the
-// telemetry (eventlog, /stats, OTel span attributes). In mast no
-// caller does, because in mast there is no caller — see the package
-// doc and #221.
+// telemetry (eventlog, /stats, OTel span attributes). mast's caller
+// does not: pkg/mcp's wrap is structural-only and supplies no
+// LLMFallback, so on this server these three fields are always zero
+// and the router never reaches MethodLLMFallback. They stay on the
+// struct because Process still honors an LLMFallback an embedding
+// host passes in — the package is usable outside the daemon.
 //
 // The buckets stop at input and output. A subagent running on a
 // cache-warm model spends most of its input on cached tokens priced
 // differently from fresh ones, so a session billed from these three
 // fields alone is billed at the uncached rate for reads it did not
 // pay full price for. Upstream carries the cache buckets through
-// (core-agent 3de4134); mast does not, and widening the struct before
-// anything writes it would be three more fields nobody fills.
+// (core-agent 3de4134); mast does not, and widening the struct while
+// mast's own wrap writes nothing here would be three more fields
+// nobody fills. That port lands with an LLM fallback or not at all.
 //
 // Dollar-cost figures are NOT stored here. They're computed at
 // display time via usage.Tracker's layered pricing chain so

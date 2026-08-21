@@ -57,6 +57,7 @@ import (
 	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/config"
+	"github.com/go-steer/mast/pkg/digest"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/envelope"
 	"github.com/go-steer/mast/pkg/eventlog"
@@ -122,6 +123,7 @@ func run() {
 		autoResume       = flag.Bool("auto-resume", true, "serve mode: on boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (coordinator dispatch only in v0.2). --auto-resume=false disables")
 		autoResumeWindow = flag.Duration("auto-resume-window", time.Hour, "serve mode: only auto-resume sessions interrupted within this window; older interruptions are left for an operator (0 disables the freshness gate)")
 		watchdogFlag     = flag.String("watchdog", "", "behavioral watchdog posture, a ladder where each rung includes the one before it: `warn` (log a detected tool loop and let the turn run), `feedback` (also tell the model, on its next turn, what it is doing), or `enforce` (also cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical in all three. Unset takes the workload's own safety.watchdog, then mast's default (feedback) — the startup line says which")
+		mcpDigest        = flag.Bool("mcp-digest", true, "route MCP tool responses through the structural digest (pkg/digest) before they reach the model: JSON is pruned deterministically (identifier keys kept, long strings truncated, long arrays collapsed head+tail), prose is passed through bounded. Responses under 8000 bytes are untouched. Also registers `retrieve_raw` so a specialist can fetch the un-digested payload back when a digest dropped something it needs. --mcp-digest=false is the kill switch; per-server opt-out is `no_digest: true` in mcp.json")
 		showVersion      = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -247,7 +249,7 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
-	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow, *watchdogFlag); err != nil {
+	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow, *watchdogFlag, *mcpDigest); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
@@ -424,7 +426,7 @@ func newResumeByToken(
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration, watchdogFlag string) error {
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration, watchdogFlag string, mcpDigest bool) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -529,7 +531,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	subObs := &daemonSubRunObserver{}
 
 	built, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode,
-		hostSeams{pause: pauseRec, subRun: subObs})
+		hostSeams{pause: pauseRec, subRun: subObs, digest: newDigestOptions(logger, mcpDigest)})
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		return err
@@ -1405,6 +1407,12 @@ func workloadNames(cfg *config.Config) []string {
 type hostSeams struct {
 	pause  planner.PauseRecorder
 	subRun planner.SubRunObserver
+
+	// digest configures the MCP digest wrap (#221). Nil turns it off,
+	// which is what --mcp-digest=false hands over and what a caller
+	// with no MCP surface — every test that builds a root without one —
+	// passes by leaving the zero value alone.
+	digest *mastmcp.DigestOptions
 }
 
 func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, seams hostSeams) (rootBuild, error) {
@@ -1453,22 +1461,23 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		return rootBuild{}, err
 	}
 
-	toolsets, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName)
+	toolsets, extraTools, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName, seams.digest)
 	if err != nil {
 		return rootBuild{}, err
 	}
 
 	a, builtin, err := compose.BuildRoot(ctx, compose.RootConfig{
-		Bundle:         bundle,
-		Specs:          loaded,
-		Model:          llm,
-		ModelName:      modelName,
-		Provider:       providerName,
-		Toolsets:       toolsets,
-		Dispatch:       compose.Dispatch(resolved),
-		Logger:         logger,
-		PauseRecorder:  seams.pause,
-		SubRunObserver: seams.subRun,
+		Bundle:          bundle,
+		Specs:           loaded,
+		Model:           llm,
+		ModelName:       modelName,
+		Provider:        providerName,
+		Toolsets:        toolsets,
+		SpecialistTools: extraTools,
+		Dispatch:        compose.Dispatch(resolved),
+		Logger:          logger,
+		PauseRecorder:   seams.pause,
+		SubRunObserver:  seams.subRun,
 	})
 	if err != nil {
 		return rootBuild{}, err
@@ -1478,7 +1487,13 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		bundle:   &bundle,
 		specs:    loaded,
 		toolsets: toolsets,
-		builtin:  builtin,
+		// retrieve_raw joins the planner's vocabulary in the catalog:
+		// /tools answers "what can this daemon do" (#205), and a tool
+		// specialists can actually call is part of that answer whether
+		// compose installed it or the MCP wiring did. Concatenated into
+		// a fresh slice rather than appended in place — compose's return
+		// value is not this function's to extend.
+		builtin:  append(append([]tool.Tool(nil), builtin...), extraTools...),
 		dispatch: resolved,
 	}, nil
 }
@@ -1494,10 +1509,11 @@ type rootBuild struct {
 	bundle   *workload.Bundle
 	specs    []specialists.Spec
 	toolsets []tool.Toolset
-	// builtin are the non-MCP tools compose wired onto the root — the
-	// planner's control-plane vocabulary, empty under every other
-	// dispatch shape. Same reason as toolsets: the wiring site is the
-	// only place the list still exists (#137).
+	// builtin are the non-MCP tools this daemon wired: the planner's
+	// control-plane vocabulary from compose (empty under every other
+	// dispatch shape, #137) plus retrieve_raw when the MCP digest wrap
+	// is active (#221). Same reason as toolsets: the wiring site is the
+	// only place the list still exists.
 	builtin  []tool.Tool
 	dispatch string
 }
@@ -1551,27 +1567,38 @@ func resolveDispatch(flagValue string, bundle *workload.Bundle) string {
 // dispatches by transport kind (streamable HTTP or a local stdio process)
 // — no server is special-cased.
 //
-// It is a no-op (nil, nil) under the echo model, which never emits tool
+// It is a no-op under the echo model, which never emits tool
 // calls, so wiring MCP there is pure startup cost (and, for credentialed
 // HTTP servers, would surface auth failures as workload-load errors rather
 // than "no real LLM"). The scripted model and real providers do wire MCP;
 // a stdio server needs no credentials, so offline tool-driving works under
 // --model scripted. A workload that references a server absent from the
 // catalog is a fatal error rather than a silently-dropped tool.
-func wireMCPToolsets(ctx context.Context, logger *slog.Logger, bundle workload.Bundle, cfgDir, modelName string) ([]tool.Toolset, error) {
+//
+// digestOpts, when non-nil, routes every wired server's tool responses
+// through pkg/digest (#221) and the second return value carries the
+// retrieve_raw escape hatch that makes that safe. The two travel
+// together deliberately: a digest with no way back to the raw payload
+// is a lossy compression the model cannot appeal. A server that set
+// `no_digest: true` is wrapped by neither — WithDigest returns it
+// unchanged — but retrieve_raw is still registered for the servers that
+// were, and a roster where every server opted out gets no tool, because
+// nothing will have stored anything for it to fetch.
+func wireMCPToolsets(ctx context.Context, logger *slog.Logger, bundle workload.Bundle, cfgDir, modelName string, digestOpts *mastmcp.DigestOptions) ([]tool.Toolset, []tool.Tool, error) {
 	if modelName == "echo" || len(bundle.ToolCatalog.MCP) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	catalogPath := filepath.Join(cfgDir, mastmcp.CatalogFileName)
 	catalog, err := mastmcp.LoadCatalog(catalogPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var toolsets []tool.Toolset
+	digested := 0
 	for _, ref := range bundle.ToolCatalog.MCP {
 		scfg, ok := catalog.Servers[ref.Server]
 		if !ok {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"workload references MCP server %q not defined in %s", ref.Server, catalogPath)
 		}
 		// A stdio server executes a local command — audit-log the
@@ -1586,12 +1613,58 @@ func wireMCPToolsets(ctx context.Context, logger *slog.Logger, bundle workload.B
 		}
 		ts, err := mastmcp.NewToolset(ctx, ref.Server, scfg)
 		if err != nil {
-			return nil, fmt.Errorf("wire MCP server %q: %w", ref.Server, err)
+			return nil, nil, fmt.Errorf("wire MCP server %q: %w", ref.Server, err)
+		}
+		serverOpts := digestOpts
+		if scfg.NoDigest {
+			serverOpts = nil
+		}
+		if wrapped := mastmcp.WithDigest(ts, ref.Server, serverOpts); wrapped != ts {
+			ts = wrapped
+			digested++
 		}
 		toolsets = append(toolsets, ts)
-		logger.Info("MCP toolset wired", "server", ref.Server, "transport", scfg.Transport)
+		logger.Info("MCP toolset wired",
+			"server", ref.Server, "transport", scfg.Transport, "digest", serverOpts != nil)
 	}
-	return toolsets, nil
+	if digested == 0 || digestOpts == nil || digestOpts.Store == nil {
+		return toolsets, nil, nil
+	}
+	rawTool, err := mastmcp.NewRetrieveRawTool(digestOpts.Store)
+	if err != nil {
+		return nil, nil, fmt.Errorf("wire retrieve_raw: %w", err)
+	}
+	logger.Info("MCP digest wrap active",
+		"servers", digested, "threshold_bytes", mastmcp.DefaultDigestThreshold, "escape_hatch", mastmcp.RetrieveRawToolName)
+	return toolsets, []tool.Tool{rawTool}, nil
+}
+
+// newDigestOptions builds the MCP digest configuration for a serve run,
+// or nil when --mcp-digest=false turned the wrap off.
+//
+// The CCR store is scratch: it holds the raw payload of a tool call only
+// so retrieve_raw can hand it back during the same run, and nothing
+// reads it after the process exits. So it lives under os.TempDir()
+// rather than beside --session-db — house rule #5, and the honest
+// lifetime. A store that cannot be created is not fatal: digesting
+// still runs, retrieve_raw goes unregistered, and the log says so,
+// because losing the escape hatch is worse than losing the compression
+// but neither is worth refusing to serve over.
+func newDigestOptions(logger *slog.Logger, enabled bool) *mastmcp.DigestOptions {
+	if !enabled {
+		logger.Info("MCP digest wrap disabled (--mcp-digest=false)")
+		return nil
+	}
+	opts := &mastmcp.DigestOptions{}
+	dir := filepath.Join(os.TempDir(), "mast", "digest-raw")
+	store, err := digest.NewFilesystemStore(dir)
+	if err != nil {
+		logger.Warn("MCP digest raw-payload store unavailable; retrieve_raw will not be registered",
+			"dir", dir, "error", err.Error())
+		return opts
+	}
+	opts.Store = store
+	return opts
 }
 
 // reservedPayloadErr rejects payloads whose derived session ID uses
