@@ -122,7 +122,7 @@ func (ts *toolSchemas) resolve(name string) (tool.Tool, error) {
 // runOwnBehalf runs a wired tool that no model asked for and returns
 // its result.
 //
-// There are exactly TWO callers, and the count is the point — this is
+// There are exactly THREE callers, and the count is the point — this is
 // mast's whole surface for calling a tool outside the model's dispatch
 // path, and each caller is a named exception with its own fence:
 //
@@ -137,9 +137,18 @@ func (ts *toolSchemas) resolve(name string) (tool.Tool, error) {
 //     mast's is that it is mutating and would otherwise park the cycle
 //     for a human on every fire. compose.CheckMonitorCollectSurface
 //     refuses to start if a collect tool is reachable from any roster.
+//   - ack (v0.5 W4.6): an operator's acknowledgement, forwarded to
+//     whoever owns the finding state. Fenced by REACHABILITY through the
+//     same check, and additionally by ARRIVAL: the only thing that calls
+//     it is the daemon's authenticated /monitor-ack route, so every ack
+//     carries an identity resolved from a credential. This is the one
+//     exception whose argument mast overwrites rather than passes
+//     through — subject_key and ack_by go on last, over the bundle's
+//     literals, because an operator identity a caller or a YAML file
+//     could set is not an identity.
 //
-// A third caller needs its own fence and its own paragraph here, not a
-// third call site.
+// A fourth caller needs its own fence and its own paragraph here, not a
+// fourth call site.
 //
 // Two properties are shared and neither is optional.
 //
@@ -203,6 +212,23 @@ func (ts *toolSchemas) collect(ctx adkagent.Context, name string, args map[strin
 	result, err := ts.runOwnBehalf(ctx, name, args, "serve as a monitor.collect call")
 	if err != nil {
 		return nil, fmt.Errorf("monitor collection %s: %w", name, err)
+	}
+	return result, nil
+}
+
+// ack forwards one operator acknowledgement to the tool the bundle's
+// monitor.ack names, on mast's own behalf (v0.5 W4.6).
+//
+// Unlike both others, this one writes — and to a store mast does not
+// own. The result is discarded: the producer's answer is bookkeeping
+// about its own suppression state, mast has already recorded the half it
+// is the store of record for, and handing a mute-button receipt to
+// either the model or the operator's chat would be noise. What matters
+// is whether it errored. See runOwnBehalf for the fence.
+func (ts *toolSchemas) ack(ctx adkagent.Context, name string, args map[string]any) (map[string]any, error) {
+	result, err := ts.runOwnBehalf(ctx, name, args, "forward an operator acknowledgement")
+	if err != nil {
+		return nil, fmt.Errorf("monitor ack %s: %w", name, err)
 	}
 	return result, nil
 }

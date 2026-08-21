@@ -457,3 +457,134 @@ func TestLoad_MonitorNotifyErrors(t *testing.T) {
 		})
 	}
 }
+
+// The inbound half of a monitoring cycle (W4.6): the bundle names where
+// an operator's acknowledgement is forwarded, and mast fills in who and
+// what at the ingress.
+
+func TestLoad_MonitorAck(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  collect:
+    - tool: k8s_findings_diff
+      as: transitions
+  transitions_from: transitions
+  ack:
+    tool: k8s_findings_ack
+    args: {window: 4h}
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := b.Monitor.AckTool(); got != "k8s_findings_ack" {
+		t.Errorf("AckTool() = %q, want the declared tool", got)
+	}
+	if got := b.Monitor.AckArgs()["window"]; got != "4h" {
+		t.Errorf("AckArgs() = %v, want the deployment's literal window carried through", b.Monitor.AckArgs())
+	}
+	// One list, because the fence is one rule: everything mast runs on
+	// its own behalf is what internal/compose keeps out of every roster.
+	got := b.Monitor.SelfRunTools()
+	if len(got) != 2 || got[0] != "k8s_findings_diff" || got[1] != "k8s_findings_ack" {
+		t.Errorf("SelfRunTools() = %v, want the collect tool then the ack tool", got)
+	}
+}
+
+// A workload can take acks for findings something else surfaces, so the
+// ack block stands alone — no collect, no cadence. This is the shape
+// that would break if validateMonitorAck sat behind Enabled().
+func TestLoad_MonitorAckWithoutCollectOrCadence(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+monitor:
+  ack:
+    tool: k8s_findings_ack
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load rejected an ack-only workload: %v", err)
+	}
+	if b.Monitor.Enabled() {
+		t.Error("Enabled() = true for a workload that collects nothing")
+	}
+	if got := b.Monitor.SelfRunTools(); len(got) != 1 || got[0] != "k8s_findings_ack" {
+		t.Errorf("SelfRunTools() = %v, want the ack tool alone — it still must not be reachable from a roster", got)
+	}
+}
+
+// No ack block is the overwhelming majority, and the accessors have to
+// answer for it without a nil check at every call site.
+func TestMonitorAckAbsent(t *testing.T) {
+	var m workload.Monitor
+	if got := m.AckTool(); got != "" {
+		t.Errorf("AckTool() = %q, want empty", got)
+	}
+	if got := m.AckArgs(); got != nil {
+		t.Errorf("AckArgs() = %v, want nil", got)
+	}
+	if got := m.SelfRunTools(); len(got) != 0 {
+		t.Errorf("SelfRunTools() = %v, want nothing", got)
+	}
+}
+
+// A workload whose ack tool is also a collect tool declares it once in
+// SelfRunTools — otherwise the compose error would name it twice and
+// read like two separate offences.
+func TestMonitorSelfRunToolsDedupesTheAck(t *testing.T) {
+	m := workload.Monitor{
+		Collect: []workload.MonitorCollect{{Tool: "t"}},
+		Ack:     &workload.MonitorAck{Tool: "t"},
+	}
+	if got := m.SelfRunTools(); len(got) != 1 || got[0] != "t" {
+		t.Errorf("SelfRunTools() = %v, want one entry", got)
+	}
+}
+
+func TestLoad_MonitorAckErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			"no tool to forward to",
+			"name: x\nspecialists: [a]\nmonitor:\n  ack:\n    args: {window: 4h}\n",
+			"names no tool",
+		},
+		{
+			// The attribution failure the whole path exists to prevent:
+			// a bundle that pins who acked makes every ack the same one.
+			"args pin ack_by",
+			"name: x\nspecialists: [a]\nmonitor:\n  ack:\n    tool: k8s_findings_ack\n    args: {ack_by: oncall}\n",
+			"mast supplies from the request itself",
+		},
+		{
+			"args pin subject_key",
+			"name: x\nspecialists: [a]\nmonitor:\n  ack:\n    tool: k8s_findings_ack\n    args: {subject_key: everything}\n",
+			"mast supplies from the request itself",
+		},
+		{
+			// A cycle that acks what it just classified is a monitor
+			// silencing itself, with no operator anywhere near it.
+			"the ack tool is also collected",
+			"name: x\nspecialists: [a]\nedge_trigger:\n  scheduled:\n    interval: 15m\nmonitor:\n  collect:\n    - tool: k8s_findings_ack\n  ack:\n    tool: k8s_findings_ack\n",
+			"acks what it just classified",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeBundle(t, "b.yaml", tc.body)
+			_, err := workload.Load(path)
+			if err == nil {
+				t.Fatalf("Load accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}

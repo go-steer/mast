@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+- **An operator can acknowledge a finding, and mast records who did —
+  but an ack is not an approval.** A workload can declare a
+  `monitor.ack` block naming one of its catalog tools, and the daemon
+  opens `POST /monitor-ack` on the inject listener. An acknowledgement
+  that arrives there is authenticated, attributed, recorded durably by
+  `pkg/transcript`, and forwarded to the producer's own ack tool with
+  `subject_key` and `ack_by` (#242, W4.6, closing parity board row 13
+  on mast's side). It is not on the cadence: an ack arrives when
+  somebody reads their chat.
+
+  **`ack_by` comes from the credential, never from the body.** The
+  identity is read off the authenticated caller at the moment of the
+  request — a real person where the daemon has a user table
+  (`MAST_INJECT_USERS_FILE`), `shared-bearer-token` where it does not —
+  and a request that supplies `ack_by` itself is refused **400, by
+  name**, rather than quietly overridden. This is the rule #194 settled
+  for `ConsumedBy`, for the same reason: an attribution a caller writes
+  about itself is worth nothing after an incident, and a silent
+  override teaches an integrator that the field is accepted.
+
+  **An ack is not a mutation approval**, and the implementation shares
+  nothing with the write gate. No grant, no `approve | reject | edit`
+  verdict, no freshness window, no change-set signature, and nothing in
+  `sessions export-decisions` — reusing that machinery would put a
+  suppression in the decision export as if it were an adjudication, and
+  the two are different acts. Only one of them is a person taking
+  responsibility for a change.
+
+  **mast exposes no ack tool the model can call.** The ack is a
+  `monitor.collect`-class call, so the same reachability fence covers
+  it: a workload whose specialists can reach the ack tool by any route
+  — named in an allowlist, covered by a whole-server grant, or
+  inherited by a roster that declares none — refuses to start, naming
+  the specialist, the tool and the block. mast now calls a tool nobody
+  asked for in exactly three places, and each has its own fence; a
+  fourth caller needs a fourth fence, not a fourth call site.
+
+  The suppression itself stays with the producer. mast forwards the
+  ack and reads the classification back; the next cycle reports the
+  subject as `suppressed` because
+  [`k8s-lookout`](https://github.com/go-steer/k8s-lookout) says so, and
+  the record is still *reported* rather than filtered — mast does not
+  decide what an operator stops seeing. A repeat ack of a subject
+  already acked is answered from the durable record with
+  `previously_acked_by` and `previously_acked_at`, which survives a
+  daemon restart because it was never process state.
+
+  New: `cmd/mast/monitorack.go` (the route's policy), `pkg/monitor`'s
+  ack argument names, `pkg/transcript`'s durable ack record, the
+  `monitor.ack` bundle block,
+  `mast_monitor_acks_total{workload,outcome}`, and three acceptance
+  legs (`U-ack` in `scripts/uat-v0.5.sh`) — one that an ack is
+  attributed, forwarded, honoured by the producer and durable across a
+  restart, one that it is not an approval, and one that no workload's
+  tool roster contains it.
+
 - **A monitoring cycle that changed nothing no longer wakes the
   model.** A workload can declare a `monitor.notify` block naming a
   conversation, and mast posts a cycle's assessment into it through

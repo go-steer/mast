@@ -17,11 +17,15 @@
 // BLOCKING tool — the prerequisite the deferred crash/drain/abort legs
 // were waiting on (docs/uat-v0.2-plan.md "Blocking-tool prerequisite").
 //
-// It exposes three tools. Two have effect classes matching the
+// It exposes four tools. Two have effect classes matching the
 // fixture's tool_catalog policies — read_status (read-only) and
 // apply_change (mutating) — and the third, findings_diff, answers in
 // the TEXT record contract a run-to-run classifier uses, which is what
-// the v0.5 monitoring legs (scripts/uat-v0.5.sh) read. A tool call
+// the v0.5 monitoring legs (scripts/uat-v0.5.sh) read. The fourth,
+// findings_ack, is the other direction: it takes a suppression and
+// findings_diff honours it from the next call on, so the ack leg can
+// assert that a subject reads as suppressed BECAUSE THE PRODUCER SAYS
+// SO rather than because mast filtered anything. A tool call
 // blocks until the harness releases it, so the
 // harness can hold a turn open across a kill -9 / SIGTERM drain / abort
 // and drive deterministic timing. All coordination is via files in the
@@ -49,7 +53,13 @@
 //     this read, and a changed answer voids it.
 //   - findings_diff reports the contents of "findings_diff.out" verbatim
 //     as text, so a leg can hand the daemon any classification a real
-//     classifier might produce — including a malformed one.
+//     classifier might produce — including a malformed one, and minus
+//     whatever findings_ack has suppressed.
+//   - findings_ack appends its subject_key to "acked", and every
+//     subsequent findings_diff re-classifies that subject as
+//     `suppressed`. The suppression lives HERE, in the producer, which
+//     is the claim the v0.5 ack leg is making: mast forwards and
+//     records who asked, and holds no suppression state of its own.
 //
 // A `kill -9` of the launching daemon is the one interruption that does NOT
 // cancel the call ctx: the crash legs SIGKILL the daemon mid-call, which
@@ -65,6 +75,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -159,6 +170,46 @@ func main() {
 		return textResult(findingsDiff(dir)), nil
 	})
 
+	// findings_ack is the inbound half — k8s_lookout's `k8s_findings_ack`
+	// is the real one (v0.5 W4.6). Registered low-level for the same
+	// reason findings_diff is, plus one of its own: the ack leg asserts
+	// on the ARGUMENTS mast forwarded, and the raw form is what the call
+	// ledger records. Its declared properties are the two mast supplies
+	// (subject_key, ack_by), the operator's note, and one the bundle
+	// pins (window) — a producer's ack surface takes a duration from
+	// whoever calls it, which is exactly why mast holds no opinion about
+	// expiry.
+	srv.AddTool(&mcpsdk.Tool{
+		Name:        "findings_ack",
+		Description: "UAT lookout-shaped ack: suppress one subject in subsequent diffs",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"subject_key": map[string]any{"type": "string", "description": "the subject to suppress"},
+				"ack_by":      map[string]any{"type": "string", "description": "who acknowledged it"},
+				"reason":      map[string]any{"type": "string", "description": "the operator's note"},
+				"window":      map[string]any{"type": "string", "description": "how long the suppression lasts"},
+			},
+			"required": []any{"subject_key", "ack_by"},
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		detail := ""
+		if req != nil && len(req.Params.Arguments) > 0 {
+			detail = "args=" + strings.TrimSpace(string(req.Params.Arguments))
+		}
+		if err := block(ctx, dir, "findings_ack", detail); err != nil {
+			return nil, err
+		}
+		subject, err := ackSubject(req)
+		if err != nil {
+			return nil, err
+		}
+		if err := suppress(dir, subject); err != nil {
+			return nil, err
+		}
+		return textResult("findings_ack: ok subject_key=" + subject), nil
+	})
+
 	if err := srv.Run(context.Background(), &mcpsdk.StdioTransport{}); err != nil {
 		os.Exit(1)
 	}
@@ -171,13 +222,103 @@ func main() {
 // before it could see the normal case.
 const defaultFindingsDiff = "scanned=1 findings=0 elapsed=1ms\n"
 
-// findingsDiff reads the canned classifier output for this leg.
+// findingsDiff reads the canned classifier output for this leg, with
+// every acked subject re-classified as suppressed.
 func findingsDiff(dir string) string {
 	b, err := os.ReadFile(filepath.Join(dir, "findings_diff.out")) // #nosec G304 -- harness fixture, path from the harness's own env
 	if err != nil {
-		return defaultFindingsDiff
+		return applyAcks(dir, defaultFindingsDiff)
 	}
-	return string(b)
+	return applyAcks(dir, string(b))
+}
+
+// ackedFile is where findings_ack records the subjects it was told to
+// suppress, one per line. A file rather than process memory because the
+// ack leg restarts the daemon — which restarts this server with it —
+// and a suppression that evaporated on restart would make the leg's
+// central claim ("the producer owns the suppression") untestable.
+const ackedFile = "acked"
+
+// ackArgs is findings_ack's input as this fixture reads it. Only the
+// subject matters to what happens next; ack_by is asserted on through
+// the call ledger, which records the raw arguments verbatim.
+type ackArgs struct {
+	SubjectKey string `json:"subject_key"`
+}
+
+func ackSubject(req *mcpsdk.CallToolRequest) (string, error) {
+	if req == nil || len(req.Params.Arguments) == 0 {
+		return "", fmt.Errorf("findings_ack: no arguments")
+	}
+	var in ackArgs
+	if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
+		return "", fmt.Errorf("findings_ack: %w", err)
+	}
+	if strings.TrimSpace(in.SubjectKey) == "" {
+		return "", fmt.Errorf("findings_ack: subject_key is required")
+	}
+	return in.SubjectKey, nil
+}
+
+// suppress records one acked subject. Append-only and idempotent by
+// effect: a repeat ack of the same subject writes a second line and
+// changes nothing, which is what a real producer does with one too.
+func suppress(dir, subject string) error {
+	f, err := os.OpenFile(filepath.Join(dir, ackedFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("findings_ack: record suppression: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := fmt.Fprintln(f, subject); err != nil {
+		return fmt.Errorf("findings_ack: record suppression: %w", err)
+	}
+	return nil
+}
+
+// applyAcks re-classifies every acked subject's record as suppressed.
+//
+// A rewrite rather than a deletion, because that is what the vocabulary
+// says: `suppressed` is a transition class lookout emits, and a
+// producer that dropped the record entirely would leave the operator
+// who acked unable to see that their ack is what did it. Token-based,
+// which is all the fixture's records need — they are logfmt with no
+// quoted spaces.
+func applyAcks(dir, out string) string {
+	acked := ackedSubjects(dir)
+	if len(acked) == 0 {
+		return out
+	}
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		var subject, class string
+		for _, f := range strings.Fields(line) {
+			switch {
+			case strings.HasPrefix(f, "subject_key="):
+				subject = strings.TrimPrefix(f, "subject_key=")
+			case strings.HasPrefix(f, "transition="):
+				class = strings.TrimPrefix(f, "transition=")
+			}
+		}
+		if subject == "" || class == "" || !acked[subject] {
+			continue
+		}
+		lines[i] = strings.Replace(line, "transition="+class, "transition=suppressed", 1)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func ackedSubjects(dir string) map[string]bool {
+	b, err := os.ReadFile(filepath.Join(dir, ackedFile)) // #nosec G304 -- harness fixture, path from the harness's own env
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			out[s] = true
+		}
+	}
+	return out
 }
 
 // changeArgs is apply_change's declared input. Required (no omitempty),

@@ -93,7 +93,7 @@ the version named in the library API design's import-surface table.
 | `pkg/router` | LLM-as-router classifier (SingleTurn) used by graph dispatch. |
 | `pkg/specialists` | Subagent-as-tool: `.tmpl` files (YAML frontmatter) with budgets, model overrides, tool allowlists ([`docs/specialists-design.md`](./docs/specialists-design.md)). |
 | `pkg/workload` | Workload bundles: declarative YAML naming specialists, tool catalog, budgets, HITL policy. |
-| `pkg/monitor` | The run-to-run classification a monitoring cycle carries: parses the record stream a bundle's `monitor.transitions_from` key names (logfmt or flat JSON, one record per line, mandatory `scanned=/findings=` summary) into a `monitor.Set` the scheduled envelope ships whole. Domain-neutral by construction — no enum of transition classes, no severity comparison, no fingerprinting; the classifier's verdict is consumed verbatim. |
+| `pkg/monitor` | The run-to-run classification a monitoring cycle carries: parses the record stream a bundle's `monitor.transitions_from` key names (logfmt or flat JSON, one record per line, mandatory `scanned=/findings=` summary) into a `monitor.Set` the scheduled envelope ships whole. Domain-neutral by construction — no enum of transition classes, no severity comparison, no fingerprinting; the classifier's verdict is consumed verbatim. Also the two argument names an operator's acknowledgement is forwarded under (`subject_key`, `ack_by`) — constants rather than strings in `cmd/`, because the loader refuses a bundle that pins either and both ends must mean the same thing by them. |
 | `pkg/notify` | The chat egress a monitoring cycle speaks through: a dependency-free client for switchboard's `POST /v1/messages` ingress and its edit/append verbs, with the two non-error answers to an append (409 "send the full text", 200 with a continuation ref) modelled as sentinels a caller acts on rather than as faults. Knows nothing about monitoring — the timeline policy lives in `cmd/mast/notify.go`. |
 | `pkg/planner` | Supervisor-body planner scaffold (`plan`/`finish_plan`; `invoke_remote_agent` composes here). |
 | `pkg/envelope` | Inject payloads — the unattended entry-point contract. |
@@ -160,7 +160,13 @@ named by `monitor.transitions_from` through `pkg/monitor` before the
 envelope is built. The cycle's tail — whether to wake the model at
 all, and what to tell the chat — is `cmd/mast/notify.go` over
 `pkg/notify`, configured by the bundle's `monitor.notify` block and
-the daemon's `--notify-url` / `MAST_NOTIFY_TOKEN`.
+the daemon's `--notify-url` / `MAST_NOTIFY_TOKEN`. The one leg that
+runs the other way is `cmd/mast/monitorack.go`, off the bundle's
+`monitor.ack` block: an operator's acknowledgement arrives on the
+daemon's `POST /monitor-ack`, is attributed from the credential that
+carried it, recorded durably by `pkg/transcript`, and forwarded to the
+producer's own ack tool. It is not on the cadence — an ack arrives
+when somebody reads their chat.
 
 ## Key contracts worth knowing before changing anything
 
@@ -182,17 +188,24 @@ the daemon's `--notify-url` / `MAST_NOTIFY_TOKEN`.
   from the outbox instead of asking an operator to re-approve a
   mutation that already fired. Reordering them is a correctness bug,
   not a preference.
-- **mast calls a tool nobody asked for in exactly two places, and each
-  has its own fence.** `cmd/mast/toolschemas.go`'s `runOwnBehalf` is
-  the whole surface: the write gate's precondition read, and a
-  monitoring cycle's `monitor.collect` leg. The read is fenced by
-  *classification* — compose refuses to start if the declared read is
-  mutating, so that exception can only widen towards safer calls. The
-  collection leg inverts that (it permits a mutating call precisely
-  because it is mast's own and would otherwise park every fire), so it
-  is fenced by *reachability*: `compose.CheckMonitorCollectSurface`
-  refuses to start if a collect tool is reachable from any roster. A
-  third caller needs a third fence, not a third call site.
+- **mast calls a tool nobody asked for in exactly three places, and
+  each has its own fence.** `cmd/mast/toolschemas.go`'s `runOwnBehalf`
+  is the whole surface: the write gate's precondition read, a
+  monitoring cycle's `monitor.collect` leg, and the `monitor.ack`
+  forward. The read is fenced by *classification* — compose refuses to
+  start if the declared read is mutating, so that exception can only
+  widen towards safer calls. The collection leg inverts that (it
+  permits a mutating call precisely because it is mast's own and would
+  otherwise park every fire), so it is fenced by *reachability*:
+  `compose.CheckMonitorCollectSurface` refuses to start if a tool mast
+  runs on its own behalf is reachable from any roster. The ack forward
+  sits behind that same reachability fence — one rule over one list,
+  because which direction a self-run call goes is why the exception
+  exists, not what bounds it — and behind a second fence of its own:
+  *arrival*. Nothing but the authenticated `/monitor-ack` route can
+  reach it, and it is the one self-run call whose arguments mast
+  overwrites rather than passes through. A fourth caller needs a
+  fourth fence, not a fourth call site.
 - **What changed since last run is the classifier's answer, not
   mast's.** A cycle may check that a transition record is *well
   formed* and may not check that it is *right*: a record with no
@@ -221,6 +234,23 @@ the daemon's `--notify-url` / `MAST_NOTIFY_TOKEN`.
   a count of quiet cycles, and the daemon's own broken/recovered
   notices are edge-triggered so an operator does not learn to mute the
   channel.
+- **An ack is not an approval.** They share an operator, a chat window
+  and a verb, and nothing else: an approval mints a grant that
+  licenses a write and is consumed on use, while an ack asserts no
+  diagnosis and authorizes no change. `cmd/mast/monitorack.go` touches
+  neither `pkg/permissions` nor `pkg/approval` and writes no decision
+  record — if it did, the v0.3 answer to "who approved this change"
+  would start including people who muted an alert. The split that
+  falls out: **the producer is the store of record for the
+  suppression** (how long it lasts, whether a repeat was redundant —
+  mast holds no window and forwards a repeat regardless), and **mast
+  is the store of record for who asked**, which is the half nobody can
+  reconstruct afterwards, because a producer's ack surface takes an
+  `ack_by` string from whoever calls it and cannot check it. So
+  attribution comes from the credential and never from the body: a
+  request carrying `ack_by` is refused by name rather than ignored,
+  since silently dropping it produces an audit line naming the wrong
+  person with nothing anywhere saying so.
 - **Unknown tools count as mutating.** The mutation predicate is
   default-deny: a tool nothing has classified is gated, so a bundle
   cannot get write access by omission. Un-gating is an audited
@@ -249,14 +279,15 @@ the daemon's `--notify-url` / `MAST_NOTIFY_TOKEN`.
 Deferrals are decisions ([`AGENTS.md`](./AGENTS.md) house rule #7);
 the owning doc names the version that lifts each one, and the
 [roadmap](https://go-steer.github.io/mast/roadmap/) is the
-user-facing view. Highlights: ack windows and the in-chat
-Approve/Reject surface, the last of unattended monitoring's four legs
-(v0.5 — the other three landed on `main` after v0.4 as
-`monitor.collect`, `monitor.transitions_from` and `monitor.notify`,
-which *consume* [`k8s-lookout`](https://github.com/go-steer/k8s-lookout)'s
+user-facing view. Highlights: the in-chat Approve/Reject surface
+(v0.5; unattended monitoring's four legs all landed on `main` after
+v0.4 as `monitor.collect`, `monitor.transitions_from`,
+`monitor.notify` and `monitor.ack`, which *consume*
+[`k8s-lookout`](https://github.com/go-steer/k8s-lookout)'s
 classification and switchboard's ingress rather than growing either
-here); pre-call budget gating (today a
-ceiling is crossed by the call that reports it); the remaining AG-UI
+here; an ack window is deferred permanently rather than to a version,
+because the expiry belongs to the producer); pre-call budget gating
+(today a ceiling is crossed by the call that reports it); the remaining AG-UI
 slices (`agui://` federation client, per-key `StateDelta`, webhook
 push, client-declared tools,
 [`docs/ag-ui-design.md`](./docs/ag-ui-design.md)); the `run_shape_*`

@@ -142,6 +142,12 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 *A healthy monitor is mostly `quiet`, which is the point: the family exists so that "we heard nothing" and "it stopped running" stop looking alike. `error` is deliberately not a retry counter — a failed send is a spent cycle, because the classifier advanced its state during collection and re-sending would report a transition that has already been superseded.)*
 
+*(Shipped v0.5, 2026-08-21 — the return path (W4.6). An operator acknowledges a subject on `POST /monitor-ack`; mast attributes it to the credential the request presented, records who asked, and forwards it to the tool `monitor.ack` names:*
+
+- *`mast_monitor_acks_total{workload, outcome}` — one increment per acknowledgement the ingress accepted; outcome ∈ `forwarded` (recorded durably and taken by the producer's ack tool) / `error` (the durable record or the forward failed, so the suppression did not take)*
+
+*Two outcomes and no more, because mast's half of an ack is two steps with no middle state. It counts acks and not suppressions: how long one lasts belongs to the producer that owns the finding state, and a repeat ack is forwarded and counted rather than judged redundant here. `error` is the alert — an operator who pressed the button and heard nothing believes something is muted that is not — and, as with the egress family, it is not a retry counter: acking again is the recovery, and both attempts are in the audit.)*
+
 <!-- shipped-metric-families:end -->
 
 **Session lifecycle:**

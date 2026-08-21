@@ -23,6 +23,7 @@
 package inject
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -148,6 +149,73 @@ type AckEffectsRequest struct {
 // AckEffectsHandler applies an effects acknowledgement. Optional; when
 // nil the /ack-effects route responds 404.
 type AckEffectsHandler func(ctx context.Context, req AckEffectsRequest) error
+
+// MonitorAckRequest is an operator saying "I have seen this finding,
+// stop telling me about it" (v0.5 W4.6).
+//
+// # There is no ack_by field, and there will not be one
+//
+// Who acked is resolved from the request's credential
+// (handleMonitorAck → callerContext), exactly as an approver is on
+// /resume. A body-supplied acker is an attribution a caller writes
+// about itself, which after an incident is worth nothing: the audit
+// question is who had the credential, not what the client typed. This
+// route goes further than /resume and REFUSES a body carrying ack_by
+// rather than ignoring it — silently dropping a field a client believed
+// in produces a log naming the wrong person with no sign anything went
+// wrong. A relay acking on a human's behalf names them with
+// X-Asserted-Caller, the proxy path, which works only for a credential
+// provisioned to assert.
+//
+// # And no window
+//
+// How long a suppression lasts belongs to whoever owns the finding
+// state; mast forwards, records who asked, and holds no opinion about
+// expiry. The deployment's default lives in the bundle's
+// monitor.ack.args.
+type MonitorAckRequest struct {
+	// Subject is the producer's subject key, verbatim as it appeared in
+	// the classification mast reported. Required — an ack with no
+	// subject is a request to silence everything, which no operator
+	// means and which mast will not infer.
+	Subject string `json:"subject"`
+
+	// Reason is the operator's note ("known, fix rolling out"),
+	// recorded in mast's audit record and forwarded if the producer's
+	// tool takes one.
+	Reason string `json:"reason,omitempty"`
+
+	// Workload, when set, must match the workload this daemon serves.
+	// Optional and checked rather than required: a relay that has
+	// several mast deployments configured should fail loudly when it
+	// posts to the wrong one, rather than suppress a finding on a
+	// cluster nobody was looking at.
+	Workload string `json:"workload,omitempty"`
+}
+
+// MonitorAckResult reports what mast recorded and forwarded.
+type MonitorAckResult struct {
+	// Workload and Subject echo what was acked.
+	Workload string `json:"workload"`
+	Subject  string `json:"subject"`
+
+	// AckBy is who mast attributed it to — the value it forwarded and
+	// recorded. Echoed so the caller renders the identity mast resolved
+	// rather than the one it assumed; for a relay, those differ.
+	AckBy string `json:"ack_by"`
+
+	// PreviouslyAckedBy and PreviouslyAckedAt describe the last
+	// recorded ack of this subject, when there was one. Informational:
+	// mast forwards a repeat ack regardless, because whether a second
+	// one is redundant is the producer's call.
+	PreviouslyAckedBy string `json:"previously_acked_by,omitempty"`
+	PreviouslyAckedAt string `json:"previously_acked_at,omitempty"`
+}
+
+// MonitorAckHandler forwards an acknowledgement. Optional; when nil the
+// /monitor-ack route responds 404 — a daemon whose workload declares no
+// monitor.ack has nowhere to forward one.
+type MonitorAckHandler func(ctx context.Context, req MonitorAckRequest) (MonitorAckResult, error)
 
 // PauseRequest asks the daemon to gate-pause a session (plane B of the
 // v0.2 pause/abort surface, docs/durable-execution-design.md "The v0.2
@@ -288,6 +356,17 @@ type Config struct {
 	// Optional.
 	AckEffectsHandler AckEffectsHandler
 
+	// MonitorAckHandler is called for each valid monitor-ack POST
+	// (v0.5 W4.6). Optional.
+	//
+	// Note the name: this is NOT AckEffectsHandler's neighbour in
+	// anything but spelling. /ack-effects acknowledges mast's own
+	// ambiguous prior effects on a session so a resume can proceed;
+	// /monitor-ack acknowledges a finding in the monitored world so a
+	// producer stops reporting it. Different subject, different store
+	// of record, no shared machinery.
+	MonitorAckHandler MonitorAckHandler
+
 	// PauseHandler is called for each valid pause POST. Optional.
 	PauseHandler PauseHandler
 
@@ -340,6 +419,7 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("POST /resume", s.handleResume)
 	mux.HandleFunc("POST /abort", s.handleAbort)
 	mux.HandleFunc("POST /ack-effects", s.handleAckEffects)
+	mux.HandleFunc("POST /monitor-ack", s.handleMonitorAck)
 	mux.HandleFunc("POST /pause", s.handlePause)
 	mux.HandleFunc("POST /extend-token", s.handleExtendToken)
 	mux.HandleFunc("POST /stop", s.handleStop)
@@ -425,7 +505,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
-	if !s.resumeAuthOK(r) {
+	if !s.attributedAuthOK(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -560,6 +640,94 @@ func (s *Server) handleAckEffects(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = fmt.Fprintln(w, "acknowledged")
+}
+
+// handleMonitorAck takes an operator's acknowledgement of a monitored
+// subject and forwards it (v0.5 W4.6).
+//
+// This is the SECOND route that authenticates rather than merely
+// admitting the shared token, and the reason is the one /resume's
+// Authenticator doc gives: identity is load-bearing here. An ack is a
+// mute button on somebody's alerting, and the audit question it leaves
+// behind — who silenced this — has no answer that can be backfilled.
+//
+// It is not, however, an approval. Nothing here mints a grant, records
+// a verdict, or touches pkg/permissions; a suppression that appeared in
+// the decision export would make "who approved this change" ambiguous
+// in exactly the way v0.3 spent a release making it unambiguous.
+func (s *Server) handleMonitorAck(w http.ResponseWriter, r *http.Request) {
+	if !s.attributedAuthOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.cfg.MonitorAckHandler == nil {
+		http.Error(w, "monitor ack not enabled: this workload declares no monitor.ack tool to forward to", http.StatusNotFound)
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+
+	// Read once, inspect, then decode. The inspection is what makes the
+	// no-self-attribution rule visible to the caller: a body carrying
+	// ack_by is refused by name, rather than silently dropped into an
+	// audit record naming somebody else.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(body, &probe); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, ok := probe["ack_by"]; ok {
+		http.Error(w, "bad request: ack_by is not a field a caller may set; mast takes it from the credential this request presented. A relay acking for a human asserts them with the "+auth.HeaderAssertedCaller+" header", http.StatusBadRequest)
+		return
+	}
+	var req MonitorAckRequest
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Subject) == "" {
+		http.Error(w, "bad request: subject is required (it is the producer's subject key, verbatim from the classification)", http.StatusBadRequest)
+		return
+	}
+
+	ctx, err := s.callerContext(r)
+	if err != nil {
+		s.logger.Warn("monitor ack caller rejected", "error", err.Error())
+		http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+		return
+	}
+
+	res, err := s.cfg.MonitorAckHandler(ctx, req)
+	if err != nil {
+		if errors.Is(err, ErrUnavailable) {
+			w.Header().Set("Retry-After", "10")
+			http.Error(w, "shutting down; retry against the replacement instance", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, ErrBadPayload) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, ErrConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		s.logger.Error("monitor ack failed", "subject", req.Subject, "error", err.Error())
+		http.Error(w, "monitor ack failed", http.StatusInternalServerError)
+		return
+	}
+	// Logged after the handler, not before, so the line carries the
+	// resolved identity rather than the unattributed request. An ack
+	// nobody can be named for is not one this route lets through.
+	s.logger.Info("monitor ack accepted", "workload", res.Workload, "subject", res.Subject, "ack_by", res.AckBy)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
@@ -748,20 +916,23 @@ func (s *Server) callerContext(r *http.Request) (context.Context, error) {
 	return auth.WithProxyBy(auth.WithCaller(ctx, effective), caller.Identity), nil
 }
 
-// resumeAuthOK gates /resume, the one route that takes a per-person
-// credential as well as the daemon's shared token.
+// attributedAuthOK gates the routes that take a per-person credential
+// as well as the daemon's shared token: /resume (who approved) and
+// /monitor-ack (who silenced).
 //
-// The two arrive in the same Authorization header, so a gate that only
-// compared against the shared token made the two mutually exclusive: a
-// user token failed the gate and never reached [Server.callerContext],
-// and the shared token passed the gate and then failed authentication.
-// Configuring an Authenticator alongside a BearerToken therefore made
-// /resume unreachable by either credential, which is why nothing wired
-// one. The route accepts whichever the operator issued.
+// The two credentials arrive in the same Authorization header, so a
+// gate that only compared against the shared token made them mutually
+// exclusive: a user token failed the gate and never reached
+// [Server.callerContext], and the shared token passed the gate and then
+// failed authentication. Configuring an Authenticator alongside a
+// BearerToken therefore made /resume unreachable by either credential,
+// which is why nothing wired one. These routes accept whichever the
+// operator issued.
 //
-// This deliberately does not widen the other routes. An Authenticator
-// says who approved; it is not a second way in.
-func (s *Server) resumeAuthOK(r *http.Request) bool {
+// This deliberately does not widen the remaining routes. An
+// Authenticator says who did the thing whose attribution cannot be
+// reconstructed later; it is not a second way in.
+func (s *Server) attributedAuthOK(r *http.Request) bool {
 	if s.authOK(r) {
 		return true
 	}

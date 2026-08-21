@@ -390,7 +390,7 @@ outside the model's tool surface, and hands the model the transitions already
 classified. That is also why the collection leg costs nothing: a step the model
 is not part of cannot spend a token.
 
-**Three of those four have landed.** A workload can now declare a
+**All four have landed.** A workload can now declare a
 [`monitor.collect`](/reference/workload-bundle/#monitor--the-facts-a-cycle-gathers-for-itself)
 block: a list of catalog tools mast runs itself when a scheduled cycle fires,
 before the model is woken, with the results handed to it in the tick envelope
@@ -445,6 +445,23 @@ week is otherwise indistinguishable from one that died a week ago. And a
 cycle that *breaks* says so in the same channel, once on the way down and
 once on the way back, because a monitor whose failure is visible only in a
 log file is one everybody believes is working.
+
+**The fourth runs the other way.** Everything above pushes outward on a
+cadence; an ack comes back in when somebody reads their chat. A bundle with an
+[`ack:`](/reference/workload-bundle/#ack--taking-an-acknowledgement-back) block
+opens `POST /monitor-ack` on the daemon's inject listener, and an
+acknowledgement that arrives there is attributed from the credential that
+carried it, recorded durably, and forwarded to the producer's own ack tool.
+Two things it is not. It is **not an approval**: no grant, no verdict, no
+freshness window, and nothing in the decision export — a suppression and an
+adjudication are different acts, and only one of them is a person taking
+responsibility for a change. And `ack_by` is **not a field a caller may set**;
+it is read off the authenticated identity at the moment of the request, and a
+body that supplies it is refused by name rather than quietly overridden,
+because an attribution a caller writes about itself is worth nothing after an
+incident. The suppression itself stays where the state is: mast forwards, and
+the next cycle reports the subject as `suppressed` because the classifier says
+so — not because mast filtered it out.
 
 Landed already on the way there: **durable budget spend**. A `max_cost_usd`
 that a restart reset was a ceiling on what a workload spent per process,
