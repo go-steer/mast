@@ -210,10 +210,16 @@ type Signal interface {
 // thresholds, or a subset, construct DefaultWatchdog directly with a
 // custom signal list — the cycle detector is the one most likely to be
 // dropped, on a workload whose normal shape is a polling loop.
+//
+// DominantToolCallSignal is deliberately NOT in this set. It covers the
+// shape between the two loop detectors (#227) and is ready to wire, but
+// adding a third Critical detector to the default set changes what
+// every unattended workload is told about itself under mast's default
+// `feedback` posture. That is a posture decision, not a port.
 func NewDefaultWatchdog() *DefaultWatchdog {
 	return &DefaultWatchdog{
 		signals: []Signal{
-			NewRepeatedToolCallSignal(5),
+			NewRepeatedToolCallSignal(DefaultRepeatThreshold),
 			NewAlternatingCycleSignal(DefaultCycleMaxPeriod, DefaultCycleRepeats),
 			NewToolFailureStreakSignal(DefaultFailureStreak),
 		},
@@ -279,6 +285,12 @@ type RepeatedToolCallSignal struct {
 	runLength int
 	tripped   bool // emit one alert per run, not one per observation past threshold
 }
+
+// DefaultRepeatThreshold is the run length that trips
+// RepeatedToolCallSignal in the default signal set. Exported because
+// DominantToolCallSignal defers to it — the two numbers have to be the
+// same number, not two literals that agree today.
+const DefaultRepeatThreshold = 5
 
 // NewRepeatedToolCallSignal constructs a signal with the given
 // threshold. Threshold must be ≥ 2 (a "repeated call" requires at

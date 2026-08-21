@@ -71,6 +71,14 @@ every later turn" half of `enforce`, and no next turn for a `feedback`
 observation to be injected into, so both rungs act within the turn they
 fire in.
 
+An embedder is also the caller who can change *which* signals run.
+`watchdog.DefaultWatchdog` takes a signal list, so the shipped-but-not-
+default `dominant-tool-call` density detector
+(`watchdog.NewDominantToolCallSignal(12, 8)`) goes in the same way a
+tighter repeat threshold does — and a workload whose normal shape is a
+polling loop drops the cycle detector the same way. See [the
+signals](/concepts/interop/#the-signals).
+
 ## Path 2: the slim slice
 
 The root package imports the dispatch subsystems, several of which are

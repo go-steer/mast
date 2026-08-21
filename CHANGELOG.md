@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **A fourth watchdog signal, for the loop neither of the other two can
+  see.** `dominant-tool-call` trips when one call accounts for 8 of the
+  last 12 — the `a a a b a a a c a a a` shape, where every interloper
+  resets the consecutive-repeat detector's run and the cycle detector
+  finds no repeating block. Nothing tripped until the interleaves
+  happened to stop long enough for five in a row, which is a convergence
+  delay rather than a miss, and on the live run upstream measured that
+  delay was 22 identical calls over 2m20s of a loop that was degenerate
+  by the fourth.
+
+  It stands down structurally where another detector already owns the
+  shape — a consecutive run at the repeat threshold, or a window that is
+  a clean repetition of a 2–4 call block — because mast appends every
+  signal's alert and three detectors on one loop would be three
+  paragraphs of steering under the `feedback` default. Both deferrals
+  are fields and zero disables either, so wiring this signal on its own
+  gets it undeferred.
+
+  **Not in the default signal set.** A third Critical detector changes
+  what every unattended workload is told about itself, and a polling
+  workload is exactly a dominant call with interleaves; defaulting it is
+  a posture decision, still open. A library embedder wires it today with
+  `watchdog.NewDominantToolCallSignal(12, 8)` in a custom signal list.
+
 - **The metrics reference page is now checked against a real scrape.**
   `docs/site/.../reference/metrics.md` enumerates every family
   `pkg/observability` constructs, with labels and fixed vocabularies.

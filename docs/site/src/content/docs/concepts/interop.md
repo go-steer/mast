@@ -126,8 +126,10 @@ all three dimensions plus each specialist's own, and the watchdog's posture
 `--watchdog=feedback`, which corrects but never stops; `false` under
 `--watchdog=enforce`, whether or not it has fired yet).
 
-The watchdog raises three signals, and each names a different way an
-unattended run goes wrong:
+#### The signals
+
+The watchdog raises three signals by default, and each names a different
+way an unattended run goes wrong:
 
 | signal | severity | fires when |
 |---|---|---|
@@ -140,6 +142,23 @@ agent was stuck; it means the agent's conclusions rest on tools that all
 failed. It stays Warn deliberately: three denials into a legitimate RBAC
 probe is not a runaway, and halting there would make the backstop the
 outage.
+
+A fourth signal, **`dominant-tool-call`**, ships and is *not* wired by
+default. It covers the shape between the first two — one call repeated
+with occasional others wedged in (`a a a b a a a c a a a`), which resets
+the repeat detector's run and shows the cycle detector no repeating
+block. Density does not care where the interleaves fall, so it reaches
+the verdict inside one twelve-call window instead of waiting for the
+interleaves to stop; when they are the whole delay, that is most of a
+loop's cost. It is off by default because a third Critical detector
+changes what every unattended workload is told about itself under
+`feedback`, and a polling workload with any variation in it is exactly a
+dominant call with interleaves. A [library
+embedder](/quickstart/library-embed/) wires it by constructing
+`watchdog.DefaultWatchdog` with its own signal list including
+`watchdog.NewDominantToolCallSignal(12, 8)`; alongside the other two it
+stands down wherever one of them already owns the shape, so one loop
+still produces one alert.
 
 Severity is a property of the pattern, not of the posture. What changes
 between postures is the reaction, and the three of them are a ladder —
