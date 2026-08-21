@@ -14,19 +14,32 @@ The policy that decides whether a call parks at all is
 Its default is `require_approval`, so a bundle that says nothing about
 mutation is gated — unattended writes have to be asked for.
 
-:::caution[One gap, in one dispatch shape]
+:::caution[The planner cannot gate a write, so it refuses to try]
 The gate is a runner plugin, and under `planner` dispatch
 `invoke_specialist` runs its specialist on a runner of its own — built
-without it. **A mutating call made from inside a planner dispatch does not
-park**, even under `require_approval`, and leaves no effect-outbox record
-either. Reaching this takes a roster that declares
-`capability: change_executor`, since a specialist holding an undeclared
-mutating tool is refused at composition and `invoke_specialist` itself is
-refused outright in ambiguous-effect mode — but that is a supported
-configuration, so it is worth knowing before you deploy one. Every other
-dispatch shape (`coordinator`, `fanout`, `graph`, `bounded`) runs on the
-outer runner and is gated normally. Tracked as
-[#235](https://github.com/go-steer/mast/issues/235).
+without it. A mutating call made from inside a planner dispatch would
+neither park nor dry-run, and would leave no effect-outbox record.
+
+So **that combination does not start.** A bundle that enables the planner,
+holds a `capability: change_executor` specialist, and asks for anything
+other than `on_mutation: apply` is refused at composition, naming the
+specialist and the way out:
+
+```
+compose: workload "triage" enables the planner and declares
+hitl.on_mutation: require_approval, but its roster holds change
+executor(s) change-executor: …
+```
+
+Run that roster under `coordinator` or `graph`, where the runner carries
+the gate and everything on this page applies normally. Or set
+`hitl.on_mutation: apply` if the writes are genuinely meant to fire
+unattended — there is no gate to bypass under `apply`, though the missing
+outbox record still costs you exactly-once replay if a dispatch is
+interrupted.
+
+This is containment, not the fix; letting the gate reach inside a dispatch
+is [#235](https://github.com/go-steer/mast/issues/235).
 :::
 
 ## What a parked call looks like

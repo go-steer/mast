@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **A planner roster that holds a change executor no longer starts when
+  the bundle asked for the write to be gated.** The write gate and the
+  effect outbox are runner plugins, and `invoke_specialist` builds its
+  runner itself — with none. So a mutating call made inside a planner
+  dispatch did not park under `hitl.on_mutation: require_approval`, did
+  not stop under `dry_run`, and left no durable record of what it did.
+  Every other dispatch shape runs on the outer runner and was always
+  gated normally.
+
+  Measured, not inferred: an outer `BeforeToolCallback` over that shape
+  sees `invoke_specialist` and `finish_task`, and never the
+  `scale_deployment` the specialist executed between them.
+
+  Composition now refuses the combination, on both doors — the library's
+  `BuildRoot` and the binary's pre-MCP `CheckRoster`, so an operator
+  without credentials reads the real reason instead of an OAuth 403. The
+  message names the specialist and the way out: run the same roster
+  under `coordinator` or `graph`, where the runner carries the gate.
+  `on_mutation: apply` is exempt, because there is no gate under `apply`
+  for a dispatch to bypass; what is still missing there is the outbox
+  record, and it is documented rather than refused over.
+
+  This is containment. Letting the gate reach inside a dispatch is #235,
+  and it needs a decision rather than a wiring change: an approval park
+  suspends a turn to be resumed from a durable session, and a
+  sub-session is in-memory. `examples/workloads/gke-triage` ships
+  `require_approval`, a `change-executor`, and a commented-out
+  `planner:` block — its comment now says why uncommenting it stops.
+
 - **One recording, replayed per concurrent branch.** `--model=scripted`
   holds a position in a transcript, and an offline fake collapses every
   per-specialist model override back to the one instance — so a whole

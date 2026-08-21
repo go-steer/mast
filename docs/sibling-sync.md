@@ -1000,7 +1000,12 @@ Carried forward from 2026-08-21, in the order they are worth doing:
    boundary, or refuse a `change_executor` in a planner roster until one of those lands). Containment
    today is `ClassSpawning` plus `CheckCapabilitySplit`, which narrows the door to a roster that
    declares `capability: change_executor` out loud — narrower than "any workload", but a supported
-   configuration walks through it.
+   configuration walks through it, and `examples/workloads/gke-triage` is two commented lines away
+   from being one. **Contained the same day** by `compose.CheckPlannerWriteSurface`: the combination
+   is refused at composition, on both doors (`BuildRoot` and the pre-MCP `CheckRoster`), scoped to
+   the promise actually broken — `on_mutation: apply` is exempt, since there is no gate under
+   `apply` for a dispatch to bypass. That is containment, not the fix; #235 stays open for the
+   boundary decision, and the check comes out with whichever answer lands.
 
 Two open questions that are not ports and need an owner: whether mast follows upstream's
 park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it collides with what

@@ -142,3 +142,66 @@ func mutatingNames(names []string, pred effects.Predicate) []string {
 	sort.Strings(bad)
 	return bad
 }
+
+// CheckPlannerWriteSurface refuses a planner roster that holds a change
+// executor while the bundle asks for the mutation to be gated (#235).
+//
+// # The hole
+//
+// The write gate and the effect outbox are runner plugins, and
+// `invoke_specialist` runs its specialist on a runner it constructs
+// itself — with none. So a mutating call made inside a planner dispatch
+// does not park, does not dry-run, and leaves no durable intent record,
+// on a bundle whose `hitl.on_mutation` asked for all three. Every other
+// dispatch shape runs on the outer runner and is gated normally;
+// `examples/workloads/gke-triage` is two commented lines away from the
+// combination, which is how close a supported configuration sits to it.
+//
+// Measured rather than reasoned about: an outer BeforeToolCallback over
+// this shape sees invoke_specialist and finish_task, and never the
+// mutating call the specialist executed between them.
+//
+// # Why refuse rather than warn
+//
+// Same argument as CheckNameCollisions one file over, and the same
+// argument the read/write split makes: a fail-open hole in the write
+// path is refused at startup, not run carefully. A warning would be a
+// line in a log nobody is tailing on a deployment nobody is watching,
+// which is the posture this whole product is built against — and the
+// operator who wrote `require_approval` would go on believing they had
+// it. The refusal is also cheap to escape: the same roster runs under
+// `coordinator` or `graph`, where the gate reaches it.
+//
+// # Why on_mutation: apply is exempt
+//
+// The refusal is scoped to the promise that is actually broken. Under
+// `apply` the gate was never going to stop the call, so nothing about
+// the dispatch changes what executes. What is still missing there is
+// the outbox record, which costs exactly-once replay after an
+// interrupted dispatch — a real gap, named at the call site in
+// pkg/planner/dispatch.go and in the write-gate reference page, and not
+// one worth refusing a startup over.
+//
+// This is containment, not the fix. #235 carries the three candidate
+// boundaries; whichever lands, this check comes out with it.
+func CheckPlannerWriteSurface(b workload.Bundle, specs []specialists.Spec) error {
+	if !b.Planner.Enabled {
+		return nil
+	}
+	policy := b.HITL.EffectiveOnMutation()
+	if policy == workload.OnMutationApply {
+		return nil
+	}
+	var executors []string
+	for _, s := range specs {
+		if s.Capability == specialists.CapabilityChangeExecutor {
+			executors = append(executors, s.Name)
+		}
+	}
+	if len(executors) == 0 {
+		return nil
+	}
+	sort.Strings(executors)
+	return fmt.Errorf("compose: workload %q enables the planner and declares hitl.on_mutation: %s, but its roster holds change executor(s) %s: the write gate and the effect outbox are runner plugins and invoke_specialist runs each specialist on a runner of its own, so a mutating call made inside a dispatch would neither park nor dry-run and would leave no durable record of what it did (go-steer/mast#235). Run this roster under dispatch: coordinator or graph, where the gate reaches it; or set hitl.on_mutation: apply if these writes are genuinely meant to fire unattended and unrecorded",
+		b.Name, policy, strings.Join(executors, ", "))
+}

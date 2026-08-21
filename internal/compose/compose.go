@@ -296,6 +296,14 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		return nil, nil, err
 	}
 
+	// And the one place the split is not enough on its own: a change
+	// executor reached through a planner dispatch runs where the write
+	// gate cannot see it (#235). Declared write surface is fine; a
+	// declared write surface with no gate in front of it is not.
+	if err := CheckPlannerWriteSurface(cfg.Bundle, cfg.Specs); err != nil {
+		return nil, nil, err
+	}
+
 	// The bounded roster is checked before anything is constructed, not
 	// at the terminal arm below, so a roster that can never be bounded
 	// is refused without first resolving a tier, opening a provider
