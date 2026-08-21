@@ -108,7 +108,7 @@ Report what you were given.
 func TestBuildRootRefusesTheRosterBeforeWiringMCP(t *testing.T) {
 	_, err := buildRoot(context.Background(), discardLogger(),
 		mastagent.NewToolActorModel("toolactor"), "", "toolactor",
-		unbuildableBounded(t), workload.DispatchBounded, nil)
+		unbuildableBounded(t), workload.DispatchBounded, hostSeams{})
 	if err == nil {
 		t.Fatal("buildRoot accepted a two-specialist bounded roster; want a refusal")
 	}

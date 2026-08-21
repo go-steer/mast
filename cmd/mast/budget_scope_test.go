@@ -50,7 +50,7 @@ func spend(author string, tokens int32) *session.Event {
 func TestMeterPoolEnforcesSpecialistCeilings(t *testing.T) {
 	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
 	built, err := buildRoot(context.Background(), discardLogger(),
-		mastagent.NewEchoModel("echo"), "", "echo", dir, "coordinator", nil)
+		mastagent.NewEchoModel("echo"), "", "echo", dir, "coordinator", hostSeams{})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
 	}

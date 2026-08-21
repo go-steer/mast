@@ -61,6 +61,18 @@ branch-based attribution silently attributes everything to the root and
 per-specialist ceilings never trip. Author-based attribution works across
 every dispatch shape.
 
+Seeing the spend in the first place takes one extra seam under `planner`
+dispatch, and it is worth knowing why. A planner runs each
+`invoke_specialist` call on a runner of its own, so those events never
+appear on the stream the meter watches; through v0.4 a specialist
+dispatched that way was billed to nobody, and a workload could spend past
+its ceiling as long as it spent through the planner's door. Since v0.5
+the dispatch tool hands those events back to the same meter, under the
+same session — coordinator, graph and fan-out dispatch never had the gap.
+If you embed mast as a library and compose the planner yourself, wire
+`compose.RootConfig.SubRunObserver`; the top-level `mast.RunWorkload`
+already does.
+
 ## Where the dollar figure comes from
 
 Tokens are counted from what the provider reports; the price per token
@@ -134,6 +146,14 @@ the coordinator does not route around it and try someone else. A
 per-specialist ceiling is a safety limit, not a routing hint; treating it
 as "try the next one" would turn a tight cap into a way to burn the
 workload budget across the roster.
+
+One exception, and it falls out of where the seam sits rather than from a
+policy: a specialist that trips its cap *inside a planner dispatch* stops
+only that dispatch. The planner gets its result back marked
+`"status": "halted"` with the reason, and its turn continues — the cap is
+observed from inside the tool call that started the sub-run, which is the
+one place mast can stop a specialist without stopping the session. What
+the planner does next is up to the planner; it is told, not overruled.
 
 Both are deliberate, and both are the conservative reading. Neither is
 something to discover during an incident.

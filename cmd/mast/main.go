@@ -523,7 +523,13 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// needs the runner, which needs the root).
 	pauseRec := &daemonPauseRecorder{store: store}
 
-	built, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode, pauseRec)
+	// Where a planner dispatch's private sub-run reports its spend.
+	// Also built empty and attached below: the meter pool and the
+	// metric registry both need the bundle this call is about to load.
+	subObs := &daemonSubRunObserver{}
+
+	built, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode,
+		hostSeams{pause: pauseRec, subRun: subObs})
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
 		return err
@@ -666,6 +672,11 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		workloadName = bundle.Name
 	}
 	obs.Prime(workloadName)
+
+	// Both sinks now exist, so a planner dispatch's sub-run has
+	// somewhere to report. Before this line no turn has started, so no
+	// dispatch can be in flight to miss it.
+	subObs.attach(meters, obs, workloadName, logger)
 
 	// Shutdown bookkeeping: which sessions have a turn in flight, and
 	// the pre-mark/clear ordering for their interruption markers. The
@@ -1380,7 +1391,21 @@ func workloadNames(cfg *config.Config) []string {
 // It is returned alongside the agent because callers act on it too (the
 // boot-time auto-resume pass only runs under coordinator dispatch), and
 // one resolution shared beats two that can drift.
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, pauseRec planner.PauseRecorder) (rootBuild, error) {
+// hostSeams are the daemon-side sinks compose wires into the root:
+// where a plane-A self-pause records itself, and where a planner
+// dispatch's private sub-run reports its spend. Both are constructed
+// before the root and finish wiring after it — the scheduler needs the
+// runner and the meter pool needs the bundle, and both of those need
+// the root — so they travel together as one late-bound bundle rather
+// than as a growing tail of positional arguments. A zero value is
+// legal: it is what a caller with neither seam (a test, a one-shot)
+// passes.
+type hostSeams struct {
+	pause  planner.PauseRecorder
+	subRun planner.SubRunObserver
+}
+
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, seams hostSeams) (rootBuild, error) {
 	if err := validateDispatch(dispatch); err != nil {
 		return rootBuild{}, err
 	}
@@ -1432,15 +1457,16 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 	}
 
 	a, builtin, err := compose.BuildRoot(ctx, compose.RootConfig{
-		Bundle:        bundle,
-		Specs:         loaded,
-		Model:         llm,
-		ModelName:     modelName,
-		Provider:      providerName,
-		Toolsets:      toolsets,
-		Dispatch:      compose.Dispatch(resolved),
-		Logger:        logger,
-		PauseRecorder: pauseRec,
+		Bundle:         bundle,
+		Specs:          loaded,
+		Model:          llm,
+		ModelName:      modelName,
+		Provider:       providerName,
+		Toolsets:       toolsets,
+		Dispatch:       compose.Dispatch(resolved),
+		Logger:         logger,
+		PauseRecorder:  seams.pause,
+		SubRunObserver: seams.subRun,
 	})
 	if err != nil {
 		return rootBuild{}, err

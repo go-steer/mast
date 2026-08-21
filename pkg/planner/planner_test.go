@@ -435,9 +435,12 @@ func TestPlannerModelCallsAreMetered(t *testing.T) {
 	}
 
 	tokens, cost, calls := meter.Snapshot()
-	// Two planner rounds (invoke + finish) must be visible; the
+	// Two planner rounds (invoke + finish) must be visible. The
 	// specialist's own calls ran under the tool's private sub-runner
-	// and are NOT expected here (documented gap; see dispatch.go).
+	// and are NOT on this stream — they reach a host through
+	// Config.SubRunObserver, which is left unwired here so this test
+	// keeps measuring exactly what the OUTER stream carries. #226 and
+	// subrun_test.go cover the other door.
 	if wantCalls := len(plModel.requests()); calls != wantCalls {
 		t.Errorf("metered calls = %d, want %d (one per planner model round)", calls, wantCalls)
 	}

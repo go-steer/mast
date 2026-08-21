@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **A specialist dispatched by the planner is billed to the workload
+  that dispatched it.** The planner runs every `invoke_specialist` call
+  on a runner of its own, and a private runner is a private event
+  stream: nothing it emitted reached the budget meter, the metric
+  registry, or anything else riding the outer stream. A workload with a
+  `max_cost_usd` could spend past it without limit as long as it spent
+  through the planner's door, and per-specialist ceilings — which key
+  on the event author — were unenforceable there for the same reason.
+  Coordinator, graph and fan-out dispatch never had the gap.
+
+  The dispatch tool now hands each sub-run event to the host
+  (`planner.Config.SubRunObserver`, threaded through
+  `compose.RootConfig`), which folds it into the same meter under the
+  *outer* session's ID. `mast.RunWorkload` and the daemon wire it; a
+  library caller composing the planner directly should too. Sub-run
+  model calls also now show up in `mast_model_calls_total` and
+  `mast_tokens_total`.
+
+  A ceiling crossed inside a dispatch stops that dispatch, not the
+  session: the planner gets its result back marked `"status":
+  "halted"` with the reason and decides what to do next. That is the
+  finer-grained stop `pkg/budget` documents as needing a pre-call seam
+  — the tool body turns out to be one, for this shape.
+
+  The watchdog half is not fixed. Its enforcer is per-turn and taps a
+  stream, so a dispatched specialist can still loop without being
+  halted; #226 stays open for it and for the effects outbox, which
+  likewise does not reach inside a sub-run.
+
 - **Every example bundle is now composed by a test, not just the one.**
   `examples/workloads/gke-triage` was exercised by the e2e presubmit and
   a projection test; `bounded-triage` and `ns-audit` were prose that

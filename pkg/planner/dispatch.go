@@ -47,14 +47,23 @@ package planner
 //    AgentNode), the same sanctioned dynamic-invocation idiom pkg/graph
 //    uses.
 //
-//    Known gap (documented, not fixed, in v0.1): the sub-runner's
-//    events do not stream past the OUTER runner's event consumer, so
-//    a specialist's own model calls are invisible to the workload
-//    meter in cmd/mast. The planner's OWN model calls are metered
-//    like any other agent's (TestPlannerModelCallsAreMetered). Closing
-//    the gap is the pre-call-gating / model-wrapper follow-on from
-//    docs/orchestration-design.md "Budget substrate" — a metering
-//    model.LLM wrapper composes here with zero ADK changes.
+//    A private runner is a private event stream: nothing the sub-run
+//    emits reaches the OUTER runner's consumer, which through v0.4 is
+//    where every accounting seam mast has rides (the budget meter, the
+//    metrics registry, the watchdog tap in cmd/mast). A specialist
+//    dispatched through this door could therefore spend without limit,
+//    report no tokens, and loop without being halted (#226). The seam
+//    that closes it is Config.SubRunObserver: the tool hands the host
+//    every sub-run event, so the host folds them into exactly the
+//    consumers the outer stream feeds. Coordinator and graph dispatch
+//    never had the gap — both funnel sub-agent events upward.
+//
+//    Enforcement here is better-shaped than at the outer stream, and
+//    the reason is worth keeping: an observer error stops only the
+//    SUB-run and hands the planner a labelled partial it can route
+//    around, rather than cancelling the session. That is the shape
+//    pkg/budget's own package doc calls out as needing a pre-call
+//    seam — the tool body turns out to be one.
 //
 // 2. request_operator_input mechanism — long-running tool pause, NOT
 //    a workflow RequestInput interrupt.
@@ -173,7 +182,26 @@ type invokeSpecialistArgs struct {
 	Input string `json:"input"`
 }
 
-func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Agent) (tool.Tool, error) {
+// SubRunObserver is handed every event emitted by the private
+// sub-runner an invoke_specialist dispatch runs a specialist on.
+//
+// sessionID is the OUTER session's ID — the sub-run's own session is an
+// in-memory throwaway, and attributing a dispatch to it would file the
+// spend under a session no operator can name. The event's Author is the
+// specialist's agent name, which is what lets a host's per-specialist
+// ceilings bind here the same way they bind on a coordinator's dispatch.
+//
+// Returning an error stops the sub-run: the specialist's remaining work
+// is abandoned and invoke_specialist returns a partial result labelled
+// with the reason, so the planner sees a refusal it can route around
+// instead of a cancelled session. Observers must therefore return an
+// error only when the run genuinely should stop — a metering failure
+// that is not a ceiling should be logged and swallowed.
+type SubRunObserver interface {
+	ObserveSubRun(sessionID string, ev *session.Event) error
+}
+
+func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Agent, obs SubRunObserver) (tool.Tool, error) {
 	available := "(none declared)"
 	if len(roster) > 0 {
 		available = fmt.Sprintf("%v", roster)
@@ -192,13 +220,13 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 				"available":  roster,
 			}, nil
 		}
-		// TODO(v0.2 sub-runner debt): this inner runner carries neither
-		// the outer budget meter nor the recorded-effect outbox plugin
-		// (pkg/effects). The outbox's containment still holds one level
-		// up — invoke_specialist is ClassSpawning, refused outright in
-		// ambiguous-effect mode — but tool calls made in here leave no
-		// durable intent records (in-memory session). Fold into the
-		// planner-budget-bypass fix.
+		// The inner runner's accounting reaches the host through obs
+		// (#226). Still outstanding on the same seam: the recorded-effect
+		// outbox plugin (pkg/effects) is not installed here, so tool
+		// calls made inside a dispatch leave no durable intent records
+		// (the sub-session is in-memory). The outbox's containment holds
+		// one level up — invoke_specialist is ClassSpawning, refused
+		// outright in ambiguous-effect mode.
 		r, err := runner.New(runner.Config{
 			AppName:           "planner_dispatch",
 			Agent:             d,
@@ -209,15 +237,30 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 			return nil, fmt.Errorf("invoke_specialist %q: construct runner: %w", args.Name, err)
 		}
 
+		// A cancellable copy of the tool context, so an observer that
+		// stops the sub-run stops it here and not one level up: the
+		// outer turn keeps running and the planner gets a result.
+		// Deferred cancel also guarantees the sub-run cannot outlive
+		// the tool call that started it.
+		subCtx, cancelSub := ctx.WithAgentCancel()
+		defer cancelSub()
+
 		var (
 			output      any
 			lastText    string
 			totalTokens int64
 			modelCalls  int
+			halted      error
 		)
 		msg := genai.NewContentFromText(args.Input, genai.RoleUser)
-		for ev, err := range r.Run(ctx, ctx.UserID(), "invoke-"+args.Name, msg, adkagent.RunConfig{}) {
+		for ev, err := range r.Run(subCtx, ctx.UserID(), "invoke-"+args.Name, msg, adkagent.RunConfig{}) {
 			if err != nil {
+				// A halt cancels the sub-context, so the runner's own
+				// error after one is "context canceled" — a symptom of
+				// the stop we already have the reason for.
+				if halted != nil {
+					break
+				}
 				return nil, fmt.Errorf("invoke_specialist %q: %w", args.Name, err)
 			}
 			if ev == nil {
@@ -237,19 +280,37 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 					}
 				}
 			}
+			// Observe last: the host sees the event that crossed its
+			// ceiling, and the partial below carries whatever the
+			// specialist had produced up to it.
+			if obs != nil {
+				if err := obs.ObserveSubRun(ctx.SessionID(), ev); err != nil {
+					halted = err
+					cancelSub()
+					break
+				}
+			}
 		}
 		if output == nil && lastText != "" {
 			output = lastText
 		}
-		return map[string]any{
+		res := map[string]any{
 			"specialist": args.Name,
 			"result":     output,
-			// Sub-invocation usage is surfaced here because it is
-			// invisible to the outer runner's meter (see the mechanism
-			// note at the top of this file).
+			// Sub-invocation usage is surfaced to the model as well as
+			// to obs: the planner budgets its own plan, and it can only
+			// do that if it can see what a dispatch cost.
 			"sub_model_calls":  modelCalls,
 			"sub_total_tokens": totalTokens,
-		}, nil
+		}
+		if halted != nil {
+			// Not an error return: a cap that fires must not look like a
+			// broken tool. The planner is told the specialist stopped
+			// early and why, and decides what to do about it.
+			res["status"] = "halted"
+			res["reason"] = halted.Error()
+		}
+		return res, nil
 	})
 }
 

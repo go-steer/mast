@@ -303,7 +303,7 @@ func TestTheBuiltinAxisIsReportedAsADeclaration(t *testing.T) {
 func TestEveryCatalogEntryStatesItsMCPGrant(t *testing.T) {
 	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
 	built, err := buildRoot(context.Background(), discardLogger(),
-		mastagent.NewEchoModel("echo"), "", "echo", dir, workload.DispatchCoordinator, nil)
+		mastagent.NewEchoModel("echo"), "", "echo", dir, workload.DispatchCoordinator, hostSeams{})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestSubagentCatalogLeavesInheritedModelEmpty(t *testing.T) {
 func TestSubagentCatalogFromShippedWorkload(t *testing.T) {
 	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
 	built, err := buildRoot(context.Background(), discardLogger(),
-		mastagent.NewEchoModel("echo"), "", "echo", dir, workload.DispatchCoordinator, nil)
+		mastagent.NewEchoModel("echo"), "", "echo", dir, workload.DispatchCoordinator, hostSeams{})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
 	}
