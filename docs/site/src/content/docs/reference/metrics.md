@@ -92,6 +92,27 @@ catch up on a missed tick.
 |---|---|---|
 | `mast_scheduled_fires_total` | `workload`, `outcome` | Scheduled-trigger ticks by disposition. Outcomes: `ran`, `skipped` (came due during a drain), `error` (the run failed; the tick is spent, the next tick is the retry), `missed` (coalesced away — the daemon was down when it came due). |
 
+### Monitoring-notification family (v0.5)
+
+A workload that declares
+[`monitor.notify`](/reference/workload-bundle/#notify--speaking-only-when-something-changed)
+counts every cycle by what it told the chat ingress — including, and mostly,
+the cycles that told it nothing. **A healthy monitor is mostly `quiet`**, so
+these two families are read together with `mast_model_calls_total`: quiet
+cycles never wake the model, which is the whole point of the feature, and a
+`quiet` rate that stops climbing while the cadence keeps firing means
+something is now speaking on every cycle.
+
+`error` is the one to alert on. There is no retry and no spool: a send that
+failed is gone, and the next cycle reports what is new then. `health` counts
+the notices mast writes itself when the monitoring is broken or has
+recovered — one on each edge, not one per failing cycle.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_monitor_notifications_total` | `workload`, `outcome` | Monitoring cycles by what they told the chat ingress. Outcomes: `posted` (opened a message), `appended` (extended the open one), `replaced` (the ingress had forgotten the body, so the whole text was re-sent), `rolled` (the message was full and the timeline moved to its continuation), `quiet` (nothing changed — no request, no model call), `health` (a mast-authored broken/recovered notice), `error` (the send failed). |
+| `mast_monitor_digest_wakes_total` | `workload` | Cycles that spoke because `digest_after` expired rather than because anything changed. Separate from the outcome above because "did anything change" and "did the deadman have to fire" are different questions: a workload whose digest wakes are its *only* notifications is one nothing has happened to, or one whose classifier has quietly stopped classifying. |
+
 ## Traces
 
 Trace export is env-gated OTel: a no-op unless `OTEL_EXPORTER_OTLP_*`

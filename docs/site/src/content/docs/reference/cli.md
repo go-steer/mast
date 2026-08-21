@@ -28,6 +28,7 @@ start a daemon; it exits `2` with the misplaced-flag error, because
 | `--attach-listen` | (empty) | Operator attach surface (HTTP/SSE for [mast-web](https://github.com/go-steer/mast-web) and other attach clients): a TCP address like `127.0.0.1:8484`, or a Unix socket as `unix:/path/mast.sock`. Empty = disabled. Requires `--session-db` (live-tail pumps from the eventlog overlay). Non-loopback TCP binds are refused unless auth is configured — set `MAST_ATTACH_TOKEN`. Serve mode only. |
 | `--a2a-listen` | (empty) | [A2A](https://a2a-protocol.org) server surface: a TCP address like `127.0.0.1:7780`. Empty = disabled. Publishes an agent card and a JSON-RPC 2.0 endpoint (`POST /a2a`) for workloads that opt in via the bundle's `a2a.expose` section. Card endpoints (`/.well-known/agent-card.json`, `/.well-known/agent-card/<name>.json`) are public; `/a2a` is authenticated when `MAST_A2A_TOKEN` is set, with per-skill scope enforcement. Non-loopback binds are refused without a token (`tasks/cancel` is destructive). Serve mode only. See [A2A server](#a2a-server). |
 | `--agui-listen` | (empty) | [AG-UI](https://docs.ag-ui.com/introduction) server surface: a TCP address like `127.0.0.1:7781`. Empty = disabled. Serves a per-workload HTTP+SSE run endpoint and a `/agui/agents.json` discovery descriptor for workloads that opt in via the bundle's `agui.expose` section. Authenticated when `MAST_AGUI_TOKEN` is set (per-workload scope enforcement); rate limits via `MAST_AGUI_RATE`/`MAST_AGUI_BURST`. Non-loopback binds are refused without a token (a run drives a budgeted turn). Serve mode only. See [AG-UI server](#ag-ui-server). |
+| `--notify-url` | (empty) | Chat egress for monitoring cycles: [switchboard](https://github.com/go-steer/switchboard)'s message ingress, as an origin (`http://switchboard:8080`) or the full `/v1/messages` endpoint. Empty = disabled, and a workload whose bundle declares a `monitor.notify` block then **refuses to start**. Requires `MAST_NOTIFY_TOKEN`. Serve mode only — one-shot runs no monitoring cycle. See [chat egress](#chat-egress-for-monitoring-cycles). |
 | `--session-db` | (empty) | SQLite file path (default driver) or Postgres DSN/URL with `--session-db-driver=postgres`. Empty = in-memory sessions, **no durability**. |
 | `--session-db-driver` | `sqlite` | `sqlite` or `postgres`. `postgres` with an empty `--session-db` is a startup error, never a silent in-memory downgrade. |
 | `--timeout` | `5m` | One-shot turn deadline (`2m`, `90s`, …); `0` disables. One-shot only — serve-mode wallclock ceilings come from workload budgets. An unresponsive backend (or a provider SDK silently retrying on quota errors) fails loudly instead of hanging a script. |
@@ -48,6 +49,32 @@ for external agent callers), so treat it as a third trust boundary. The
 AG-UI surface has its own token as well, `MAST_AGUI_TOKEN` — per-workload
 scopes for user-facing clients (CopilotKit apps, chat-platform bots), a
 fourth trust boundary.
+
+### Chat egress for monitoring cycles
+
+Those four are all **inbound**: they let a caller drive this daemon.
+`--notify-url` is the one that points the other way — the daemon posting
+into a chat when a [monitoring
+cycle](/reference/workload-bundle/#notify--speaking-only-when-something-changed)
+has something to report:
+
+```bash
+MAST_NOTIFY_TOKEN=… mast --workload=cluster-watch \
+  --notify-url=http://switchboard:8080 --listen=:7777 --session-db=/var/lib/mast/sessions.db
+```
+
+The bearer comes from `MAST_NOTIFY_TOKEN` and there is deliberately no flag
+for it: a flag puts a credential in every `ps` on the node and in the
+container spec's args. The daemon **refuses to start** if that token equals
+any of the four inbound ones — they authorize opposite directions, and
+sharing one means anything that can read the chat bridge's configuration can
+inject turns here. Setting the token with no `--notify-url` is a startup
+warning, because it usually means half a rollout.
+
+Which conversation to post into, and how long the workload may stay silent,
+are the bundle's (`monitor.notify.conversation`, `monitor.notify.digest_after`)
+— they are properties of the workload, while the ingress and the credential
+are properties of the deployment.
 
 ## `mast sessions` (operator surface)
 

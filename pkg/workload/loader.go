@@ -144,6 +144,9 @@ func (b *Bundle) validate() error {
 // should do. Whether a named tool has leaked into a specialist's reach
 // is checked at composition, where the roster is.
 func (b *Bundle) validateMonitor() error {
+	if err := b.validateMonitorNotify(); err != nil {
+		return err
+	}
 	if !b.Monitor.Enabled() {
 		return nil
 	}
@@ -181,6 +184,31 @@ func (b *Bundle) validateMonitor() error {
 		}
 		sort.Strings(collected)
 		return fmt.Errorf("monitor.transitions_from names %q, which no monitor.collect entry files a result under (collected: %s)", key, strings.Join(collected, ", "))
+	}
+	return nil
+}
+
+// validateMonitorNotify checks the egress half (v0.5 W4.5).
+//
+// Whether the conversation exists, and whether this deployment is even
+// allowed to post into it, is switchboard's answer, not mast's — mast
+// finds out at the first fire, with a 403 it reports. What mast can
+// check here is that the block says where, and that the deadman parses.
+func (b *Bundle) validateMonitorNotify() error {
+	if b.Monitor.Notify == nil {
+		return nil
+	}
+	if b.Monitor.NotifyTarget() == "" {
+		return fmt.Errorf("monitor.notify names no conversation; a cycle that speaks has to say where")
+	}
+	if _, err := b.Monitor.EffectiveDigestAfter(); err != nil {
+		return err
+	}
+	// Same argument as the collection leg: a notify block on a workload
+	// with no cadence is an operator who believes a chat is being kept
+	// up to date by something that never runs.
+	if b.EdgeTrigger.Scheduled == nil {
+		return fmt.Errorf("monitor.notify posts into %q but the workload declares no edge_trigger.scheduled block; a cycle speaks at the end of a scheduled cycle, so without a cadence it never speaks at all", b.Monitor.NotifyTarget())
 	}
 	return nil
 }

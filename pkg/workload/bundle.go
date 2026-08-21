@@ -569,6 +569,94 @@ type Monitor struct {
 	// wants to notify on change needs the classification named, because
 	// mast will not derive one. See pkg/monitor.
 	TransitionsFrom string `yaml:"transitions_from,omitempty"`
+
+	// Notify is where a cycle speaks, and how long it may stay silent
+	// (v0.5 W4.5). Absent means a cycle that changes nothing outside
+	// mast: the assessment lands in the session transcript and nowhere
+	// else, which is the right default for a workload nobody has told
+	// where to post.
+	Notify *MonitorNotify `yaml:"notify,omitempty"`
+}
+
+// MonitorNotify is the egress half of a monitoring cycle (v0.5 W4.5):
+// where a cycle that has something to say says it, and how long a
+// quiet monitor may go without saying anything at all.
+//
+//	monitor:
+//	  notify:
+//	    conversation: C0123ESCALATIONS
+//	    digest_after: 6h
+//
+// # Only on change
+//
+// A cycle speaks when its classification is non-empty. A cycle whose
+// classification is empty — "we looked, and nothing changed" — does
+// not wake the model and posts nothing, which is the whole point: an
+// unattended monitor's ordinary output is silence, and a channel that
+// gets a message every fifteen minutes is a channel nobody reads.
+//
+// A workload that names no monitor.transitions_from has no basis to be
+// quiet on and therefore speaks every cycle. That is a supported
+// shape and a loud one; the load error it would deserve does not exist
+// because "post every cycle" is a legitimate thing to ask a low-cadence
+// workload for.
+type MonitorNotify struct {
+	// Conversation is the platform key switchboard posts into — for
+	// Slack a channel ID, or "channel:thread_ts" to post into a thread.
+	// Required whenever the block is present: there is no default
+	// channel, and a monitor that guessed one would be worse than one
+	// that refused to start.
+	Conversation string `yaml:"conversation"`
+
+	// DigestAfter is the longest this workload may stay silent. Once
+	// that much wall-clock has passed with nothing to report, the next
+	// cycle speaks anyway — a heartbeat, so that silence means "nothing
+	// changed" rather than "the daemon died three days ago".
+	//
+	// Wall-clock rather than a count of quiet cycles (the open question
+	// #242 left for W4.5): what an operator wants to state is how long
+	// they are willing to be in the dark, and a count only answers that
+	// after they have multiplied it by an interval they have to go and
+	// look up. A count also silently re-scales when the cadence is
+	// retuned, which is precisely when a deadman should not move.
+	//
+	// Empty or "0s" disables the heartbeat: the workload speaks only
+	// when something changed.
+	DigestAfter string `yaml:"digest_after,omitempty"`
+}
+
+// NotifyTarget returns the conversation a cycle posts into, or "" when
+// the workload declares no notify block.
+func (m Monitor) NotifyTarget() string {
+	if m.Notify == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.Notify.Conversation)
+}
+
+// EffectiveDigestAfter parses monitor.notify.digest_after. Zero means
+// no heartbeat: this workload speaks only when something changed.
+//
+// The parse error is returned rather than swallowed, for the reason
+// EffectiveInterval gives: a deadman that silently failed to parse is
+// an operator believing they will hear from a monitor that has no way
+// left to speak.
+func (m Monitor) EffectiveDigestAfter() (time.Duration, error) {
+	if m.Notify == nil {
+		return 0, nil
+	}
+	raw := strings.TrimSpace(m.Notify.DigestAfter)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("monitor.notify.digest_after %q is not a duration (want something like \"6h\"): %w", m.Notify.DigestAfter, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("monitor.notify.digest_after %q is negative; it is how long silence may last, not how far back to look", m.Notify.DigestAfter)
+	}
+	return d, nil
 }
 
 // Enabled reports whether this workload collects on its own behalf.

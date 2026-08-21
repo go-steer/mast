@@ -108,6 +108,8 @@ agui:
 | `monitor.collect[].args` | map | Literal arguments for the call, e.g. `{transitions: "new,escalated,resolved"}`. There is no `args_from`: a collection call is not about any particular object, so there is nothing to map arguments from. |
 | `monitor.collect[].as` | string | The key this call's result is filed under in the envelope. Defaults to the tool name; needed only when one workload collects from the same tool twice. Two entries filed under one key is a load error. |
 | `monitor.transitions_from` | string | Optional. Names the `monitor.collect` key whose result carries the run-to-run classification — what is new, escalated, resolved since the last cycle. That result is parsed into the envelope's `transitions` block instead of being passed through raw. Must name a key some `collect` entry files a result under, or it is a load error. It names *where* the classification comes from, never what it may say: mast has no vocabulary of transition classes. See [`transitions_from:`](#transitions_from--the-classification-comes-from-the-tool) below. |
+| `monitor.notify.conversation` | string | Required when a `notify:` block is present. Where a speaking cycle posts — the conversation id switchboard knows, e.g. `#sre-oncall` or a platform id. Requires an `edge_trigger.scheduled` block, for the same reason `collect` does: a cycle speaks at the end of a cycle, so with no cadence it never speaks. The ingress URL and its bearer token are the **daemon's** (`--notify-url`, `MAST_NOTIFY_TOKEN`), not the bundle's — deployment facts, so one bundle moves between staging and production unedited. See [`notify:`](#notify--speaking-only-when-something-changed) below. |
+| `monitor.notify.digest_after` | duration | Optional deadman. After this long with nothing sent, the next cycle speaks whether or not anything changed. Omitted or `0s` = no deadman, and the workload may stay silent indefinitely. Wall-clock, not a count of quiet cycles: a monitor that has been quiet for a week is otherwise indistinguishable from one that died a week ago. |
 | `a2a.expose` | bool | Opt this workload into the [A2A server](/reference/cli/#a2a-server) surface (`--a2a-listen`). Default false — A2A exposure is an external contract, so it is never automatic. |
 | `a2a.skill_name`, `a2a.skill_description` | strings | The skill id/name and human-readable summary published on the agent card. `skill_name` defaults to the workload name; `skill_description` to the workload description. |
 | `a2a.input_schema`, `a2a.output_schema` | maps | A **mast-side** convention only: mast may validate inbound task inputs against them and fold them into the skill description. Spec `AgentSkill` has no schema fields, so they do **not** round-trip through the agent card as machine-readable schema. |
@@ -693,6 +695,113 @@ A malformed stream fails the cycle exactly the way [a failed
 collection](#when-collection-fails) does — before any model call, counted
 `error`, cadence continuing — and the log line names both the
 `transitions_from` key and what was wrong with the bytes.
+
+### `notify:` — speaking only when something changed
+
+`transitions_from` tells mast whether anything changed. `notify` is what it
+does with that answer:
+
+```yaml
+monitor:
+  collect:
+    - tool: k8s_findings_diff
+      args: {transitions: "new,escalated,resolved"}
+      as: transitions
+  transitions_from: transitions
+  notify:
+    conversation: "#sre-oncall"
+    digest_after: 12h
+```
+
+The daemon supplies the other half — which ingress, and with what
+credential:
+
+```bash
+MAST_NOTIFY_TOKEN=… mast --workload=cluster-watch \
+  --notify-url=http://switchboard:8080 --listen=:7777 --session-db=…
+```
+
+That split is deliberate. *Where to speak* is a property of the workload;
+*which switchboard, and as whom* is a property of the deployment. A bundle
+that named its own ingress could not be promoted from staging to production
+without editing the workload. The token is refused at startup if it equals
+any of the daemon's own inbound tokens (`MAST_INJECT_TOKEN`,
+`MAST_ATTACH_TOKEN`, `MAST_A2A_TOKEN`, `MAST_AGUI_TOKEN`): those point the
+other way, and sharing one means anything that can read the chat bridge's
+configuration can drive this daemon. It is an env var and never a flag, so
+it stays out of `ps` and out of the container spec's args.
+
+A bundle with a `notify:` block and a daemon with no `--notify-url` is a
+**startup refusal**, not a warning. The workload's entire output is the
+message it was going to send.
+
+#### A quiet cycle does not wake the model
+
+Not "wakes it and then declines to post" — the turn never runs. A
+fifteen-minute cadence that spends a model call on every quiet cycle costs
+more per month in nothing-happened than the incidents it exists to catch.
+
+The skip is narrow: it applies only when the workload declared **both**
+`transitions_from` (so "nothing changed" is the classifier's answer, not
+mast's guess) and `notify` (so speaking is what the cycle is for). A
+workload that names no classification source speaks on every cycle, and the
+daemon says so at startup with `speaks_every_cycle=true`.
+
+#### One incident is one message
+
+The first speaking cycle posts; the next ones **append** to that message, so
+an incident that takes six cycles to resolve reads as one growing story
+instead of six notifications an operator has to reassemble. The first quiet
+cycle **closes** the timeline — what happens after calm is a new incident,
+and it gets a new message.
+
+Switchboard can answer an append two ways that are not errors, and both are
+handled rather than surfaced:
+
+- **409, "send the full text"** — a restart, another replica, or a message
+  posted from elsewhere means it no longer remembers the body. mast holds
+  what it last sent and re-sends the whole story as an edit.
+- **200 with a continuation ref** — the message is full, so the platform
+  posted a threaded continuation. Every later cycle targets that one.
+
+If neither works (the platform cannot edit, or the message is gone), the
+whole story is posted fresh, so the thread that survives is the readable one.
+
+#### A failed send is not replayed
+
+There is no queue, no retry and no spool. A send that failed is an errored
+fire, counted `mast_monitor_notifications_total{outcome="error"}`, and the
+next cycle reports what is new **then**.
+
+Holding the message and re-sending it next cycle is the tempting fix and it
+is wrong: the classifier advanced its own state when it answered, so the
+replay would describe a world that has already moved on. Advancing state
+before speaking is the ordering that makes this safe.
+
+#### A broken monitor says so
+
+If a cycle cannot complete — collection failed, the classification was
+truncated, the turn errored — mast posts a notice of its own into the same
+conversation, and another when the cycle next succeeds. Both are
+edge-triggered: **once** on the way down and once on the way back, never on
+every failing cycle, because a channel that repeats itself every fifteen
+minutes is a channel an operator mutes, and the mute costs them the incident
+report too. A health notice that cannot be delivered is logged and never
+fails the fire.
+
+#### Silence has a deadline
+
+With `digest_after`, a workload that has said nothing for that long speaks
+on its next cycle whether or not it has news, and the deadman resets. The
+clock starts at daemon startup, so a daemon booting into a quiet world does
+not immediately announce the quiet. Those cycles are counted separately on
+`mast_monitor_digest_wakes_total`, because "did anything change" and "did
+the deadman have to fire" are different operator questions.
+
+Every cycle's outcome is on
+`mast_monitor_notifications_total{workload,outcome}` — `posted`, `appended`,
+`replaced`, `rolled`, `quiet`, `health`, `error`. A healthy monitor is
+mostly `quiet`.
 
 ### The fence
 

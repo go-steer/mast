@@ -94,6 +94,7 @@ the version named in the library API design's import-surface table.
 | `pkg/specialists` | Subagent-as-tool: `.tmpl` files (YAML frontmatter) with budgets, model overrides, tool allowlists ([`docs/specialists-design.md`](./docs/specialists-design.md)). |
 | `pkg/workload` | Workload bundles: declarative YAML naming specialists, tool catalog, budgets, HITL policy. |
 | `pkg/monitor` | The run-to-run classification a monitoring cycle carries: parses the record stream a bundle's `monitor.transitions_from` key names (logfmt or flat JSON, one record per line, mandatory `scanned=/findings=` summary) into a `monitor.Set` the scheduled envelope ships whole. Domain-neutral by construction — no enum of transition classes, no severity comparison, no fingerprinting; the classifier's verdict is consumed verbatim. |
+| `pkg/notify` | The chat egress a monitoring cycle speaks through: a dependency-free client for switchboard's `POST /v1/messages` ingress and its edit/append verbs, with the two non-error answers to an append (409 "send the full text", 200 with a continuation ref) modelled as sentinels a caller acts on rather than as faults. Knows nothing about monitoring — the timeline policy lives in `cmd/mast/notify.go`. |
 | `pkg/planner` | Supervisor-body planner scaffold (`plan`/`finish_plan`; `invoke_remote_agent` composes here). |
 | `pkg/envelope` | Inject payloads — the unattended entry-point contract. |
 | `pkg/config` | `.agents/` discovery (workloads, specialists, MCP refs, A2A registrations) ([`docs/config-layout-design.md`](./docs/config-layout-design.md)). |
@@ -156,7 +157,10 @@ bundle's `scheduled:` section; a cycle's collection leg
 (`cmd/mast/monitor.go`, `cmd/mast/monitorctx.go`) runs ahead of it,
 off the bundle's `monitor.collect` block, and parses the one result
 named by `monitor.transitions_from` through `pkg/monitor` before the
-envelope is built.
+envelope is built. The cycle's tail — whether to wake the model at
+all, and what to tell the chat — is `cmd/mast/notify.go` over
+`pkg/notify`, configured by the bundle's `monitor.notify` block and
+the daemon's `--notify-url` / `MAST_NOTIFY_TOKEN`.
 
 ## Key contracts worth knowing before changing anything
 
@@ -202,6 +206,21 @@ envelope is built.
   a fingerprint, or a local heuristic here re-implements
   [`k8s-lookout`](https://github.com/go-steer/k8s-lookout) inside mast
   and is the bug this contract exists to prevent.
+- **A cycle with nothing to report does not wake the model, and a
+  failed report is never replayed.** The skip is decided before the
+  turn runs (`cmd/mast/notify.go`'s `decide`) and only where both
+  `monitor.transitions_from` and `monitor.notify` are declared — so
+  "nothing changed" is always the classifier's answer, never mast's
+  guess. The no-replay half is the ordering constraint the whole M4b
+  chain was built around: state advances during collection, so a
+  message that failed to send describes a world that has already moved
+  on. There is no queue and no spool; the failure is an errored fire
+  and `mast_monitor_notifications_total{outcome="error"}`. Anything
+  added here that holds an assessment for the next cycle re-opens the
+  problem. Silence is bounded by wall clock (`digest_after`), never by
+  a count of quiet cycles, and the daemon's own broken/recovered
+  notices are edge-triggered so an operator does not learn to mute the
+  channel.
 - **Unknown tools count as mutating.** The mutation predicate is
   default-deny: a tool nothing has classified is gated, so a bundle
   cannot get write access by omission. Un-gating is an audited
@@ -230,12 +249,13 @@ envelope is built.
 Deferrals are decisions ([`AGENTS.md`](./AGENTS.md) house rule #7);
 the owning doc names the version that lifts each one, and the
 [roadmap](https://go-steer.github.io/mast/roadmap/) is the
-user-facing view. Highlights: the chat egress half of unattended
-monitoring (v0.5, and deliberately owned by switchboard rather than by
-mast — cross-run finding state itself landed on `main` after v0.4 as
-`monitor.transitions_from`, which *consumes*
-[`k8s-lookout`](https://github.com/go-steer/k8s-lookout)'s
-classification rather than growing one here); pre-call budget gating (today a
+user-facing view. Highlights: ack windows and the in-chat
+Approve/Reject surface, the last of unattended monitoring's four legs
+(v0.5 — the other three landed on `main` after v0.4 as
+`monitor.collect`, `monitor.transitions_from` and `monitor.notify`,
+which *consume* [`k8s-lookout`](https://github.com/go-steer/k8s-lookout)'s
+classification and switchboard's ingress rather than growing either
+here); pre-call budget gating (today a
 ceiling is crossed by the call that reports it); the remaining AG-UI
 slices (`agui://` federation client, per-key `StateDelta`, webhook
 push, client-declared tools,

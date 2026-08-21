@@ -17,6 +17,7 @@ package workload_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -284,5 +285,175 @@ monitor:
 	}
 	if b.Monitor.Collect[0].Key() != "recent" || b.Monitor.Collect[1].Key() != "daily" {
 		t.Errorf("keys = %q/%q, want recent/daily", b.Monitor.Collect[0].Key(), b.Monitor.Collect[1].Key())
+	}
+}
+
+// The W4.5 half: where a cycle speaks, and how long it may stay quiet.
+
+func TestLoad_MonitorNotify(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  collect:
+    - tool: k8s_findings_diff
+      as: transitions
+  transitions_from: transitions
+  notify:
+    conversation: "#sre-oncall"
+    digest_after: 6h
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := b.Monitor.NotifyTarget(); got != "#sre-oncall" {
+		t.Errorf("NotifyTarget() = %q, want #sre-oncall", got)
+	}
+	d, err := b.Monitor.EffectiveDigestAfter()
+	if err != nil {
+		t.Fatalf("EffectiveDigestAfter: %v", err)
+	}
+	if d != 6*time.Hour {
+		t.Errorf("EffectiveDigestAfter() = %v, want 6h", d)
+	}
+}
+
+// A workload with no notify block is a cycle that changes nothing
+// outside mast: the assessment lands in the transcript and nowhere
+// else. That is the default, and it stays a legitimate shape.
+func TestLoad_MonitorNotifyIsOptional(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  collect:
+    - tool: k8s_cluster_health
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if b.Monitor.Notify != nil {
+		t.Errorf("Notify = %+v, want nil", b.Monitor.Notify)
+	}
+	if got := b.Monitor.NotifyTarget(); got != "" {
+		t.Errorf("NotifyTarget() = %q, want empty", got)
+	}
+	if d, err := b.Monitor.EffectiveDigestAfter(); err != nil || d != 0 {
+		t.Errorf("EffectiveDigestAfter() = %v, %v; want 0, nil", d, err)
+	}
+}
+
+// Omitting digest_after means no deadman: this workload is willing to
+// stay silent for as long as nothing changes. Distinct from "0s", which
+// spells the same thing out loud, and both are distinct from a value
+// that does not parse.
+func TestLoad_MonitorNotifyDigestAfterIsOptional(t *testing.T) {
+	for _, tc := range []struct{ name, digest string }{
+		{"omitted", ""},
+		{"explicit zero", "\n    digest_after: 0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  collect:
+    - tool: diff
+  notify:
+    conversation: "#ops"`+tc.digest+"\n")
+			b, err := workload.Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			d, err := b.Monitor.EffectiveDigestAfter()
+			if err != nil {
+				t.Fatalf("EffectiveDigestAfter: %v", err)
+			}
+			if d != 0 {
+				t.Errorf("EffectiveDigestAfter() = %v, want 0 (no deadman)", d)
+			}
+		})
+	}
+}
+
+// A workload may speak without collecting anything: the notify block is
+// about the tail of the cycle, and does not depend on the collection
+// leg. What it does depend on is a cadence.
+func TestLoad_MonitorNotifyWithoutCollect(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  notify:
+    conversation: "#ops"
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if b.Monitor.Enabled() {
+		t.Error("Enabled() = true with no collect entries")
+	}
+	if got := b.Monitor.NotifyTarget(); got != "#ops" {
+		t.Errorf("NotifyTarget() = %q, want #ops", got)
+	}
+}
+
+func TestLoad_MonitorNotifyErrors(t *testing.T) {
+	for _, tc := range []struct{ name, body, wantErr string }{
+		{
+			// A block that says to speak but not where is a post with
+			// no destination; there is no default conversation to fall
+			// back to, and inventing one would be worse than refusing.
+			"no conversation",
+			"name: x\nspecialists: [a]\nedge_trigger:\n  scheduled:\n    interval: 15m\nmonitor:\n  collect:\n    - tool: diff\n  notify:\n    digest_after: 6h\n",
+			"names no conversation",
+		},
+		{
+			"whitespace conversation",
+			"name: x\nspecialists: [a]\nedge_trigger:\n  scheduled:\n    interval: 15m\nmonitor:\n  notify:\n    conversation: \"   \"\n",
+			"names no conversation",
+		},
+		{
+			"digest_after does not parse",
+			"name: x\nspecialists: [a]\nedge_trigger:\n  scheduled:\n    interval: 15m\nmonitor:\n  notify:\n    conversation: \"#ops\"\n    digest_after: 6 hours\n",
+			"is not a duration",
+		},
+		{
+			// Silence that may last a negative amount of time is not a
+			// deadman, it is a typo for something.
+			"negative digest_after",
+			"name: x\nspecialists: [a]\nedge_trigger:\n  scheduled:\n    interval: 15m\nmonitor:\n  notify:\n    conversation: \"#ops\"\n    digest_after: -6h\n",
+			"is negative",
+		},
+		{
+			// Same argument the collection leg makes: an operator who
+			// believes a chat is being kept up to date by something
+			// that never runs.
+			"no cadence to speak on",
+			"name: x\nspecialists: [a]\nmonitor:\n  notify:\n    conversation: \"#ops\"\n",
+			"declares no edge_trigger.scheduled block",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeBundle(t, "b.yaml", tc.body)
+			_, err := workload.Load(path)
+			if err == nil {
+				t.Fatalf("Load accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
 	}
 }
