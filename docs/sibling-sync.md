@@ -765,10 +765,27 @@ Recorded here so the next triage does not re-derive it from scratch.
 
 ### `3de4134` — the baseline commit, and a port candidate
 
+*(Verdicted 2026-08-21: **correct fix, not portable yet** — see [#221](https://github.com/go-steer/mast/issues/221).)*
+
 `fix(usage): carry the digest subagent's cache buckets to the paying session (#845)` is both the
-SHA this report was generated against and an unverdicted change to a subsystem mast has
-(`pkg/digest`, with its own usage path at `digest.go:333`). Not investigated in this pass. Listed
-so it is not mistaken for triaged simply by being the baseline.
+SHA this report was generated against and a change to a subsystem mast has. The defect is real in
+mast's copy of the struct: `digest.Savings` carries `SubagentModel` / `SubagentInputTokens` /
+`SubagentOutputTokens` and no cache buckets, so a subagent on a cache-warm model bills the paying
+session at the uncached rate for reads it did not pay full price for.
+
+It cannot be *observed* here, because **nothing in mast calls `pkg/digest` at all**. The package has
+zero importers and is absent from `go list -deps ./cmd/mast`: the wrapper that drives digesting
+upstream (`pkg/mcp/digest_wrap.go`) was never ported, and the descope was never written down as one.
+So porting the cache buckets would add three more fields nobody fills to a struct nobody writes in a
+package nobody calls — [#211](https://github.com/go-steer/mast/issues/211)'s shape a third time.
+
+What shipped instead is the accuracy pass the finding demanded, since three surfaces read as though
+digest were live: `attach.UsageInfo.DigestMethods` ("present when at least one `digest.Process` call
+has fired", which is never), the attach protocol's v1.2.0 `latency_ms` and v1.3.0 `savings`
+tool-result sidecars (specified as produced by two files mast does not have), and `Savings.Subagent*`
+itself. Each is annotated where it lives, and the claim is held by a test rather than a comment —
+`TestNothingInMastImportsDigest` fails the day something imports the package and names the three
+annotations to correct. The port lands when #221 is answered with "wire it", and dies with "drop it".
 
 ### Baseline after this triage
 
@@ -814,7 +831,10 @@ Carried into the next pass from 2026-08-20, in the order they are worth doing:
    carries it — a copied list would render the deny-all specialist and the inherit-everything one
    identically. And the built-in axis ships as `builtin_declared`, because nothing populates
    `specialists.BuildOptions.Tools`: filed as [#219](https://github.com/go-steer/mast/issues/219).
-4. **`3de4134`** — unverdicted, and the baseline the last report was generated against. Next up.
+4. ~~**`3de4134`**~~ — **verdicted 2026-08-21**: correct fix, not portable, because `pkg/digest` has
+   no caller in mast at all. The three surfaces that implied otherwise are annotated and the claim
+   is now a test; the wire-it-or-drop-it call is [#221](https://github.com/go-steer/mast/issues/221).
+   **The carry-forward list is now empty** — what remains below are the two design calls, not ports.
 5. ~~**[#210](https://github.com/go-steer/mast/issues/210) / [#211](https://github.com/go-steer/mast/issues/211)**~~ — both shipped 2026-08-20.
 
 Two open questions that are not ports and need an owner: whether mast follows upstream's

@@ -36,21 +36,25 @@ import "time"
 // emits TurnComplete with CostUSD = nil so the field is omitted from
 // the wire entirely — the "cost deferred" signal is explicit.
 //
-// v1.2.0 (#277): tool-result response payloads now carry a
+// v1.2.0 (core-agent#277): tool-result response payloads now carry a
 // `latency_ms` sidecar (int64, milliseconds) reporting the wall-
 // clock time spent in the upstream tool call. Additive — consumers
-// on older schema versions simply don't see the field. Populated
-// by both the MCP digest wrap (pkg/mcp/digest_wrap.go) and the
-// plain rename passthrough (pkg/mcp/namespace.go), so operators
-// see per-call timing whether digest is enabled or not.
+// on older schema versions simply don't see the field. Upstream it is
+// populated by both the MCP digest wrap (pkg/mcp/digest_wrap.go) and
+// the plain rename passthrough (pkg/mcp/namespace.go), so operators
+// see per-call timing whether digest is enabled or not. **mast emits
+// neither**: it ported neither file, so the sidecar is decode-only
+// here. TurnComplete.LatencyMs is a different, turn-grain field and
+// is populated. See #221.
 //
-// v1.3.0 (#223 Phase 4): tool-result response payloads now carry
-// an optional `savings` object reporting the digest wrap's per-call
-// byte + token reduction, router path, and (agentic path only)
-// subagent usage. Sidecar rides the same response-map channel as
-// v1.2.0's latency_ms. Fully additive.
+// v1.3.0 (core-agent#223 Phase 4): tool-result response payloads now
+// carry an optional `savings` object reporting the digest wrap's
+// per-call byte + token reduction, router path, and (agentic path
+// only) subagent usage. Sidecar rides the same response-map channel
+// as v1.2.0's latency_ms. Fully additive — and decode-only on mast
+// for the same reason, since pkg/digest has no caller here.
 //
-// v1.4.0 (#329): capabilities frame extended with four optional
+// v1.4.0 (core-agent#329): capabilities frame extended with four optional
 // fields — `features` (feature-flag map), `slash_commands` (dynamic
 // list of server-side slash names), `agent` (name/version/model/
 // provider/url/description identity block), and `caller_id` (resolved

@@ -51,10 +51,14 @@ func installRecorder(t *testing.T) *tracetest.SpanRecorder {
 	return rec
 }
 
-// TestProcess_EmitsDigestProcessSpan pins the #223 Phase 5 contract:
-// each Process call emits a digest.process span with core_agent.*
-// attributes capturing the router's decision + savings math. This is
-// the span OTel dashboards slice on to rank tools by savings.
+// TestProcess_EmitsDigestProcessSpan pins the core-agent#223 Phase 5
+// contract: each Process call emits a digest.process span with
+// mast.digest.* attributes capturing the router's decision + savings
+// math. This is the span OTel dashboards slice on to rank tools by
+// savings — once something in mast calls Process (#221); the prefix is
+// observability-design's vocabulary rather than the ported
+// core_agent.* one precisely because no dashboard can be reading it
+// yet.
 func TestProcess_EmitsDigestProcessSpan(t *testing.T) {
 	rec := installRecorder(t)
 
@@ -76,16 +80,16 @@ func TestProcess_EmitsDigestProcessSpan(t *testing.T) {
 	for _, kv := range sp.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsInterface()
 	}
-	if got["core_agent.digest.path"] != "passthrough" {
-		t.Errorf("path attr = %v, want passthrough", got["core_agent.digest.path"])
+	if got["mast.digest.path"] != "passthrough" {
+		t.Errorf("path attr = %v, want passthrough", got["mast.digest.path"])
 	}
-	if got["core_agent.digest.original_bytes"] != int64(len(payload)) {
-		t.Errorf("original_bytes attr = %v, want %d", got["core_agent.digest.original_bytes"], len(payload))
+	if got["mast.digest.original_bytes"] != int64(len(payload)) {
+		t.Errorf("original_bytes attr = %v, want %d", got["mast.digest.original_bytes"], len(payload))
 	}
 	// Savings tokens estimated via 4-char heuristic; both original
 	// and digest are the same (passthrough → digest == payload), so
 	// savings_tokens_est should be 0. But the attribute must exist.
-	if _, ok := got["core_agent.digest.savings_tokens_est"]; !ok {
+	if _, ok := got["mast.digest.savings_tokens_est"]; !ok {
 		t.Errorf("savings_tokens_est attr missing: %v", got)
 	}
 }
@@ -104,7 +108,7 @@ func TestProcess_SpanMarksStructuralPath(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
 	for _, kv := range spans[0].Attributes() {
-		if string(kv.Key) == "core_agent.digest.path" && kv.Value.AsString() != "structural_json" {
+		if string(kv.Key) == "mast.digest.path" && kv.Value.AsString() != "structural_json" {
 			t.Errorf("path attr = %q, want structural_json", kv.Value.AsString())
 		}
 	}

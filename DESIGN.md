@@ -120,7 +120,8 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 | `pkg/providers/vertexcache` | Vertex context-cache manager (public so compose and embedders can wire hooks). |
 | `pkg/providers/mock` | Scripted JSONL replay for tests and offline demos. |
 | `pkg/taskclass` / `pkg/modeltier` / `pkg/pricing` | Task-class profiles → model-tier defaults → catalog pricing for the budget meter. |
-| `pkg/instruction` / `pkg/digest` | Instruction assembly; transcript digesting (eventlog-store variant descoped at port). |
+| `pkg/instruction` | Instruction assembly. |
+| `pkg/digest` | Tool-result digesting — the structural / agentic / passthrough router, its retrieval store, and per-method telemetry (eventlog-store variant descoped at port). **Embedder-facing only: nothing in mast calls it.** The MCP wrapper that drives it upstream was not ported, so the daemon digests nothing, `attach.UsageInfo.DigestMethods` is never populated, and `Savings.Subagent*` is never filled. Wire it or say so on the surfaces that imply it is live — [#221](https://github.com/go-steer/mast/issues/221). |
 
 **Operator + interop surfaces**
 

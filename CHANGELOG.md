@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **`pkg/digest` says it has no caller, and a test holds it to that.**
+  The package ships complete — content router, structural pruner, CCR
+  store, telemetry, an OTel span — and nothing in mast imports it. The
+  MCP wrapper that drives digesting upstream was never ported, and the
+  descope was never written down, so three surfaces described a live
+  feature: `attach.UsageInfo.DigestMethods` ("present when at least one
+  `digest.Process` call has fired", i.e. never), the attach protocol's
+  v1.2.0 `latency_ms` and v1.3.0 `savings` tool-result sidecars
+  (specified as produced by two files this repo does not have), and
+  `Savings.Subagent*`.
+
+  Each is annotated where it lives, and the claim is a test rather than
+  a comment: `TestNothingInMastImportsDigest` fails the day something
+  imports the package, and names the annotations to correct. The wire
+  fields stay on the response shape — it is wire-compatible with
+  core-agent's daemon, which does populate them.
+
+  Whether to wire the package or drop it is #221. Two fixes rode along,
+  both safe precisely because nothing calls it: the span attributes are
+  `mast.digest.*` rather than the ported `core_agent.digest.*`, and the
+  dangling references to core-agent's design docs and issue numbers are
+  qualified as such.
+
 - **The roster listing says what each specialist is allowed to touch.**
   `GET /sessions/{id}/subagents` carried a specialist's name, model,
   root, invocation and `capability`, and no tool grant — so the endpoint

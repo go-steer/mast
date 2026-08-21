@@ -24,7 +24,7 @@ import (
 	"strings"
 )
 
-// Pruner limits. Fixed for v1 per docs/digest-design.md open question 2
+// Pruner limits. Fixed for v1 per core-agent's docs/digest-design.md open question 2
 // ("operator-tunable, or fixed for v1? Proposal: fixed, with
 // package-level overrides for tests"). Add flags only if telemetry
 // shows operators need them.
@@ -77,7 +77,7 @@ func SetIdentifierKeyPattern(re *regexp.Regexp) {
 var defaultIdentifierKey = identifierKey
 
 // PruneJSON deterministically compresses a JSON payload using the
-// rules documented in docs/digest-design.md. Returns the pruned JSON
+// rules documented in core-agent's docs/digest-design.md. Returns the pruned JSON
 // as a string plus metadata describing what happened (arrays
 // collapsed, strings truncated, subtrees dropped).
 //
