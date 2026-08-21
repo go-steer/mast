@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **A proposed change has to name a tool an executor can actually run,
+  and `tools.builtin` never was one.** The write gate's producer
+  contract checks a finding's `proposed_change` against the set of
+  tools the roster's change executors hold, so an operator is not
+  offered an approval that will fire nothing. It built that set from
+  each executor's MCP allowlist *and* its `tools.builtin` list —
+  and nothing populates `specialists.BuildOptions.Tools`, so a
+  specialist is built holding no built-in tools whatever its
+  frontmatter declares. An executor declaring `builtin:
+  [patch_k8s_resource]` therefore had proposals for that tool accepted
+  at report time and nothing to run them with at approval time, which
+  is the exact failure the contract exists to prevent.
+
+  The executable surface is now the MCP allowlist and nothing else. An
+  executor whose whole declared surface is built-in names has an empty
+  one, refuses every proposal, and says so at startup instead of
+  leaving an operator to discover it mid-incident.
+
+  The axis itself is documented for what it is rather than removed: a
+  claim the spec makes about itself, read by the capability split, the
+  fan-out branch check, and the write-surface startup log — all of
+  which hold the specialist to the claim, which is sound whether or
+  not it grants anything. `specialists-design.md`'s normative table
+  now says so, including that absent and empty mean the same thing on
+  this axis, unlike `mcp:`. #219.
+
 - **A session that has to be resumed from disk keeps the ACL it was
   stored with.** It did not. `resumeAndRegister` read the persisted row,
   authorized the caller against it, and then registered the rebuilt

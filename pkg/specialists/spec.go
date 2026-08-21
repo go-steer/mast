@@ -129,7 +129,31 @@ type MCPAllowlist struct {
 // that axis, a present-but-empty field denies everything on it, and a
 // non-empty field is a whitelist. `mcp: []` is therefore not the same
 // declaration as no `mcp:` key at all — see InheritsAllMCP.
+//
+// That reading is exact for MCP and describes only one of the three
+// axes. Builtin is a declaration rather than a grant and Skills is
+// refused outright; each field says why below.
 type ToolAllowlist struct {
+	// Builtin names built-in tools the specialist is declared to use.
+	// It is **not** a grant, whatever the normative table's shape
+	// suggests: nothing populates BuildOptions.Tools, so every
+	// specialist is built holding no built-in tools at all and there is
+	// nothing here for a whitelist to narrow. Absent and empty are the
+	// same declaration on this axis, unlike MCP's (#219).
+	//
+	// What reads it are the checks that treat a declaration as a claim
+	// to be held to: internal/compose.CheckCapabilitySplit and
+	// pkg/graph.checkBranchTools refuse a read_only specialist or a
+	// fan-out branch that names a mutating tool here, and the
+	// capability startup log reports it as declared write surface.
+	// Those all run in the refusing direction, which is safe under
+	// either reading — a claim mast holds you to costs nothing when the
+	// claim turns out to grant nothing.
+	//
+	// The one consumer that ran the other way was the write gate's
+	// executable surface, which widened what a proposed change could
+	// name; that was corrected with #219, because a built-in name there
+	// is a promise the executor cannot keep.
 	Builtin []string       `yaml:"builtin,omitempty"`
 	MCP     []MCPAllowlist `yaml:"mcp,omitempty"`
 

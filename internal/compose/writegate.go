@@ -237,7 +237,17 @@ func changeSetChecker(cfg WriteGateConfig) *approval.ChangeSetChecker {
 	declares := func(string) bool { return true }
 	if surface, exhaustive := changeSurface(cfg.Specs); exhaustive {
 		declares = func(name string) bool { return surface[name] }
-		if cfg.Logger != nil {
+		switch {
+		case cfg.Logger == nil:
+		case len(surface) == 0:
+			// An executor with nothing executable is a roster that will
+			// refuse every proposed change, and an operator should read
+			// that at startup rather than infer it from the first
+			// refusal. The usual cause is a surface declared entirely in
+			// tools.builtin, which grants nothing (#219).
+			cfg.Logger.Warn("producer contract active with an empty executable surface: every proposed change will be refused",
+				"hint", "a change executor's executable tools come from tools.mcp; tools.builtin grants nothing")
+		default:
 			cfg.Logger.Info("producer contract active", "executable_tools", sortedKeys(surface))
 		}
 	}
@@ -263,6 +273,16 @@ func changeSetChecker(cfg WriteGateConfig) *approval.ChangeSetChecker {
 // mast has no allowlist to hold it to. In both cases the contract falls
 // back to what the schema resolver alone can say, which still refuses a
 // tool this daemon does not hold.
+//
+// The surface is the MCP allowlist and nothing else. tools.builtin used
+// to widen it, and that was the silent-approval failure above rather
+// than a defense against it: nothing populates
+// specialists.BuildOptions.Tools, so a specialist is built holding no
+// built-in tools whatever its frontmatter declares, and a built-in name
+// in this set is a promise the executor cannot keep (#219). An executor
+// that declares only built-in tools therefore has an *empty* executable
+// surface, and every proposal against it is refused at report time —
+// which is the honest answer, and the one an operator can act on.
 func changeSurface(specs []specialists.Spec) (map[string]bool, bool) {
 	names := map[string]bool{}
 	executors := 0
@@ -281,9 +301,6 @@ func changeSurface(specs []specialists.Spec) (map[string]bool, bool) {
 			for _, n := range al.Tools {
 				names[n] = true
 			}
-		}
-		for _, n := range s.Tools.Builtin {
-			names[n] = true
 		}
 	}
 	if executors == 0 {

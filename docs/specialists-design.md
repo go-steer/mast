@@ -112,7 +112,7 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | `model` | string | inherit parent | Full model ID (`gemini-2.5-flash`, `claude-haiku-4-5`, etc.). Dispatched by model id, exactly like `--model`; the parent's provider alias only disambiguates the Anthropic backend, so a cross-provider override is legal (open Q#4, resolved 2026-08-12). Resolution is memoized per id, and an override that cannot be resolved fails the build rather than silently inheriting the parent's model. Under an offline-fake parent (`echo` / `scripted` / `toolactor`) every override collapses back to the parent so tiered bundles still run credential-free. Common pattern: frontier parent dispatching to cheap-tier specialists for high-volume tasks. Mutually exclusive with `tier`. |
 | `tier` | string | inherit parent | Provider-portable model override: `small`, `mid` or `frontier`, resolved to a concrete model id for the running provider through `pkg/taskclass.ModelForTier` — the same table `--task` uses (v0.4 W1.1a; see [Model and tier](#model-and-tier-2026-08-15)). Says how much model the step is worth rather than which vendor's model it must run on, so a shipped bundle can declare its own cost shape and still load on any provider. Closed enum: an unrecognized value fails the load, as does declaring `model` and `tier` on the same specialist. Everything `model` guarantees holds here too — memoized per resolved id, unresolvable fails the build, offline-fake parents collapse it. |
 | `output_schema` | string | none | Path to a JSON-Schema document (`.json`, `.yaml`, `.yml`) **relative to the `.tmpl` file's own directory**, so a roster stays relocatable. Absent = the specialist returns free-form output. The document is read, type-normalized and checked at *load* time — a malformed contract fails the roster on startup, not on the first turn that dispatches to the specialist. Enforcement is ADK's: in `Task` mode the schema becomes the `finish_task` declaration and a non-conforming call comes back as a validation error the model can correct; in `SingleTurn` mode the reply is validated on the way out and a violation refuses the delegation. Either way the caller sees a refusal that names the offending key, and non-conforming output never becomes the specialist's result. Constraints checked at load: the top level must be an object (see below), every node needs a `type`, arrays need `items`, objects need `properties`, and every `required` name must be a declared property. Mast does not interpret the schema — there is no `Finding` Go type; the shape is a workload asset (`examples/workloads/gke-triage/schemas/finding.json`). |
-| `tools.builtin` | []string | inherit all | Allowlist (not denylist) of core-agent built-in tools. Absent = inherit all; present-but-empty = deny all builtins (see the normative table below — empty and absent are NOT equivalent, revised 2026-07-25). |
+| `tools.builtin` | []string | — | **A declaration, not a grant ([status](#the-builtin-axis-is-a-declaration-not-a-grant-2026-08-21)).** Names built-in tools the specialist is declared to use. mast offers specialists no built-in tools, so nothing here is granted or narrowed and absent and empty mean the same thing. What reads it is the capability split, the fan-out branch check, and the write-surface startup log — each holding the specialist to the claim rather than acting on it. |
 | `tools.mcp[].server` | string | required if `mcp` set | MCP server name as configured under `.agents/mcp/` (path per [`./config-layout-design.md`](./config-layout-design.md), which is authoritative for layout; an earlier `.agents/mcp.json` reference here was stale). |
 | `tools.mcp[].tools` | []string | all from this server | Allowlist of tools from this MCP server. Absent = whole server; non-empty = narrowed to those names (enforced via stock `tool.FilterToolset`, verified 2026-07-25). |
 | `tools.skills` | []string | inherit all | **Not implemented as of v0.4 — a non-empty list fails the load ([status](#the-skills-axis-does-not-exist-yet-2026-08-20)).** Allowlist of skills (SKILL.md bundles per [`./skills-design.md`](./skills-design.md)) the specialist may invoke. References resolve the same way as workload-bundle `skills:` entries (local name or registry URL). Absent = inherit the bundle's `skills:` roster; present-but-empty = deny skill access (normative table below). Skill invocation from a specialist follows the standard three-way policy layering: skill's `allowed_tools` ∩ specialist's `tools` ∩ workload bundle's `tool_catalog` — narrowest wins. Skill budget *hints* are advisory (per [`./skills-design.md`](./skills-design.md) — hints are not enforcement); the enforced ceiling is the specialist's `budget.max_cost_usd`, itself bounded by the bundle's. |
@@ -141,11 +141,39 @@ Cross-axis independence: each axis resolves on its own (e.g. `mcp` listed + `bui
 
 This is allowlist-by-design: enumerating the few tools a specialist *should* see is much easier than excluding the many it shouldn't.
 
+**One column of that table is the mcp axis and one is aspirational.** As of v0.4 only `mcp` resolves this way in code: `builtin` names no grant mast can narrow (below) and `skills` is refused outright ([below](#the-skills-axis-does-not-exist-yet-2026-08-20)). The table stays as written because it is the format's contract — it is what an embedder's own runtime, and core-agent's, resolve against — but read the builtin and skills columns as *what the shape would mean*, and the two status sections that follow as what this build does.
+
+### The builtin axis is a declaration, not a grant (2026-08-21)
+
+Same finding as the skills section below, one notch weaker: the axis *is* read, it just does not do what the table says the axis does.
+
+Nothing populates `specialists.BuildOptions.Tools`. `internal/compose` builds every specialist with `{Model, Resolve, ResolveTier}` and adds `Toolsets` for Task-mode specs, so a specialist's tools are its filtered MCP toolsets plus whatever ADK installs itself (`finish_task`, delegation tools). **It holds no built-in tools at all**, and there is nothing for `builtin:` to whitelist. mast's own built-ins are the planner's control-plane vocabulary, wired onto the *root* under planner dispatch and never offered to a specialist.
+
+| Frontmatter | What the table above promises | What mast does |
+|---|---|---|
+| `builtin:` absent | inherit every built-in tool | inherits nothing, because none are offered |
+| `builtin: []` | deny all built-ins | denies nothing that was ever granted — same outcome as absent |
+| `builtin: [get_pod]` | whitelist `get_pod` | the specialist cannot call `get_pod`, or anything else built-in |
+
+So the field is kept and re-documented rather than refused, because unlike `skills` it has real consumers — three of them, all reading it as a **claim the spec makes about itself** and holding it to that claim:
+
+- `internal/compose.CheckCapabilitySplit` refuses a `read_only` specialist that lists a mutating name here.
+- `pkg/graph.checkBranchTools` refuses a fan-out branch that does, and separately refuses one that lists `request_operator_input` (a branch cannot park a run).
+- The capability startup log reports it as part of the workload's declared write surface.
+
+All three run in the *refusing* direction, which is sound under either reading: holding a specialist to a claim costs nothing when the claim turns out to grant nothing.
+
+**One consumer ran the other way and was corrected.** The write gate's producer contract (`changeSurface`, v0.4 W7.0) folded `builtin` names into the set of tools a proposed change may name — so a `change_executor` declaring `builtin: [patch_k8s_resource]` had proposals for that tool *accepted* at report time, and then nothing to run them with. That is precisely the silent-approval failure the contract exists to prevent: an operator approves a patch, the executor turns out not to hold the tool, and the incident ends with an approval and no change. The executable surface is now the MCP allowlist and nothing else; an executor that declares its whole surface in `builtin:` gets an empty one, refuses every proposal, and says so at startup.
+
+Reporting the axis honestly is also why `GET /sessions/{id}/subagents` publishes it as **`builtin_declared`** rather than `builtin` (#218): under the table's name an operator would read it as what the specialist can call.
+
+The way to make the table true would be to populate `BuildOptions.Tools` with a built-in set and let `builtin` narrow it the way `mcp` narrows toolsets. That is a feature, not a fix, and it needs a built-in set to exist first (#219).
+
 ### The skills axis does not exist yet (2026-08-20)
 
-Two of the three axes above are enforced code. The third is not, and the table read as though it were.
+One of the three axes above is enforced code. This is the weakest of the other two, and the table read as though it were the strongest.
 
-`builtin` is read by the write gate (`internal/compose/writegate.go`) and the capability-split check; `mcp` is enforced by `filterToolsets` via stock `tool.FilterToolset`. `skills` is read by **no production code at all** — because there is nothing for it to narrow. mast ships no skills subsystem: no `pkg/skills`, no SKILL.md loader, no `invoke_skill`, no `mast skills` CLI. [`./skills-design.md`](./skills-design.md) schedules the loader for **v0.1**; four releases have shipped without it and nothing in this corpus said so (#211).
+`mcp` is enforced by `filterToolsets` via stock `tool.FilterToolset`; `builtin` is read as a declaration by the capability split and the fan-out branch check ([above](#the-builtin-axis-is-a-declaration-not-a-grant-2026-08-21)). `skills` is read by **no production code at all** — because there is nothing for it to narrow. mast ships no skills subsystem: no `pkg/skills`, no SKILL.md loader, no `invoke_skill`, no `mast skills` CLI. [`./skills-design.md`](./skills-design.md) schedules the loader for **v0.1**; four releases have shipped without it and nothing in this corpus said so (#211).
 
 So as of v0.4, on the one file whose job is to state what a sub-agent may touch:
 
