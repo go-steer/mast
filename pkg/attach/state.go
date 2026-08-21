@@ -162,6 +162,74 @@ type SubagentCatalogInfo struct {
 	// spells it, so an operator can grep the bundle for what they see
 	// here.
 	AgentMode string `json:"agent_mode,omitempty"`
+
+	// Tools is the specialist's declared tool allowlist. "What is this
+	// thing allowed to touch" is the question a roster listing exists
+	// to answer, and Capability answers only its coarsest half.
+	Tools SubagentToolGrant `json:"tools"`
+}
+
+// MCP grant values for SubagentToolGrant.MCPGrant.
+const (
+	// MCPGrantAll — the spec declared no `mcp:` key, so the specialist
+	// is offered every MCP toolset the workload has.
+	MCPGrantAll = "all"
+	// MCPGrantNone — the spec declared `mcp: []`, which denies them all.
+	MCPGrantNone = "none"
+	// MCPGrantListed — the servers in MCP, and only those.
+	MCPGrantListed = "listed"
+)
+
+// SubagentToolGrant is one specialist's declared tool allowlist,
+// projected for GET /sessions/{id}/subagents.
+//
+// The shape is not a transcription of the frontmatter, because the
+// frontmatter's meaning lives in a distinction JSON erases: an absent
+// `mcp:` key grants every toolset, `mcp: []` grants none, and the two
+// decode to the same empty array on the wire. MCPGrant says which one
+// the spec actually declared, so a reader never has to know the
+// nil-versus-empty rule to read the answer.
+//
+// The allowlist's third axis, skills, has no field here: the loader
+// refuses a non-empty tools.skills outright (mast ships no skills
+// runtime — #211), so a skills grant cannot reach a running roster and
+// a field for it would only ever report the empty list.
+type SubagentToolGrant struct {
+	// MCPGrant is the MCP axis's effect in one word: "all", "none", or
+	// "listed" (see MCP).
+	MCPGrant string `json:"mcp_grant"`
+
+	// MCP is the per-server allowlist, present only under
+	// MCPGrantListed. Servers not listed are dropped from the
+	// specialist's offered toolsets.
+	MCP []SubagentMCPGrant `json:"mcp,omitempty"`
+
+	// BuiltinDeclared is the spec's `tools.builtin` list, and the name
+	// says the whole caveat: mast installs no built-in tools on a
+	// specialist (nothing populates specialists.BuildOptions.Tools), so
+	// this axis narrows nothing at build time. What reads it is the
+	// write gate, which takes it as the specialist's declared write
+	// surface, and the capability-split check, which refuses a
+	// read_only specialist that lists a mutating name. Reporting it as
+	// "builtin" would tell an operator the specialist can call these.
+	// The gap between that and what specialists-design's normative table
+	// promises is #219.
+	BuiltinDeclared []string `json:"builtin_declared,omitempty"`
+}
+
+// SubagentMCPGrant is one server's entry in a specialist's MCP
+// allowlist.
+type SubagentMCPGrant struct {
+	Server string `json:"server"`
+
+	// Tools is the narrowed tool list, empty under WholeServer.
+	Tools []string `json:"tools,omitempty"`
+
+	// WholeServer is true when the spec listed the server with no
+	// `tools:` of its own, which passes every tool on it. Same erasure
+	// as MCPGrant, one level down: "narrowed to nothing" and "not
+	// narrowed at all" are both an empty array otherwise.
+	WholeServer bool `json:"whole_server"`
 }
 
 // Invocation values for SubagentCatalogInfo.Invocation. See the field

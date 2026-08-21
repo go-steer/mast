@@ -84,6 +84,39 @@ shape never routes to — a `_fallback` under fan-out dispatch, a second
 `SingleTurn` spec under graph dispatch — and an empty `invocation` is how
 you see it without reading the composition code.
 
+Each entry also carries a `tools` grant, which is the other half of *what
+can this thing do*: `capability` says whether the specialist is allowed to
+change anything, `tools` says what it can reach.
+
+```json
+"tools": {
+  "mcp_grant": "listed",
+  "mcp": [
+    {"server": "gke", "tools": ["get_pod", "get_events"], "whole_server": false},
+    {"server": "slack", "whole_server": true}
+  ],
+  "builtin_declared": ["apply_manifest"]
+}
+```
+
+`mcp_grant` is the field to read first, because the underlying declaration
+means opposite things one character apart. A spec with **no** `mcp:` key
+inherits *every* MCP toolset the workload has (`"all"`); a spec that writes
+`mcp: []` is denied *all* of them (`"none"`); a non-empty list is a
+whitelist (`"listed"`, and only then is `mcp` present). Both of the first
+two spellings are an empty list on the wire, so a catalog that just
+transcribed the declaration would show the deny-all specialist and the
+reach-the-whole-cluster one identically. `whole_server` draws the same
+distinction per entry: a listed server with no `tools:` of its own passes
+whole.
+
+`builtin_declared` is named for what it is. mast installs no built-in tools
+on a specialist, so the list narrows nothing at build time; what reads it
+is the write gate, which treats it as the specialist's declared write
+surface, and the capability-split check, which refuses a `read_only`
+specialist that lists a mutating name. Read it as a declaration about the
+spec, not as a set of tools the specialist holds.
+
 `GET /sessions/{id}/guardrails` answers the question an operator actually
 has when a session stops responding: *what stopped it, and what do I do?*
 It reports the budget ceilings in force and the usage against them across
