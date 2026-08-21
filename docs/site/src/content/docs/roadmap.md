@@ -390,7 +390,7 @@ outside the model's tool surface, and hands the model the transitions already
 classified. That is also why the collection leg costs nothing: a step the model
 is not part of cannot spend a token.
 
-**The first of those four has landed.** A workload can now declare a
+**Two of those four have landed.** A workload can now declare a
 [`monitor.collect`](/reference/workload-bundle/#monitor--the-facts-a-cycle-gathers-for-itself)
 block: a list of catalog tools mast runs itself when a scheduled cycle fires,
 before the model is woken, with the results handed to it in the tick envelope
@@ -405,6 +405,23 @@ declares no allowlist at all — so a tool cannot be both mast's to call and the
 model's. A collection failure aborts the cycle before any model call and is
 counted as an errored fire, because a monitor that reports calm when its
 collection broke is worse than one that reports nothing.
+
+**The second is the finding diff itself.** A bundle points
+[`monitor.transitions_from`](/reference/workload-bundle/#transitions_from--the-classification-comes-from-the-tool)
+at one of its own collect keys, and that result rides the tick envelope as
+classified transitions rather than as text the model has to re-read. What is
+worth noticing is what mast did *not* gain: no list of transition classes,
+no severity comparison, no fingerprinting, no second opinion on whether a
+finding is really new. The classifier's verdict is carried through verbatim,
+because lookout already keeps the per-run state and two implementations of
+"what changed" is one more than can be right. The single check mast does
+make is that the stream is *whole* — a record stream ends in a
+`scanned=/findings=` summary, and one that is missing or that disagrees with
+the records above it voids the cycle. A truncated answer is a prefix of a
+healthy one, and the notify half is about to stay silent when nothing
+changed; those two must not look the same. A cycle that classified and found
+nothing says so explicitly, which is a different fact from a workload that
+never classified at all.
 
 Landed already on the way there: **durable budget spend**. A `max_cost_usd`
 that a restart reset was a ceiling on what a workload spent per process,

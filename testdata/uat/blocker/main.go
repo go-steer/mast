@@ -17,9 +17,12 @@
 // BLOCKING tool — the prerequisite the deferred crash/drain/abort legs
 // were waiting on (docs/uat-v0.2-plan.md "Blocking-tool prerequisite").
 //
-// It exposes two tools whose effect classes match the fixture's
-// tool_catalog policies: read_status (read-only) and apply_change
-// (mutating). A tool call blocks until the harness releases it, so the
+// It exposes three tools. Two have effect classes matching the
+// fixture's tool_catalog policies — read_status (read-only) and
+// apply_change (mutating) — and the third, findings_diff, answers in
+// the TEXT record contract a run-to-run classifier uses, which is what
+// the v0.5 monitoring legs (scripts/uat-v0.5.sh) read. A tool call
+// blocks until the harness releases it, so the
 // harness can hold a turn open across a kill -9 / SIGTERM drain / abort
 // and drive deterministic timing. All coordination is via files in the
 // directory named by UAT_BLOCKER_DIR:
@@ -44,6 +47,9 @@
 //     calls it authorized. The change-set freshness legs
 //     (scripts/uat-v0.4.sh) turn on that: a grant is re-checked against
 //     this read, and a changed answer voids it.
+//   - findings_diff reports the contents of "findings_diff.out" verbatim
+//     as text, so a leg can hand the daemon any classification a real
+//     classifier might produce — including a malformed one.
 //
 // A `kill -9` of the launching daemon is the one interruption that does NOT
 // cancel the call ctx: the crash legs SIGKILL the daemon mid-call, which
@@ -114,9 +120,64 @@ func main() {
 			return okResult("apply_change"), struct{}{}, nil
 		})
 
+	// findings_diff stands in for a run-to-run classifier — k8s_lookout's
+	// `k8s_findings_diff` is the real one (v0.5 W4.4). Two things about
+	// it are deliberate and neither is incidental to what the legs test:
+	//
+	// REGISTERED LOW-LEVEL, not through the generic mcpsdk.AddTool. The
+	// generic form always sends structured content, even for an empty
+	// output struct; the real classifier sends TEXT, one logfmt record
+	// per line ending in a summary. mast's parser is written against
+	// that, so a fixture that answered in structured JSON would exercise
+	// a path production never takes.
+	//
+	// The records come from "<dir>/findings_diff.out", so a leg can hand
+	// the daemon whatever a classifier might say — including the
+	// escalation whose severities did not move, which is the leg that
+	// fails if mast ever starts checking the classification instead of
+	// carrying it.
+	srv.AddTool(&mcpsdk.Tool{
+		Name:        "findings_diff",
+		Description: "UAT lookout-shaped classifier: text records, run-to-run transitions",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"transitions": map[string]any{
+					"type":        "string",
+					"description": "comma-separated transition classes to report",
+				},
+			},
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		detail := ""
+		if req != nil && len(req.Params.Arguments) > 0 {
+			detail = "args=" + strings.TrimSpace(string(req.Params.Arguments))
+		}
+		if err := block(ctx, dir, "findings_diff", detail); err != nil {
+			return nil, err
+		}
+		return textResult(findingsDiff(dir)), nil
+	})
+
 	if err := srv.Run(context.Background(), &mcpsdk.StdioTransport{}); err != nil {
 		os.Exit(1)
 	}
+}
+
+// defaultFindingsDiff is what findings_diff answers when the harness has
+// written no canned output: one quiet cycle, correctly terminated. A
+// fixture whose default was empty would make "the summary line is
+// mandatory" untestable, because every leg would have to write a file
+// before it could see the normal case.
+const defaultFindingsDiff = "scanned=1 findings=0 elapsed=1ms\n"
+
+// findingsDiff reads the canned classifier output for this leg.
+func findingsDiff(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "findings_diff.out")) // #nosec G304 -- harness fixture, path from the harness's own env
+	if err != nil {
+		return defaultFindingsDiff
+	}
+	return string(b)
 }
 
 // changeArgs is apply_change's declared input. Required (no omitempty),

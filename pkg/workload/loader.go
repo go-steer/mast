@@ -17,6 +17,7 @@ package workload
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -167,6 +168,19 @@ func (b *Bundle) validateMonitor() error {
 			return fmt.Errorf("monitor.collect files two results under %q; give one of them an `as:` key, or drop the duplicate", key)
 		}
 		seen[key] = true
+	}
+	// A transitions_from that names nothing collected is a workload
+	// that believes it is watching for change and is not. It fails on
+	// the first fire either way; failing at load names the typo and
+	// lists what was actually collected, which is the difference
+	// between a five-second fix and reading a stack trace at 3am.
+	if key := b.Monitor.TransitionsKey(); key != "" && !seen[key] {
+		collected := make([]string, 0, len(seen))
+		for k := range seen {
+			collected = append(collected, k)
+		}
+		sort.Strings(collected)
+		return fmt.Errorf("monitor.transitions_from names %q, which no monitor.collect entry files a result under (collected: %s)", key, strings.Join(collected, ", "))
 	}
 	return nil
 }

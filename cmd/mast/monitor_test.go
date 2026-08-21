@@ -15,15 +15,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/mast/pkg/monitor"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -78,15 +81,15 @@ func TestCollectRunsInDeclarationOrder(t *testing.T) {
 		t.Errorf("ran %v, want [scan diff] in declaration order", rec.saw)
 	}
 	// Keyed by `as:` where given, by tool name where not.
-	scan, _ := got["scan"].(map[string]any)
+	scan, _ := got.Collected["scan"].(map[string]any)
 	if scan == nil || scan["state"] != "steady" {
-		t.Errorf("collected[scan] = %v, want the tool's own result carried through whole", got["scan"])
+		t.Errorf("collected[scan] = %v, want the tool's own result carried through whole", got.Collected["scan"])
 	}
-	if _, keyed := got["transitions"]; !keyed {
-		t.Errorf("collected = %v, want the diff filed under its `as:` key", got)
+	if _, keyed := got.Collected["transitions"]; !keyed {
+		t.Errorf("collected = %v, want the diff filed under its `as:` key", got.Collected)
 	}
-	if _, unaliased := got["diff"]; unaliased {
-		t.Errorf("collected = %v, want the alias to replace the tool name, not sit beside it", got)
+	if _, unaliased := got.Collected["diff"]; unaliased {
+		t.Errorf("collected = %v, want the alias to replace the tool name, not sit beside it", got.Collected)
 	}
 	if rec.sawArgs[1]["window"] != "1h" {
 		t.Errorf("the diff saw %v, want the bundle's literal arguments", rec.sawArgs[1])
@@ -115,8 +118,8 @@ func TestCollectAbortsOnTheFirstFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("collect succeeded with a failing call; the model would be woken with a partial picture")
 	}
-	if got != nil {
-		t.Errorf("collect returned %v alongside the error; a partial map is the thing that must not reach the model", got)
+	if got.Collected != nil || got.Transitions != nil {
+		t.Errorf("collect returned %+v alongside the error; a partial picture is the thing that must not reach the model", got)
 	}
 	if !strings.Contains(err.Error(), "mcp server gone") {
 		t.Errorf("error = %v, want the tool's own failure carried up", err)
@@ -161,8 +164,8 @@ func TestCollectIsANoOpWithoutAMonitorBlock(t *testing.T) {
 		t.Error("a collector with no calls reports enabled")
 	}
 	got, err := c.collect(context.Background(), "sess-1")
-	if err != nil || got != nil {
-		t.Errorf("collect = %v, %v; want nil, nil", got, err)
+	if err != nil || got.Collected != nil || got.Transitions != nil {
+		t.Errorf("collect = %+v, %v; want the zero cycle and no error", got, err)
 	}
 	if len(rec.saw) != 0 {
 		t.Errorf("ran %v, want nothing", rec.saw)
@@ -177,8 +180,8 @@ func TestNilCollectorIsSafe(t *testing.T) {
 		t.Error("a nil collector reports enabled")
 	}
 	got, err := c.collect(context.Background(), "sess-1")
-	if err != nil || got != nil {
-		t.Errorf("collect = %v, %v; want nil, nil", got, err)
+	if err != nil || got.Collected != nil || got.Transitions != nil {
+		t.Errorf("collect = %+v, %v; want the zero cycle and no error", got, err)
 	}
 }
 
@@ -187,7 +190,13 @@ func TestNilCollectorIsSafe(t *testing.T) {
 // take, rather than an empty string that reads as an unattributed call.
 func TestCollectPassesTheFireIdentity(t *testing.T) {
 	rec := &recordingRun{results: map[string]map[string]any{"scan": {}}}
-	c := testCollector(t, rec, workload.MonitorCollect{Tool: "scan"})
+	// Built directly rather than through testCollector, with an app and
+	// user that are deliberately not the daemon's: the claim is that the
+	// cycle runs under the identity it was handed, which a collector
+	// hardcoding the daemon's own constants would also pass.
+	c := newMonitorCollector(discardLogger(),
+		workload.Monitor{Collect: []workload.MonitorCollect{{Tool: "scan"}}},
+		rec.run, "mast-under-test", "daemon")
 
 	if _, err := c.collect(context.Background(), "sched-2026-08-21T10:00:00Z"); err != nil {
 		t.Fatalf("collect: %v", err)
@@ -196,8 +205,8 @@ func TestCollectPassesTheFireIdentity(t *testing.T) {
 	if ctx.SessionID() != "sched-2026-08-21T10:00:00Z" {
 		t.Errorf("SessionID = %q, want the fire's session", ctx.SessionID())
 	}
-	if ctx.AppName() != "mast" || ctx.UserID() != "daemon" {
-		t.Errorf("app/user = %q/%q, want mast/daemon", ctx.AppName(), ctx.UserID())
+	if ctx.AppName() != "mast-under-test" || ctx.UserID() != "daemon" {
+		t.Errorf("app/user = %q/%q, want the identity the collector was built with", ctx.AppName(), ctx.UserID())
 	}
 	if ctx.AgentName() != "mast:monitor" {
 		t.Errorf("AgentName = %q, want the namespaced form no specialist name can take", ctx.AgentName())
@@ -247,8 +256,8 @@ func TestCollectContextDrivesARealTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	if scan, _ := got["scan"].(map[string]any); scan == nil || scan["ok"] != true {
-		t.Errorf("collected = %v, want the tool's result", got)
+	if scan, _ := got.Collected["scan"].(map[string]any); scan == nil || scan["ok"] != true {
+		t.Errorf("collected = %v, want the tool's result", got.Collected)
 	}
 	if probe.sawAgent != "mast:monitor" || probe.sawSession != "sess-9" {
 		t.Errorf("the tool saw %q/%q, want mast:monitor/sess-9", probe.sawAgent, probe.sawSession)
@@ -315,6 +324,304 @@ func TestCollectedRidesInTheEnvelope(t *testing.T) {
 	}
 	if back["tick"] != "2026-08-21T10:00:00Z" {
 		t.Errorf("tick = %v, want the same envelope to carry which fire these facts belong to", back["tick"])
+	}
+}
+
+// The W4.4 half: the cycle reads the classification, and reads nothing
+// into it.
+
+// diffOut is what a lookout-shaped tool hands back through ADK's MCP
+// adapter: text under an `output` key, one record per line, terminated
+// by the summary.
+func diffOut(lines ...string) map[string]any {
+	return map[string]any{"output": strings.Join(lines, "\n") + "\n"}
+}
+
+func transitionCollector(t *testing.T, rec *recordingRun, key string, calls ...workload.MonitorCollect) *monitorCollector {
+	t.Helper()
+	return newMonitorCollector(discardLogger(),
+		workload.Monitor{Collect: calls, TransitionsFrom: key},
+		rec.run, "mast", "daemon")
+}
+
+// TestCollectParsesTheNamedTransitionSource: the source named by
+// monitor.transitions_from comes back parsed, and does NOT also come
+// back raw. Two spellings of one answer in one envelope is an invitation
+// to reconcile them.
+func TestCollectParsesTheNamedTransitionSource(t *testing.T) {
+	rec := &recordingRun{results: map[string]map[string]any{
+		"scan": {"nodes": float64(12)},
+		"diff": diffOut(
+			`transition=new subject_key=pod/prod/api/CrashLoopBackOff severity=critical`,
+			`transition=resolved subject_key=pod/prod/web/Unhealthy severity=warning`,
+			`scanned=412 findings=2 elapsed=1.9s`,
+		),
+	}}
+	c := transitionCollector(t, rec, "transitions",
+		workload.MonitorCollect{Tool: "scan"},
+		workload.MonitorCollect{Tool: "diff", As: "transitions"},
+	)
+
+	got, err := c.collect(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if got.Transitions == nil {
+		t.Fatal("Transitions = nil for a workload that named a source")
+	}
+	if n := len(got.Transitions.Transitions); n != 2 {
+		t.Fatalf("got %d transitions, want 2: %+v", n, got.Transitions)
+	}
+	if got.Transitions.Scanned != 412 {
+		t.Errorf("Scanned = %d, want 412", got.Transitions.Scanned)
+	}
+	if _, raw := got.Collected["transitions"]; raw {
+		t.Errorf("collected = %v; the parsed set must not be shadowed by the text it was read from", got.Collected)
+	}
+	// Everything else still rides raw. Naming one source classifies one
+	// result, not the whole block.
+	if scan, _ := got.Collected["scan"].(map[string]any); scan == nil || scan["nodes"] != float64(12) {
+		t.Errorf("collected[scan] = %v, want the other calls untouched", got.Collected["scan"])
+	}
+}
+
+// TestCollectDoesNotSecondGuessTheClassification is the runtime end of
+// the leg pkg/monitor pins: the stub reports `escalated` for a subject
+// whose severity mast can see did not change, and mast reports it as
+// escalated anyway. This is the test that fails the moment anyone adds
+// a local heuristic — anywhere between the tool result and the envelope.
+func TestCollectDoesNotSecondGuessTheClassification(t *testing.T) {
+	rec := &recordingRun{results: map[string]map[string]any{
+		"diff": diffOut(
+			`transition=escalated subject_key=pod/prod/api/Unhealthy severity=warning prev_severity=warning`,
+			`scanned=1 findings=1`,
+		),
+	}}
+	c := transitionCollector(t, rec, "diff", workload.MonitorCollect{Tool: "diff"})
+
+	got, err := c.collect(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if got.Transitions == nil || len(got.Transitions.Transitions) != 1 {
+		t.Fatalf("transitions = %+v, want the one record through", got.Transitions)
+	}
+	if class := got.Transitions.Transitions[0].Class; class != "escalated" {
+		t.Errorf("class = %q, want escalated — the severities being equal is lookout's business, not mast's", class)
+	}
+}
+
+// TestCollectAbortsOnAMalformedClassification: the strictness argument.
+// A truncated diff read leniently becomes an empty transition set, and
+// an empty transition set is the wire for "all quiet" — which W4.5 will
+// decline to notify on. So it fails the cycle instead, and the failure
+// names the bundle key, the tool, and what was wrong with the bytes.
+func TestCollectAbortsOnAMalformedClassification(t *testing.T) {
+	rec := &recordingRun{results: map[string]map[string]any{
+		"scan": {"nodes": float64(12)},
+		// A prefix of a healthy answer: records, no summary line.
+		"diff": diffOut(`transition=new subject_key=pod/prod/api/CrashLoopBackOff`),
+	}}
+	c := transitionCollector(t, rec, "transitions",
+		workload.MonitorCollect{Tool: "scan"},
+		workload.MonitorCollect{Tool: "diff", As: "transitions"},
+	)
+
+	got, err := c.collect(context.Background(), "sess-1")
+	if err == nil {
+		t.Fatalf("collect accepted a truncated diff: %+v", got)
+	}
+	if got.Collected != nil || got.Transitions != nil {
+		t.Errorf("collect returned %+v alongside the error", got)
+	}
+	for _, want := range []string{`"transitions"`, `"diff"`, "summary line"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to mention %s", err, want)
+		}
+	}
+}
+
+// A tool that answers with structured content is not a transition
+// source, and saying so beats coercing a shape with no terminator in it.
+func TestCollectRefusesAStructuredTransitionSource(t *testing.T) {
+	// ADK's mcptoolset files a server's STRUCTURED content under the
+	// same `output` key it files text under, so this is what a tool
+	// answering in JSON objects actually looks like from here.
+	rec := &recordingRun{results: map[string]map[string]any{
+		"diff": {"output": map[string]any{"findings": []any{}, "scanned": float64(3)}},
+	}}
+	c := transitionCollector(t, rec, "diff", workload.MonitorCollect{Tool: "diff"})
+
+	if _, err := c.collect(context.Background(), "sess-1"); err == nil {
+		t.Fatal("collect accepted a structured result as a transition source")
+	} else if !strings.Contains(err.Error(), "record stream") {
+		t.Errorf("error = %v, want it to say what the contract is", err)
+	}
+}
+
+// A quiet cycle is a SUCCESS with an empty set — distinct from a
+// workload that classifies nothing (nil), and the distinction is what
+// W4.5 decides from.
+func TestCollectQuietCycleIsEmptyNotAbsent(t *testing.T) {
+	rec := &recordingRun{results: map[string]map[string]any{
+		"diff": diffOut(`scanned=412 findings=0 elapsed=1.1s`),
+	}}
+	c := transitionCollector(t, rec, "diff", workload.MonitorCollect{Tool: "diff"})
+
+	got, err := c.collect(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if got.Transitions == nil {
+		t.Fatal("Transitions = nil on a quiet cycle; nil means the workload does not classify at all")
+	}
+	if !got.Transitions.Empty() {
+		t.Errorf("transitions = %+v, want empty", got.Transitions)
+	}
+	if got.Transitions.Scanned != 412 {
+		t.Errorf("Scanned = %d; a cycle that changed nothing and scanned nothing is a broken monitor, and the number is how you tell", got.Transitions.Scanned)
+	}
+}
+
+// A workload that collects without naming a source keeps every result
+// raw. Classification is opt-in.
+func TestCollectWithoutATransitionSourceLeavesResultsRaw(t *testing.T) {
+	rec := &recordingRun{results: map[string]map[string]any{
+		"diff": diffOut(`transition=new subject_key=a`, `scanned=1 findings=1`),
+	}}
+	c := testCollector(t, rec, workload.MonitorCollect{Tool: "diff"})
+
+	got, err := c.collect(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if got.Transitions != nil {
+		t.Errorf("Transitions = %+v for a workload that named no source", got.Transitions)
+	}
+	if _, raw := got.Collected["diff"]; !raw {
+		t.Errorf("collected = %v, want the result carried through raw", got.Collected)
+	}
+}
+
+// TestCollectLogsTheTallyItObserved: the operator-facing line. Built
+// from the classes that turned up rather than from a list mast keeps, so
+// a class lookout ships tomorrow is counted correctly by a build from
+// today.
+func TestCollectLogsTheTallyItObserved(t *testing.T) {
+	var out bytes.Buffer
+	rec := &recordingRun{results: map[string]map[string]any{
+		"diff": diffOut(
+			`transition=new subject_key=a`,
+			`transition=quiesced subject_key=b`,
+			`transition=new subject_key=c`,
+			`scanned=40 findings=3`,
+		),
+	}}
+	c := newMonitorCollector(slog.New(slog.NewJSONHandler(&out, nil)),
+		workload.Monitor{Collect: []workload.MonitorCollect{{Tool: "diff"}}, TransitionsFrom: "diff"},
+		rec.run, "mast", "daemon")
+
+	if _, err := c.collect(context.Background(), "sess-7"); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	line := out.String()
+	if !strings.Contains(line, "monitoring cycle classified what changed") {
+		t.Fatalf("logs = %s, want the classification line", line)
+	}
+	for _, want := range []string{`"scanned":40`, `"transitions":3`, `"new=2"`, `"quiesced=1"`, `"session":"sess-7"`} {
+		if !strings.Contains(line, want) {
+			t.Errorf("logs = %s, want %s", line, want)
+		}
+	}
+}
+
+// TestTransitionsRideInTheEnvelope: the wake-up the model actually
+// reads. `transitions.records` is always present when a source was
+// named — an explicit empty list is "nothing changed", and a missing key
+// is "we do not know".
+func TestTransitionsRideInTheEnvelope(t *testing.T) {
+	set, err := monitor.Parse("transition=new subject_key=pod/prod/api/CrashLoop severity=critical\nscanned=9 findings=1\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	body, err := json.Marshal(scheduledPayload{
+		Kind:        "scheduled",
+		Workload:    "watch",
+		Tick:        "2026-08-21T10:00:00Z",
+		Collected:   map[string]any{"health": map[string]any{"nodes": 12}},
+		Transitions: &set,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(body, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tr, _ := back["transitions"].(map[string]any)
+	if tr == nil {
+		t.Fatalf("envelope = %s, want a transitions object", body)
+	}
+	if tr["scanned"] != float64(9) {
+		t.Errorf("scanned = %v, want 9", tr["scanned"])
+	}
+	records, _ := tr["records"].([]any)
+	if len(records) != 1 {
+		t.Fatalf("records = %v, want one", tr["records"])
+	}
+	rec0, _ := records[0].(map[string]any)
+	if rec0["transition"] != "new" {
+		t.Errorf("record = %v, want the producer's own spelling of the class", rec0)
+	}
+	if rec0["subject_key"] != "pod/prod/api/CrashLoop" {
+		t.Errorf("record = %v, want the subject key an ack will be keyed by", rec0)
+	}
+	fields, _ := rec0["fields"].(map[string]any)
+	if fields["severity"] != "critical" {
+		t.Errorf("fields = %v, want the rest of the record carried whole", fields)
+	}
+	// The tick still says which fire these belong to, and the other
+	// collected facts still ride beside them.
+	if back["tick"] != "2026-08-21T10:00:00Z" {
+		t.Errorf("tick = %v", back["tick"])
+	}
+	if _, ok := back["collected"].(map[string]any); !ok {
+		t.Errorf("envelope = %s, want the unclassified facts alongside", body)
+	}
+}
+
+// A quiet cycle still puts an empty list in the envelope. The model is
+// being told "we looked and nothing changed", which is a different
+// sentence from silence.
+func TestQuietCycleSaysSoInTheEnvelope(t *testing.T) {
+	set, err := monitor.Parse("scanned=412 findings=0\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	body, err := json.Marshal(scheduledPayload{Kind: "scheduled", Workload: "w", Tick: "t", Transitions: &set})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"records":[]`) {
+		t.Errorf("envelope = %s, want an explicit empty record list", body)
+	}
+	if strings.Contains(string(body), "collected") {
+		t.Errorf("envelope = %s, want no collected key when the only call was the classification", body)
+	}
+}
+
+// A workload that classifies nothing carries no transitions key at all,
+// rather than an empty set that would read as "we checked".
+func TestNoTransitionSourceLeavesTheEnvelopeUnchanged(t *testing.T) {
+	body, err := json.Marshal(scheduledPayload{
+		Kind: "scheduled", Workload: "w", Tick: "t",
+		Collected: map[string]any{"health": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "transitions") {
+		t.Errorf("envelope = %s, want no transitions key on a workload that names no source", body)
 	}
 }
 

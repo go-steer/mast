@@ -28,6 +28,7 @@ import (
 	"google.golang.org/adk/v2/runner"
 
 	"github.com/go-steer/mast/pkg/auth"
+	"github.com/go-steer/mast/pkg/monitor"
 	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
@@ -128,6 +129,20 @@ type scheduledPayload struct {
 	// them, because what a transition means belongs to the tool that
 	// classified it.
 	Collected map[string]any `json:"collected,omitempty"`
+
+	// Transitions is the run-to-run classification, parsed, when the
+	// workload named a source for it with monitor.transitions_from
+	// (v0.5 W4.4). Absent otherwise — including on a workload that
+	// collects plenty and classifies nothing.
+	//
+	// Parsed rather than raw, and NOT repeated under Collected: the
+	// records the model reads are the same records mast decided the
+	// cycle's notification from, so an operator reading the transcript
+	// and an operator reading the notification are looking at one
+	// answer. The classes inside are the producer's own strings — see
+	// pkg/monitor for why there is no vocabulary here to compare them
+	// against.
+	Transitions *monitor.Set `json:"transitions,omitempty"`
 }
 
 // scheduledSessionID names the session one tick's run owns.
@@ -463,15 +478,16 @@ func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *tran
 		// wallclock ceiling above bounds the whole cycle rather than
 		// only the model's half of it — a wedged MCP server is exactly
 		// the way an unattended cycle stops without anyone noticing.
-		collected, err := collector.collect(ctx, sessionID)
+		facts, err := collector.collect(ctx, sessionID)
 		if err != nil {
 			return fmt.Errorf("monitoring cycle for tick %s: %w", tick.UTC().Format(time.RFC3339), err)
 		}
 		body, err := json.Marshal(scheduledPayload{
-			Kind:      "scheduled",
-			Workload:  workloadName,
-			Tick:      tick.UTC().Format(time.RFC3339),
-			Collected: collected,
+			Kind:        "scheduled",
+			Workload:    workloadName,
+			Tick:        tick.UTC().Format(time.RFC3339),
+			Collected:   facts.Collected,
+			Transitions: facts.Transitions,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal scheduled payload: %w", err)

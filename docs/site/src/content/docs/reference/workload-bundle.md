@@ -107,6 +107,7 @@ agui:
 | `monitor.collect[].tool` | string | Required in each entry. A wired tool mast runs **on its own behalf** at the top of each scheduled cycle, before the model is woken; the results arrive in the wake-up envelope under `collected`. Requires an `edge_trigger.scheduled` block — a collection with no cadence never runs. No tool named here may be reachable from any specialist's allowlist, and the daemon refuses to start if one is. See [`monitor:`](#monitor--the-facts-a-cycle-gathers-for-itself) below. |
 | `monitor.collect[].args` | map | Literal arguments for the call, e.g. `{transitions: "new,escalated,resolved"}`. There is no `args_from`: a collection call is not about any particular object, so there is nothing to map arguments from. |
 | `monitor.collect[].as` | string | The key this call's result is filed under in the envelope. Defaults to the tool name; needed only when one workload collects from the same tool twice. Two entries filed under one key is a load error. |
+| `monitor.transitions_from` | string | Optional. Names the `monitor.collect` key whose result carries the run-to-run classification — what is new, escalated, resolved since the last cycle. That result is parsed into the envelope's `transitions` block instead of being passed through raw. Must name a key some `collect` entry files a result under, or it is a load error. It names *where* the classification comes from, never what it may say: mast has no vocabulary of transition classes. See [`transitions_from:`](#transitions_from--the-classification-comes-from-the-tool) below. |
 | `a2a.expose` | bool | Opt this workload into the [A2A server](/reference/cli/#a2a-server) surface (`--a2a-listen`). Default false — A2A exposure is an external contract, so it is never automatic. |
 | `a2a.skill_name`, `a2a.skill_description` | strings | The skill id/name and human-readable summary published on the agent card. `skill_name` defaults to the workload name; `skill_description` to the workload description. |
 | `a2a.input_schema`, `a2a.output_schema` | maps | A **mast-side** convention only: mast may validate inbound task inputs against them and fold them into the skill description. Spec `AgentSkill` has no schema fields, so they do **not** round-trip through the agent card as machine-readable schema. |
@@ -576,6 +577,7 @@ monitor:
     - tool: k8s_findings_diff
       args: {transitions: "new,escalated,resolved"}
       as: transitions
+  transitions_from: transitions
 ```
 
 The calls run in declaration order, serially, before any model call. Their
@@ -587,11 +589,25 @@ results reach the roster inside the wake-up envelope:
   "workload": "cluster-watch",
   "tick": "2026-08-21T10:00:00Z",
   "collected": {
-    "health": { "…": "whatever the tool returned" },
-    "transitions": { "…": "whatever the tool returned" }
+    "health": { "…": "whatever the tool returned" }
+  },
+  "transitions": {
+    "scanned": 412,
+    "records": [
+      {
+        "subject_key": "prod/checkout-7d9f/OOMKilled",
+        "transition": "escalated",
+        "fields": { "severity": "critical", "prev_severity": "warning" }
+      }
+    ]
   }
 }
 ```
+
+Everything named in `collect` lands under `collected` as the tool returned
+it. The one key named by `transitions_from` is the exception: it is parsed,
+and it moves — it appears under `transitions` and **not** under `collected`,
+so the model is never handed two spellings of the same fact.
 
 ### Why this is not just a tool the model holds
 
@@ -616,6 +632,67 @@ So the collection is mast's. Three things follow, all of them deliberate:
 - **mast learns nothing about your domain.** It runs the calls you named and
   passes the results through unchanged. What a transition *means* is the
   collected tool's business.
+
+### `transitions_from:` — the classification comes from the tool
+
+A monitor's real question is not "what does the cluster look like" but "what
+changed since last time", and answering that needs per-run state. The tool
+that keeps it — [`k8s-lookout`](https://github.com/go-steer/k8s-lookout)'s
+findings diff, or anything shaped like it — already does the classifying.
+`transitions_from` points mast at that result so the transitions ride the
+envelope as data rather than as a wall of text the model has to re-read:
+
+```yaml
+monitor:
+  collect:
+    - tool: k8s_findings_diff
+      args: {transitions: "new,escalated,resolved"}
+      as: transitions
+  transitions_from: transitions
+```
+
+**mast has no vocabulary of transition classes.** There is no enum, no
+severity comparison, no fingerprinting, no "is this really new" second
+opinion. A record's `transition` value is whatever string the classifier
+wrote, carried to the model verbatim — if your tool emits `quiesced`, the
+model sees `quiesced`. `transitions_from` names *where* the verdict comes
+from; it never constrains what the verdict says. Two implementations of
+"what changed" is one more than can be right.
+
+#### The record stream
+
+The named tool answers in text: one record per line, then a summary line.
+Each record is logfmt or flat JSON (detected per line, so a stream may mix
+them), and needs two keys — `subject_key` and `transition`. Everything else
+becomes `fields`:
+
+```
+subject_key=prod/checkout-7d9f/OOMKilled transition=escalated severity=critical prev_severity=warning
+{"subject_key":"prod/api-5c1/CrashLoopBackOff","transition":"new","severity":"warning"}
+scanned=412 findings=2 elapsed=1.4s
+```
+
+The trailing `scanned=<n> findings=<n> elapsed=<d>` line is **mandatory**,
+and `findings=` must equal the records above it. That is the only judgement
+mast makes about the stream, and it is about completeness, not correctness:
+a truncated answer is a *prefix* of a healthy one, and the notify half
+deliberately says nothing when nothing changed. Without the summary line the
+two are indistinguishable, so a stream that lacks it — or whose count
+disagrees — is void, and voids the cycle. A record with a `transition` but
+no `subject_key` is malformed on the same footing: nothing downstream can
+acknowledge or de-duplicate a subject it cannot name.
+
+#### A quiet cycle says so
+
+`"records": []` means "we classified, and nothing changed". A workload with
+no `transitions_from` ships no `transitions` key at all, which means "we do
+not know". Those are different facts and the notify half acts on only one of
+them, so the empty list is never elided.
+
+A malformed stream fails the cycle exactly the way [a failed
+collection](#when-collection-fails) does — before any model call, counted
+`error`, cadence continuing — and the log line names both the
+`transitions_from` key and what was wrong with the bytes.
 
 ### The fence
 

@@ -534,16 +534,49 @@ func (c MonitorCollect) Key() string {
 // duplicating it here would be two places to configure one cycle — the
 // failure mode being that they disagree and the operator reads the one
 // that is not running.
+//
+// And the transition vocabulary. transitions_from names WHERE the
+// classification comes from; what the classes are, and which findings
+// deserve which one, belongs to the tool that answers — see pkg/monitor
+// for why mast holds no opinion about it.
 type Monitor struct {
 	// Collect is the ordered list of calls one cycle opens with. Order
 	// is honoured and the calls are serial: a diff that classifies the
 	// scan has to run after the scan, and there is no useful
 	// concurrency in two calls when the second depends on the first.
 	Collect []MonitorCollect `yaml:"collect,omitempty"`
+
+	// TransitionsFrom names the collect key whose result carries the
+	// run-to-run classification — what is new, what got worse, what
+	// cleared since the previous cycle (v0.5 W4.4).
+	//
+	//	monitor:
+	//	  collect:
+	//	    - tool: k8s_findings_diff
+	//	      args: {transitions: "new,escalated,resolved"}
+	//	      as: transitions
+	//	  transitions_from: transitions
+	//
+	// Naming it does three things nothing else can do: the envelope
+	// files the parsed set under `transitions` instead of a wall of
+	// text; the cycle FAILS on a malformed or truncated answer rather
+	// than waking the model with a hole where the diff should be; and
+	// W4.5's notifier gets a set to be empty or not, which is what "only
+	// notify on change" is decided from.
+	//
+	// It is optional, and a workload that collects raw facts and lets
+	// the model read them is a supported shape — but a workload that
+	// wants to notify on change needs the classification named, because
+	// mast will not derive one. See pkg/monitor.
+	TransitionsFrom string `yaml:"transitions_from,omitempty"`
 }
 
 // Enabled reports whether this workload collects on its own behalf.
 func (m Monitor) Enabled() bool { return len(m.Collect) > 0 }
+
+// TransitionsKey is the collect key the classification is read from, or
+// "" if the workload does not name one.
+func (m Monitor) TransitionsKey() string { return strings.TrimSpace(m.TransitionsFrom) }
 
 // CollectTools returns the tool names the collection leg runs, in
 // declaration order and de-duplicated. This is the set internal/compose
