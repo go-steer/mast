@@ -949,14 +949,26 @@ Carried forward from 2026-08-21, in the order they are worth doing:
    that costs real money on a live workload, it is the backstop the whole unattended thesis rests
    on, and it has been a `TODO` in `pkg/planner/dispatch.go` since v0.1 with no issue behind it.
    The budget half is the fix; the watchdog seam and the `pkg/effects` outbox are separate
-   follow-ups on the same issue.
-2. **[#228](https://github.com/go-steer/mast/issues/228) — a drift gate for the metrics page.**
-   Cheapest of the four, and the registry being deliberately fixed is what makes it cheap: the code
-   side of the comparison is one package-local list. Fold the two families missing from
-   `observability-design.md` in with it.
-3. **[#227](https://github.com/go-steer/mast/issues/227) — the dominant-tool-call density
-   detector.** Land it as a constructor before deciding whether it joins the default set; the
-   default-posture question is the watchdog-governance call still open for a human.
+   follow-ups on the same issue. **Metering half shipped 2026-08-21** (`7105fb9`): the dispatch tool
+   hands each sub-run event to the host through `planner.Config.SubRunObserver`, and a cap crossed
+   inside a dispatch stops the dispatch rather than the session. #226 stays open for the watchdog
+   seam — its enforcer is per-turn and taps a stream, so there is nothing a process-scoped observer
+   can join — and for the effects outbox.
+2. ~~**[#228](https://github.com/go-steer/mast/issues/228) — a drift gate for the metrics page.**~~
+   **Shipped 2026-08-21** (`0ccf5de`). The gate primes a registry, GETs `Handler()`, and compares
+   the parsed scrape against the parsed page both ways — names, labels, and the enumerated values
+   `Prime` materializes. Reading the scrape rather than regenerating names from
+   `prometheus.CounterOpts` is the whole point: upstream derived its column and got two names wrong.
+   The `observability-design.md` drift is folded in, in a delimited shipped inventory the same test
+   holds to the registry, and the A2A / AG-UI sketches now say how the shipped families differ from
+   them (`{workload}`, not `{skill}`; `interrupted`/`aborted`/`rejected`, not `interrupt`/`cancelled`).
+3. ~~**[#227](https://github.com/go-steer/mast/issues/227) — the dominant-tool-call density
+   detector.**~~ **Shipped 2026-08-21 as a constructor, undefaulted, as the triage asked.**
+   `NewDominantToolCallSignal(window, threshold)` at 8-of-12, deferring structurally to whichever
+   detector already owns the shape (`DeferToRepeatRun`, `DeferToCyclePeriod`; zero disables either,
+   so an embedder wiring it alone sees every dominant loop). `NewDefaultWatchdog` does not wire it,
+   and a test fails if that changes without the docs changing with it —
+   **whether it joins the default set is still the open watchdog-governance call for a human.**
 4. **[#229](https://github.com/go-steer/mast/issues/229) — one scripted cursor, N concurrent
    branches.** Test-harness-scoped, but silent, and it blocks writing a recorded fan-out acceptance
    test — which is the shape most worth recording.
