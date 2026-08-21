@@ -239,6 +239,15 @@ type RootConfig struct {
 	// *transcript.Store, or the daemon's scheduler-aware wrapper. Nil
 	// (no durable store) leaves the tool unregistered.
 	PauseRecorder planner.PauseRecorder
+
+	// SubRunObserver folds the events of a planner dispatch's private
+	// sub-runner back into the caller's accounting (#226). A host that
+	// meters, records metrics or watches for loops on the root runner's
+	// event stream MUST set this, or a planner-dispatched specialist's
+	// spend reaches none of them. Only the planner shape has the seam;
+	// coordinator, graph and fan-out dispatch funnel sub-agent events up
+	// the root stream already.
+	SubRunObserver planner.SubRunObserver
 }
 
 // BuildRoot builds the roster and assembles the dispatch shape. Every
@@ -356,19 +365,21 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 	// v0.1 scaffold): when the bundle enables the planner, the root is
 	// the supervisor-body planner with the bundle's specialists as its
 	// invoke_specialist roster, and the requested dispatch is ignored.
-	// Budget is unchanged — the planner's model calls stream past the
-	// caller's meter like any other agent's.
+	// The planner's own model calls stream past the caller's meter like
+	// any other agent's; a dispatched specialist's do not, and reach the
+	// caller through SubRunObserver instead (#226).
 	if cfg.Bundle.Planner.Enabled {
 		if cfg.Logger != nil {
 			cfg.Logger.Info("planner enabled; --dispatch ignored", "dispatch_flag", string(cfg.Dispatch))
 		}
 		pcfg := planner.Config{
-			Name:          cfg.Bundle.Name,
-			Description:   cfg.Bundle.Description,
-			Model:         cfg.Model,
-			Specialists:   byName,
-			Order:         cfg.Bundle.Specialists,
-			PauseRecorder: cfg.PauseRecorder,
+			Name:           cfg.Bundle.Name,
+			Description:    cfg.Bundle.Description,
+			Model:          cfg.Model,
+			Specialists:    byName,
+			Order:          cfg.Bundle.Specialists,
+			PauseRecorder:  cfg.PauseRecorder,
+			SubRunObserver: cfg.SubRunObserver,
 		}
 		root, err := planner.NewRoot(pcfg)
 		if err != nil {

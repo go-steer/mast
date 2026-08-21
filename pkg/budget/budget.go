@@ -29,12 +29,23 @@
 // A workload budget bounds the session; a specialist's own budget
 // bounds that specialist. Config.Scopes composes the two by attributing
 // each usage event to the agent that authored it — session.Event.Author
-// is the agent's name on every dispatch shape mast builds (a
-// coordinator's sub-agent tool, a workflow-graph node, a planner's
-// invoke_specialist), which is what makes one seam enough. A scope
-// carries its own ceilings and, when the specialist declares a `model:`
-// override, its own price, so a cheap analyst's tokens are not billed
-// at the synthesizer's rate.
+// is the agent's name on every dispatch shape mast builds, which is
+// what makes one attribution rule enough for all of them.
+//
+// It does not follow that one seam is enough to SEE them. A
+// coordinator's sub-agent tool and a workflow-graph node funnel their
+// events up the root runner's stream, so observing that stream catches
+// both. A planner's invoke_specialist does not: it runs the specialist
+// on a private runner, whose events reach the host only through
+// planner.SubRunObserver (#226). A host that meters must feed this
+// package from both — the arithmetic is identical either way, and the
+// Author on a sub-run event is still the specialist's name, so a
+// declared ceiling binds on the planner's door exactly as it does on a
+// coordinator's.
+//
+// A scope carries its own ceilings and, when the specialist declares a
+// `model:` override, its own price, so a cheap analyst's tokens are not
+// billed at the synthesizer's rate.
 //
 // Composition is tightest-cap-wins by construction rather than by
 // arithmetic: every event is checked against its scope and against the
@@ -56,6 +67,14 @@
 // only lever there is the run context. Stopping one specialist and
 // handing the coordinator a refusal it can route around is the better
 // shape, and it needs the pre-call seam above.
+//
+// One dispatch shape already has that better shape, by accident of
+// where its seam sits: a planner sub-run is observed from inside the
+// tool call that started it, so an error from Observe there stops the
+// specialist and returns the planner a labelled partial, leaving the
+// session alive (see planner.SubRunObserver). Coordinator and graph
+// dispatch still stop the session, and will until the pre-call seam
+// exists.
 package budget
 
 import (

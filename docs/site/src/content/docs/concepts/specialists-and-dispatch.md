@@ -182,7 +182,11 @@ The example is `examples/workloads/bounded-triage`.
 There is also a `planner` scaffold — a supervisor-body root whose
 `run_shape_*` vocabulary returns `not_implemented` until the reference-graph
 library lands. It is declared, not finished; the [roadmap](/roadmap/) says
-where it sits.
+where it sits. Its one working door, `invoke_specialist`, runs each
+specialist on a runner of its own — which changes nothing about what a
+dispatch costs you, but does change what a crossed cap does: it stops the
+dispatch and hands the planner the reason, instead of stopping the
+session. See [budgets](/concepts/budgets/#two-limits-worth-knowing).
 
 ## What is checked before the daemon serves
 

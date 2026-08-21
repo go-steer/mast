@@ -177,14 +177,21 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	if err != nil {
 		return nil, err
 	}
+	// Built before the root, not inside runTurn, because the planner's
+	// dispatch tool needs it at construction time: a specialist run
+	// through invoke_specialist streams past a private runner, so the
+	// only way its spend reaches this turn's ceilings is the observer
+	// seam compose threads into the planner (#226).
+	meter := budget.New(meterConfig(cfg, &bundle, specs, modelName))
 	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
-		Bundle:        bundle,
-		Specs:         specs,
-		Model:         llm,
-		ModelName:     modelName,
-		Dispatch:      compose.DispatchAuto,
-		Logger:        cfg.Logger,
-		PauseRecorder: pauseRecorder(cfg),
+		Bundle:         bundle,
+		Specs:          specs,
+		Model:          llm,
+		ModelName:      modelName,
+		Dispatch:       compose.DispatchAuto,
+		Logger:         cfg.Logger,
+		PauseRecorder:  pauseRecorder(cfg),
+		SubRunObserver: subRunMeter{meter},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: build workload %q: %w", bundle.Name, err)
@@ -197,7 +204,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	}
 
 	msg := genai.NewContentFromText(input, genai.RoleUser)
-	return runTurn(ctx, cfg, root, &bundle, meterConfig(cfg, &bundle, specs, modelName), newSessionID(), msg)
+	return runTurn(ctx, cfg, root, &bundle, meter, newSessionID(), msg)
 }
 
 // Run is the single-agent convenience: one Chat-mode agent with the
@@ -218,7 +225,7 @@ func Run(ctx context.Context, cfg Config, instruction, input string) (*Result, e
 		return nil, fmt.Errorf("mast: build agent: %w", err)
 	}
 	msg := genai.NewContentFromText(input, genai.RoleUser)
-	return runTurn(ctx, cfg, root, nil, meterConfig(cfg, nil, nil, modelName), newSessionID(), msg)
+	return runTurn(ctx, cfg, root, nil, budget.New(meterConfig(cfg, nil, nil, modelName)), newSessionID(), msg)
 }
 
 // ListSessions returns the operator projections (pkg/transcript) for
@@ -263,14 +270,16 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 	if err != nil {
 		return nil, err
 	}
+	meter := budget.New(meterConfig(cfg, &bundle, specs, modelName))
 	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
-		Bundle:        bundle,
-		Specs:         specs,
-		Model:         llm,
-		ModelName:     modelName,
-		Dispatch:      compose.DispatchAuto,
-		Logger:        cfg.Logger,
-		PauseRecorder: pauseRecorder(cfg),
+		Bundle:         bundle,
+		Specs:          specs,
+		Model:          llm,
+		ModelName:      modelName,
+		Dispatch:       compose.DispatchAuto,
+		Logger:         cfg.Logger,
+		PauseRecorder:  pauseRecorder(cfg),
+		SubRunObserver: subRunMeter{meter},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: build workload %q: %w", bundle.Name, err)
@@ -283,7 +292,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		})},
 	}
 	msg.Parts[0].FunctionResponse.ID = interruptID
-	return runTurn(ctx, cfg, root, &bundle, meterConfig(cfg, &bundle, specs, modelName), sessionID, msg)
+	return runTurn(ctx, cfg, root, &bundle, meter, sessionID, msg)
 }
 
 // AckEffects records the operator's acknowledgement of ambiguous prior
@@ -487,7 +496,18 @@ func libraryWatchdogMode(bundle *workload.Bundle) (watchdog.Mode, error) {
 // metering usage against limits and collecting the final output (the
 // last node output or model text on the event stream — the same
 // projection examples/deploy/slim uses).
-func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, mcfg budget.Config, sessionID string, msg *genai.Content) (*Result, error) {
+// subRunMeter adapts one turn's budget meter to
+// planner.SubRunObserver, so a specialist dispatched through the
+// planner's private sub-runner is billed to the turn that dispatched
+// it. The session ID is ignored: a library meter already IS this
+// call's session, and there is no pool to pick from.
+type subRunMeter struct{ m *budget.Meter }
+
+func (s subRunMeter) ObserveSubRun(_ string, ev *adksession.Event) error {
+	return s.m.Observe(ev)
+}
+
+func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, meter *budget.Meter, sessionID string, msg *genai.Content) (*Result, error) {
 	svc := cfg.Sessions
 	if svc == nil {
 		svc = adksession.InMemoryService()
@@ -550,10 +570,11 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 
 	// Budget enforcement point (same shape as cmd/mast): the meter
 	// folds UsageMetadata from each streamed event; crossing a ceiling
-	// cancels the run context, aborting in-flight model/tool work.
+	// cancels the run context, aborting in-flight model/tool work. The
+	// meter is the caller's rather than built here because a planner
+	// root has to be handed it at construction time (see subRunMeter).
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	meter := budget.New(mcfg)
 
 	// Behavioral watchdog (pkg/watchdog). Every other turn-driving path
 	// in this repo taps the event stream — the daemon at runTurnPre,
