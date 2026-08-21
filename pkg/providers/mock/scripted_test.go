@@ -45,7 +45,7 @@ func TestScripted_PlaysTurnsInOrder(t *testing.T) {
 			},
 		},
 	}
-	llm := &scriptedLLM{turns: turns}
+	llm := newScriptedFromTurns(t, false, turns...)
 
 	got1 := drain(t, llm, &adkmodel.LLMRequest{})
 	if got1[0].Content.Parts[0].Text != "first" {
@@ -59,9 +59,9 @@ func TestScripted_PlaysTurnsInOrder(t *testing.T) {
 
 func TestScripted_ExhaustionIsAnError(t *testing.T) {
 	t.Parallel()
-	llm := &scriptedLLM{turns: []RecordedTurn{
-		{Responses: []*adkmodel.LLMResponse{{TurnComplete: true}}},
-	}}
+	llm := newScriptedFromTurns(t, false,
+		RecordedTurn{Responses: []*adkmodel.LLMResponse{{TurnComplete: true}}},
+	)
 	_ = drain(t, llm, &adkmodel.LLMRequest{})
 
 	// Second call must error.
@@ -80,13 +80,10 @@ func TestScripted_ExhaustionIsAnError(t *testing.T) {
 func TestScripted_StrictMatch(t *testing.T) {
 	t.Parallel()
 	contents := []*genai.Content{{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hello"}}}}
-	llm := &scriptedLLM{
-		strict: true,
-		turns: []RecordedTurn{{
-			Request:   &adkmodel.LLMRequest{Contents: contents},
-			Responses: []*adkmodel.LLMResponse{{TurnComplete: true}},
-		}},
-	}
+	llm := newScriptedFromTurns(t, true, RecordedTurn{
+		Request:   &adkmodel.LLMRequest{Contents: contents},
+		Responses: []*adkmodel.LLMResponse{{TurnComplete: true}},
+	})
 	got := drain(t, llm, &adkmodel.LLMRequest{Contents: contents})
 	if len(got) != 1 || !got[0].TurnComplete {
 		t.Errorf("expected matching strict turn to play through, got %+v", got)
@@ -95,15 +92,12 @@ func TestScripted_StrictMatch(t *testing.T) {
 
 func TestScripted_StrictMismatch(t *testing.T) {
 	t.Parallel()
-	llm := &scriptedLLM{
-		strict: true,
-		turns: []RecordedTurn{{
-			Request: &adkmodel.LLMRequest{Contents: []*genai.Content{
-				{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "recorded"}}},
-			}},
-			Responses: []*adkmodel.LLMResponse{{TurnComplete: true}},
+	llm := newScriptedFromTurns(t, true, RecordedTurn{
+		Request: &adkmodel.LLMRequest{Contents: []*genai.Content{
+			{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "recorded"}}},
 		}},
-	}
+		Responses: []*adkmodel.LLMResponse{{TurnComplete: true}},
+	})
 	incoming := &adkmodel.LLMRequest{Contents: []*genai.Content{
 		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "different"}}},
 	}}
@@ -214,15 +208,27 @@ func TestScripted_PlaysFromRecording(t *testing.T) {
 		},
 	}})
 
-	turns, err := decodeScript(buf, "buf")
+	src, err := newScript(buf, "buf", false)
 	if err != nil {
-		t.Fatalf("decodeScript: %v", err)
+		t.Fatalf("newScript: %v", err)
 	}
-	scripted := &scriptedLLM{turns: turns}
+	scripted := &scriptedLLM{src: src}
 	got := drain(t, scripted, req)
 	if len(got) != 1 || got[0].Content.Parts[0].Text != "first" {
 		t.Errorf("scripted replay didn't reproduce recorded response, got %+v", got)
 	}
+}
+
+// newScriptedFromTurns builds a scripted LLM over turns already in
+// memory, through the same JSONL path NewScripted uses — so an
+// in-memory fixture and a file fixture exercise the same decode.
+func newScriptedFromTurns(t *testing.T, strict bool, turns ...RecordedTurn) *scriptedLLM {
+	t.Helper()
+	src, err := newScript(encodeTurns(t, turns), "test", strict)
+	if err != nil {
+		t.Fatalf("newScript: %v", err)
+	}
+	return &scriptedLLM{src: src}
 }
 
 // encodeTurns writes turns as JSONL the same way the recorder does:

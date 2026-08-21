@@ -72,6 +72,34 @@ gets skipped.
 `toolactor` matters specifically because `echo` never emits tool calls:
 testing the write gate needs a fake that actually tries to call something.
 
+### One recording, concurrent branches
+
+`scripted` differs from the other two in one way that matters: it holds a
+position in a transcript. Every specialist in the roster shares the one
+instance, and [fan-out
+dispatch](/concepts/specialists-and-dispatch/#fanout--the-whole-roster-at-once)
+runs its analysts
+**at the same time**, so a single position walked by N branches at once
+would hand recorded turns out by whichever branch got there first.
+
+It doesn't. A replay is per branch: each concurrent lane gets its own
+cursor over its own decode of the same recording, and each starts at turn
+0. So a three-analyst fan-out against a one-turn recording is three
+analysts that each replay that turn — not one analyst that replays it and
+two that fail with `script exhausted`.
+
+Nothing changes for a sequential shape. A coordinator, a planner, a
+single-agent replay and a resumed run are all one lane, and they go on
+consuming one script in one order, exactly as recorded. Two things this
+does *not* do:
+
+- One transcript cannot describe N *different* branches. Every branch
+  replays the same turns, because a recorded turn does not name the agent
+  it belongs to.
+- Two invocations running at once in one process — a daemon handling two
+  incidents — still share the unbranched replay. A recording describes one
+  session.
+
 ## Per-specialist models
 
 A specialist may name its own model, and **it may name a different
@@ -105,7 +133,10 @@ Two behaviours to know before you tier a roster:
   construction.
 - **Offline fakes collapse overrides.** Under `echo`, `scripted`, or
   `toolactor`, every override resolves back to the fake — so a tiered
-  bundle still runs credential-free in smoke and acceptance runs.
+  bundle still runs credential-free in smoke and acceptance runs. The
+  collapse is exact for `echo` and `toolactor`, which are stateless.
+  `scripted` is a cursor, so it collapses to one *instance* but not to
+  one *position* — see below.
 
 ## Tiers: the portable way to say the same thing
 

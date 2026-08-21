@@ -969,9 +969,15 @@ Carried forward from 2026-08-21, in the order they are worth doing:
    so an embedder wiring it alone sees every dominant loop). `NewDefaultWatchdog` does not wire it,
    and a test fails if that changes without the docs changing with it —
    **whether it joins the default set is still the open watchdog-governance call for a human.**
-4. **[#229](https://github.com/go-steer/mast/issues/229) — one scripted cursor, N concurrent
-   branches.** Test-harness-scoped, but silent, and it blocks writing a recorded fan-out acceptance
-   test — which is the shape most worth recording.
+4. ~~**[#229](https://github.com/go-steer/mast/issues/229) — one scripted cursor, N concurrent
+   branches.**~~ **Shipped 2026-08-21.** A replay is now keyed on the ADK branch tag the model's own
+   context carries, so the fix stayed inside `pkg/providers/mock` — no change to `internal/compose`,
+   `pkg/specialists` or `pkg/graph`. Upstream's `f90bc65` gave every `Model` call its own cursor;
+   mast keys on the branch instead, because per-call would restart a multi-turn replay at turn 0 and
+   the branch is ADK's own concurrency-isolation identity: every sequential shape inherits its
+   parent's unchanged, so a coordinator, a planner and a resumed run keep walking one cursor in one
+   order. The acceptance test the row said was blocked is written: a three-analyst fan-out against a
+   **one-turn** recording, which cannot pass at all under a shared cursor.
 
 Two open questions that are not ports and need an owner: whether mast follows upstream's
 park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it collides with what
