@@ -202,9 +202,14 @@ func (a *attachDeps) ensure(sid string) {
 // state to reconstruct (core-agent's resumer rebuilds a whole agent;
 // mast's rebuilds a Config struct).
 //
-// v0.1 runs the attach surface in single-user mode (no ACL store, no
-// multi-session auth), so resumed sessions carry a zero ACL — the
-// same trust model as the legacy Register path.
+// The zero auth.SessionACL it returns is not this resumer declining
+// to look one up: the registry supplies the persisted ACL itself when
+// a store is wired, precisely because a resumer that returns the zero
+// value would otherwise register an admins-only entry over a session
+// its owner just asked for. mast's daemon wires neither an ACL store
+// nor multi-session auth, so there is no row to read here and the
+// zero value is the whole truth — the same trust model as the legacy
+// Register path. See #223.
 type storeResumer struct {
 	store      *transcript.Store
 	adapterFor func(sid string) (attach.Registrant, error)

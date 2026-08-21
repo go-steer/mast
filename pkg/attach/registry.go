@@ -678,8 +678,8 @@ func (r *SessionRegistry) lookupSingleGated(ctx context.Context, sessionID strin
 const resumerDefaultApp = "mast"
 
 // resumeAndRegister calls the resumer (deduped via singleflight) and
-// registers the result under its own ACL. Returns the new Entry on
-// success; ErrSessionNotFound when the resumer reports no persisted
+// registers the result under its persisted ACL. Returns the new Entry
+// on success; ErrSessionNotFound when the resumer reports no persisted
 // row; the underlying error otherwise.
 //
 // When a gate is supplied it is evaluated against the persisted ACL
@@ -691,20 +691,55 @@ const resumerDefaultApp = "mast"
 // wired the gate is skipped (nothing to authorize against — matches
 // the pre-gate behavior, and production resume deployments always
 // wire the store the resumer itself reads).
+//
+// The row is read whenever a store is wired, gate or no gate, because
+// **the row is also the ACL the resumed entry gets** — it wins over
+// whatever the resumer returned. The resumer is a factory for the
+// Registrant; the ACL is the registry's own durable state, and asking
+// a caller-supplied resumer to hand it back is how a session ends up
+// governed by an ACL that disagrees with the one the gate just
+// authorized against. That disagreement is a lockout, not a
+// permissions hole: an ACL a resumer forgot to populate is the zero
+// value, which admits admins only, so the owner who triggered the
+// resume is refused by the very entry their request created. mast's
+// own storeResumer returns a zero ACL for exactly this reason (see
+// cmd/mast/attach.go), and it is the obvious thing for an embedder's
+// resumer to do too. The resumer's return value is still honored when
+// no store is wired or no row exists — the storeless and legacy paths
+// have nothing else to go on.
+//
+// A store error is handled exactly as before: fatal when a gate is
+// present (a caller who cannot be authorized is not resumed), and
+// otherwise the resumer's ACL stands. Widening the error to fatal on
+// the ungated path would fail resumes that a store blip has no reason
+// to touch.
+//
+// See #223 for the lockout this closes.
 func (r *SessionRegistry) resumeAndRegister(ctx context.Context, app, sid string, resumer SessionResumer, gate resumeGate) (*Entry, error) {
-	if gate != nil {
-		r.mu.RLock()
-		store := r.aclStore
-		r.mu.RUnlock()
-		if store != nil {
-			row, err := store.FindByAppSID(ctx, app, sid)
-			if err != nil {
-				if errors.Is(err, ErrSessionACLNotFound) {
-					return nil, fmt.Errorf("%w: %s/%s", ErrSessionNotFound, app, sid)
+	// persisted is the ACL the entry will be registered under when a
+	// row was found; nil means "no row, use whatever the resumer
+	// returns".
+	var persisted *auth.SessionACL
+	r.mu.RLock()
+	store := r.aclStore
+	r.mu.RUnlock()
+	if store != nil {
+		row, err := store.FindByAppSID(ctx, app, sid)
+		switch {
+		case err == nil:
+			acl := row.ACL()
+			persisted = &acl
+			if gate != nil {
+				if err := gate(row); err != nil {
+					return nil, err
 				}
-				return nil, err
 			}
-			if err := gate(row); err != nil {
+		case errors.Is(err, ErrSessionACLNotFound):
+			if gate != nil {
+				return nil, fmt.Errorf("%w: %s/%s", ErrSessionNotFound, app, sid)
+			}
+		default:
+			if gate != nil {
 				return nil, err
 			}
 		}
@@ -736,6 +771,9 @@ func (r *SessionRegistry) resumeAndRegister(ctx context.Context, app, sid string
 				return nil, fmt.Errorf("%w: %s/%s", ErrSessionNotFound, app, sid)
 			}
 			return nil, resumeErr
+		}
+		if persisted != nil {
+			acl = *persisted
 		}
 		entry, err := r.registerResumed(ag, acl, cancelOnEvict)
 		if err != nil {
@@ -796,6 +834,12 @@ func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL, ca
 	// ordering reflects that this session is back in memory. The
 	// aclStore row itself is unchanged (row was already written at
 	// original creation); Touch only bumps LastTouchedAt.
+	//
+	// The Owner guard is what makes this reachable: an owner-less ACL
+	// is a legacy session with no row to touch. It used to swallow
+	// every resume, because resumeAndRegister passed on whatever the
+	// resumer returned and a resumer returns the zero value — so a
+	// resumed session quietly stopped sorting by recency (#223).
 	if r.aclStore != nil && acl.Owner != "" {
 		// Best-effort — a store hiccup here shouldn't fail the
 		// resume. The next sweep-time Touch will backfill.

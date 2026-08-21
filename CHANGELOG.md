@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **A session that has to be resumed from disk keeps the ACL it was
+  stored with.** It did not. `resumeAndRegister` read the persisted row,
+  authorized the caller against it, and then registered the rebuilt
+  session under whatever ACL the `SessionResumer` returned — which for
+  any realistic resumer is the zero value, because the ACL is the
+  registry's durable state and a factory has no reason to go re-read it.
+  A zero ACL means no owner, and no owner means admins only. So the
+  owner's own request produced the entry that then refused them, as a
+  404, on a session they own; it stayed that way until the next
+  eviction. A viewer added by `PUT /acl` before a restart was shut out on
+  the same path.
+
+  The row now wins whenever an ACL store is wired. The resumer's return
+  value is still honored where there is nothing else to go on — no store,
+  or no row for this session — and a store read that fails is still fatal
+  only when a resume gate is present, because a transient error is no
+  reason to refuse a resume the daemon was not going to authorize anyway.
+  Fixes a second symptom of the same discard: a resumed session skipped
+  its `LastTouchedAt` update and sorted wrong in `GET /sessions`.
+
+  Not reachable through the shipped daemon, which wires neither an ACL
+  store nor multi-session auth; it is reachable by any embedder that
+  turns both on. Nothing caught it because the test double returned the
+  persisted ACL by hand, which no real resumer does. #223.
+
 - **`pkg/digest` says it has no caller, and a test holds it to that.**
   The package ships complete — content router, structural pruner, CCR
   store, telemetry, an OTel span — and nothing in mast imports it. The

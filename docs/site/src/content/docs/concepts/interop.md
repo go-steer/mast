@@ -312,6 +312,14 @@ Two things the response tells you that the ACL itself cannot:
   restarts, and saying so is the difference between a durable decision and
   one that quietly evaporates overnight.
 
+When `persisted` is true the grant outlives the session's stay in memory.
+Idle sessions are evicted and rebuilt from disk on the next request, and a
+restart evicts all of them; either way the ACL that comes back is the one
+on disk, not one reconstructed by whatever rebuilt the session. That
+matters most for the grant you just made: a viewer added at 4pm is still a
+viewer after the overnight restart, and an owner whose session was swept
+out is not locked out of it by the act of asking for it again.
+
 Ownership **transfer** — sending a different `owner` — is daemon-admin
 only. It is there for the case where the owner left, and it fails with a
 403 for anyone else rather than being silently dropped, because an ignored
