@@ -415,6 +415,17 @@ specialist's answer. A report naming an unknown tool, or arguments the tool
 would reject, comes back to the specialist as an error it can correct —
 the same refusal shape as a schema violation, not a failed run.
 
+When the roster's change executors have enumerated their MCP allowlists,
+the check narrows further: the entry has to name a tool one of them can
+actually run. This is the difference between a call this daemon holds and a
+call that will fire if an operator approves it, and the gap between the two
+is where an approval ends with nothing happening. An executor that took an
+un-enumerated grant has no finite surface to check against, so the narrower
+check is skipped; an executor whose declared surface is only
+`tools.builtin` has an *empty* one and every proposal is refused, which
+mast warns about at startup — built-in tools are a declaration, not a grant
+(see [specialists](/concepts/specialists-and-dispatch/)).
+
 `arguments` is a JSON object **encoded in a string** —
 `"{\"namespace\":\"prod\",\"replicas\":2}"`, or `"{}"` for a tool that takes
 none. It has to be, because its keys are whichever tool the entry names and

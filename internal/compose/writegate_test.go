@@ -229,6 +229,75 @@ func TestChangeSurfaceUnenumeratedGrantsAreNotASurface(t *testing.T) {
 	}
 }
 
+// TestABuiltinDeclarationIsNotAnExecutableTool: tools.builtin is a
+// declaration about the spec, not a grant — nothing populates
+// specialists.BuildOptions.Tools, so a specialist is built holding no
+// built-in tools whatever its frontmatter says. Folding those names
+// into the executable surface accepted a proposal at report time that
+// nothing could run at approval time, which is the exact failure the
+// contract exists to catch, arriving through the contract itself
+// (#219).
+func TestABuiltinDeclarationIsNotAnExecutableTool(t *testing.T) {
+	exec := execSpec("change-executor", "patch_k8s_resource")
+	exec.Tools.Builtin = []string{"apply_manifest"}
+
+	surface, exhaustive := changeSurface([]specialists.Spec{exec})
+	if !exhaustive {
+		t.Fatal("an enumerated executor reported a non-exhaustive surface")
+	}
+	if !surface["patch_k8s_resource"] {
+		t.Errorf("surface = %v, want the executor's MCP tool", sortedKeys(surface))
+	}
+	if surface["apply_manifest"] {
+		t.Errorf("surface = %v, want no built-in name: the executor cannot call apply_manifest, "+
+			"so accepting a proposal for it ends the incident with an approval and no change", sortedKeys(surface))
+	}
+}
+
+// And the same thing through the built checker, since a surface
+// computed and not consulted is not enforcement. An executor whose
+// whole declared surface is built-in names can run nothing at all, so
+// the honest contract refuses everything rather than accepting calls it
+// cannot make.
+func TestAnExecutorDeclaringOnlyBuiltinsCanRunNothing(t *testing.T) {
+	exec := specialists.Spec{Name: "change-executor", Capability: specialists.CapabilityChangeExecutor}
+	exec.Tools.MCP = []specialists.MCPAllowlist{} // deny-all: enumerated, so the surface is knowable
+	exec.Tools.Builtin = []string{"apply_manifest"}
+
+	c := changeSetChecker(WriteGateConfig{
+		Bundle: &workload.Bundle{Name: "b"},
+		Specs:  []specialists.Spec{exec},
+		ToolSchemas: func(string) (*jsonschema.Schema, error) {
+			return &jsonschema.Schema{Type: "object"}, nil
+		},
+	})
+	if c.Declares("apply_manifest") {
+		t.Error("a proposal naming a built-in the executor does not hold was accepted")
+	}
+}
+
+// A roster that will refuse every change an operator could approve is
+// something to read at startup, not to infer from the first refusal
+// during an incident.
+func TestAnEmptyExecutableSurfaceIsSaidOutLoud(t *testing.T) {
+	exec := specialists.Spec{Name: "change-executor", Capability: specialists.CapabilityChangeExecutor}
+	exec.Tools.MCP = []specialists.MCPAllowlist{}
+	exec.Tools.Builtin = []string{"apply_manifest"}
+
+	var buf bytes.Buffer
+	changeSetChecker(WriteGateConfig{
+		Bundle: &workload.Bundle{Name: "b"},
+		Specs:  []specialists.Spec{exec},
+		Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+		ToolSchemas: func(string) (*jsonschema.Schema, error) {
+			return &jsonschema.Schema{Type: "object"}, nil
+		},
+	})
+	if !strings.Contains(buf.String(), "every proposed change will be refused") {
+		t.Errorf("startup log does not say the roster can execute nothing: %q", buf.String())
+	}
+}
+
 // TestChangeSetCheckerNarrowsToTheSurface drives the built checker,
 // because a surface computed and then not consulted is not enforcement.
 func TestChangeSetCheckerNarrowsToTheSurface(t *testing.T) {

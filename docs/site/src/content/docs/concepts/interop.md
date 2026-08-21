@@ -111,11 +111,12 @@ distinction per entry: a listed server with no `tools:` of its own passes
 whole.
 
 `builtin_declared` is named for what it is. mast installs no built-in tools
-on a specialist, so the list narrows nothing at build time; what reads it
-is the write gate, which treats it as the specialist's declared write
-surface, and the capability-split check, which refuses a `read_only`
-specialist that lists a mutating name. Read it as a declaration about the
-spec, not as a set of tools the specialist holds.
+on a specialist, so the list grants and narrows nothing; what reads it is
+the capability-split check, which refuses a `read_only` specialist that
+lists a mutating name, the fan-out branch check, which does the same for an
+analyst, and the startup log that reports a workload's declared write
+surface. Read it as a claim the spec makes about itself and is held to, not
+as a set of tools the specialist holds.
 
 `GET /sessions/{id}/guardrails` answers the question an operator actually
 has when a session stops responding: *what stopped it, and what do I do?*
