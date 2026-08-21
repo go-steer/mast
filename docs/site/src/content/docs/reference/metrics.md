@@ -12,8 +12,13 @@ cardinality-control point. Session IDs are never metric labels;
 correlation at session grain goes through logs and traces.
 
 `/metrics` is served on the inject listener (same port as `/inject`; a
-separate metrics port is revisited in v0.2). All families are materialized
+separate metrics port is still deferred). All families are materialized
 at zero on startup, so `rate()` / `increase()` have a defined origin.
+
+This page is held to a real scrape by a test, in both directions: a
+family the registry exports and this page omits fails the build, and so
+does a name, a label, or an outcome value on this page that nothing
+exports. What is written below is what a `curl /metrics` returns.
 
 ## Counter families
 
@@ -52,7 +57,7 @@ the family names, not just an attempt.
 
 ### A2A server family (v0.2)
 
-The [A2A server](/mast/reference/cli/#a2a-server) counts task-lifecycle
+The [A2A server](/reference/cli/#a2a-server) counts task-lifecycle
 transitions it drives. The `outcome` label is an A2A task-state value, kept in
 lockstep with the wire vocabulary.
 
@@ -62,7 +67,7 @@ lockstep with the wire vocabulary.
 
 ### AG-UI server family (v0.2)
 
-The [AG-UI server](/mast/reference/cli/#ag-ui-server) counts each run it drives
+The [AG-UI server](/reference/cli/#ag-ui-server) counts each run it drives
 to a terminal frame, plus a duration histogram over runs that reached the turn
 (pre-turn refusals — draining, an unaddressable session id — are not timed).
 The `outcome` label is kept in lockstep with the server's terminal-frame

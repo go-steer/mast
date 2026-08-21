@@ -271,7 +271,7 @@ when none serves the DB), or **`resume --ack-effects`** when the
 session is also paused on an interrupt. Unknown tools — MCP tools
 included — count as mutating unless the workload's
 `tool_catalog.tools` overrides them (see the
-[workload bundle reference](/mast/reference/workload-bundle/)); the
+[workload bundle reference](/reference/workload-bundle/)); the
 acknowledgement is recorded durably beside the session and covers
 only calls persisted up to that moment. Task delegations, HITL
 interrupts, and long-running calls never count as dangling effects.
