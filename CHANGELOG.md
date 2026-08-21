@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **The wire contract switchboard codes against is now pinned as
+  literals.** `/resume` and `/monitor-ack` are consumed from another
+  repo, so their JSON field names, the verdict and scope vocabularies
+  (`approve | reject | edit`; `once`, `session`, `session_tool`,
+  `always`, `change_set`), the `X-Asserted-Caller` header name, the
+  `{confirmed, payload}` confirmation envelope and the `/resume` status
+  codes are asserted as strings rather than as constants (#242, W6.2 /
+  W6.3, mast's half). Tests only — no behaviour changed.
+
+  The gap this closes is narrow and real: a Go rename compiles, passes
+  every behavioural test in the package because the tests are renamed
+  with it, and breaks a client the compiler cannot see. Adding an
+  optional field still needs no coordination; renaming or removing one
+  is now a failing test that says so.
+
+  Noted rather than changed: `GET /resume` answers **200 `ok`** from the
+  health route, not 405, because `GET /` is a catch-all under net/http's
+  pattern matching. The assertion is on the dispatch — nothing resumes,
+  nothing is acked — since the status code is the health handler's.
+
 - **An operator can acknowledge a finding, and mast records who did —
   but an ack is not an approval.** A workload can declare a
   `monitor.ack` block naming one of its catalog tools, and the daemon
