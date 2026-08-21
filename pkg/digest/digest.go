@@ -38,14 +38,24 @@
 // here are the v0.1 surface. Revisit when mast's eventlog story lands
 // (docs/fork-design.md P1.3 staging). (Skeleton PR: store interface + implementations land in
 //
-//	the follow-up per docs/digest-design.md sequencing.)
+//	the follow-up per core-agent's docs/digest-design.md sequencing.)
 //
 // LLM-agnostic: this package digests payloads. It does not import
 // pkg/agent, does not know what an MCP tool is, does not reach for
 // the model loop. Callers pass an LLMFallback function if they want
 // one.
 //
-// Full design: docs/digest-design.md. Tracking issue: #128.
+// And in mast there are no callers. The MCP wrapper that drives this
+// upstream (pkg/mcp/digest_wrap.go) was not ported, so nothing in the
+// daemon calls Process: `go list -deps ./cmd/mast` does not contain
+// this package. Three surfaces still read as though it were live and
+// are annotated where they are — attach.UsageInfo.DigestMethods
+// (never populated), the attach protocol's v1.2.0/v1.3.0 tool-result
+// sidecars (never emitted), and Savings.Subagent* (never filled).
+// The package is complete, tested and embeddable; it is just not on
+// mast's own path. Wire it or drop it: #221.
+//
+// Full design: core-agent's docs/digest-design.md. Tracking issue: core-agent#128.
 package digest
 
 import (
@@ -60,7 +70,7 @@ import (
 // tracer is the OTel tracer used by Process. Resolved once at package
 // load — no-op when the global tracer provider is noop (telemetry off).
 // Name matches the design doc's span-namespace convention
-// (docs/agentic-mcp-design.md, "OTel spans + attributes" addendum).
+// (core-agent's docs/agentic-mcp-design.md, "OTel spans + attributes" addendum).
 var tracer = otel.Tracer("mast/digest")
 
 // Method values populated on Result.Method — the observable dispatch
@@ -82,7 +92,7 @@ const (
 // where OriginalBytes ≈ DigestBytes so savings are ~0) and gives
 // callers the per-call byte + token math they need to surface
 // operator-visible savings totals without recomputing from Digest /
-// RawBytes themselves. See docs/agentic-mcp-design.md
+// RawBytes themselves. See core-agent's docs/agentic-mcp-design.md
 // § "savings telemetry" for the full display + OTel wiring.
 type Result struct {
 	Digest   string         // compressed payload (caller hands this to the model)
@@ -109,7 +119,17 @@ type Result struct {
 // LLM (that lives in the caller, e.g. the MCP agentic wrapper).
 // Callers populate these AFTER Process returns from the subagent's
 // ResponseUsage, then hand the Result off to whatever surfaces the
-// telemetry (eventlog, /stats, OTel span attributes).
+// telemetry (eventlog, /stats, OTel span attributes). In mast no
+// caller does, because in mast there is no caller — see the package
+// doc and #221.
+//
+// The buckets stop at input and output. A subagent running on a
+// cache-warm model spends most of its input on cached tokens priced
+// differently from fresh ones, so a session billed from these three
+// fields alone is billed at the uncached rate for reads it did not
+// pay full price for. Upstream carries the cache buckets through
+// (core-agent 3de4134); mast does not, and widening the struct before
+// anything writes it would be three more fields nobody fills.
 //
 // Dollar-cost figures are NOT stored here. They're computed at
 // display time via usage.Tracker's layered pricing chain so
@@ -217,7 +237,7 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 	// decision, not just "we started digesting."
 	ctx, span := tracer.Start(ctx, "digest.process", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
-	span.SetAttributes(attribute.Int("core_agent.digest.original_bytes", rawBytes))
+	span.SetAttributes(attribute.Int("mast.digest.original_bytes", rawBytes))
 
 	// Persist to the CCR store BEFORE routing. If the write fails,
 	// we still process — the caller gets a digest, just no retrieval
@@ -345,11 +365,11 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 		savingsTokens = 0
 	}
 	span.SetAttributes(
-		attribute.String("core_agent.digest.path", res.Method),
-		attribute.Int("core_agent.digest.digest_bytes", digestBytes),
-		attribute.Int("core_agent.digest.original_tokens_est", res.Savings.OriginalTokensEst),
-		attribute.Int("core_agent.digest.digest_tokens_est", res.Savings.DigestTokensEst),
-		attribute.Int("core_agent.digest.savings_tokens_est", savingsTokens),
+		attribute.String("mast.digest.path", res.Method),
+		attribute.Int("mast.digest.digest_bytes", digestBytes),
+		attribute.Int("mast.digest.original_tokens_est", res.Savings.OriginalTokensEst),
+		attribute.Int("mast.digest.digest_tokens_est", res.Savings.DigestTokensEst),
+		attribute.Int("mast.digest.savings_tokens_est", savingsTokens),
 	)
 	return res, nil
 }

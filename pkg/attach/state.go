@@ -306,13 +306,16 @@ type InterruptProvider interface {
 // the remote TUI's /stats slash. PerModel is empty when only one model
 // has been used (no breakdown needed). PerTurn is one entry per model
 // call in submission order and is always populated when the tracker
-// recorded any turns — see issue #222 for the motivating operator
+// recorded any turns — see core-agent#222 for the motivating operator
 // use case (per-turn cost + cache attribution).
 //
-// DigestMethods is the digest wrapper's per-method call count (issue
-// #130 / task #84). Present when at least one digest.Process call has
-// fired process-wide. Feeds "which pruner path is dominating" without
-// operators needing to scrape per-event metadata.
+// DigestMethods is the digest wrapper's per-method call count
+// (core-agent#130 / task #84). Present when at least one
+// digest.Process call has fired process-wide, which on this server is
+// never: mast ships pkg/digest but wires no caller for it, so the
+// field is always omitted here. It stays on the response shape because
+// the surface is wire-compatible with core-agent's daemon, which does
+// populate it, and mast-web decodes both. See #221.
 type UsageInfo struct {
 	Overall       UsageTotals            `json:"overall"`
 	PerModel      map[string]UsageTotals `json:"per_model,omitempty"`
@@ -324,6 +327,9 @@ type UsageInfo struct {
 // /usage response. Counts is calls-per-method; BytesSaved is the
 // cumulative byte reduction (raw - digest) accrued per method.
 // Passthrough always contributes 0 to BytesSaved by definition.
+//
+// Decode-only on this server — nothing in mast produces one. See
+// UsageInfo.DigestMethods.
 type DigestMethodsInfo struct {
 	Counts     map[string]int64 `json:"counts,omitempty"`
 	BytesSaved map[string]int64 `json:"bytes_saved,omitempty"`
