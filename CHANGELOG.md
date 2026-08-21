@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **The roster listing says what each specialist is allowed to touch.**
+  `GET /sessions/{id}/subagents` carried a specialist's name, model,
+  root, invocation and `capability`, and no tool grant — so the endpoint
+  built to answer *what can this thing do* answered only the coarsest
+  half of it. Entries now carry a `tools` object.
+
+  It reports the grant's **effect**, not the frontmatter's syntax,
+  because the syntax means opposite things one character apart: a spec
+  with no `mcp:` key inherits every MCP toolset the workload has, one
+  that writes `mcp: []` is denied all of them, and both are an empty
+  list on the wire. `mcp_grant` is `"all"`, `"none"` or `"listed"`
+  accordingly, and `whole_server` draws the same distinction per entry —
+  a listed server with no `tools:` of its own passes whole.
+
+  The built-in axis ships as `builtin_declared` rather than `builtin`.
+  Nothing populates `specialists.BuildOptions.Tools`, so a specialist is
+  built holding no built-in tools and the list narrows nothing; what
+  reads it is the write gate and the capability-split check. Publishing
+  it as `builtin` would tell an operator the specialist can call tools
+  it does not hold. The third axis, `skills`, has no field at all: the
+  loader refuses a non-empty one, so it can never reach a running
+  roster.
+
 - **A session's ACL can be amended, not just granted.**
   `auth.ActionSessionAdmin` has documented itself as covering "ACL /
   metadata mutations on the session" since the authorization matrix was

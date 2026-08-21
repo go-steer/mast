@@ -181,6 +181,7 @@ func TestSubagentCatalogCarriesDeclaredFields(t *testing.T) {
 		Invocation:  attach.InvocationTransfer,
 		Capability:  string(specialists.CapabilityChangeExecutor),
 		AgentMode:   string(specialists.ModeTask),
+		Tools:       attach.SubagentToolGrant{MCPGrant: attach.MCPGrantAll},
 	}
 	if !reflect.DeepEqual(got[0], want) {
 		t.Errorf("entry\n got: %+v\nwant: %+v", got[0], want)
@@ -193,9 +194,126 @@ func TestSubagentCatalogCarriesDeclaredFields(t *testing.T) {
 	}
 	const wantJSON = `{"name":"change-executor","description":"applies approved changes","model":"gemini-2.5-pro",` +
 		`"root":"specialists/change-executor.tmpl","modes":[],"invocation":"transfer",` +
-		`"capability":"change_executor","agent_mode":"Task"}`
+		`"capability":"change_executor","agent_mode":"Task","tools":{"mcp_grant":"all"}}`
 	if string(blob) != wantJSON {
 		t.Errorf("wire form\n got: %s\nwant: %s", blob, wantJSON)
+	}
+}
+
+// The MCP axis is read on presence, and the two presences that matter
+// are one character apart: no `mcp:` key grants every toolset the
+// workload has, `mcp: []` grants none. Both decode to an empty array,
+// so a catalog that transcribed the list would report the deny-all
+// specialist and the inherit-everything one identically — and it is the
+// inherit-everything one that can reach the cluster. mcp_grant names
+// which was declared.
+func TestTheMCPAxisReportsPresenceNotSyntax(t *testing.T) {
+	cases := []struct {
+		name string
+		mcp  []specialists.MCPAllowlist
+		want string
+	}{
+		{"no mcp: key inherits every toolset", nil, attach.MCPGrantAll},
+		{"`mcp: []` denies them all", []specialists.MCPAllowlist{}, attach.MCPGrantNone},
+		{
+			"a non-empty list is a whitelist",
+			[]specialists.MCPAllowlist{{Server: "gke", Tools: []string{"get_pod"}}},
+			attach.MCPGrantListed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := spec("log-analyst", specialists.ModeTask)
+			s.Tools.MCP = tc.mcp
+			got := subagentCatalog(nil, []specialists.Spec{s}, workload.DispatchCoordinator)
+			if got[0].Tools.MCPGrant != tc.want {
+				t.Errorf("mcp_grant = %q, want %q", got[0].Tools.MCPGrant, tc.want)
+			}
+			// The per-server detail is meaningful only under "listed";
+			// carrying it under the others would invite a client to read
+			// an empty list as the grant.
+			if tc.want != attach.MCPGrantListed && len(got[0].Tools.MCP) != 0 {
+				t.Errorf("mcp = %+v under grant %q, want nothing", got[0].Tools.MCP, tc.want)
+			}
+		})
+	}
+}
+
+// The same erasure one level down: filterToolsets passes a listed
+// server whole when the entry declares no tools[] of its own, so
+// "narrowed to nothing" and "not narrowed at all" are again the same
+// empty array. whole_server says which.
+func TestAListedServerWithNoToolsPassesWhole(t *testing.T) {
+	s := spec("log-analyst", specialists.ModeTask)
+	s.Tools.MCP = []specialists.MCPAllowlist{
+		{Server: "gke", Tools: []string{"get_pod", "get_events"}},
+		{Server: "slack"},
+	}
+
+	got := subagentCatalog(nil, []specialists.Spec{s}, workload.DispatchCoordinator)
+	want := []attach.SubagentMCPGrant{
+		{Server: "gke", Tools: []string{"get_pod", "get_events"}},
+		{Server: "slack", WholeServer: true},
+	}
+	if !reflect.DeepEqual(got[0].Tools.MCP, want) {
+		t.Errorf("mcp\n got: %+v\nwant: %+v", got[0].Tools.MCP, want)
+	}
+
+	blob, err := json.Marshal(got[0].Tools)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const wantJSON = `{"mcp_grant":"listed","mcp":[` +
+		`{"server":"gke","tools":["get_pod","get_events"],"whole_server":false},` +
+		`{"server":"slack","whole_server":true}]}`
+	if string(blob) != wantJSON {
+		t.Errorf("wire form\n got: %s\nwant: %s", blob, wantJSON)
+	}
+}
+
+// tools.builtin is reported under a name that says it is a declaration,
+// because that is all it is in mast: nothing populates
+// specialists.BuildOptions.Tools, so a specialist is built holding no
+// built-in tools at all and the list narrows nothing. What does read it
+// is the write gate and the capability-split check. Publishing it as
+// "builtin" would tell an operator the specialist can call these.
+func TestTheBuiltinAxisIsReportedAsADeclaration(t *testing.T) {
+	s := spec("change-executor", specialists.ModeTask)
+	s.Tools.Builtin = []string{"apply_manifest"}
+
+	got := subagentCatalog(nil, []specialists.Spec{s}, workload.DispatchCoordinator)
+	if want := []string{"apply_manifest"}; !reflect.DeepEqual(got[0].Tools.BuiltinDeclared, want) {
+		t.Errorf("builtin_declared = %v, want %v", got[0].Tools.BuiltinDeclared, want)
+	}
+
+	blob, err := json.Marshal(got[0].Tools)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const wantJSON = `{"mcp_grant":"all","builtin_declared":["apply_manifest"]}`
+	if string(blob) != wantJSON {
+		t.Errorf("wire form\n got: %s\nwant: %s\n"+
+			"the key must not read as \"builtin\": mast installs no built-in tools on a specialist", blob, wantJSON)
+	}
+}
+
+// Every member of a shipped roster answers the question, including the
+// ones that declare no tools: block — "all" is a grant, and a field
+// left empty there would read as "none".
+func TestEveryCatalogEntryStatesItsMCPGrant(t *testing.T) {
+	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
+	built, err := buildRoot(context.Background(), discardLogger(),
+		mastagent.NewEchoModel("echo"), "", "echo", dir, workload.DispatchCoordinator, nil)
+	if err != nil {
+		t.Fatalf("buildRoot: %v", err)
+	}
+
+	for _, e := range subagentCatalog(built.bundle, built.specs, built.dispatch) {
+		switch e.Tools.MCPGrant {
+		case attach.MCPGrantAll, attach.MCPGrantNone, attach.MCPGrantListed:
+		default:
+			t.Errorf("%s: mcp_grant = %q, want one of all/none/listed", e.Name, e.Tools.MCPGrant)
+		}
 	}
 }
 

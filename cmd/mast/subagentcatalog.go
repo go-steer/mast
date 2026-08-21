@@ -99,7 +99,42 @@ func subagentCatalog(bundle *workload.Bundle, specs []specialists.Spec, dispatch
 			Invocation:  invocationFor(shape, spec, classifier),
 			Capability:  string(spec.Capability),
 			AgentMode:   string(spec.Mode),
+			Tools:       toolGrantFor(spec),
 		})
+	}
+	return out
+}
+
+// toolGrantFor projects a spec's tools: block for the catalog.
+//
+// It reads the allowlist on *presence*, the same way filterToolsets
+// does, and reports the outcome rather than the syntax. `mcp: []` and
+// no `mcp:` key at all are opposite grants that both marshal to an
+// empty array, and an operator asking what a specialist may touch
+// should not have to know that. The same erasure repeats per server:
+// a listed server with no tools: passes whole.
+//
+// The builtin axis is reported under a name that says it is a
+// declaration, because in mast that is all it is — see
+// attach.SubagentToolGrant.BuiltinDeclared.
+func toolGrantFor(spec specialists.Spec) attach.SubagentToolGrant {
+	out := attach.SubagentToolGrant{
+		MCPGrant:        attach.MCPGrantNone,
+		BuiltinDeclared: spec.Tools.Builtin,
+	}
+	switch {
+	case spec.Tools.InheritsAllMCP():
+		out.MCPGrant = attach.MCPGrantAll
+	case len(spec.Tools.MCP) > 0:
+		out.MCPGrant = attach.MCPGrantListed
+		out.MCP = make([]attach.SubagentMCPGrant, 0, len(spec.Tools.MCP))
+		for _, al := range spec.Tools.MCP {
+			out.MCP = append(out.MCP, attach.SubagentMCPGrant{
+				Server:      al.Server,
+				Tools:       al.Tools,
+				WholeServer: len(al.Tools) == 0,
+			})
+		}
 	}
 	return out
 }
