@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **A judged nightly no longer loses a corpus row to a provider's rate
+  limiter.** On 2026-08-21 three of the 31 scenarios came back
+  `Error 429 ... RESOURCE_EXHAUSTED` from Vertex, so the board scored 28
+  rows, and an incomplete board is exit 1 by design — a quota blip
+  presented as a broken measurement of mast (#239).
+
+  The gate is unchanged: 28 rows compared against a 31-row baseline
+  understates or overstates whatever is missing, and softening that
+  would cost the tier the one honest signal it has. What changed is
+  upstream of it. `internal/evals/judge.Retrying` wraps both models the
+  tier builds — so the corpus, the grader and J-cost-tier all survive
+  the same blip — and waits out a `429` or `503` on a bounded 3s/9s/27s
+  schedule. Only when the call failed *before* the model yielded
+  anything: a stream that already spoke cannot be replayed without
+  handing the caller its content twice.
+
+  This also removes an asymmetry that was invisible from mast's side.
+  `anthropic-sdk-go` retries twice of its own accord and
+  `google.golang.org/genai` does not, so the two nightlies were
+  measuring different amounts of resilience; the Anthropic run on the
+  same commit was green. Retryability is decided by `errors.As` on each
+  SDK's own error type, never by matching text — the corpus is 31
+  Kubernetes incidents, several of them about exhausted resources, and
+  the grader is handed those responses verbatim.
+
+  Retries are counted onto the board (`retries`, `retry_wait_seconds`),
+  printed when non-zero, and diffed night over night, because a retry
+  nobody can see is how a provider under worsening pressure keeps
+  producing complete, green, increasingly slow boards with nothing to
+  point at.
+
 - **MCP tool responses are digested before the model reads them, on by
   default.** `pkg/digest` — a structural JSON pruner, a raw-payload
   store, and per-method telemetry — shipped in v0.2 with no caller in

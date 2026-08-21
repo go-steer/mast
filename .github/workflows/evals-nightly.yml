@@ -25,6 +25,12 @@
 # scores nothing anywhere in the corpus. That is a failure of the
 # measurement, not of mast, and it needs someone to look.
 #
+# A transient provider error is not allowed to become that failure: the
+# tier waits out a 429 or 503 on a bounded schedule before giving up on
+# a row, and reports on the board how many calls it had to retry
+# (internal/evals/judge/retry.go, #239). So a red run here still means
+# what it says — the board is short and the reason is not a quota.
+#
 # It also fails on J-cost-tier (docs/v0.4-plan.md W0.6), which runs a
 # two-tier roster and reads the meter back. That one is a claim about
 # mast rather than about the measurement, and it can be made here

@@ -31,6 +31,16 @@
 # take the provider as environment rather than holding it. Only the env
 # block and the artifact name differ.
 #
+# ## Retries
+#
+# The two providers used to differ in a way nothing here could see:
+# anthropic-sdk-go retries a 429 twice on its own and
+# google.golang.org/genai does not, so this board was the one that lost
+# rows to Vertex quota (2026-08-21, three of 31) while its sibling on
+# the same commit came back green. The tier now retries at the model
+# interface both arrive through, so the two boards measure the same
+# resilience — see internal/evals/judge/retry.go (#239).
+#
 # ## Model choice
 #
 # gemini-3.7-flash for both the model under test and the grader.

@@ -123,8 +123,12 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   against the upstream rubric, then posts a board and a delta against the
   previous night. Scores report and never gate — no score can fail a build,
   and what the tier flags instead is a scenario that did not run or a metric
-  that scored nothing. Scenarios the tool surface cannot satisfy are listed
-  as structural ceilings rather than folded into a low score.
+  that scored nothing. A provider's rate limiter is not allowed to become
+  that flag: the tier waits out a `429` on a bounded schedule before giving
+  up on a scenario, and says on the board how many calls it had to retry, so
+  a quota under pressure is visible rather than absorbed. Scenarios the tool
+  surface cannot satisfy are listed as structural ceilings rather than
+  folded into a low score.
 
   One check on that board *is* pass/fail, because its verdict is arithmetic
   rather than judgment: the nightly runs a two-specialist roster with one

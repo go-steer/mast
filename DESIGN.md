@@ -139,7 +139,10 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 **Internal:** `internal/compose` (model/backend dispatch, shared
 one-shot construction, the `bounded` single-node build),
 `internal/evals` (the deterministic eval suite and the judged
-nightly's scoring, including the tiered-cost check),
+nightly's scoring, including the tiered-cost check; the judged tier
+retries a provider's `429`/`503` at the `model.LLM` seam so a quota
+blip costs a wait rather than a corpus row, and counts what it
+retried onto the board),
 `internal/version` (ldflags-injected build identity, reported by
 `--version` and the attach capabilities frame), `internal/toolcatalog`
 (the tool declarations a real turn puts in front of a model, captured
