@@ -93,6 +93,16 @@ func (s Summary) WriteDelta(w io.Writer, prev Summary) {
 			prev.Judge.Model, prev.Judge.Grader, s.Judge.Model, s.Judge.Grader)
 	}
 
+	// Retries night over night, because the number that matters is the
+	// trend and not the night. One retry is weather; a count that climbs
+	// every night is a quota the tier is about to run out of, and the
+	// board that reports it is green right up until the night it isn't
+	// (#239).
+	if prev.Judge.Retries != s.Judge.Retries {
+		p("  provider retries: %d → %d (%.0fs → %.0fs waiting)",
+			prev.Judge.Retries, s.Judge.Retries, prev.Judge.RetryWaitSeconds, s.Judge.RetryWaitSeconds)
+	}
+
 	p("")
 	prevAgg := byMetricName(prev.Judge.Aggregate)
 	for _, cur := range s.Judge.Aggregate {

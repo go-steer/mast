@@ -54,6 +54,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/differentiators"
@@ -106,6 +109,18 @@ type Config struct {
 	// Deliberately separate from the report writer: the CLI points this
 	// at stderr so the board on stdout stays a clean artifact.
 	Progress io.Writer
+
+	// buildModel and retryBackoff are the judge tier's test seam, and
+	// they are unexported because that is all they are for. The tier's
+	// resilience to a transient provider error (#239) is otherwise only
+	// reachable with a provider that can be made to return 429 on
+	// demand, which is exactly the thing a unit test cannot have — and
+	// an untested wiring is how the retry ends up counted nowhere.
+	//
+	// Nil buildModel means compose.BuildModel; nil retryBackoff means
+	// the judge package's own schedule.
+	buildModel   func(ctx context.Context, provider, name string) (model.LLM, error)
+	retryBackoff []time.Duration
 }
 
 // CorpusSummary is what the corpus suite found.

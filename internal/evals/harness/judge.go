@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/evals"
@@ -62,6 +63,18 @@ type JudgeSummary struct {
 	Aggregate []MetricSummary  `json:"aggregate"`
 	Notes     []string         `json:"notes,omitempty"`
 	Ceilings  []CeilingFinding `json:"ceilings,omitempty"`
+
+	// Retries is how many model calls this board only got by waiting out
+	// a transient provider error (#239), and RetryWaitSeconds is how long
+	// that cost.
+	//
+	// On the board rather than swallowed by the retry wrapper, because a
+	// retry nobody can see is how a measurement quietly stops measuring:
+	// a provider under worsening pressure would keep producing complete,
+	// green, increasingly slow boards with nothing to point at. Zero on a
+	// healthy night, so the delta surfaces the first night it is not.
+	Retries          int     `json:"retries,omitempty"`
+	RetryWaitSeconds float64 `json:"retry_wait_seconds,omitempty"`
 
 	// Validity is #169's half of the board: not how many tools the run
 	// reached for, but whether the calls it made were well formed and
@@ -323,14 +336,31 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		graderName = anthropic.DefaultSmallModelID
 	}
 
-	under, err := compose.BuildModel(ctx, cfg.Provider, modelName)
+	note := progressFn(cfg.Progress)
+
+	build := cfg.buildModel
+	if build == nil {
+		build = compose.BuildModel
+	}
+	rawUnder, err := build(ctx, cfg.Provider, modelName)
 	if err != nil {
 		return Summary{}, fmt.Errorf("harness: build model under test: %w", err)
 	}
-	grading, err := compose.BuildModel(ctx, cfg.Provider, graderName)
+	rawGrading, err := build(ctx, cfg.Provider, graderName)
 	if err != nil {
 		return Summary{}, fmt.Errorf("harness: build grading model: %w", err)
 	}
+	// Both models, so the rig, the grader and J-cost-tier all survive the
+	// same blip. The tier's expensive failure is a row that never ran, and
+	// a 429 is the provider asking us to wait rather than telling us
+	// anything about mast (#239) — see internal/evals/judge/retry.go.
+	onRetry := func(who string) func(int, time.Duration, error) {
+		return func(attempt int, wait time.Duration, err error) {
+			note("[retry] %s: %v — waiting %s before attempt %d", who, err, wait, attempt+1)
+		}
+	}
+	under := judge.Retrying(rawUnder, cfg.retryBackoff, onRetry("model under test"))
+	grading := judge.Retrying(rawGrading, cfg.retryBackoff, onRetry("grader"))
 
 	scratch, cleanup, err := scratchDir(cfg)
 	if err != nil {
@@ -356,8 +386,6 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		board.Notes = append(board.Notes, fmt.Sprintf(
 			"the model under test and the grader are both %s — a model grading its own output flatters it; pass --grader to separate them", modelName))
 	}
-
-	note := progressFn(cfg.Progress)
 
 	// J-cost-tier runs first. It is two specialists and one turn against
 	// the same credentials the corpus is about to spend minutes on, and
@@ -435,6 +463,15 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 			})
 		}
 	}
+
+	// Counted across both models: from the board's point of view a
+	// grader retry and a corpus retry are the same fact about the
+	// provider, and splitting them would only invite reading one and
+	// missing the other.
+	underRetries, underWait := judge.RetriesOf(under)
+	graderRetries, graderWait := judge.RetriesOf(grading)
+	board.Retries = underRetries + graderRetries
+	board.RetryWaitSeconds = (underWait + graderWait).Seconds()
 
 	board.Aggregate = aggregate(board.Scenes)
 	board.Validity = summarizeValidity(board.Scenes)
@@ -668,6 +705,10 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 	p("judge tier — model under test %s, grader %s, provider %s", j.Model, j.Grader, j.Provider)
 	p("  fixtures: %d of %d hand-authored, the rest derived from quoted spans of the expected response (marked *)",
 		j.Authored, len(j.Scenes))
+	if j.Retries > 0 {
+		p("  provider: %d call(s) only completed on a retry, %.0fs spent waiting — this board is complete, but the provider was under pressure (#239)",
+			j.Retries, j.RetryWaitSeconds)
+	}
 	p("")
 	p("  %-42s %-9s %-9s %-9s %s", "scenario", "intent", "severity", "quality", "tools")
 	for _, s := range j.Scenes {

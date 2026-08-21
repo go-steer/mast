@@ -325,3 +325,29 @@ func TestLoadSummary_RoundTripsARealBoard(t *testing.T) {
 		t.Error("LoadSummary accepted a file that is not a board")
 	}
 }
+
+// TestWriteDelta_ProviderRetriesAreATrend. One retry is weather; a count
+// that climbs every night is a quota the tier is about to run out of,
+// and the board reporting it is green right up until the night it is
+// not (#239). Silent when the number did not move, because a nightly
+// that prints an unchanging line teaches its reader to skip the section.
+func TestWriteDelta_ProviderRetriesAreATrend(t *testing.T) {
+	board := func(retries int, wait float64) Summary {
+		return Summary{Tier: TierJudge, Judge: &JudgeSummary{
+			Model: "gemini-3.7-flash", Grader: "gemini-3.5-flash-lite",
+			Scenes:           []JudgeScenario{row("LC-01", 1, 1)},
+			Retries:          retries,
+			RetryWaitSeconds: wait,
+		}}
+	}
+
+	out := delta(t, board(0, 0), board(7, 63))
+	if !strings.Contains(out, "provider retries: 0 → 7 (0s → 63s waiting)") {
+		t.Errorf("a night that only completed by retrying was not reported:\n%s", out)
+	}
+
+	quiet := delta(t, board(0, 0), board(0, 0))
+	if strings.Contains(quiet, "provider retries") {
+		t.Errorf("two clean nights still printed a retry line:\n%s", quiet)
+	}
+}

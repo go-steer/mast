@@ -20,11 +20,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"google.golang.org/genai"
+
+	adkmodel "google.golang.org/adk/v2/model"
+
+	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/differentiators"
 	"github.com/go-steer/mast/internal/evals/judge"
@@ -638,6 +646,118 @@ func TestSummary_WriteTextJudgeTier(t *testing.T) {
 	sum.WriteText(&buf)
 	if out := buf.String(); !strings.Contains(out, "INCOMPLETE") || strings.Contains(out, "REPORTED") {
 		t.Errorf("an incomplete board reported itself as complete:\n%s", out)
+	}
+}
+
+// throws429Once wraps a model and fails its very first call with the
+// error the 2026-08-21 nightly received, so a credential-free run can
+// reach the judge tier's retry wiring. Only once: the point is a blip.
+type throws429Once struct {
+	inner adkmodel.LLM
+	once  sync.Once
+}
+
+func (m *throws429Once) Name() string { return m.inner.Name() }
+
+func (m *throws429Once) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	var fail bool
+	m.once.Do(func() { fail = true })
+	if fail {
+		return func(yield func(*adkmodel.LLMResponse, error) bool) {
+			yield(nil, fmt.Errorf("failed to call model: %w", genai.APIError{
+				Code: 429, Status: "RESOURCE_EXHAUSTED", Message: "Resource exhausted. Please try again later.",
+			}))
+		}
+	}
+	return m.inner.GenerateContent(ctx, req, stream)
+}
+
+// TestRun_JudgeTierWaitsOutATransient429AndPutsItOnTheBoard is the
+// wiring half of #239, and it is here rather than in the judge package
+// because the retry only helps if runJudge actually wraps the models it
+// builds and reports what they spent. Before this, a 429 cost a corpus
+// row, three of them cost the night, and the report blamed mast for a
+// provider's quota.
+func TestRun_JudgeTierWaitsOutATransient429AndPutsItOnTheBoard(t *testing.T) {
+	sum, err := Run(context.Background(), Config{
+		Root: repoRoot, Tier: TierJudge, Scratch: t.TempDir(),
+		Model: "echo", Grader: "echo",
+		buildModel: func(ctx context.Context, provider, name string) (adkmodel.LLM, error) {
+			m, err := compose.BuildModel(ctx, provider, name)
+			if err != nil {
+				return nil, err
+			}
+			return &throws429Once{inner: m}, nil
+		},
+		// A real schedule would make this test sleep for three seconds
+		// to prove something about arithmetic.
+		retryBackoff: []time.Duration{time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if sum.Judge == nil {
+		t.Fatal("the judge tier produced no board")
+	}
+	for _, s := range sum.Judge.Scenes {
+		if s.Error != "" {
+			t.Fatalf("%s did not run: %s — a transient 429 still cost a row", s.ID, s.Error)
+		}
+	}
+	if got := len(sum.Judge.Scenes); got != 31 {
+		t.Errorf("board has %d rows, want all 31", got)
+	}
+	// Two, not one: the tier builds two models and each is wrapped, so
+	// this also pins that the board sums both rather than reporting the
+	// corpus's retries and quietly dropping the grader's.
+	if sum.Judge.Retries != 2 {
+		t.Errorf("board records %d retries, want 2 (one per model) — a retry nobody counted is a provider under pressure nobody sees",
+			sum.Judge.Retries)
+	}
+	// The wait it actually served, not the one it was configured with:
+	// two millisecond waits, so anything near the default schedule's six
+	// seconds means the board is reporting a number it made up.
+	if sum.Judge.RetryWaitSeconds <= 0 || sum.Judge.RetryWaitSeconds > 1 {
+		t.Errorf("board records %v seconds waiting, want the two millisecond waits it served", sum.Judge.RetryWaitSeconds)
+	}
+	var buf bytes.Buffer
+	sum.WriteText(&buf)
+	if out := buf.String(); !strings.Contains(out, "only completed on a retry") {
+		t.Errorf("the printed board did not mention the retry:\n%s", out)
+	}
+}
+
+// TestSummary_WriteTextSaysWhenTheBoardOnlyCompletedByWaiting. A retry
+// nobody can see is how a measurement quietly stops measuring: a
+// provider under worsening pressure keeps producing complete, green,
+// increasingly slow boards with nothing for a reader to point at
+// (#239). Silent at zero, so the line means something when it appears.
+func TestSummary_WriteTextSaysWhenTheBoardOnlyCompletedByWaiting(t *testing.T) {
+	board := func(retries int, wait float64) Summary {
+		return Summary{Tier: TierJudge, Judge: &JudgeSummary{
+			Model: "gemini-3.7-flash", Grader: "gemini-3.5-flash-lite", Provider: "vertex",
+			Scenes:           []JudgeScenario{{ID: "LC-01", Results: []evals.Result{{Metric: evals.MetricIntentCoverage, Score: 1}}}},
+			Aggregate:        []MetricSummary{{Metric: evals.MetricIntentCoverage, Mean: 1, Scored: 1}},
+			Retries:          retries,
+			RetryWaitSeconds: wait,
+		}}
+	}
+
+	var buf bytes.Buffer
+	board(3, 39).WriteText(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "3 call(s) only completed on a retry, 39s spent waiting") {
+		t.Errorf("the board did not say it had been retried:\n%s", out)
+	}
+	// It stays a report: waiting out a 429 is not a broken board.
+	if !strings.Contains(out, "REPORTED") {
+		t.Errorf("a retried-but-complete board reported itself as incomplete:\n%s", out)
+	}
+
+	buf.Reset()
+	board(0, 0).WriteText(&buf)
+	if out := buf.String(); strings.Contains(out, "only completed on a retry") {
+		t.Errorf("a clean board printed a retry line:\n%s", out)
 	}
 }
 
