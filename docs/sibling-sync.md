@@ -801,6 +801,111 @@ saying plainly: **the count measures re-ports, not fixes.** Nine of the nineteen
 verdicted as needing nothing from mast, and three of those are places mast arrived first. Read the
 "port candidate" rows, not the number.
 
+## Triage of 2026-08-21
+
+The report reads **57 commits / 76 of 200 ported files** against core-agent `68ad89a`. **Nine SHAs
+are new** since the 2026-08-20 baseline of `3de4134`, and all nine are verdicted below. Four became
+mast issues, filed the same day.
+
+One thing is worth reading off the batch before the individual rows. **Three of the nine commits are
+about billing delegated work** — `57ac01c` bills a synchronously-invoked subagent's turns to the
+parent, `f71c685` makes a declared budget bind on both delegation doors, `181327c` prices a cache
+bucket the daemon can now ask for. Upstream is converging on the same conclusion from three
+directions: *the door a delegation goes through decides whether it is counted, and the operator
+cannot see which door was used.* mast has exactly one delegation door that leaves the outer runner,
+and it counts nothing at all. That is [#226](https://github.com/go-steer/mast/issues/226), and it is
+the most consequential finding this ledger has produced since the watchdog cluster.
+
+### Confirmed analogues — 4 commits, all filed
+
+Each was checked against mast's code; every row below is a finding, not a candidate.
+
+| SHA | Upstream | The mast finding |
+|---|---|---|
+| `57ac01c` + `f71c685` | bill a synchronously-invoked subagent's turns to the parent (#849); a declared budget that binds on both delegation doors (#850) | **Worse here, and it is three consumers rather than one** — [#226](https://github.com/go-steer/mast/issues/226). `invoke_specialist` runs each specialist on a private runner with an in-memory session (`pkg/planner/dispatch.go:202`), so nothing riding the outer event stream sees a single event it emits: not the budget meter, not the metrics registry, not the watchdog (`cmd/mast/main.go:2536`–`2568`). A planner-dispatched specialist can spend without limit, report no tokens, and loop without being halted. Coordinator and graph dispatch are unaffected — `parallelagent` funnels sub-agent events upward — so an operator reads one bundle and gets two different enforcement stories depending on `dispatch:`. `MeterScopes`' per-specialist ceilings are unenforceable on this door for the same reason |
+| `6813f6d` | add the dominant-tool-call density detector (#847) | **Same hole between the same two detectors** — [#227](https://github.com/go-steer/mast/issues/227). `RepeatedToolCallSignal` resets its run on any non-matching call; `AlternatingCycleSignal` skips near-uniform windows by construction (`uniform(tail[:p])`, `pkg/watchdog/cycle.go:165`). `a a a b a a a c a a a` trips neither until the interleaves happen to stop. The port's real work is de-duplication, not detection: mast appends every signal's alert, and under the `feedback` default three overlapping detectors on one loop is three paragraphs of steering for one behavior |
+| `661f278` | a metrics page written from the code, plus a drift gate (#854) | **Half absorbed, half missing** — [#228](https://github.com/go-steer/mast/issues/228). mast is *ahead* on the page: `reference/metrics.md` lists exactly the sixteen families `pkg/observability` constructs, with labels and vocabularies. Nothing keeps it that way, and the same pipeline already carries the drift — `mast_scheduled_fires_total` and `mast_a2a_server_tasks_total` ship, are on the site page, and appear in neither the shipped nor the design-target column of `docs/observability-design.md` |
+| `f90bc65` | a scripted provider that gives every Model call its own cursor (#853) | **Same defect, different door** — [#229](https://github.com/go-steer/mast/issues/229). `mock.NewScripted` returns one cursor, offline fakes collapse every per-specialist override back to that one instance (a documented feature of `BuildModel`), and fan-out runs its branches concurrently. Three branches then walk one script between them. The cursor is mutex-guarded, so `-race` stays silent while the replay is nondeterministic |
+
+### Not applicable to the lean scope — 2 commits
+
+| SHA | Upstream | Why |
+|---|---|---|
+| `64b1ceb` | opt-in `replace_all` for `edit_file`, and a refusal that names it (#851) | mast ships no file-editing built-ins. `edit_file` occurs in this repo only as a *name* in `pkg/permissions`' mutation vocabulary and its recommendation defaults; there is no `pkg/tools` and nothing to widen. mast's built-ins are the planner's control-plane vocabulary ([#219](https://github.com/go-steer/mast/issues/219)) |
+| `9ccbcee` | frame every skill body as how, never what or where (#848) | mast has **no skills runtime at all**: the specialist loader refuses `tools.skills` outright rather than accept an inert grant (`pkg/specialists/loader.go:108`, [#211](https://github.com/go-steer/mast/issues/211)), and `pkg/permissions/gate.go:149` records that this build registers none of `list_skills` / `load_skill` / `load_skill_resource`. Nothing to frame |
+
+`9ccbcee` should not be filed away as merely n/a, though — it is a **design input to
+[`./skills-design.md`](./skills-design.md) that arrived before the subsystem**. Upstream's failure
+was a subagent handed a fully specified goal that loaded a skill whose Step 0 said "acquire the
+following context from the user", found no user, and improvised: 44 turns and $1.33 against $0.26
+for the comparable run, with the answer still correct so the only visible symptom was the bill.
+**mast's exposure would be strictly worse**, because "there is no operator to ask" is not an
+accident of that run — it is mast's premise. Whatever mast's skills loader ends up being, the
+framing trailer (a skill governs *how*, never *what* or *which subject*; parameters the task already
+supplied are not reacquired; a step naming an absent tool is skipped, not improvised around) belongs
+in it from the first commit, appended after the skill body rather than before it, because recency is
+the mechanism of the bug.
+
+### No exposure, and the reason was already written down — `181327c`
+
+`feat(pricing): price 1-hour cache writes and ship the 1h prompt-cache TTL (#846)` touches
+`pkg/pricing`, `pkg/usage` and the Anthropic provider — three things mast has. It still costs mast
+nothing today, and the argument is already in mast's own source: `pricing.Rates`'
+`CacheCreationInputPerMTok` doc says it holds exactly one write rate, the 5-minute one, and that "a
+caller that starts requesting `ttl: "1h"` at the `cache_control` site would be undercharged by 37.5%
+against this field; adding 1h support means adding a second rate here, not reusing this one."
+
+mast has no such caller and no way to configure one. `pkg/providers/anthropic/convert.go:158` marks
+the last system block with a bare `anthropic.NewCacheControlEphemeralParam()` — no TTL, so the
+SDK's `omitzero` leaves the field unset and the request takes Anthropic's 5-minute default. There is
+no `prompt_cache.ttl` key and no `--prompt-cache-ttl` flag. The undercharge upstream fixed is
+reachable only by shipping the knob, which is the port's real content: **if mast ever offers a 1h
+TTL, the rate field lands in the same PR, not after it.** Recorded here so that PR does not have to
+rediscover why. (The digest half of the commit — carrying the 1h share through subtask result →
+savings record → sidecar → observer — is moot for the third time running: nothing in mast calls
+`pkg/digest`, [#221](https://github.com/go-steer/mast/issues/221).)
+
+### `68ad89a` — the verdict shipped with the triage
+
+`chore(ci): run the credential-free examples, and account for the rest (#855)` is upstream's answer
+to finding `examples/parallel-spawn` had been exiting 1 for some time while its README advertised
+"Exits 0". Its Go-program half does not transfer: mast has three Go examples, and two
+(`examples/workflows/fan-out-fan-in`, `examples/workflows/llm-as-router`) carry their own tests
+while the third (`examples/deploy/slim`) is gated by `scripts/check-slim-deps.sh`, which is a
+stronger check than running it would be.
+
+The transferable part is the rule, not the runner: *a new example is either covered or excluded with
+a written reason, with no third state in which it is quietly uncovered.* mast had that third state
+in its own idiom. Of three example **bundles**, only `gke-triage` was exercised — by
+`dev/ci/presubmits/e2e.sh` and `deploy/projection_test.go` — while `bounded-triage` and `ns-audit`
+were prose that nothing compiled. That matters here more than it would in a repo with static
+examples, because mast's loaders keep *gaining* refusals: a tier that conflicts with a model, an
+`output_schema` that will not parse, a roster whose read/write split does not hold, and
+`tools.skills`, which started being rejected outright at #211. Each of those is a good refusal, and
+each can turn a shipped example into one that no longer boots, with the failure landing on an
+operator's first run.
+
+`TestEveryExampleBundleStillBuilds` (`internal/compose/examples_test.go`) loads and composes every
+directory under `examples/workloads`, offline, against the echo model — which is what makes it
+credential-free, since offline fakes collapse tier and model overrides back to the one fake and a
+real model name would send tier resolution looking for an API key. All three bundles pass today, so
+this is preventive rather than corrective; it was verified by breaking one (`model:` beside `tier:`
+in `ns-audit`) and watching the gate name the file. The tree is globbed rather than listed, so a new
+example is covered by existing.
+
+### Baseline after this triage
+
+The count went **54 → 57** with no port, which is the instrument working as designed: nine upstream
+commits landed and six of them touch packages mast carries a copy of. **Nothing here will move the
+number, either.** The examples gate is mast-side and touches no ported file; the four filed issues
+are fixes whose landing place is `pkg/planner`, `pkg/watchdog`, `pkg/observability` and
+`pkg/providers/mock`, and — as the 2026-08-17 and 2026-08-20 sections both record — a fix that does
+not *re-port* a file does not bump the file's derivation trailer.
+
+Two of the nine are permanent residents: `64b1ceb` and `9ccbcee` are upstream commits on subsystems
+mast does not have, so they will report every Monday until the packages they touch are re-ported or
+mast grows the subsystem. That is the 13-commit n/a floor from 2026-08-17 becoming 15.
+
 ## Next triage
 
 The weekly report regenerates [#153](https://github.com/go-steer/mast/issues/153) in place. Triage
@@ -834,11 +939,35 @@ Carried into the next pass from 2026-08-20, in the order they are worth doing:
 4. ~~**`3de4134`**~~ — **verdicted 2026-08-21**: correct fix, not portable, because `pkg/digest` has
    no caller in mast at all. The three surfaces that implied otherwise are annotated and the claim
    is now a test; the wire-it-or-drop-it call is [#221](https://github.com/go-steer/mast/issues/221).
-   **The carry-forward list is now empty** — what remains below are the two design calls, not ports.
+   That emptied the 2026-08-20 list; the 2026-08-21 pass refilled it, below.
 5. ~~**[#210](https://github.com/go-steer/mast/issues/210) / [#211](https://github.com/go-steer/mast/issues/211)**~~ — both shipped 2026-08-20.
+
+Carried forward from 2026-08-21, in the order they are worth doing:
+
+1. **[#226](https://github.com/go-steer/mast/issues/226) — a planner-dispatched specialist's spend
+   reaches no meter, no metric and no watchdog.** Do this one first. It is the only finding here
+   that costs real money on a live workload, it is the backstop the whole unattended thesis rests
+   on, and it has been a `TODO` in `pkg/planner/dispatch.go` since v0.1 with no issue behind it.
+   The budget half is the fix; the watchdog seam and the `pkg/effects` outbox are separate
+   follow-ups on the same issue.
+2. **[#228](https://github.com/go-steer/mast/issues/228) — a drift gate for the metrics page.**
+   Cheapest of the four, and the registry being deliberately fixed is what makes it cheap: the code
+   side of the comparison is one package-local list. Fold the two families missing from
+   `observability-design.md` in with it.
+3. **[#227](https://github.com/go-steer/mast/issues/227) — the dominant-tool-call density
+   detector.** Land it as a constructor before deciding whether it joins the default set; the
+   default-posture question is the watchdog-governance call still open for a human.
+4. **[#229](https://github.com/go-steer/mast/issues/229) — one scripted cursor, N concurrent
+   branches.** Test-harness-scoped, but silent, and it blocks writing a recorded fan-out acceptance
+   test — which is the shape most worth recording.
 
 Two open questions that are not ports and need an owner: whether mast follows upstream's
 park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it collides with what
 [#206](https://github.com/go-steer/mast/issues/206) just documented), and whether ADK-installed
 dispatch tools should meet the permissions gate (raised by `32aed49`, answerable only from mast's
 own allowlist story).
+
+And one row that is neither a port nor a question, but a **precondition to write down**: `181327c`
+becomes portable the moment mast offers a prompt-cache TTL knob, and until then it is a rate mast
+would carry unused. Whoever ships the knob ships the rate in the same PR. Nothing needs to happen
+before then.

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Every example bundle is now composed by a test, not just the one.**
+  `examples/workloads/gke-triage` was exercised by the e2e presubmit and
+  a projection test; `bounded-triage` and `ns-audit` were prose that
+  nothing compiled. mast's loaders keep gaining refusals — a `tier:`
+  that conflicts with a `model:`, an `output_schema` that will not
+  parse, a roster whose read/write split does not hold, `tools.skills`
+  since #211 — and each of them can turn a shipped example into one
+  that no longer boots, with the failure landing on an operator's first
+  run rather than in CI. All three build today; the gate is preventive.
+  The tree is globbed rather than listed, so a new example is covered
+  by existing.
+
 - **A proposed change has to name a tool an executor can actually run,
   and `tools.builtin` never was one.** The write gate's producer
   contract checks a finding's `proposed_change` against the set of
