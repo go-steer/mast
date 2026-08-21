@@ -29,32 +29,39 @@ import (
 //
 // Implementations:
 //
-//  1. Look up the persisted ACL row by (app, sid) — typically via
-//     SessionACLStore.FindByAppSID.
-//  2. Materialize the original Caller from the row's Owner.
-//  3. Reconstruct the agent using the daemon's SessionFactory shape
-//     with the EXPLICIT sessionID (not a freshly minted one) so
-//     ADK's session.Service reattaches the prior conversation
-//     history from the eventlog.
-//  4. Return the new Registrant, the persisted ACL, and a
-//     cancelOnEvict CancelFunc the registry invokes when the entry
-//     is later evicted (idle sweep). The cancel typically shuts
-//     down the per-session wake loop the resumer spawned.
+//  1. Confirm the session exists — typically via
+//     SessionACLStore.FindByAppSID, or whatever durable store the
+//     implementation reads.
+//  2. Reconstruct the agent with the EXPLICIT sessionID (not a
+//     freshly minted one) so ADK's session.Service reattaches the
+//     prior conversation history from the eventlog.
+//  3. Return the new Registrant and a cancelOnEvict CancelFunc the
+//     registry invokes when the entry is later evicted (idle
+//     sweep). The cancel typically shuts down the per-session wake
+//     loop the resumer spawned.
 //
-// The caller (Registry.Lookup) registers the returned Registrant
-// under the returned ACL via the internal registerResumed path,
-// carrying the cancel func onto *Entry.cancelOnEvict.
+// The auth.SessionACL return is a **fallback, not the answer**: when
+// the registry has an ACL store wired it registers the resumed entry
+// under the persisted row it read itself, and the returned value is
+// used only where there is nothing else to go on — no store, or no
+// row for this session. Returning the zero value is therefore the
+// correct thing for a resumer over a store the registry already has;
+// it is also what an implementation does by accident, which is why
+// the registry stopped taking this value at its word (#223). Do not
+// use it to *change* a session's ACL — that is what
+// SessionRegistry.SetACL and PUT /sessions/{id}/acl are for.
 //
-// Return ErrSessionACLNotFound when no ACL row exists for the
-// triple — the registry maps that to ErrSessionNotFound so the
-// handler returns 404. Any other error surfaces as 500 with the
-// resume-failure message (see docs/session-resume-design.md OQ #2).
+// Return ErrSessionACLNotFound when no such session exists — the
+// registry maps that to ErrSessionNotFound so the handler returns
+// 404. Any other error surfaces as 500 with the resume-failure
+// message (see core-agent's docs/session-resume-design.md OQ #2).
 //
-// Implementations live in pkg/compose (see compose.BuildSessionResumer)
-// because they need compose.SessionFactoryDeps — model, gate
-// template, tools, eventlog handle, MCP servers, … all daemon-wide
-// wiring. The interface stays in pkg/attach so the handlers can
-// consult it without importing pkg/compose.
+// mast's implementation is cmd/mast's storeResumer, over the
+// transcript store. The interface lives in pkg/attach so the
+// handlers can consult it without importing the composition layer;
+// core-agent's equivalent is built in its pkg/compose, which is
+// where the daemon-wide wiring (model, gate template, tools,
+// eventlog handle, MCP servers) is assembled.
 //
 // The cancelOnEvict return may be nil — the registry treats nil as
 // "no background work to stop." Test implementations of the
