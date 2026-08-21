@@ -151,7 +151,13 @@ func CheckRoster(b workload.Bundle, specs []specialists.Spec, dispatch Dispatch)
 	// reason above: a roster mast will refuse should not cost an OAuth
 	// token fetch first, and a write-path refusal is the last one an
 	// operator should have to read past a 403 to find (#235).
-	return CheckPlannerWriteSurface(b, specs)
+	if err := CheckPlannerWriteSurface(b, specs); err != nil {
+		return err
+	}
+	// Same argument, same door: the collection leg's fence is a
+	// statement about the roster, so it costs nothing to check before
+	// anything is wired (v0.5 W4.2).
+	return CheckMonitorCollectSurface(b, specs)
 }
 
 // rosterNames renders a roster for an error message, in the order the

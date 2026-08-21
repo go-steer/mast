@@ -390,6 +390,22 @@ outside the model's tool surface, and hands the model the transitions already
 classified. That is also why the collection leg costs nothing: a step the model
 is not part of cannot spend a token.
 
+**The first of those four has landed.** A workload can now declare a
+[`monitor.collect`](/reference/workload-bundle/#monitor--the-facts-a-cycle-gathers-for-itself)
+block: a list of catalog tools mast runs itself when a scheduled cycle fires,
+before the model is woken, with the results handed to it in the tick envelope
+under names the bundle chose. The board's zero-token-collection row is green,
+and the number is read off the meter rather than inferred — a cycle that
+collects two facts and writes one report still reports exactly one model call.
+Because the whole point is to run a call the model would have needed approval
+for, the exception is fenced on reach instead: mast refuses to start a workload
+whose specialists can get at a collect tool by any route — named in an
+allowlist, covered by a whole-server grant, or inherited by a roster that
+declares no allowlist at all — so a tool cannot be both mast's to call and the
+model's. A collection failure aborts the cycle before any model call and is
+counted as an errored fire, because a monitor that reports calm when its
+collection broke is worse than one that reports nothing.
+
 Landed already on the way there: **durable budget spend**. A `max_cost_usd`
 that a restart reset was a ceiling on what a workload spent per process,
 which under automatic unattended restarts is no ceiling at all. Spend now

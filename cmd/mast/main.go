@@ -1007,8 +1007,17 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			logger.Error("scheduled trigger not armed; its cadence does not parse",
 				"error", errors.Join(ierr, jerr).Error())
 		} else {
+			// The collection leg rides the same seam the write gate's
+			// precondition read does — the same wired toolsets, the
+			// same direct-run assertion — because there is exactly one
+			// door for a tool call no model asked for (v0.5 W4.2).
+			collector := newMonitorCollector(logger, bundle.Monitor, toolSchemas.collect, appName, defaultUserID)
+			if collector.enabled() {
+				logger.Info("monitoring cycle armed; these calls run before the model is woken",
+					"workload", workloadName, "collect", bundle.Monitor.CollectTools())
+			}
 			st := newScheduledTrigger(store, logger, obs, tracker, workloadName, defaultUserID, interval, jitter,
-				newScheduledFireCallback(r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, att.ensure))
+				newScheduledFireCallback(r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, collector, att.ensure))
 			if sessionDB == "" {
 				// The anchor lands in an in-memory store that dies with
 				// the process, so the cadence re-phases on every restart.

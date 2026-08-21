@@ -462,6 +462,106 @@ type EdgeTrigger struct {
 	Scheduled *ScheduledTrigger `yaml:"scheduled,omitempty"`
 }
 
+// MonitorCollect is one call mast makes on its OWN behalf at the top of
+// a monitoring cycle, before the model is woken (v0.5 W4.2).
+//
+//	monitor:
+//	  collect:
+//	    - tool: k8s_cluster_health
+//	      as: health
+//	    - tool: k8s_findings_diff
+//	      args: {transitions: "new,escalated,resolved"}
+//	      as: transitions
+//
+// The result is handed to the model as part of the wake-up envelope. The
+// model never holds the tool.
+type MonitorCollect struct {
+	// Tool is the wired tool to run. It resolves against the same
+	// toolsets everything else does, so a name nothing wires is a
+	// failed cycle naming the tool — not a silent empty result.
+	Tool string `yaml:"tool"`
+
+	// Args are the literal arguments for the call. mast has nothing to
+	// derive them from: a collection call is not about any particular
+	// object, so unlike a precondition read there is no change to map
+	// arguments from.
+	Args map[string]any `yaml:"args,omitempty"`
+
+	// As is the key this call's result is filed under in the envelope.
+	// Defaults to the tool name, which is the right answer until a
+	// workload collects from one tool twice.
+	As string `yaml:"as,omitempty"`
+}
+
+// Key is the envelope key this call's result is filed under.
+func (c MonitorCollect) Key() string {
+	if s := strings.TrimSpace(c.As); s != "" {
+		return s
+	}
+	return strings.TrimSpace(c.Tool)
+}
+
+// Monitor is the workload's unattended-monitoring block (v0.5 W4.2):
+// the calls a scheduled cycle makes for itself, outside the model's tool
+// surface.
+//
+// # Why this is a block and not a specialist's allowlist
+//
+// The obvious spelling — give the model the collection tools and let it
+// call them — does not survive contact with the write gate, and the
+// reason is not a mast quirk. A run-to-run finding diff *advances
+// persisted state* as a side effect of answering "what changed?", so it
+// declares itself mutating and is right to; and mast's mutation
+// predicate defaults every MCP tool to mutating regardless, because
+// ADK's mcptoolset drops MCP's annotations and default-deny-unknown is
+// the only safe reading of a tool nobody classified. Under the default
+// hitl.on_mutation: require_approval, a cycle that asks the model to
+// call the diff parks for a human on EVERY fire. An unattended monitor
+// that needs an operator to authorize finding out whether anything
+// changed is not unattended.
+//
+// So the collection leg is mast's. Nothing gates it because no model
+// asked for anything, and internal/compose refuses to start if a tool
+// named here also appears in any specialist's reach — the exception is
+// narrow by construction rather than by convention.
+//
+// The corollary is the property scoreboard row 9 is about: a leg the
+// model is not part of cannot spend a token.
+//
+// # What this block does NOT carry
+//
+// The cadence. That is edge_trigger.scheduled, where v0.4 put it, and
+// duplicating it here would be two places to configure one cycle — the
+// failure mode being that they disagree and the operator reads the one
+// that is not running.
+type Monitor struct {
+	// Collect is the ordered list of calls one cycle opens with. Order
+	// is honoured and the calls are serial: a diff that classifies the
+	// scan has to run after the scan, and there is no useful
+	// concurrency in two calls when the second depends on the first.
+	Collect []MonitorCollect `yaml:"collect,omitempty"`
+}
+
+// Enabled reports whether this workload collects on its own behalf.
+func (m Monitor) Enabled() bool { return len(m.Collect) > 0 }
+
+// CollectTools returns the tool names the collection leg runs, in
+// declaration order and de-duplicated. This is the set internal/compose
+// keeps out of every roster.
+func (m Monitor) CollectTools() []string {
+	seen := make(map[string]bool, len(m.Collect))
+	out := make([]string, 0, len(m.Collect))
+	for _, c := range m.Collect {
+		name := strings.TrimSpace(c.Tool)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
 // A2A is the workload's A2A-server exposure (docs/a2a-design.md, "Which
 // agents get exposed"). Absent or expose:false means the workload is not
 // reachable over A2A — exposure has real ops implications (auth setup,
@@ -612,6 +712,11 @@ type Bundle struct {
 
 	// EdgeTrigger declares how external signals reach this workload.
 	EdgeTrigger EdgeTrigger `yaml:"edge_trigger,omitempty"`
+
+	// Monitor declares the calls a scheduled cycle makes on mast's own
+	// behalf, before the model is woken; zero value means the model is
+	// woken with nothing but the tick.
+	Monitor Monitor `yaml:"monitor,omitempty"`
 
 	// A2A declares the workload's A2A-server exposure; zero value (or
 	// expose:false) means the workload is not reachable over A2A.

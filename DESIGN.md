@@ -23,7 +23,8 @@ not add-ons.
  (webhooks, queues) │  pause / stop / ack-effects)                   │
                     │                                                │
  schedules ────────▶│  scheduled fires (durable anchor; a missed     │
- (bundle scheduled) │  tick is skipped, one session per fire)        │
+ (bundle scheduled) │  tick is skipped, one session per fire;        │
+                    │  monitor.collect gathers first, as mast)       │
                     │                                                │
  operators ────────▶│   workload bundle ──▶ root agent               │
  (mast-web, curl,   │   (.agents/ or        (coordinator / graph /   │
@@ -150,7 +151,9 @@ by driving two agent rigs through an ADK runner, plus the shared
 invariant every provider adapter's wire test is held to — see
 `docs/model-support-design.md` R2/R8). The scheduled-trigger
 loop is daemon-side in `cmd/mast/schedtrigger.go`, reading the
-bundle's `scheduled:` section.
+bundle's `scheduled:` section; a cycle's collection leg
+(`cmd/mast/monitor.go`, `cmd/mast/monitorctx.go`) runs ahead of it,
+off the bundle's `monitor.collect` block.
 
 ## Key contracts worth knowing before changing anything
 
@@ -172,6 +175,17 @@ bundle's `scheduled:` section.
   from the outbox instead of asking an operator to re-approve a
   mutation that already fired. Reordering them is a correctness bug,
   not a preference.
+- **mast calls a tool nobody asked for in exactly two places, and each
+  has its own fence.** `cmd/mast/toolschemas.go`'s `runOwnBehalf` is
+  the whole surface: the write gate's precondition read, and a
+  monitoring cycle's `monitor.collect` leg. The read is fenced by
+  *classification* — compose refuses to start if the declared read is
+  mutating, so that exception can only widen towards safer calls. The
+  collection leg inverts that (it permits a mutating call precisely
+  because it is mast's own and would otherwise park every fire), so it
+  is fenced by *reachability*: `compose.CheckMonitorCollectSurface`
+  refuses to start if a collect tool is reachable from any roster. A
+  third caller needs a third fence, not a third call site.
 - **Unknown tools count as mutating.** The mutation predicate is
   default-deny: a tool nothing has classified is gated, so a bundle
   cannot get write access by omission. Un-gating is an audited
