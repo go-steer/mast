@@ -248,6 +248,47 @@ by what that surface holds: `enforce` abandons the runaway turn, but there
 is no cross-call session state for the "refuse every later turn" half, and
 no next turn for `feedback` to inject into.
 
+#### It watches inside a planner dispatch too
+
+Under `planner` dispatch, `invoke_specialist` runs each specialist on a
+runner of its own, and a private runner is a private event stream. Through
+v0.4 that meant a specialist spinning inside one dispatch emitted its calls
+where the watchdog could not see them — `--watchdog=enforce` could not halt
+a loop it could not observe, which is the exact shape it exists to catch.
+Since v0.5 the dispatch feeds those events to the **session's** watchdog,
+the same one the outer stream feeds.
+
+The session's, deliberately, and not one minted per dispatch: the signals
+count repetition, so a per-dispatch watchdog would reset the count every
+time a dispatch ended and a specialist making three identical calls in each
+of ten dispatches would never reach a threshold of five. The cost is worth
+knowing — the planner's own calls and its specialists' now land in one
+signal set, so an `invoke_specialist` between two dispatches breaks a
+consecutive run the repeat detector was building. That is the interleaved
+shape `alternating-tool-cycle` and the opt-in dominant-tool signal exist
+for, and it is the same trade-off the outer stream already makes between a
+coordinator and its sub-agents. The loop this catches — a specialist
+spinning inside *one* dispatch — has no interleaver at all.
+
+**A trip here halts the session, not just the dispatch.** This is the
+deliberate difference from a crossed budget cap, which stops only the
+dispatch and hands the planner the reason
+([budgets](/concepts/budgets/#two-limits-worth-knowing)). A ceiling is
+cumulative, so stopping the sub-run is the whole remedy. A watchdog trip is
+a latch meaning *this session is behaving pathologically and an operator
+must reset it*, and every other door to it refuses the whole session; a
+halt that stopped only the dispatch would let the planner re-dispatch the
+same specialist immediately, which is the treadmill `enforce` exists to
+break. So both fire: the dispatch stops with a labelled partial, and the
+turn is cancelled. Under `warn` and `feedback` nothing is cancelled — the
+alert is retained and reportable, and the model-facing paragraph goes to
+the **planner**, since the specialist's sub-session is already gone and the
+planner is the one that would otherwise dispatch again.
+
+Library embeds that compose the planner themselves get this by wiring
+`compose.RootConfig.SubRunObserver`, the same seam the meter uses;
+`mast.RunWorkload` and the daemon already do.
+
 #### A halt outlives the process that observed it
 
 An `enforce` halt is written to the session database, and a daemon that

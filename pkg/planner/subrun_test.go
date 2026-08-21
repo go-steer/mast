@@ -35,17 +35,48 @@ import (
 type recordingObserver struct {
 	meter *budget.Meter
 
-	mu       sync.Mutex
-	sessions []string
-	authors  []string
-	events   int
-	err      error
+	mu          sync.Mutex
+	sessions    []string
+	specialists []string
+	authors     []string
+	events      int
+	opened      int
+	closed      int
+	err         error
 }
 
-func (o *recordingObserver) ObserveSubRun(sessionID string, ev *session.Event) error {
+func (o *recordingObserver) SubRun(sessionID, specialist string) planner.SubRunSink {
+	o.mu.Lock()
+	o.opened++
+	o.specialists = append(o.specialists, specialist)
+	o.mu.Unlock()
+	return &recordingSink{obs: o, sessionID: sessionID}
+}
+
+func (o *recordingObserver) snapshot() (sessions, authors []string, events int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.sessions...), append([]string(nil), o.authors...), o.events
+}
+
+func (o *recordingObserver) lifecycle() (opened, closed int, specialists []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.opened, o.closed, append([]string(nil), o.specialists...)
+}
+
+// recordingSink is one dispatch's sink, reporting back to the observer
+// that opened it.
+type recordingSink struct {
+	obs       *recordingObserver
+	sessionID string
+}
+
+func (s *recordingSink) Observe(ev *session.Event) error {
+	o := s.obs
 	o.mu.Lock()
 	o.events++
-	o.sessions = append(o.sessions, sessionID)
+	o.sessions = append(o.sessions, s.sessionID)
 	if ev != nil {
 		o.authors = append(o.authors, ev.Author)
 	}
@@ -59,10 +90,10 @@ func (o *recordingObserver) ObserveSubRun(sessionID string, ev *session.Event) e
 	return o.meter.Observe(ev)
 }
 
-func (o *recordingObserver) snapshot() (sessions, authors []string, events int) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return append([]string(nil), o.sessions...), append([]string(nil), o.authors...), o.events
+func (s *recordingSink) Close() {
+	s.obs.mu.Lock()
+	defer s.obs.mu.Unlock()
+	s.obs.closed++
 }
 
 // dispatchResult digs the invoke_specialist FunctionResponse out of a
@@ -254,6 +285,83 @@ func TestSubRunObserverErrorStopsOnlyTheSubRun(t *testing.T) {
 	}
 	if _, ok := res["specialist"]; !ok {
 		t.Error("a halted dispatch still has to say which specialist it was")
+	}
+}
+
+// TestEachDispatchGetsItsOwnSink is the boundary the watchdog half of
+// #226 needs and the meter half never did: a host that dedups within a
+// run and counts repetition across runs has to be told where one
+// dispatch ends. One sink per dispatch, named with the specialist it
+// belongs to, and closed exactly once each.
+//
+// Two dispatches of the SAME specialist, deliberately: a host keying
+// its scope off the name alone would pass a one-of-each test and still
+// share one dedup set between these two.
+func TestEachDispatchGetsItsOwnSink(t *testing.T) {
+	spModel := &scriptedModel{name: "sp-model", script: specialistScript}
+	plModel := &scriptedModel{name: "pl-model"}
+	plModel.script = planScript(plModel,
+		callResponse(planner.ToolInvokeSpecialist, map[string]any{"name": "sp", "input": "one"}),
+		callResponse(planner.ToolInvokeSpecialist, map[string]any{"name": "sp", "input": "two"}),
+	)
+
+	obs := &recordingObserver{}
+	root, err := planner.NewRoot(planner.Config{
+		Name:           "w",
+		Model:          plModel,
+		Specialists:    map[string]adkagent.Agent{"sp": buildSpecialist(t, "sp", spModel)},
+		SubRunObserver: obs,
+	})
+	if err != nil {
+		t.Fatalf("NewRoot: %v", err)
+	}
+	r := newRunner(t, root, session.InMemoryService())
+	runPlanner(t, r, "outer-5", genai.NewContentFromText("work", genai.RoleUser))
+
+	opened, closed, specialists := obs.lifecycle()
+	if opened != 2 {
+		t.Errorf("sinks opened = %d, want 2 (one per dispatch)", opened)
+	}
+	if closed != opened {
+		t.Errorf("sinks closed = %d, opened = %d; every dispatch has to close its sink", closed, opened)
+	}
+	for _, s := range specialists {
+		if s != "sp" {
+			t.Errorf("sink opened for specialist %q, want \"sp\"", s)
+		}
+	}
+}
+
+// TestAHaltedDispatchStillClosesItsSink: the close is deferred, so the
+// sink whose own error cut the dispatch short still gets its last word.
+// A watchdog sink drains at close, and an alert that tripped on the
+// dispatch's final event would otherwise sit in the watchdog unseen.
+func TestAHaltedDispatchStillClosesItsSink(t *testing.T) {
+	spModel := &scriptedModel{name: "sp-model", script: specialistScript}
+	plModel := &scriptedModel{name: "pl-model"}
+	plModel.script = planScript(plModel,
+		callResponse(planner.ToolInvokeSpecialist, map[string]any{"name": "sp", "input": "x"}),
+	)
+
+	obs := &recordingObserver{err: errors.New("host says stop")}
+	root, err := planner.NewRoot(planner.Config{
+		Name:           "w",
+		Model:          plModel,
+		Specialists:    map[string]adkagent.Agent{"sp": buildSpecialist(t, "sp", spModel)},
+		SubRunObserver: obs,
+	})
+	if err != nil {
+		t.Fatalf("NewRoot: %v", err)
+	}
+	r := newRunner(t, root, session.InMemoryService())
+	events := runPlanner(t, r, "outer-6", genai.NewContentFromText("work", genai.RoleUser))
+
+	if got := dispatchResult(t, events)["status"]; got != "halted" {
+		t.Fatalf("dispatch status = %v, want \"halted\"; this test would prove nothing", got)
+	}
+	opened, closed, _ := obs.lifecycle()
+	if opened != 1 || closed != 1 {
+		t.Errorf("opened = %d, closed = %d; a halted dispatch still closes its sink", opened, closed)
 	}
 }
 

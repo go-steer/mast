@@ -109,15 +109,16 @@ type Config struct {
 	// rather than a pause that would die with the process.
 	PauseRecorder PauseRecorder
 
-	// SubRunObserver is handed every event the private sub-runner of an
-	// invoke_specialist dispatch emits, so a delegated specialist's
-	// spend lands somewhere. Nil leaves the sub-run unobserved, which
-	// is what it was through v0.4 and what it should stay for a caller
-	// with nothing to fold events into.
+	// SubRunObserver is opened once per invoke_specialist dispatch and
+	// handed every event that dispatch's private sub-runner emits, so a
+	// delegated specialist's spend and behaviour land somewhere. Nil
+	// leaves the sub-run unobserved, which is what it was through v0.4
+	// and what it should stay for a caller with nothing to fold events
+	// into.
 	//
-	// This is not an optional nicety for a host that meters: a sub-run
-	// is a separate runner, so its events reach nothing the outer
-	// runner's consumer is wired to. See SubRunObserver and #226.
+	// This is not an optional nicety for a host that meters or watches:
+	// a sub-run is a separate runner, so its events reach nothing the
+	// outer runner's consumer is wired to. See SubRunObserver and #226.
 	SubRunObserver SubRunObserver
 }
 

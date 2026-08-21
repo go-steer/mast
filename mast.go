@@ -500,12 +500,21 @@ func libraryWatchdogMode(bundle *workload.Bundle) (watchdog.Mode, error) {
 // planner.SubRunObserver, so a specialist dispatched through the
 // planner's private sub-runner is billed to the turn that dispatched
 // it. The session ID is ignored: a library meter already IS this
-// call's session, and there is no pool to pick from.
+// call's session, and there is no pool to pick from. The specialist
+// name is ignored too — a meter attributes by the event's own Author,
+// which is what makes a per-specialist ceiling bind here.
+//
+// One value is both the observer and every dispatch's sink: a meter
+// carries no per-dispatch state to scope, and nothing accumulates that
+// a Close would have to flush. The library build wires no watchdog —
+// cmd/mast is where that sink has a boundary to respect.
 type subRunMeter struct{ m *budget.Meter }
 
-func (s subRunMeter) ObserveSubRun(_ string, ev *adksession.Event) error {
-	return s.m.Observe(ev)
-}
+func (s subRunMeter) SubRun(_, _ string) planner.SubRunSink { return s }
+
+func (s subRunMeter) Observe(ev *adksession.Event) error { return s.m.Observe(ev) }
+
+func (s subRunMeter) Close() {}
 
 func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, meter *budget.Meter, sessionID string, msg *genai.Content) (*Result, error) {
 	svc := cfg.Sessions

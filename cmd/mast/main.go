@@ -673,16 +673,18 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}
 	obs.Prime(workloadName)
 
-	// Both sinks now exist, so a planner dispatch's sub-run has
-	// somewhere to report. Before this line no turn has started, so no
-	// dispatch can be in flight to miss it.
-	subObs.attach(meters, obs, workloadName, logger)
-
 	// Shutdown bookkeeping: which sessions have a turn in flight, and
 	// the pre-mark/clear ordering for their interruption markers. The
 	// tracker owns the drain-time marker writes, so it emits the
 	// marker-failure and planned-stop gate-pause counters (#50).
 	tracker := newTurnTracker(store, logger, obs, workloadName)
+
+	// Every sink now exists, so a planner dispatch's sub-run has
+	// somewhere to report — and, through the tracker, a way to cancel
+	// the turn it is running inside when the watchdog halts the session
+	// (#226). Before this line no turn has started, so no dispatch can
+	// be in flight to miss it.
+	subObs.attach(meters, obs, wds, tracker, workloadName, logger)
 
 	// One turn per session at a time (#62): a second runner turn on
 	// the same session row dies on ADK's stale-session check, so

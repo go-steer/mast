@@ -113,10 +113,50 @@
   finer-grained stop `pkg/budget` documents as needing a pre-call seam
   — the tool body turns out to be one, for this shape.
 
-  The watchdog half is not fixed. Its enforcer is per-turn and taps a
-  stream, so a dispatched specialist can still loop without being
-  halted; #226 stays open for it and for the effects outbox, which
-  likewise does not reach inside a sub-run.
+- **The watchdog now watches inside a planner dispatch, and a trip there
+  halts the session.** Same private runner, same blind spot: a
+  specialist spinning inside one `invoke_specialist` call emitted its
+  tool calls where the session's watchdog could not see them, so
+  `--watchdog=enforce` could not halt a loop it could not observe —
+  which is the exact shape the watchdog exists to catch. The dispatch
+  now feeds those events to the session's watchdog, the same one the
+  outer stream feeds, through the seam the metering half opened.
+
+  The session's, and not one per dispatch, because the signals count
+  repetition: a per-dispatch watchdog resets that count every time a
+  dispatch ends, and a specialist making three identical calls in each
+  of ten dispatches would never reach a threshold of five. The cost is
+  worth knowing — the planner's own calls and its specialists' now land
+  in one signal set, so an `invoke_specialist` between two dispatches
+  breaks a consecutive run, the interleaved shape `dominant-tool-call`
+  exists for. A specialist spinning inside *one* dispatch, which is what
+  this catches, has no interleaver.
+
+  **A trip stops the dispatch *and* cancels the turn**, deliberately
+  unlike a crossed budget cap. A ceiling is cumulative, so stopping the
+  sub-run is the whole remedy; a watchdog trip is a latch meaning an
+  operator has to reset the session, and a halt that stopped only the
+  dispatch would let the planner re-dispatch the same specialist
+  immediately. Under `warn` and `feedback` nothing is cancelled — the
+  alert is retained for `GET /guardrails` and the model-facing paragraph
+  is queued for the **planner**, since the specialist's sub-session is
+  already gone and the planner is the one that would dispatch again.
+
+  Library embedders driving the watchdog themselves get
+  `watchdog.ObserveInto` and `watchdog.Drain`, the per-event and
+  end-of-run halves of `Tap`, now exported so a caller with events but
+  no stream to wrap runs the same code the stream does. **Breaking, for
+  the unreleased seam only:** `planner.SubRunObserver` is now
+  `SubRun(sessionID, specialist) SubRunSink` — a sink per dispatch
+  rather than one flat callback — because the watchdog needs dispatch
+  boundaries and a flat callback cannot tell two parallel dispatches
+  apart.
+
+  #226's third consumer is still open, and worse than it read: runner
+  **plugins** are runner-scoped and the dispatch tool builds its runner
+  with none, so a mutating call inside a dispatch reaches neither the
+  effect outbox nor the write gate — it is not gated even under
+  `hitl.on_mutation: require_approval`. Filed with a repro as #235.
 
 - **Every example bundle is now composed by a test, not just the one.**
   `examples/workloads/gke-triage` was exercised by the e2e presubmit and

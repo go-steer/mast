@@ -14,6 +14,21 @@ The policy that decides whether a call parks at all is
 Its default is `require_approval`, so a bundle that says nothing about
 mutation is gated — unattended writes have to be asked for.
 
+:::caution[One gap, in one dispatch shape]
+The gate is a runner plugin, and under `planner` dispatch
+`invoke_specialist` runs its specialist on a runner of its own — built
+without it. **A mutating call made from inside a planner dispatch does not
+park**, even under `require_approval`, and leaves no effect-outbox record
+either. Reaching this takes a roster that declares
+`capability: change_executor`, since a specialist holding an undeclared
+mutating tool is refused at composition and `invoke_specialist` itself is
+refused outright in ambiguous-effect mode — but that is a supported
+configuration, so it is worth knowing before you deploy one. Every other
+dispatch shape (`coordinator`, `fanout`, `graph`, `bounded`) runs on the
+outer runner and is gated normally. Tracked as
+[#235](https://github.com/go-steer/mast/issues/235).
+:::
+
 ## What a parked call looks like
 
 `mast sessions show <session>` prints the pending question without a

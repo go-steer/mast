@@ -951,9 +951,18 @@ Carried forward from 2026-08-21, in the order they are worth doing:
    The budget half is the fix; the watchdog seam and the `pkg/effects` outbox are separate
    follow-ups on the same issue. **Metering half shipped 2026-08-21** (`7105fb9`): the dispatch tool
    hands each sub-run event to the host through `planner.Config.SubRunObserver`, and a cap crossed
-   inside a dispatch stops the dispatch rather than the session. #226 stays open for the watchdog
-   seam — its enforcer is per-turn and taps a stream, so there is nothing a process-scoped observer
-   can join — and for the effects outbox.
+   inside a dispatch stops the dispatch rather than the session. **Watchdog half shipped
+   2026-08-21.** The row above said its enforcer taps a stream and so has nothing a process-scoped
+   observer can join; the answer was to give the stream's per-event body a name —
+   `watchdog.ObserveInto` and `watchdog.Drain`, with `Tap` re-expressed over both, so the two paths
+   cannot drift. `SubRunObserver` was reshaped from a flat callback to a sink opened per dispatch
+   (unreleased, so free to change): a meter is cumulative and was happy flat, but the watchdog dedups
+   an aggregator's re-emissions *within* a run and counts repetition *across* runs, and a flat
+   callback cannot even tell two parallel dispatches apart. Observation goes to the **session's**
+   watchdog — a per-dispatch one resets the repeat count every dispatch — and a trip fires both
+   levers, unlike the budget half, because a trip is a latch an operator must clear rather than a
+   cumulative total. **#226 now stays open only for the effects outbox**, and the measured shape of
+   that is worse than the issue said: see item 5.
 2. ~~**[#228](https://github.com/go-steer/mast/issues/228) — a drift gate for the metrics page.**~~
    **Shipped 2026-08-21** (`0ccf5de`). The gate primes a registry, GETs `Handler()`, and compares
    the parsed scrape against the parsed page both ways — names, labels, and the enumerated values
@@ -978,6 +987,20 @@ Carried forward from 2026-08-21, in the order they are worth doing:
    parent's unchanged, so a coordinator, a planner and a resumed run keep walking one cursor in one
    order. The acceptance test the row said was blocked is written: a three-analyst fan-out against a
    **one-turn** recording, which cannot pass at all under a shared cursor.
+5. **[#235](https://github.com/go-steer/mast/issues/235) — a planner-dispatched specialist's
+   mutating tool calls bypass the write gate and the effect outbox.** Found while shipping item 1's
+   watchdog half, and it is the same seam read one level wider: runner **plugins** are
+   runner-scoped, and the dispatch tool builds its runner with none. #226 named only the missing
+   outbox record; the write gate is missing too, so a mutating call inside a dispatch is not gated
+   even under `hitl.on_mutation: require_approval`. Measured rather than inferred — an outer
+   `BeforeToolCallback` sees `invoke_specialist` and `finish_task` and never the `scale_deployment`
+   the specialist actually executed. The fix is not mechanical: an approval park suspends a turn to
+   be resumed from a durable session and a sub-session is in-memory, so this needs a decision about
+   where the boundary sits (give the sub-run the host's session service, gate at the dispatch
+   boundary, or refuse a `change_executor` in a planner roster until one of those lands). Containment
+   today is `ClassSpawning` plus `CheckCapabilitySplit`, which narrows the door to a roster that
+   declares `capability: change_executor` out loud — narrower than "any workload", but a supported
+   configuration walks through it.
 
 Two open questions that are not ports and need an owner: whether mast follows upstream's
 park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it collides with what
