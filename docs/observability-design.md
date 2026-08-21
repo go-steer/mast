@@ -135,6 +135,13 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 *Three of the four outcomes are not runs, deliberately: a scheduled workload that stopped doing its work is indistinguishable from a healthy one unless the ticks it declined to run are counted too. `missed` is the alert — it is the only place a cadence reports that the daemon was not there, because mast does not catch up on a missed tick.)*
 
+*(Shipped v0.5, 2026-08-21 — chat egress for monitoring cycles (W4.5). A monitoring workload that named both `monitor.transitions_from` and `monitor.notify` speaks only when the classifier found a transition, so the interesting number here is the one that is not a message:*
+
+- *`mast_monitor_notifications_total{workload, outcome}` — one increment per completed monitoring cycle; outcome ∈ `quiet` (the classifier reported no transitions, and the model was never woken) / `posted` (a POST opened a timeline) / `appended` (a PATCH extended the open one) / `replaced` (the ingress refused the append with 409 and the full text went instead) / `rolled` (the append overflowed the platform's message ceiling and the ingress answered with a continuation id) / `health` (a broken-or-recovered notice, edge-triggered, sent outside the assessment path) / `error` (the send failed; nothing is queued and nothing replays)*
+- *`mast_monitor_digest_wakes_total{workload}` — cycles where the wall-clock deadman (`monitor.notify.digest_after`) spoke through the quiet, so an operator can see how often silence had to be broken on a timer rather than by a finding*
+
+*A healthy monitor is mostly `quiet`, which is the point: the family exists so that "we heard nothing" and "it stopped running" stop looking alike. `error` is deliberately not a retry counter — a failed send is a spent cycle, because the classifier advanced its state during collection and re-sending would report a transition that has already been superseded.)*
+
 <!-- shipped-metric-families:end -->
 
 **Session lifecycle:**

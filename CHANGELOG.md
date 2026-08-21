@@ -2,6 +2,88 @@
 
 ## Unreleased
 
+- **A monitoring cycle that changed nothing no longer wakes the
+  model.** A workload can declare a `monitor.notify` block naming a
+  conversation, and mast posts a cycle's assessment into it through
+  [switchboard](https://github.com/go-steer/switchboard)'s message
+  ingress — configured on the daemon with `--notify-url` and
+  `MAST_NOTIFY_TOKEN` (#242, W4.5, closing parity board row 14).
+
+  The headline is a negative. When the classifier reports an empty
+  transition set, the turn **does not run at all** — not "runs and
+  declines to post". A fifteen-minute cadence that spends a model call
+  on every quiet cycle costs more per month in nothing-happened than
+  the incidents it exists to catch. The skip is deliberately narrow: it
+  applies only where the workload declared both
+  `monitor.transitions_from` (so "nothing changed" is the classifier's
+  answer and not mast's guess) and `monitor.notify` (so speaking is
+  what the cycle is for). Every other workload runs every tick exactly
+  as before.
+
+  Consecutive speaking cycles extend **one** message rather than
+  posting several, so an incident that takes six cycles to resolve
+  reads as one growing story instead of six notifications an operator
+  has to reassemble; the first quiet cycle closes the timeline, and the
+  next incident gets a message of its own. Switchboard's two non-error
+  answers to an append are handled rather than surfaced: a 409 ("I no
+  longer remember that message" — a restart, another replica, a message
+  posted from elsewhere) re-sends the whole story as an edit, and a 200
+  carrying a continuation ref ("that message is full") retargets every
+  later append. Timeline state lives in the process and is not
+  persisted: after a restart the honest answer to "which message am I
+  extending" is *none*, and a fresh post costs one extra message where
+  appending to a stale one costs a story with a hole in it.
+
+  There is **no queue, no retry and no spool**. A send that failed is
+  an errored fire, counted
+  `mast_monitor_notifications_total{outcome="error"}`, and the next
+  cycle reports what is new then. Holding the assessment and re-sending
+  it is the tempting fix and it is wrong: the classifier advanced its
+  own state when it answered, so the replay would describe a world that
+  has already moved on. This is the ordering the whole M4b chain was
+  built around — advance state, *then* speak.
+
+  Silence is bounded by a wall-clock deadman, `digest_after`, and not
+  by a count of quiet cycles: a counted digest is silently re-timed by
+  any change to `interval`, and what an operator is owed is a sign of
+  life on a schedule they can reason about. A monitor that has been
+  quiet for a week is otherwise indistinguishable from one that died a
+  week ago. The clock starts at daemon startup, so a daemon booting
+  into a quiet world does not immediately announce the quiet.
+
+  A cycle that *breaks* now says so in the same channel — the gap W4.2
+  named and left open. A collection that fails, a classification that
+  arrives truncated or a turn that errors posts a mast-authored notice,
+  and the next successful cycle posts another. Both are edge-triggered,
+  once on the way down and once on the way back rather than on every
+  failing cycle, because a channel that repeats itself on the cadence
+  is one an operator mutes — and the mute costs them the incident
+  report too. A health notice that cannot be delivered never fails the
+  fire.
+
+  Two refusals guard the configuration seam. A bundle that declares
+  `monitor.notify` on a daemon with no `--notify-url` **will not
+  start**: the workload's entire output is the message it was going to
+  send. And `MAST_NOTIFY_TOKEN` is refused if it equals any of the
+  daemon's inbound tokens (`MAST_INJECT_TOKEN`, `MAST_ATTACH_TOKEN`,
+  `MAST_A2A_TOKEN`, `MAST_AGUI_TOKEN`) — they authorize opposite
+  directions, and sharing one means anything that can read the chat
+  bridge's configuration can inject turns here. It is an env var and
+  never a flag, so the credential stays out of `ps` and out of the
+  container spec's args. Which conversation and how long silence may
+  last are the bundle's; which ingress and as whom are the deployment's,
+  so one bundle moves between staging and production unedited.
+
+  New: `pkg/notify` (a dependency-free ingress client — the
+  `check-slim-deps` gate stands), `cmd/mast/notify.go` (the timeline
+  policy), two counter families
+  (`mast_monitor_notifications_total{workload,outcome}` with `posted`,
+  `appended`, `replaced`, `rolled`, `quiet`, `health`, `error`, and
+  `mast_monitor_digest_wakes_total{workload}`), and five acceptance
+  legs (`U-notify-onchange` in `scripts/uat-v0.5.sh`) driven against a
+  recording stub ingress at `testdata/uat/ingress` — because most of
+  what has to be proved here is that a request is *absent*.
+
 - **What changed since the last run comes out of the classifier, and
   mast does not second-guess it.** A workload can now point
   `monitor.transitions_from` at one of its `monitor.collect` keys; the

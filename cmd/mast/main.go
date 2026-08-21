@@ -116,6 +116,7 @@ func run() {
 		attachListen     = flag.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Requires --session-db (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN")
 		a2aListen        = flag.String("a2a-listen", "", "A2A server bind address (e.g. `127.0.0.1:7780`); empty disables the surface. Publishes an agent card and a JSON-RPC endpoint for workloads that opt in via the bundle's a2a.expose. Authenticated when MAST_A2A_TOKEN is set. Non-loopback binds are refused without auth (tasks/cancel is destructive) — set MAST_A2A_TOKEN or bind loopback")
 		aguiListen       = flag.String("agui-listen", "", "AG-UI server bind address (e.g. `127.0.0.1:7781`); empty disables the surface. Serves an HTTP+SSE run endpoint and a /agui/agents.json discovery doc for workloads that opt in via the bundle's agui.expose. Authenticated when MAST_AGUI_TOKEN is set (rate limits via MAST_AGUI_RATE/MAST_AGUI_BURST). Non-loopback binds are refused without auth (a run drives a budgeted turn) — set MAST_AGUI_TOKEN or bind loopback")
+		notifyURL        = flag.String("notify-url", "", "serve mode: switchboard's outbound message ingress (e.g. `http://switchboard:8080`), where a monitoring cycle posts what it found. Required by any workload whose bundle declares a `monitor.notify` block; the bearer comes from MAST_NOTIFY_TOKEN, which must not be one of this daemon's own inbound tokens")
 		sessionDB        = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
 		sessionDrv       = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
 		timeoutFlag      = flag.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets")
@@ -207,6 +208,10 @@ func run() {
 			fmt.Fprintln(os.Stderr, "mast: --agui-listen is a serve-mode flag; one-shot mode exposes no AG-UI surface")
 			os.Exit(2)
 		}
+		if *notifyURL != "" {
+			fmt.Fprintln(os.Stderr, "mast: --notify-url is a serve-mode flag; one-shot mode runs no monitoring cycle")
+			os.Exit(2)
+		}
 		if explicit["dispatch"] {
 			logger.Warn("--dispatch is a serve-mode flag; ignored in one-shot mode")
 		}
@@ -249,7 +254,7 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
-	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow, *watchdogFlag, *mcpDigest); err != nil {
+	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *notifyURL, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow, *watchdogFlag, *mcpDigest); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
@@ -426,7 +431,7 @@ func newResumeByToken(
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration, watchdogFlag string, mcpDigest bool) error {
+func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, notifyURL, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration, watchdogFlag string, mcpDigest bool) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -438,6 +443,22 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	injectAuthn, err := injectAuthenticator(logger, bearer)
 	if err != nil {
 		logger.Error("failed to build the inject listener's user table", "error", err.Error())
+		return err
+	}
+
+	// Where a monitoring cycle speaks (v0.5 W4.5). Built here, before
+	// anything expensive, because the checks it makes are configuration
+	// errors an operator should hear about at startup rather than on the
+	// first cycle that had something to report — including the one that
+	// matters: the outbound token must not be an inbound one.
+	notifyClient, err := buildNotifyClient(logger, notifyURL, map[string]string{
+		"MAST_INJECT_TOKEN": bearer,
+		"MAST_ATTACH_TOKEN": os.Getenv("MAST_ATTACH_TOKEN"),
+		"MAST_A2A_TOKEN":    os.Getenv("MAST_A2A_TOKEN"),
+		"MAST_AGUI_TOKEN":   os.Getenv("MAST_AGUI_TOKEN"),
+	})
+	if err != nil {
+		logger.Error("failed to configure the chat ingress", "error", err.Error())
 		return err
 	}
 
@@ -541,6 +562,19 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		"name", root.Name(),
 		"sub_agents", len(root.SubAgents()),
 	)
+
+	// Refused as early as the bundle is readable (v0.5 W4.5): a
+	// workload whose entire output is a chat message, started against a
+	// daemon with nowhere to send it, is a monitor an operator believes
+	// is reporting. The scheduled trigger checks this again when it arms
+	// — this one is here so the answer arrives before the listeners bind
+	// rather than after.
+	if bundle.Monitor.Notify != nil && notifyClient == nil {
+		err := fmt.Errorf("workload %q posts monitoring notices to %q but no chat ingress is configured; set --notify-url and %s",
+			bundle.Name, bundle.Monitor.NotifyTarget(), notifyTokenEnv)
+		logger.Error("refusing to start", "error", err.Error())
+		return err
+	}
 
 	// Recorded-effect outbox (docs/durable-execution-design.md): the
 	// runner plugin that refuses mutating tool calls while a session
@@ -1023,8 +1057,30 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 				}
 				logger.Info("monitoring cycle armed; these calls run before the model is woken", args...)
 			}
+			// The egress leg (v0.5 W4.5). A bundle that declares where to
+			// speak and a daemon with no ingress to speak through is a
+			// refusal, not a warning: the workload's whole output is the
+			// message it was going to send.
+			nf, nerr := newNotifier(logger, obs, workloadName, bundle.Monitor, notifyClient)
+			if nerr != nil {
+				close(schedDone)
+				logger.Error("monitoring notifications not armed", "workload", workloadName, "error", nerr.Error())
+				return nerr
+			}
+			if nf.enabled() {
+				args := []any{"workload", workloadName, "conversation", nf.conv}
+				if nf.digest > 0 {
+					args = append(args, "digest_after", nf.digest.String())
+				}
+				if bundle.Monitor.TransitionsKey() == "" {
+					// Worth saying out loud, because the operator who wrote
+					// the notify block probably wanted the other thing.
+					args = append(args, "speaks_every_cycle", true)
+				}
+				logger.Info("monitoring notifications armed; a cycle that changes nothing will not wake the model", args...)
+			}
 			st := newScheduledTrigger(store, logger, obs, tracker, workloadName, defaultUserID, interval, jitter,
-				newScheduledFireCallback(r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, collector, att.ensure))
+				newScheduledFireCallback(r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, collector, nf, att.ensure))
 			if sessionDB == "" {
 				// The anchor lands in an in-memory store that dies with
 				// the process, so the cadence re-phases on every restart.

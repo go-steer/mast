@@ -390,7 +390,7 @@ outside the model's tool surface, and hands the model the transitions already
 classified. That is also why the collection leg costs nothing: a step the model
 is not part of cannot spend a token.
 
-**Two of those four have landed.** A workload can now declare a
+**Three of those four have landed.** A workload can now declare a
 [`monitor.collect`](/reference/workload-bundle/#monitor--the-facts-a-cycle-gathers-for-itself)
 block: a list of catalog tools mast runs itself when a scheduled cycle fires,
 before the model is woken, with the results handed to it in the tick envelope
@@ -422,6 +422,29 @@ healthy one, and the notify half is about to stay silent when nothing
 changed; those two must not look the same. A cycle that classified and found
 nothing says so explicitly, which is a different fact from a workload that
 never classified at all.
+
+**The third is the part an operator actually sees.** With a
+[`monitor.notify`](/reference/workload-bundle/#notify--speaking-only-when-something-changed)
+block naming a conversation, a cycle whose classifier reported nothing
+changed **does not wake the model at all** — not "wakes it and declines to
+post". A fifteen-minute cadence that spends a model call on every quiet cycle
+costs more per month in nothing-happened than the incidents it exists to
+catch. Consecutive speaking cycles extend one message, so an incident that
+takes six cycles to resolve reads as one growing story rather than six
+notifications to reassemble at 3am; the first quiet cycle closes it, and the
+next incident gets a message of its own. Switchboard's two non-error answers
+to an append — "I no longer remember that message" and "that message is
+full, here is its continuation" — are both handled rather than surfaced.
+
+Three deliberate absences. There is **no retry and no spool**: a send that
+failed is an errored fire, because the classifier advanced its own state when
+it answered, so a replay next cycle would describe a world that has already
+moved on. Silence is bounded by a **wall-clock deadman** (`digest_after`)
+rather than a count of quiet cycles — a monitor that has been quiet for a
+week is otherwise indistinguishable from one that died a week ago. And a
+cycle that *breaks* says so in the same channel, once on the way down and
+once on the way back, because a monitor whose failure is visible only in a
+log file is one everybody believes is working.
 
 Landed already on the way there: **durable budget spend**. A `max_cost_usd`
 that a restart reset was a ceiling on what a workload spent per process,

@@ -43,6 +43,30 @@
 #          can also call mid-turn makes "was this write approved?"
 #          depend on which door it came through.
 #
+#   U-notify-onchange (W4.5) — what the cycle says, and when it says
+#   nothing.
+#       A  a cycle whose classifier reported a change posts once; the
+#          cycles after it, with the classifier reporting calm, make NO
+#          request and spend NO model call — the strongest form of the
+#          claim, and the only one worth making. Then calm closes the
+#          timeline, so the next change is a new message rather than an
+#          append onto yesterday's incident.
+#       B  consecutive speaking cycles extend ONE message, however the
+#          ingress answers: an append, then a 409 ("I no longer remember
+#          that message") recovered by re-sending the whole text, then a
+#          200-with-a-continuation ("that message is full") that every
+#          later cycle targets instead.
+#       C  a report the ingress refused fails the fire and is NOT
+#          replayed. The classifier consumed the diff when it answered,
+#          so the held message would describe a world that moved on.
+#       D  a monitoring cycle that is BROKEN says so in the channel,
+#          once on the edge rather than every cycle, and says when it
+#          recovered.
+#       E  silence has a deadline: with nothing changed for longer than
+#          `digest_after`, the next cycle speaks anyway. A monitor that
+#          has been quiet for a week is otherwise indistinguishable from
+#          one that died a week ago.
+#
 #   U-transitions (W4.4) — where the classification comes from.
 #       A  the classifier reports `escalated` for a subject whose
 #          severity mast can see did NOT change, and mast reports it as
@@ -72,7 +96,8 @@
 # independent witness that the collection call happened at all.
 #
 # Usage: scripts/uat-v0.5.sh
-# State goes under ${TMPDIR:-/tmp}/mast-uat-v05 (house rule #5); port 7791.
+# State goes under ${TMPDIR:-/tmp}/mast-uat-v05 (house rule #5); ports
+# 7791 for the daemon and 7792 for the stub chat ingress.
 
 set -euo pipefail
 
@@ -85,6 +110,7 @@ FIXTURE="${REPO}/testdata/uat"
 TOKEN="uat-v05-token"
 export MAST_INJECT_TOKEN="${TOKEN}"
 PID=""
+INGPID=""
 DB=""
 
 PASS=0
@@ -98,6 +124,7 @@ bad()  { FAIL=$((FAIL + 1)); printf '   \033[31mFAIL\033[0m %s\n' "$*"; }
 
 cleanup() {
   [ -n "${PID}" ] && kill "${PID}" 2>/dev/null || true
+  [ -n "${INGPID}" ] && kill "${INGPID}" 2>/dev/null || true
   return 0
 }
 trap cleanup EXIT
@@ -124,6 +151,58 @@ calls_count() {
   local f="${BLOCKDIR}/$1.calls"
   if [ -f "${f}" ]; then wc -l < "${f}" | tr -d ' '; else echo 0; fi
 }
+
+# ---- the chat ingress -----------------------------------------------
+# testdata/uat/ingress: a stub switchboard that records every request it
+# is sent, one JSON object per line. The W4.5 legs read that ledger —
+# and most of what they assert is that a line is NOT in it. "The cycle
+# ran and told nobody" has no log line strong enough to stand for it;
+# the only convincing evidence is a recording listener that received
+# nothing.
+INGRESS="${WORK}/ingress"
+INGDIR="${WORK}/ingdir"
+INGPORT="$((PORT + 1))"
+INGURL="http://127.0.0.1:${INGPORT}"
+
+# Deliberately not ${TOKEN}. The daemon refuses to start when the token
+# it posts chat with is also one that drives it, so a harness that
+# reused one would be measuring that refusal by accident on every leg.
+NOTIFY_TOKEN="uat-v05-notify-token"
+
+start_ingress() {
+  rm -rf "${INGDIR}" && mkdir -p "${INGDIR}"
+  "${INGRESS}" -addr="127.0.0.1:${INGPORT}" -dir="${INGDIR}" -token="${NOTIFY_TOKEN}" \
+    >"${WORK}/ingress.log" 2>&1 &
+  INGPID=$!
+  local i
+  for i in $(seq 1 100); do
+    if ! kill -0 "${INGPID}" 2>/dev/null; then break; fi
+    if curl -sf -m 1 "${INGURL}/healthz" >/dev/null 2>&1; then return 0; fi
+    sleep 0.1
+  done
+  echo "ingress failed to start; log:" >&2; cat "${WORK}/ingress.log" >&2; exit 1
+}
+
+stop_ingress() {
+  [ -n "${INGPID}" ] && kill "${INGPID}" 2>/dev/null || true
+  wait "${INGPID}" 2>/dev/null || true
+  INGPID=""
+}
+
+# requests — how many requests the ingress has received. The number the
+# whole workstream is about.
+requests() {
+  if [ -f "${INGDIR}/requests.jsonl" ]; then wc -l < "${INGDIR}/requests.jsonl" | tr -d ' '; else echo 0; fi
+}
+requests_atleast() { [ "$(requests)" -ge "$1" ]; }
+
+# req <n> — the nth recorded request, raw. Prose assertions grep this
+# line rather than extracting the field: a health notice has commas in
+# it, and req_field stops at the first one.
+req() { sed -n "$1p" "${INGDIR}/requests.jsonl" 2>/dev/null || true; }
+
+# req_field <n> <field> — one scalar field off the nth request.
+req_field() { req "$1" | sed -n "s/.*\"$2\":\"\{0,1\}\([^\",}]*\).*/\1/p"; }
 
 # ---- lifecycle ------------------------------------------------------
 # --model=toolactor rather than echo, for the reason the v0.4 harness
@@ -214,6 +293,15 @@ sched_fires_atleast() {
   [ "${n}" -ge "$2" ]
 }
 
+# sched_fails_atleast — the other half. A fire that errors logs its own
+# line and never the audit one, so a leg counting cycles through a
+# failure has to read this counter instead.
+sched_fails_atleast() {
+  local n
+  n="$(grep -c -- 'scheduled fire failed' "$1" || true)"
+  [ "${n}" -ge "$2" ]
+}
+
 wait_for() {
   local budget="$1"; shift
   local deadline=$((budget * 10)) i
@@ -257,7 +345,8 @@ rm -rf "${WORK}" && mkdir -p "${WORK}"
 say "Build"
 (cd "${REPO}" && go build -o "${BIN}" ./cmd/mast)
 (cd "${REPO}" && go build -o "${BLOCKER}" ./testdata/uat/blocker)
-note "built ${BIN} + ${BLOCKER} (toolactor model — no credentials, no network)"
+(cd "${REPO}" && go build -o "${INGRESS}" ./testdata/uat/ingress)
+note "built ${BIN} + ${BLOCKER} + ${INGRESS} (toolactor model — no credentials, no network)"
 
 # ---- the collection fixture: bounded-triage, on a cadence -----------
 # The shipped bounded-triage bundle plus a monitor block, because the
@@ -426,6 +515,73 @@ edge_trigger:
     jitter: 0s
     prompt: 'A monitoring cycle woke you: {"reason":"CrashLoopBackOff"}. Report on what changed.'
 YAML
+
+# ---- the notify fixture: a cycle that speaks only when it must ------
+# The classification fixture plus the half W4.5 adds. `digest_after` is
+# a day — longer than any run of this harness — so the deadman is not
+# what these legs measure: the only thing that can make this workload
+# speak is the classifier saying something changed. Leg E uses the
+# fixture below it to measure the deadman on its own.
+BNOTIFY="${WORK}/notify"
+cp -r "${REPO}/examples/workloads/bounded-triage" "${BNOTIFY}"
+cp "${FIXTURE}/mcp.json" "${BNOTIFY}/mcp.json"
+cat > "${BNOTIFY}/workload.yaml" <<'YAML'
+# Harness fixture for scripts/uat-v0.5.sh's U-notify-onchange legs.
+name: uat-notify
+description: Fixture workload for the mast v0.5 notify-only-on-change legs.
+mode: single_session
+
+dispatch: bounded
+
+tool_catalog:
+  mcp:
+    - server: uat-blocker
+  tools:
+    - name: findings_diff
+      mutating: true
+
+specialists:
+  - incident-report
+
+budget:
+  max_wallclock_seconds: 120
+
+hitl:
+  on_mutation: require_approval
+
+monitor:
+  collect:
+    - tool: findings_diff
+      args: {transitions: "new,escalated,resolved"}
+      as: transitions
+  # Both halves are required for a cycle to be allowed to stay silent:
+  # without transitions_from, "nothing changed" would be mast's guess
+  # rather than the classifier's answer, and the cycle would run.
+  transitions_from: transitions
+  notify:
+    conversation: "#uat-oncall"
+    digest_after: 24h
+
+edge_trigger:
+  scheduled:
+    # Four seconds: long enough that the harness can change the
+    # classifier's answer between two cycles and know which cycle read
+    # which answer, short enough that five cycles fit in a UAT.
+    interval: 4s
+    jitter: 0s
+    prompt: 'A monitoring cycle woke you: {"reason":"CrashLoopBackOff"}. Report on what changed.'
+YAML
+
+# ---- the digest fixture: silence with a deadline --------------------
+# The same workload with a deadman short enough to observe. Its own
+# name, so leg E reads its own counters rather than the ones four
+# earlier daemons moved.
+BDIGEST="${WORK}/digest"
+cp -r "${BNOTIFY}" "${BDIGEST}"
+sed -e 's/^name: uat-notify$/name: uat-notify-digest/' \
+    -e 's/^    digest_after: 24h$/    digest_after: 8s/' \
+    -e 's/^    interval: 4s$/    interval: 3s/' \
+    "${BNOTIFY}/workload.yaml" > "${BDIGEST}/workload.yaml"
 
 # ====================================================================
 # U-collect (W4.2) — the facts are mast's, and they cost nothing
@@ -612,6 +768,317 @@ assert_no_log "and no turn was recorded as complete" "${LOG}" 'turn complete'
 # call happened.
 assert_eq "the classifier was called" "$(calls_count findings_diff)" 1
 stop_term
+
+# ====================================================================
+# U-notify-onchange (W4.5) — the cycle speaks only when something moved
+# ====================================================================
+# The claim is a negative one, which is why these legs are driven
+# against a recording ingress rather than a log line: what has to be
+# true is that a quiet cycle produces no request and no model call. A
+# monitor that posts "all quiet" every few minutes is one an operator
+# mutes inside a week, and the mute costs them the incident report too.
+export MAST_NOTIFY_TOKEN="${NOTIFY_TOKEN}"
+
+# The two classifier answers these legs alternate between. Written
+# straight into the blocker's canned output, so the change the daemon
+# reacts to is the change a real run-to-run diff would report.
+diff_changed() {
+  cat > "${BLOCKDIR}/findings_diff.out" <<'DIFF'
+transition=new subject_key=pod/prod/web-2f1/CrashLoopBackOff severity=critical message="back-off 5m0s restarting failed container"
+scanned=412 findings=1 elapsed=1.4s
+DIFF
+}
+diff_quiet() {
+  cat > "${BLOCKDIR}/findings_diff.out" <<'DIFF'
+scanned=412 findings=0 elapsed=1.1s
+DIFF
+}
+
+# ---- leg A: nothing changed, so nothing happened --------------------
+say "U-notify-onchange/A: a cycle with nothing to report makes no request and no model call"
+WL="${BNOTIFY}"
+DISPATCH=
+DB="${WORK}/notify.db"
+LOG="${WORK}/notify.log"
+reset_blocker
+diff_changed
+start_ingress
+start_daemon "${LOG}" --notify-url="${INGURL}"
+
+NFARM="$(grep -- 'monitoring notifications armed' "${LOG}" || true)"
+assert_has "the daemon armed the notify leg at startup" "${NFARM}" '#uat-oncall'
+assert_has "and says up front what a quiet cycle will cost" "${NFARM}" 'will not wake the model'
+
+if wait_for 60 requests_atleast 1; then
+  ok "the cycle with something to report reached the ingress"
+else
+  bad "the changed cycle sent nothing"
+fi
+# The classifier reports calm from here. Written now rather than later
+# because the request above lands at the END of the cycle that
+# collected, which leaves nearly a full interval before the next read.
+diff_quiet
+assert_eq "it opened a message rather than editing one" "$(req_field 1 method)" POST
+assert_eq "in the conversation the bundle named" "$(req_field 1 conversation)" '#uat-oncall'
+assert_eq "and the ingress took it" "$(req_field 1 status)" 200
+# The tick, not the wall clock: a send that timed out client-side after
+# landing must present the key the original send used.
+assert_has "the request carries a replay key derived from the tick" "$(req 1)" '"idem":"mast:uat-notify:'
+# The daemon posts with a credential that cannot be used to drive it —
+# the separation buildNotifyClient refuses to start without.
+assert_has "and the egress credential, which is not an inbound one" "$(req 1)" "Bearer ${NOTIFY_TOKEN}"
+assert_eq "the reporting cycle woke the model once" \
+  "$(metric_value 'mast_model_calls_total{workload="uat-notify"}')" 1
+
+# THE ASSERTION THE WORKSTREAM EXISTS FOR. Two more cycles run with the
+# classifier reporting calm. Neither reaches the chat, and — the part
+# that is not merely politeness — neither spends a model call: the turn
+# does not run at all.
+NFF="$(grep -c -- 'scheduled trigger fired' "${LOG}" || true)"
+if wait_for 60 sched_fires_atleast "${LOG}" "$((NFF + 2))"; then
+  ok "two more cycles ran with nothing to report"
+else
+  bad "the cadence stopped firing"
+fi
+assert_eq "the quiet cycles sent nothing at all" "$(requests)" 1
+assert_eq "and woke no model" \
+  "$(metric_value 'mast_model_calls_total{workload="uat-notify"}')" 1
+# At info, not debug: "it ran and decided not to wake anyone" is the
+# most common thing a healthy monitor does, and an operator asking
+# whether it is still alive should not have to raise the log level of
+# everything else to find out.
+assert_has "the daemon says so plainly" \
+  "$(grep -- 'monitoring cycle stayed quiet' "${LOG}" || true)" 'nothing changed'
+NFQ="$(metric_value 'mast_monitor_notifications_total{outcome="quiet",workload="uat-notify"}')"
+if [ "${NFQ:-0}" -ge 2 ]; then
+  ok "and the meter counts them (quiet=${NFQ})"
+else
+  bad "quiet cycles were not counted (got '${NFQ:-<none>}')"
+fi
+
+# Calm closed the timeline, so the next incident is its own message
+# rather than three cycles appended under yesterday's headline.
+diff_changed
+if wait_for 60 requests_atleast 2; then
+  ok "the next change reported again"
+else
+  bad "the cycle after the quiet ones never reported"
+fi
+assert_eq "as a fresh message, because calm closed the last one" "$(req_field 2 method)" POST
+stop_term
+stop_ingress
+
+# ---- leg B: one incident is one message -----------------------------
+# Six cycles of an incident should read as one growing story, not six
+# notifications an operator has to reassemble at 3am. The ingress is
+# made to answer each of the three ways switchboard can, in the order
+# that is hardest: extend, then "I no longer remember that message",
+# then "that message is full".
+say "U-notify-onchange/B: consecutive cycles extend one message, however the ingress answers"
+WL="${BNOTIFY}"
+DISPATCH=
+DB="${WORK}/timeline.db"
+LOG="${WORK}/timeline.log"
+reset_blocker
+diff_changed
+start_ingress
+start_daemon "${LOG}" --notify-url="${INGURL}"
+
+if wait_for 60 requests_atleast 2; then
+  ok "two speaking cycles reached the ingress"
+else
+  bad "the timeline never got past its first cycle (requests=$(requests))"
+fi
+assert_eq "the first cycle opened the message" "$(req_field 1 method)" POST
+assert_eq "the second extended it instead of posting again" "$(req_field 2 method)" PATCH
+assert_has "as an append, not a rewrite" "$(req 2)" '"append":'
+assert_eq "targeting the message the first cycle opened" "$(req_field 2 id)" m1
+
+# A restarted switchboard no longer holds the message body, so it
+# refuses the append and asks for the whole text. Handled rather than
+# surfaced: the operator reading the channel should not be able to tell
+# that anything forgot anything.
+: > "${INGDIR}/append.409"
+if wait_for 60 requests_atleast 4; then
+  ok "the refused append was followed by a second request in the same cycle"
+else
+  bad "the 409 was not recovered from (requests=$(requests))"
+fi
+assert_eq "the ingress refused the append" "$(req_field 3 status)" 409
+assert_eq "and mast re-sent the story whole" "$(req_field 4 method)" PATCH
+assert_has "as a text rewrite, not another append" "$(req 4)" '"text":'
+assert_eq "into the same message" "$(req_field 4 id)" m1
+# Different body, so a different key: switchboard fingerprints the body
+# against the Idempotency-Key and answers 409 to a reused one, which
+# would turn the fallback into a second failure.
+NFK3="$(req_field 3 idem)"
+NFK4="$(req_field 4 idem)"
+if [ -n "${NFK4}" ] && [ "${NFK3}" != "${NFK4}" ]; then
+  ok "the fallback carries a key of its own (${NFK4})"
+else
+  bad "the fallback reused the append's idempotency key (${NFK3:-<none>})"
+fi
+
+# The message is full: the ingress answers the append with a
+# continuation, and every later cycle has to target that one.
+rm -f "${INGDIR}/append.409"
+: > "${INGDIR}/append.roll"
+if wait_for 60 requests_atleast 5; then
+  ok "the next cycle appended into a message that was full"
+else
+  bad "the rollover cycle never ran"
+fi
+assert_eq "which the ingress answered with a continuation" "$(req_field 5 status)" 200
+if wait_for 60 requests_atleast 6; then
+  ok "and the cycle after it kept talking"
+else
+  bad "nothing followed the rollover"
+fi
+assert_eq "into the continuation, not the message that was full" "$(req_field 6 id)" m2
+assert_eq "the full-text fallback is counted as its own outcome" \
+  "$(metric_value 'mast_monitor_notifications_total{outcome="replaced",workload="uat-notify"}')" 1
+assert_eq "and so is the rollover" \
+  "$(metric_value 'mast_monitor_notifications_total{outcome="rolled",workload="uat-notify"}')" 1
+stop_term
+stop_ingress
+
+# ---- leg C: a failed report is not replayed -------------------------
+say "U-notify-onchange/C: a report the ingress refused does not come back next cycle"
+WL="${BNOTIFY}"
+DISPATCH=
+DB="${WORK}/notifyfail.db"
+LOG="${WORK}/notifyfail.log"
+reset_blocker
+diff_changed
+start_ingress
+echo 503 > "${INGDIR}/status"
+start_daemon "${LOG}" --notify-url="${INGURL}"
+
+if wait_for 60 requests_atleast 1; then
+  ok "the cycle tried to report"
+else
+  bad "the cycle never reached the ingress"
+fi
+assert_eq "and the ingress refused it" "$(req_field 1 status)" 503
+diff_quiet
+rm -f "${INGDIR}/status"
+if wait_for 60 grep -q 'scheduled fire failed' "${LOG}"; then
+  ok "the failed send failed the fire rather than passing quietly"
+else
+  bad "a report that never arrived was recorded as a completed cycle"
+fi
+assert_has "and the failure says which half of the cycle broke" \
+  "$(grep -- 'scheduled fire failed' "${LOG}" || true)" 'could not report'
+
+# THE ASSERTION THIS LEG EXISTS FOR. The classifier consumed the diff
+# when it answered, so that finding is no longer new to it; a mast that
+# held the undelivered message and re-sent it next cycle would be
+# describing a world that has already moved on. Two more cycles run
+# with the ingress healthy again, and the ledger does not grow.
+NCF="$(grep -c -- 'scheduled trigger fired' "${LOG}" || true)"
+if wait_for 60 sched_fires_atleast "${LOG}" "$((NCF + 2))"; then
+  ok "two more cycles ran against a healthy ingress"
+else
+  bad "the cadence stopped after the failed send"
+fi
+assert_eq "the failed report was not replayed" "$(requests)" 1
+assert_eq "and it is visible as its own outcome rather than as silence" \
+  "$(metric_value 'mast_monitor_notifications_total{outcome="error",workload="uat-notify"}')" 1
+stop_term
+stop_ingress
+
+# ---- leg D: a broken monitor says so, once --------------------------
+# The gap W4.2 named and left open. A collection that fails every cycle
+# is invisible to everyone who is not reading the daemon's logs, and
+# "nobody is reading anything" is the operating assumption of the whole
+# feature.
+say "U-notify-onchange/D: a monitor that is failing says so once, and says when it recovers"
+WL="${BNOTIFY}"
+DISPATCH=
+DB="${WORK}/notifyhealth.db"
+LOG="${WORK}/notifyhealth.log"
+reset_blocker
+# Records with no summary line — the truncated classifier read
+# U-transitions/B established fails the cycle before the model is woken.
+# Here the question is what the CHANNEL learns about it.
+cat > "${BLOCKDIR}/findings_diff.out" <<'DIFF'
+transition=new subject_key=pod/prod/api-7d9/CrashLoopBackOff severity=critical
+DIFF
+start_ingress
+start_daemon "${LOG}" --notify-url="${INGURL}"
+
+if wait_for 60 requests_atleast 1; then
+  ok "the broken cycle told the channel it was broken"
+else
+  bad "the monitoring failed silently"
+fi
+assert_eq "as a message of its own" "$(req_field 1 method)" POST
+assert_has "naming the workload whose monitoring stopped" "$(req 1)" 'uat-notify'
+assert_has "and saying plainly that nothing was assessed" "$(req 1)" 'Nothing was assessed'
+
+# Edge-triggered, not rate-limited: a broken monitor that re-announces
+# itself on the cadence is one an operator mutes.
+NHF="$(grep -c -- 'scheduled fire failed' "${LOG}" || true)"
+if wait_for 60 sched_fails_atleast "${LOG}" "$((NHF + 2))"; then
+  ok "two more cycles failed the same way"
+else
+  bad "the cadence stopped after the failing cycle"
+fi
+assert_eq "and the channel was told once, not three times" "$(requests)" 1
+
+# The way back matters as much: an operator who was told the monitor
+# was broken is owed the message that it is not.
+diff_changed
+if wait_for 60 requests_atleast 3; then
+  ok "recovery reached the channel"
+else
+  bad "the recovered monitor never said so (requests=$(requests))"
+fi
+assert_has "the notice says monitoring recovered" "$(req 2)" 'Monitoring has recovered'
+assert_eq "and the recovered cycle then reported what changed" "$(req_field 3 method)" POST
+assert_eq "both notices are counted as health, not as reports" \
+  "$(metric_value 'mast_monitor_notifications_total{outcome="health",workload="uat-notify"}')" 2
+stop_term
+stop_ingress
+
+# ---- leg E: silence has a deadline ----------------------------------
+# A monitor that has been quiet for a week is indistinguishable from a
+# monitor that died a week ago, and the whole value of leg A is that
+# somebody trusts the silence. The deadman is wall-clock rather than a
+# count of quiet cycles, because what an operator is owed is a sign of
+# life on a schedule they can reason about.
+say "U-notify-onchange/E: after long enough with no news, the cycle speaks anyway"
+WL="${BDIGEST}"
+DISPATCH=
+DB="${WORK}/digest.db"
+LOG="${WORK}/digest.log"
+reset_blocker
+diff_quiet
+start_ingress
+start_daemon "${LOG}" --notify-url="${INGURL}"
+
+DGARM="$(grep -- 'monitoring notifications armed' "${LOG}" || true)"
+assert_has "the daemon armed the deadman with the bundle's window" "${DGARM}" '"digest_after":"8s"'
+if wait_for 60 sched_fires_atleast "${LOG}" 1; then
+  ok "the first quiet cycle ran"
+else
+  bad "the cadence never fired"
+fi
+# The deadman counts from startup, not from zero: a daemon booting into
+# a quiet world must not announce the quiet on its first cycle.
+assert_eq "and said nothing, because the deadman had not expired" "$(requests)" 0
+if wait_for 60 requests_atleast 1; then
+  ok "the deadman then woke a cycle that had no news"
+else
+  bad "the workload went quiet indefinitely"
+fi
+assert_eq "which posted a message of its own" "$(req_field 1 method)" POST
+assert_eq "counted as a digest wake rather than as a change" \
+  "$(metric_value 'mast_monitor_digest_wakes_total{workload="uat-notify-digest"}')" 1
+assert_eq "and it did wake the model, unlike the quiet cycles before it" \
+  "$(metric_value 'mast_model_calls_total{workload="uat-notify-digest"}')" 1
+stop_term
+stop_ingress
 
 # ====================================================================
 say "Summary"

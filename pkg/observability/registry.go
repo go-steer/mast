@@ -115,6 +115,54 @@ const (
 	ScheduledFireMissed = "missed"
 )
 
+// Monitoring-notification outcomes (mast_monitor_notifications_total
+// {outcome}) for the v0.5 W4.5 egress leg. The family counts what a
+// monitoring cycle DID about telling somebody, which is why "quiet" is
+// an outcome: a cycle that decided there was nothing to say is the
+// intended common case, and a monitor whose chat has gone silent is
+// only distinguishable from a healthy quiet one by whether the quiet
+// count is still rising.
+const (
+	// MonitorNotifyPosted: a new message opened a timeline.
+	MonitorNotifyPosted = "posted"
+	// MonitorNotifyAppended: the assessment was added to the message the
+	// previous speaking cycle posted.
+	MonitorNotifyAppended = "appended"
+	// MonitorNotifyReplaced: the append could not be applied (the
+	// ingress had forgotten the message body) and the whole timeline was
+	// re-sent as an edit.
+	MonitorNotifyReplaced = "replaced"
+	// MonitorNotifyRolled: the append overflowed the platform's message
+	// limit and switchboard rolled the timeline into a threaded
+	// continuation, which mast now addresses instead.
+	MonitorNotifyRolled = "rolled"
+	// MonitorNotifyQuiet: the classification was empty, so no model was
+	// woken and nothing was sent.
+	MonitorNotifyQuiet = "quiet"
+	// MonitorNotifyHealth: mast spoke about itself — the monitoring
+	// cycle failed, or recovered after failing. Counted apart from the
+	// assessments because it is the one message a cycle sends that no
+	// model wrote.
+	MonitorNotifyHealth = "health"
+	// MonitorNotifyError: the ingress refused, or could not be reached.
+	// The cycle's work is not replayed; the next cycle is a fresher
+	// sample.
+	MonitorNotifyError = "error"
+)
+
+// monitorNotifyOutcomes is the fixed label set primed for
+// mast_monitor_notifications_total{outcome}, kept beside the vocabulary
+// so Prime and MonitorNotify cannot drift.
+var monitorNotifyOutcomes = []string{
+	MonitorNotifyPosted,
+	MonitorNotifyAppended,
+	MonitorNotifyReplaced,
+	MonitorNotifyRolled,
+	MonitorNotifyQuiet,
+	MonitorNotifyHealth,
+	MonitorNotifyError,
+}
+
 // Auto-resume outcomes for AutoResume (mast_autoresume_total{outcome}).
 // A fixed vocabulary, mirroring cmd/mast's boot-time auto-resume
 // decision tree (#41): every interrupted candidate the boot pass
@@ -223,6 +271,8 @@ type Registry struct {
 	gatePauses      *prometheus.CounterVec
 	timedPauseFires *prometheus.CounterVec
 	scheduledFires  *prometheus.CounterVec
+	monitorNotifies *prometheus.CounterVec
+	monitorDigests  *prometheus.CounterVec
 	a2aTasks        *prometheus.CounterVec
 	aguiRuns        *prometheus.CounterVec
 	aguiRunDur      *prometheus.HistogramVec
@@ -308,6 +358,12 @@ func New() *Registry {
 	r.scheduledFires = counter("mast_scheduled_fires_total",
 		"Scheduled-trigger ticks, by what became of them (ran, skipped, error, missed).",
 		"workload", "outcome")
+	r.monitorNotifies = counter("mast_monitor_notifications_total",
+		"Monitoring cycles by what they told the chat ingress (posted, appended, replaced, rolled, quiet, health, error).",
+		"workload", "outcome")
+	r.monitorDigests = counter("mast_monitor_digest_wakes_total",
+		"Monitoring cycles that spoke because the notify deadman expired rather than because anything changed.",
+		"workload")
 
 	// A2A server (#78). Task lifecycle outcomes for inbound A2A tasks
 	// driven through the runTurnPre chokepoint (Stage B) plus cancels
@@ -366,6 +422,10 @@ func (r *Registry) Prime(workload string) {
 	for _, outcome := range []string{ScheduledFireRan, ScheduledFireSkipped, ScheduledFireError, ScheduledFireMissed} {
 		r.scheduledFires.WithLabelValues(workload, outcome)
 	}
+	for _, outcome := range monitorNotifyOutcomes {
+		r.monitorNotifies.WithLabelValues(workload, outcome)
+	}
+	r.monitorDigests.WithLabelValues(workload)
 	for _, outcome := range a2aTaskOutcomes {
 		r.a2aTasks.WithLabelValues(workload, outcome)
 	}
@@ -498,6 +558,29 @@ func (r *Registry) ScheduledFire(workload, outcome string) {
 		return
 	}
 	r.scheduledFires.WithLabelValues(workload, outcome).Inc()
+}
+
+// MonitorNotify records what one monitoring cycle did about telling
+// somebody (one of the MonitorNotify* constants). Called once per cycle
+// that reached the egress leg, including the quiet ones.
+func (r *Registry) MonitorNotify(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.monitorNotifies.WithLabelValues(workload, outcome).Inc()
+}
+
+// MonitorDigestWake records a cycle that spoke because the notify
+// deadman expired rather than because the classification changed. Its
+// own family rather than a notification outcome: the operator question
+// it answers is "has this workload been silent long enough that I had
+// to prove I was alive", which is not the same question as how the
+// message was delivered.
+func (r *Registry) MonitorDigestWake(workload string) {
+	if r == nil {
+		return
+	}
+	r.monitorDigests.WithLabelValues(workload).Inc()
 }
 
 // A2ATask records one A2A server task lifecycle transition with the

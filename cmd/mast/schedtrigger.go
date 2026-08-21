@@ -26,6 +26,7 @@ import (
 	"google.golang.org/genai"
 
 	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/monitor"
@@ -143,6 +144,16 @@ type scheduledPayload struct {
 	// pkg/monitor for why there is no vocabulary here to compare them
 	// against.
 	Transitions *monitor.Set `json:"transitions,omitempty"`
+
+	// Digest marks the cycle the notify deadman woke: nothing changed,
+	// and the workload has been silent long enough that it owes the
+	// channel a sign of life (v0.5 W4.5).
+	//
+	// On the wire because the model would otherwise be handed an empty
+	// transition set with no way to tell why it was asked — and the
+	// right answer to "nothing changed, say so" is a different sentence
+	// from the right answer to "here is what changed".
+	Digest bool `json:"digest,omitempty"`
 }
 
 // scheduledSessionID names the session one tick's run owns.
@@ -451,7 +462,13 @@ func (t *scheduledTrigger) persist(ctx context.Context, lastFire time.Time, fire
 // A collection failure therefore returns before a turn is launched, so
 // the tick costs nothing and the failure is visible as an errored fire
 // rather than as a model run that concluded nothing was wrong.
-func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, collector *monitorCollector, ensure func(string)) func(context.Context, time.Time) error {
+//
+// The notify decision is taken in the same window, and for the same
+// reason (v0.5 W4.5): a cycle whose classifier reported nothing changed
+// does not reach runTurnPre at all. "Notify only on change" that woke
+// the model on every tick and then declined to post would be the
+// feature in name and none of the saving.
+func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, collector *monitorCollector, nf *notifier, ensure func(string)) func(context.Context, time.Time) error {
 	var prompt string
 	if bundle != nil && bundle.EdgeTrigger.Scheduled != nil {
 		prompt = bundle.EdgeTrigger.Scheduled.Prompt
@@ -480,7 +497,26 @@ func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *tran
 		// the way an unattended cycle stops without anyone noticing.
 		facts, err := collector.collect(ctx, sessionID)
 		if err != nil {
-			return fmt.Errorf("monitoring cycle for tick %s: %w", tick.UTC().Format(time.RFC3339), err)
+			err = fmt.Errorf("monitoring cycle for tick %s: %w", tick.UTC().Format(time.RFC3339), err)
+			// The one message in the cycle that mast writes itself. A
+			// collection that has been failing since Friday is otherwise
+			// visible only in a counter nobody is watching, which is the
+			// exact failure unattended monitoring is supposed to remove.
+			nf.cycleFailed(ctx, tick, err)
+			return err
+		}
+		// Taken before the turn: the answer decides whether there is one.
+		speech, reason := nf.decide(facts.Transitions)
+		// Sent before the quiet check, so an operator who was told the
+		// monitor was broken hears that it is not — even on a cycle that
+		// has nothing else to say.
+		nf.cycleRecovered(ctx, tick)
+		if speech == speechQuiet {
+			nf.quiet(sessionID, reason)
+			return nil
+		}
+		if speech == speechDigest {
+			nf.digestWake()
 		}
 		body, err := json.Marshal(scheduledPayload{
 			Kind:        "scheduled",
@@ -488,6 +524,7 @@ func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *tran
 			Tick:        tick.UTC().Format(time.RFC3339),
 			Collected:   facts.Collected,
 			Transitions: facts.Transitions,
+			Digest:      speech == speechDigest,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal scheduled payload: %w", err)
@@ -501,7 +538,31 @@ func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *tran
 		// tail while it happens.
 		ensure(sessionID)
 		msg := genai.NewContentFromText(text, genai.RoleUser)
-		return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks,
-			workloadName, sessionID, msg, "scheduled:"+tick.UTC().Format(time.RFC3339), nil, nil)
+		// The assessment to post is the turn's own final text, taken off
+		// the event stream through the same capture the A2A backend uses
+		// rather than re-read from the store afterwards: what the chat
+		// gets and what the transcript holds are then one string, not two
+		// renderings of one turn.
+		var cap turnCapture
+		var onEvent func(*session.Event)
+		if speech.speaks() {
+			onEvent = cap.onEvent
+		}
+		if err := runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks,
+			workloadName, sessionID, msg, "scheduled:"+tick.UTC().Format(time.RFC3339), nil, onEvent); err != nil {
+			nf.cycleFailed(ctx, tick, err)
+			return err
+		}
+		if !speech.speaks() {
+			return nil
+		}
+		if err := nf.speak(ctx, sessionID, cap.lastText, nf.idem(tick)); err != nil {
+			// An errored fire, not a failure notice: the notice would go
+			// down the channel that just refused it. Nothing is held for
+			// the next cycle — the classifier already advanced, so the
+			// next cycle reports what is new then, not this again.
+			return fmt.Errorf("monitoring cycle for tick %s could not report: %w", tick.UTC().Format(time.RFC3339), err)
+		}
+		return nil
 	}
 }
