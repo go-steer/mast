@@ -370,13 +370,25 @@ eval row.*
 
 ## Next: v0.5 — unattended monitoring, end to end
 
-The parity claim, and the release where the other two projects land their
-halves: cross-run finding state and resource-name normalization in
-[k8s-lookout](https://github.com/go-steer/k8s-lookout), chat egress and
-in-chat Approve/Reject with an approver allowlist in switchboard. On mast's
-side: zero-token collection, wiring the finding diff, notifying only on
-change (with a failed post that does not resurrect the diff next cycle), and
-ack windows.
+The parity claim. **Most of the other two projects' halves have now landed**:
+[k8s-lookout](https://github.com/go-steer/k8s-lookout) ships cross-run finding
+state and resource-name normalization — a scan diffed against the previous one
+into new / ongoing / escalated / resolved / suppressed, keyed by a normalized
+per-object subject, plus an ack that suppresses a subject for a window — and
+switchboard ships agent-initiated chat egress, so a monitoring loop with an
+escalation to raise at 3am no longer needs a thread someone else started.
+Still theirs to do: in-chat Approve/Reject with an approver allowlist.
+
+On mast's side: zero-token collection, wiring the finding diff, notifying only
+on change (with a failed post that does not resurrect the diff next cycle), and
+ack windows. One decision shapes all four. A finding diff genuinely *writes* —
+it advances the stored state as a side effect of answering — so if the model
+were the one to call it, every cycle would stop and ask an operator for
+permission to find out whether anything had changed, which is not unattended
+monitoring. So mast makes the collection and state-advance calls itself,
+outside the model's tool surface, and hands the model the transitions already
+classified. That is also why the collection leg costs nothing: a step the model
+is not part of cannot spend a token.
 
 Landed already on the way there: **durable budget spend**. A `max_cost_usd`
 that a restart reset was a ceiling on what a workload spent per process,
