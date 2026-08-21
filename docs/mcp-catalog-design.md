@@ -174,6 +174,17 @@ kind — **both transports are implemented**:
     Until that wiring lands, off-tree catalogs rely on filesystem
     permissions plus the env scoping and command allowlist above.
 
+**Response digesting (v0.5, #221).** Every cataloged toolset is wrapped so
+that a tool response over 8000 bytes is pruned structurally before it reaches
+the model, with the untouched bytes parked in a temp-dir store behind a
+`call_id` the model can redeem via the `retrieve_raw` tool. Smaller responses
+pass through with their own shape intact. A server opts out with
+`no_digest: true`; the daemon turns the whole thing off with
+`--mcp-digest=false`. mast digests structurally only — the upstream
+small-model summarizer stays unported, because it would add a model-config
+surface for a feature that is meant to save tokens (see
+[`./sibling-sync.md`](./sibling-sync.md), `3de4134`).
+
 The aggregate catalog file is `mcp.json` (`{version, servers: {name: …}}`)
 resolved next to the workload (directory mode) or at the config root (name
 mode); the per-server `.agents/mcp/*.example.json` templates above are the

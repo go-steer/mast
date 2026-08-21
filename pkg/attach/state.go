@@ -311,11 +311,12 @@ type InterruptProvider interface {
 //
 // DigestMethods is the digest wrapper's per-method call count
 // (core-agent#130 / task #84). Present when at least one
-// digest.Process call has fired process-wide, which on this server is
-// never: mast ships pkg/digest but wires no caller for it, so the
-// field is always omitted here. It stays on the response shape because
-// the surface is wire-compatible with core-agent's daemon, which does
-// populate it, and mast-web decodes both. See #221.
+// digest.Process call has fired process-wide — on mast that means the
+// MCP digest wrap ran at least once this process, so it is omitted
+// under --mcp-digest=false, and omitted before the first tool response
+// large enough to route. The counters are process-global rather than
+// per-session (the wrap has no session in hand when a tool runs), so
+// two sessions on one daemon report the same block. See #221.
 type UsageInfo struct {
 	Overall       UsageTotals            `json:"overall"`
 	PerModel      map[string]UsageTotals `json:"per_model,omitempty"`
@@ -328,7 +329,7 @@ type UsageInfo struct {
 // cumulative byte reduction (raw - digest) accrued per method.
 // Passthrough always contributes 0 to BytesSaved by definition.
 //
-// Decode-only on this server — nothing in mast produces one. See
+// Produced by attachadapter from digest.Telemetry(). See
 // UsageInfo.DigestMethods.
 type DigestMethodsInfo struct {
 	Counts     map[string]int64 `json:"counts,omitempty"`

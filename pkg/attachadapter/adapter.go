@@ -46,6 +46,7 @@ import (
 
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/auth"
+	"github.com/go-steer/mast/pkg/digest"
 	"github.com/go-steer/mast/pkg/eventlog"
 )
 
@@ -376,11 +377,26 @@ func (ad *Adapter) AttachStatus() attach.StatusInfo {
 
 // AttachUsage implements attach.UsageProvider. Zero UsageInfo when
 // no UsageFn is wired.
+//
+// The digest block is stapled on here rather than inside UsageFn
+// because pkg/digest's counters are process-global — the MCP wrap
+// calls digest.Process from whatever goroutine is running a tool, with
+// no session in hand — so every UsageFn would otherwise have to
+// remember to fetch the same snapshot. Decorating once is the cheaper
+// contract, and it self-gates: with --mcp-digest=false nothing ever
+// calls Process, the snapshot is empty, and the field is omitted.
 func (ad *Adapter) AttachUsage() attach.UsageInfo {
-	if ad.cfg.UsageFn == nil {
-		return attach.UsageInfo{}
+	info := attach.UsageInfo{}
+	if ad.cfg.UsageFn != nil {
+		info = ad.cfg.UsageFn()
 	}
-	return ad.cfg.UsageFn()
+	if snap := digest.Telemetry(); len(snap.MethodCounts) > 0 {
+		info.DigestMethods = &attach.DigestMethodsInfo{
+			Counts:     snap.MethodCounts,
+			BytesSaved: snap.BytesSaved,
+		}
+	}
+	return info
 }
 
 // AttachTools implements attach.ToolsProvider. Empty when no ToolsFn

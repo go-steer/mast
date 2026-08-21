@@ -765,7 +765,7 @@ Recorded here so the next triage does not re-derive it from scratch.
 
 ### `3de4134` — the baseline commit, and a port candidate
 
-*(Verdicted 2026-08-21: **correct fix, not portable yet** — see [#221](https://github.com/go-steer/mast/issues/221).)*
+*(Verdicted 2026-08-21: **correct fix, not portable yet** — see [#221](https://github.com/go-steer/mast/issues/221). **Re-verdicted the same day, once #221 shipped: still not portable, but for a stable reason rather than a pending decision — see the update at the end of this section.**)*
 
 `fix(usage): carry the digest subagent's cache buckets to the paying session (#845)` is both the
 SHA this report was generated against and a change to a subsystem mast has. The defect is real in
@@ -786,6 +786,18 @@ tool-result sidecars (specified as produced by two files mast does not have), an
 itself. Each is annotated where it lives, and the claim is held by a test rather than a comment —
 `TestNothingInMastImportsDigest` fails the day something imports the package and names the three
 annotations to correct. The port lands when #221 is answered with "wire it", and dies with "drop it".
+
+**Update (2026-08-21, #221 shipped "wire it").** `pkg/mcp/digest_wrap.go` is ported and digesting is
+on by default, so the package has a caller, the three surfaces are now true, and
+`TestNothingInMastImportsDigest` is deleted as it instructed. That does **not** make `3de4134`
+portable, and the reason is now structural rather than pending: mast's wrap is **structural-only**
+and passes no `LLMFallback`, so there is no digest subagent on the daemon to bill anyone for
+anything. `Savings.Subagent*` are zero by construction here, and cache buckets on them would be
+three fields nobody fills for the same reason as before — only now the reason will not change on its
+own. **The verdict is a stable conditional: `3de4134` lands with an LLM fallback, or not at all.**
+If mast ever wires one (it would need a resolved small-tier model, a second billing path inside a
+tool call, and a budget story for spend the session's meter never sees), this commit is a
+prerequisite of that work rather than a port of its own.
 
 ### Baseline after this triage
 
@@ -938,7 +950,11 @@ Carried into the next pass from 2026-08-20, in the order they are worth doing:
    `specialists.BuildOptions.Tools`: filed as [#219](https://github.com/go-steer/mast/issues/219).
 4. ~~**`3de4134`**~~ — **verdicted 2026-08-21**: correct fix, not portable, because `pkg/digest` has
    no caller in mast at all. The three surfaces that implied otherwise are annotated and the claim
-   is now a test; the wire-it-or-drop-it call is [#221](https://github.com/go-steer/mast/issues/221).
+   is now a test; the wire-it-or-drop-it call was
+   [#221](https://github.com/go-steer/mast/issues/221), **answered "wire it" the same day** — mast
+   now digests MCP responses by default, but *structural-only*, so there is still no digest subagent
+   to bill and the verdict hardens into "lands with an LLM fallback or not at all". See the update
+   in the `3de4134` section above.
    That emptied the 2026-08-20 list; the 2026-08-21 pass refilled it, below.
 5. ~~**[#210](https://github.com/go-steer/mast/issues/210) / [#211](https://github.com/go-steer/mast/issues/211)**~~ — both shipped 2026-08-20.
 

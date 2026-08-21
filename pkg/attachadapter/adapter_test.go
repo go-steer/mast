@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/auth"
+	"github.com/go-steer/mast/pkg/digest"
 	"github.com/go-steer/mast/pkg/eventlog"
 )
 
@@ -546,5 +548,52 @@ func TestInterruptedTurnIsNotReportedAsRetryable(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no turn-error frame after the interrupt")
+	}
+}
+
+// The /usage digest_methods block: one of the two protocol surfaces the
+// digest wrap was supposed to fill and did not until #221. It is
+// decorated onto whatever UsageFn returns rather than produced by it,
+// because pkg/digest's counters are process-global and no UsageFn has a
+// session to scope them to.
+//
+// Not parallel, and resets around itself: the counters it reads are the
+// process's.
+func TestAttachUsageCarriesTheDigestBlock(t *testing.T) {
+	digest.ResetTelemetry()
+	t.Cleanup(digest.ResetTelemetry)
+
+	run := func(context.Context, string) (TurnResult, error) { return TurnResult{}, nil }
+	cfg := baseConfig(t, run)
+	cfg.UsageFn = func() attach.UsageInfo { return attach.UsageInfo{Overall: attach.UsageTotals{InputTokens: 42}} }
+	ad, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Nothing has digested yet — under --mcp-digest=false nothing ever
+	// will, and the block must stay absent rather than report zeros.
+	if got := ad.AttachUsage(); got.DigestMethods != nil {
+		t.Errorf("digest_methods = %#v before any digest ran, want it omitted", got.DigestMethods)
+	}
+
+	item := `{"name":"pod","detail":"` + strings.Repeat("x", 200) + `"},`
+	payload := []byte(`{"items":[` + strings.Repeat(item, 200) + `{"name":"last"}]}`)
+	if _, err := digest.Process(context.Background(), payload, digest.Options{Threshold: 100}); err != nil {
+		t.Fatalf("digest.Process: %v", err)
+	}
+
+	got := ad.AttachUsage()
+	if got.Overall.InputTokens != 42 {
+		t.Errorf("Overall.InputTokens = %d, want the UsageFn's 42 — decorating must not replace it", got.Overall.InputTokens)
+	}
+	if got.DigestMethods == nil {
+		t.Fatal("digest_methods is absent after a digest ran; the block is unreachable")
+	}
+	if got.DigestMethods.Counts[digest.MethodStructuralJSON] != 1 {
+		t.Errorf("counts = %v, want one structural_json", got.DigestMethods.Counts)
+	}
+	if got.DigestMethods.BytesSaved[digest.MethodStructuralJSON] <= 0 {
+		t.Errorf("bytes_saved = %v, want a positive reduction", got.DigestMethods.BytesSaved)
 	}
 }

@@ -227,6 +227,20 @@ type RootConfig struct {
 	// tool loop.
 	Toolsets []tool.Toolset
 
+	// SpecialistTools are mast built-ins handed to every Task-mode
+	// specialist alongside Toolsets. Today that is retrieve_raw, the
+	// MCP digest wrap's escape hatch (#221).
+	//
+	// They are tools rather than a toolset on purpose. A toolset is
+	// matched to a `tools.mcp: - server:` allowlist entry by name and
+	// dropped when there is no match, which is right for an MCP server
+	// — reach the operator did not grant — and wrong for this: a
+	// roster that enumerates its tools, the posture mast recommends,
+	// would be the one that silently lost the escape hatch for the
+	// digests it is still being served. Nothing here grants new reach;
+	// retrieve_raw returns bytes the specialist was already sent.
+	SpecialistTools []tool.Tool
+
 	// Dispatch selects the root shape. Empty means DispatchAuto.
 	Dispatch Dispatch
 
@@ -338,6 +352,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		isTask := spec.Mode != specialists.ModeSingleTurn
 		if isTask {
 			opts.Toolsets = cfg.Toolsets
+			opts.Tools = cfg.SpecialistTools
 		}
 		a, err := specialists.Build(spec, opts)
 		if err != nil {
