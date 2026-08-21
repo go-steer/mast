@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/go-steer/mast/pkg/monitor"
 )
 
 // Load reads a workload bundle YAML file, parses it, validates required
@@ -147,6 +149,9 @@ func (b *Bundle) validateMonitor() error {
 	if err := b.validateMonitorNotify(); err != nil {
 		return err
 	}
+	if err := b.validateMonitorAck(); err != nil {
+		return err
+	}
 	if !b.Monitor.Enabled() {
 		return nil
 	}
@@ -209,6 +214,42 @@ func (b *Bundle) validateMonitorNotify() error {
 	// up to date by something that never runs.
 	if b.EdgeTrigger.Scheduled == nil {
 		return fmt.Errorf("monitor.notify posts into %q but the workload declares no edge_trigger.scheduled block; a cycle speaks at the end of a scheduled cycle, so without a cadence it never speaks at all", b.Monitor.NotifyTarget())
+	}
+	return nil
+}
+
+// validateMonitorAck checks the inbound half (v0.5 W4.6).
+//
+// Deliberately does NOT require a cadence, unlike collect and notify.
+// An ack does not arrive from a cycle — it arrives from an operator, on
+// the daemon's ingress, at whatever hour they read the message. A
+// workload can sensibly take acks for findings something else surfaces.
+func (b *Bundle) validateMonitorAck() error {
+	if b.Monitor.Ack == nil {
+		return nil
+	}
+	if b.Monitor.AckTool() == "" {
+		return fmt.Errorf("monitor.ack names no tool; an ack mast cannot forward is a suppression that never happens, silently")
+	}
+	// The two arguments mast supplies are the two an operator must not
+	// be able to pre-empt. subject_key is what the ack is about and
+	// comes from the request; ack_by is who asked and comes from their
+	// credential. A bundle that pinned either would make every ack read
+	// as the same one — which is exactly the attribution failure the
+	// whole path is arranged to prevent (#194 settled the same rule for
+	// approvals).
+	for _, reserved := range []string{monitor.AckSubjectArg, monitor.AckByArg} {
+		if _, ok := b.Monitor.Ack.Args[reserved]; ok {
+			return fmt.Errorf("monitor.ack.args sets %q, which mast supplies from the request itself; a bundle that pins it makes every ack look like the same one. Drop it and let the ingress fill it in", reserved)
+		}
+	}
+	// A tool that both classifies and suppresses would have the cycle
+	// acking findings on its own behalf every fire — the monitor
+	// silencing itself, with an operator's name nowhere near it.
+	for _, c := range b.Monitor.Collect {
+		if strings.TrimSpace(c.Tool) == b.Monitor.AckTool() {
+			return fmt.Errorf("monitor.ack forwards to %q, which monitor.collect also runs every cycle; a cycle that acks what it just classified suppresses findings nobody asked to suppress", b.Monitor.AckTool())
+		}
 	}
 	return nil
 }

@@ -67,6 +67,26 @@
 #          has been quiet for a week is otherwise indistinguishable from
 #          one that died a week ago.
 #
+#   U-ack (W4.6) — the other direction, and what it is not.
+#       A  an operator acks a subject on the daemon's ingress. mast
+#          attributes it to the PERSON whose credential arrived — not to
+#          the shared token, and not to anything the body claimed —
+#          records it durably, forwards it to the producer's ack tool,
+#          and the next cycle reports that subject as `suppressed`
+#          BECAUSE THE PRODUCER SAYS SO. The record outlives the
+#          daemon: after a restart, a second ack of the same subject is
+#          answered with who acked it the first time.
+#       B  an ack is not an approval. It appears in no decision export,
+#          its audit row appears in no session list, a body carrying
+#          `ack_by` is refused by name rather than ignored, an ack
+#          addressed to another workload is refused, and the shared
+#          token still acks and is still recorded as itself rather than
+#          promoted to a person because a user table exists.
+#       C  and it is not a tool. A workload that both takes acks and
+#          hands its model two tools off the very MCP server the ack
+#          tool lives on puts the ack tool on no roster; and a roster
+#          that CAN also reach it will not start.
+#
 #   U-transitions (W4.4) — where the classification comes from.
 #       A  the classifier reports `escalated` for a subject whose
 #          severity mast can see did NOT change, and mast reports it as
@@ -145,6 +165,7 @@ reset_blocker() {
   : > "${BLOCKDIR}/apply_change.release"
   : > "${BLOCKDIR}/read_status.release"
   : > "${BLOCKDIR}/findings_diff.release"
+  : > "${BLOCKDIR}/findings_ack.release"
 }
 
 calls_count() {
@@ -582,6 +603,167 @@ sed -e 's/^name: uat-notify$/name: uat-notify-digest/' \
     -e 's/^    digest_after: 24h$/    digest_after: 8s/' \
     -e 's/^    interval: 4s$/    interval: 3s/' \
     "${BNOTIFY}/workload.yaml" > "${BDIGEST}/workload.yaml"
+
+# ---- the ack fixture: a monitor an operator can quiet ---------------
+# The classification fixture plus the inbound half. findings_ack is
+# declared mutating — which it is, it writes suppression state into the
+# producer — under the same require_approval policy the collection legs
+# use, so leg A's quietest assertion is also its sharpest: a model
+# holding this tool would have parked the ack for an operator, and
+# nothing parked, because no model holds it and no turn ran.
+BACK="${WORK}/ack"
+cp -r "${REPO}/examples/workloads/bounded-triage" "${BACK}"
+cp "${FIXTURE}/mcp.json" "${BACK}/mcp.json"
+cat > "${BACK}/workload.yaml" <<'YAML'
+# Harness fixture for scripts/uat-v0.5.sh's U-ack legs.
+name: uat-ack
+description: Fixture workload for the mast v0.5 operator-acknowledgement legs.
+mode: single_session
+
+dispatch: bounded
+
+tool_catalog:
+  mcp:
+    - server: uat-blocker
+  tools:
+    - name: findings_diff
+      mutating: true
+    - name: findings_ack
+      mutating: true
+
+specialists:
+  - incident-report
+
+budget:
+  max_wallclock_seconds: 120
+
+hitl:
+  on_mutation: require_approval
+
+monitor:
+  collect:
+    - tool: findings_diff
+      args: {transitions: "new,escalated,resolved,suppressed"}
+      as: transitions
+  transitions_from: transitions
+  ack:
+    tool: findings_ack
+    # The bundle pins the deployment's default window and NOTHING else:
+    # subject_key and ack_by are mast's to fill in from the request and
+    # the credential, and the loader refuses a bundle that names either.
+    # How long a suppression lasts is the producer's business, which is
+    # why the window is a literal here rather than a mast concept.
+    args: {window: "24h"}
+
+edge_trigger:
+  scheduled:
+    interval: 4s
+    jitter: 0s
+    prompt: 'A monitoring cycle woke you: {"reason":"CrashLoopBackOff"}. Report on what changed.'
+YAML
+
+# ---- the ack-fence fixture: the ack tool behind both doors ----------
+# testdata/uat's roster with findings_ack added to the worker's
+# allowlist and named by monitor.ack. One tool, two doors — refused at
+# startup, exactly as the collect fence is, because the fence is one
+# rule over every tool mast runs on its own behalf and not two rules
+# that happen to agree.
+#
+# Deliberately no cadence: an ack does not arrive from a cycle, so a
+# workload can take acks without having one. That the fence still bites
+# is the point — it is a property of the roster, not of the schedule.
+BACKREFUSE="${WORK}/ack-refuse"
+cp -r "${FIXTURE}" "${BACKREFUSE}"
+sed -e 's/^        - apply_change$/        - apply_change\n        - findings_ack/' \
+  "${FIXTURE}/specialists/uat-worker.tmpl" > "${BACKREFUSE}/specialists/uat-worker.tmpl"
+cat > "${BACKREFUSE}/workload.yaml" <<'YAML'
+# Harness fixture for scripts/uat-v0.5.sh's U-ack/B fence assertion.
+name: uat-ack-refuse
+description: Fixture workload for the mast v0.5 ack-fence refusal.
+mode: single_session
+
+tool_catalog:
+  mcp:
+    - server: uat-blocker
+  tools:
+    - name: findings_ack
+      mutating: true
+
+specialists:
+  - uat-worker
+
+budget:
+  max_wallclock_seconds: 300
+
+hitl:
+  on_mutation: apply
+
+monitor:
+  ack:
+    tool: findings_ack
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer
+YAML
+
+# ---- the roster fixture: acks, and a model that holds tools ---------
+# testdata/uat unchanged — coordinator, worker, two tools off the
+# uat-blocker server — plus a monitor.ack block naming a third tool on
+# that same server. The worker's allowlist enumerates the two it needs,
+# so the fence is satisfied and the daemon serves; what leg B then
+# measures is that the third one is on no roster the model was handed.
+BACKROSTER="${WORK}/ack-roster"
+cp -r "${FIXTURE}" "${BACKROSTER}"
+cat > "${BACKROSTER}/workload.yaml" <<'YAML'
+# Harness fixture for scripts/uat-v0.5.sh's U-ack/B roster assertion.
+name: uat-ack-roster
+description: Fixture workload for the mast v0.5 ack-tool roster negative.
+mode: single_session
+
+tool_catalog:
+  mcp:
+    - server: uat-blocker
+  tools:
+    - name: read_status
+      mutating: false
+    - name: apply_change
+      mutating: true
+    - name: findings_ack
+      mutating: true
+
+specialists:
+  - uat-worker
+
+budget:
+  max_wallclock_seconds: 300
+
+hitl:
+  on_mutation: apply
+
+monitor:
+  ack:
+    tool: findings_ack
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer
+YAML
+
+# ---- the ack ingress's credentials ----------------------------------
+# A user table, because the claim this leg makes is that an ack names a
+# PERSON. With the shared token alone every ack in the audit reads
+# `shared-bearer-token`, which is true and useless: it says somebody
+# holding the daemon's token asked for quiet. 0600 or the loader
+# refuses the file — it holds bearer secrets.
+ALICE="uat-v05-alice-token"
+ACKUSERS="${WORK}/users.json"
+cat > "${ACKUSERS}" <<JSON
+{"version":1,"users":[{"identity":"alice@example.com","token":"${ALICE}"}]}
+JSON
+chmod 600 "${ACKUSERS}"
 
 # ====================================================================
 # U-collect (W4.2) — the facts are mast's, and they cost nothing
@@ -1079,6 +1261,247 @@ assert_eq "and it did wake the model, unlike the quiet cycles before it" \
   "$(metric_value 'mast_model_calls_total{workload="uat-notify-digest"}')" 1
 stop_term
 stop_ingress
+
+# ====================================================================
+# U-ack (W4.6) — the operator answers back, and it is not an approval
+# ====================================================================
+# Everything above is mast talking. This is the one leg where somebody
+# talks to mast: an operator reads a finding in their chat and asks for
+# it to stop. Two claims, and the second is the one that keeps the v0.3
+# audit honest — an ack shares an operator, a chat window and a verb
+# with an approval, and shares nothing else.
+#
+# There is no `mast ack` subcommand and this leg does not want one. The
+# client is the chat relay that rendered the message, and the route is
+# what it holds; a CLI would be a second client for a button nobody
+# presses from a terminal.
+
+# ack_post <token> <json> — POST /monitor-ack, leaving the response body
+# in ACKBODY and the status in ACKCODE. The status is appended on its
+# own line rather than read from a second request: an ack is not
+# idempotent from mast's side (it records and forwards every time), so a
+# helper that asked twice would be measuring the second one.
+ACKBODY=""
+ACKCODE=""
+ack_post() {
+  local raw
+  raw="$(curl -s -m 30 -X POST "${BASE}/monitor-ack" \
+    -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+    -d "$2" -w $'\n%{http_code}')"
+  ACKCODE="${raw##*$'\n'}"
+  ACKBODY="${raw%$'\n'*}"
+}
+
+# ack_field <field> — one scalar field off the last response body.
+ack_field() { sed -n "s/.*\"$1\":\"\{0,1\}\([^\",}]*\).*/\1/p" <<<"${ACKBODY}"; }
+
+# last_log <file> <message> — the MOST RECENT line carrying <message>,
+# which is what a leg reading a cycle that ran after something the
+# harness did needs; log_field's first-match is the wrong end.
+last_log() { { grep -F -- "$2" "$1" || true; } | tail -n 1; }
+
+ACKSUBJ='pod/prod/web-2f1/CrashLoopBackOff'
+
+# ---- leg A: attributed, forwarded, and suppressed by the producer ---
+say "U-ack/A: an operator quiets a finding, and the producer is what stops reporting it"
+WL="${BACK}"
+DISPATCH=
+DB="${WORK}/ack.db"
+LOG="${WORK}/ack.log"
+reset_blocker
+diff_changed
+export MAST_INJECT_USERS_FILE="${ACKUSERS}"
+# The model's roster, printed per request. The negative claim below —
+# no model was ever offered the ack tool — is otherwise an assertion
+# about code that this harness cannot see.
+export MAST_TOOLACTOR_DEBUG=1
+start_daemon "${LOG}"
+
+ACKARM="$(grep -- 'operator acknowledgements armed' "${LOG}" || true)"
+assert_has "the daemon armed the ack ingress at startup" "${ACKARM}" 'findings_ack'
+assert_has "and loaded the user table it will name people from" \
+  "$(grep -- 'inject user table loaded' "${LOG}" || true)" '"users":1'
+
+if wait_for 60 sched_fires_atleast "${LOG}" 1; then
+  ok "a cycle ran and classified the finding"
+else
+  bad "the cadence never fired"
+fi
+assert_has "the subject arrived as new" \
+  "$(last_log "${LOG}" 'classified what changed')" '"new=1"'
+
+# THE ATTRIBUTION ASSERTION. alice's own credential, so the ack names
+# alice — not the shared token that also opens this door, and not
+# anything the body said, because the body cannot say it.
+ack_post "${ALICE}" "{\"subject\":\"${ACKSUBJ}\",\"reason\":\"known, fix rolling out\",\"workload\":\"uat-ack\"}"
+assert_eq "the ack was accepted" "${ACKCODE}" 200
+assert_eq "and attributed to the person who held the credential" "$(ack_field ack_by)" 'alice@example.com'
+assert_has "the audit line names her too" \
+  "$(grep -- 'operator ack forwarded' "${LOG}" || true)" 'alice@example.com'
+
+# THE FORWARD. The producer's ledger is the independent witness: mast
+# says it forwarded, and the tool says it was called — with the subject
+# from the request, the identity from the credential, and the window
+# from the bundle.
+assert_eq "the producer's ack tool was called once" "$(calls_count findings_ack)" 1
+ACKCALL="$(cat "${BLOCKDIR}/findings_ack.calls" 2>/dev/null || true)"
+assert_has "with the subject the operator named" "${ACKCALL}" "${ACKSUBJ}"
+assert_has "the identity mast resolved, not one the caller typed" "${ACKCALL}" 'alice@example.com'
+assert_has "and the window the bundle pinned" "${ACKCALL}" '"window":"24h"'
+assert_eq "counted as forwarded" \
+  "$(metric_value 'mast_monitor_acks_total{outcome="forwarded",workload="uat-ack"}')" 1
+
+# THE ASSERTION THE LEG EXISTS FOR. The next cycle reports the subject
+# as suppressed BECAUSE THE PRODUCER SAYS SO: mast forwarded the ack and
+# then read the classification back like any other, with no suppression
+# state of its own and no local filter. The record is still there and
+# still counted — a producer that dropped it would leave the operator
+# unable to see that their own ack is what did this.
+NAF="$(grep -c -- 'scheduled trigger fired' "${LOG}" || true)"
+if wait_for 60 sched_fires_atleast "${LOG}" "$((NAF + 1))"; then
+  ok "another cycle ran after the ack"
+else
+  bad "the cadence stopped after the ack"
+fi
+ACKCLS="$(last_log "${LOG}" 'classified what changed')"
+assert_has "the producer now classifies the subject as suppressed" "${ACKCLS}" '"suppressed=1"'
+assert_has "and mast still reports it, rather than filtering it away" "${ACKCLS}" '"transitions":1'
+
+# Nothing parked. findings_ack is declared mutating under
+# require_approval, so a model holding it would have stopped the cycle
+# for an operator — to approve the ack that operator had just asked for.
+assert_no_log "the ack forwarded without parking for an approval" "${LOG}" 'HITL PAUSE'
+stop_term
+
+# THE DURABILITY ASSERTION. mast is the store of record for who asked,
+# and a store of record that forgets on restart is a log line. The
+# second ack lands on a daemon that has never seen the first one, and
+# is answered with who acked it, from the DB.
+#
+# Its own log file, because start_daemon truncates: the assertions
+# below read both, and a restart that erased the first daemon's audit
+# would make leg B's negatives pass by having nothing to look at.
+ACKLOG1="${LOG}"
+LOG="${WORK}/ack2.log"
+start_daemon "${LOG}"
+ack_post "${ALICE}" "{\"subject\":\"${ACKSUBJ}\",\"workload\":\"uat-ack\"}"
+assert_eq "a repeat ack is accepted rather than refused as redundant" "${ACKCODE}" 200
+assert_eq "and the answer names who acked it before the restart" \
+  "$(ack_field previously_acked_by)" 'alice@example.com'
+assert_has "with when they did" "${ACKBODY}" 'previously_acked_at'
+assert_eq "the producer was asked again, because redundancy is its call" \
+  "$(calls_count findings_ack)" 2
+
+# ---- leg B: an ack is not an approval -------------------------------
+say "U-ack/B: an ack authorizes nothing and names nobody it was not told to"
+
+# The decision export is the v0.3 answer to "who approved this change".
+# An ack that appeared in it would put people who muted an alert into
+# the list of people who authorized a write.
+ACKDEC="$("${BIN}" sessions export-decisions --session-db="${DB}" --include-approver 2>/dev/null || true)"
+if grep -Fq -- 'alice@example.com' <<<"${ACKDEC}"; then
+  bad "the operator who acked appears in the decision export"
+else
+  ok "the operator who acked appears in no decision export"
+fi
+if grep -Fq -- "${ACKSUBJ}" <<<"${ACKDEC}"; then
+  bad "the acked subject appears in the decision export"
+else
+  ok "and neither does what she acked"
+fi
+
+# The ack row is bookkeeping about the monitored world, not a session.
+# An operator listing sessions should not find a row they cannot resume,
+# abort or pause.
+ACKSESS="$("${BIN}" sessions list --session-db="${DB}" 2>/dev/null || true)"
+if grep -Fq -- 'mast-acks' <<<"${ACKSESS}"; then
+  bad "the ack audit row shows up as a session"
+else
+  ok "the ack audit row is not a session anyone can act on"
+fi
+
+# Refused by name, not ignored. Silently dropping a field the client
+# believed in produces an audit line naming the wrong person with
+# nothing anywhere saying so.
+ack_post "${ALICE}" "{\"subject\":\"${ACKSUBJ}\",\"ack_by\":\"mallory@example.com\"}"
+assert_eq "a body that names its own acker is refused" "${ACKCODE}" 400
+assert_has "and the refusal says why" "${ACKBODY}" 'ack_by is not a field a caller may set'
+assert_eq "the producer was not called for it" "$(calls_count findings_ack)" 2
+ACKAUDIT="$(grep -h -- 'operator ack forwarded' "${ACKLOG1}" "${LOG}" || true)"
+if grep -Fq -- 'mallory' <<<"${ACKAUDIT}"; then
+  bad "the name the body claimed reached the audit log"
+else
+  ok "the name the body claimed reached nothing"
+fi
+
+# A relay with several mast deployments configured should fail loudly on
+# the wrong one rather than quiet a finding on a cluster nobody was
+# looking at.
+ack_post "${ALICE}" "{\"subject\":\"${ACKSUBJ}\",\"workload\":\"uat-notify\"}"
+assert_eq "an ack addressed to another workload is refused" "${ACKCODE}" 400
+assert_has "naming both the workload it was sent to and the one it asked for" "${ACKBODY}" 'uat-ack'
+
+# The shared token still opens this door and still says what it is. A
+# daemon that started attributing shared-token acks to a person because
+# a user table exists would be inventing the attribution the whole leg
+# is about.
+ack_post "${TOKEN}" "{\"subject\":\"node/gke-pool-3/DiskPressure\"}"
+assert_eq "the shared token can still ack" "${ACKCODE}" 200
+assert_eq "and is recorded as itself, not as a person" "$(ack_field ack_by)" 'shared-bearer-token'
+stop_term
+unset MAST_INJECT_USERS_FILE
+
+# THE NEGATIVE THE PLAN ASKS FOR, measured rather than reasoned. It is
+# made against a DIFFERENT workload on purpose: the acking fixture's
+# specialist is a toolless SingleTurn report, so "the ack tool was not
+# in its roster" would be true of every tool and would prove nothing.
+# This one is testdata/uat's coordinator + worker, which holds two tools
+# from the very MCP server findings_ack lives on. The worker's turn is
+# handed a real roster off that server, and the ack tool is not on it.
+say "U-ack/C: the ack tool is on no model's roster, and a roster that reaches it will not start"
+WL="${BACKROSTER}"
+DISPATCH=coordinator
+DB="${WORK}/ackroster.db"
+LOG="${WORK}/ackroster.log"
+reset_blocker
+start_daemon "${LOG}"
+RCODE="$(curl -s -m 90 -o /dev/null -w '%{http_code}' -X POST "${BASE}/inject" \
+  -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"kind":"uat-event","reason":"ReadStatus","namespace":"default","name":"pod-ack","uid":"ack-1","message":"uat","cluster":"uat"}')"
+assert_eq "a turn ran on a workload that both takes acks and holds tools" "${RCODE}" 202
+if wait_for 60 grep -q 'toolactor: tools=\[.*read_status' "${LOG}"; then
+  ok "the model was handed a real roster off the ack tool's own server"
+else
+  bad "no model request offered read_status, so the roster claim would be vacuous"
+fi
+ACKROSTERS="$(grep -F -- 'toolactor: tools=' "${LOG}" || true)"
+if grep -Fq -- 'findings_ack' <<<"${ACKROSTERS}"; then
+  bad "the ack tool was offered to the model"
+else
+  ok "and findings_ack was on none of them ($(grep -c '' <<<"${ACKROSTERS}") rosters)"
+fi
+assert_has "while the daemon was armed to forward acks the whole time" \
+  "$(grep -- 'operator acknowledgements armed' "${LOG}" || true)" 'findings_ack'
+stop_term
+unset MAST_TOOLACTOR_DEBUG
+
+# ---- the fence: the same tool behind both doors ---------------------
+# U-collect/B's claim for the other direction, and deliberately its own
+# assertion rather than an inference from it: the fence is one rule over
+# every tool mast runs on its own behalf, and a rule that only ever ran
+# against collect tools is one nobody has seen bite an ack tool.
+DB="${WORK}/afence.db"
+LOG="${WORK}/afence.log"
+if start_refused "${LOG}" "${BACKREFUSE}" coordinator; then
+  ok "the daemon refused a roster that can also reach the ack tool"
+else
+  bad "the daemon came up with findings_ack reachable through both doors"
+fi
+ACKREF="$(grep -- 'failed to construct root agent' "${LOG}" || true)"
+[ -n "${ACKREF}" ] || note "no refusal logged; last line was: $(tail -n 1 "${LOG}")"
+assert_has "the refusal names the specialist" "${ACKREF}" 'uat-worker'
+assert_has "and the tool both doors reach" "${ACKREF}" 'findings_ack'
+assert_has "and points at the block the operator wrote" "${ACKREF}" 'monitor.ack'
 
 # ====================================================================
 say "Summary"

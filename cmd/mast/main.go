@@ -1104,6 +1104,30 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		close(schedDone)
 	}
 
+	// The ack leg (v0.5 W4.6), armed outside the scheduled-trigger branch
+	// on purpose. An ack is inbound: it arrives when an operator reads
+	// their chat, and a workload whose monitoring is driven by inbound
+	// POSTs rather than a cadence takes acks exactly like one that fires
+	// on a clock. Tying it to the cadence would make "can this be
+	// acknowledged?" depend on how the cycle happens to be triggered.
+	acker := newMonitorAcker(logger, obs, store, bundle.Monitor, toolSchemas.ack, workloadName, appName, defaultUserID)
+	var monitorAckHandler inject.MonitorAckHandler
+	if acker.enabled() {
+		monitorAckHandler = acker.forward
+		logger.Info("operator acknowledgements armed; they are attributed here and suppressed by the producer",
+			"workload", workloadName, "tool", acker.tool)
+		if sessionDB == "" {
+			// The attribution is the half mast alone holds, and without a
+			// durable store it dies with the process — leaving the
+			// producer's suppression in place with no record of who asked
+			// for it. Worth refusing? No: the forward still works, and a
+			// daemon run without --session-db has already accepted that
+			// nothing it writes survives. Worth saying, loudly.
+			logger.Warn("operator acknowledgements have no durable record (--session-db is empty); the suppression will outlive mast's note of who asked for it",
+				"workload", workloadName)
+		}
+	}
+
 	pauseHandler := func(reqCtx context.Context, req inject.PauseRequest) (inject.PauseResult, error) {
 		// No drain gate, like abort: a gate pause is a marker write,
 		// and pausing during a drain is a legitimate operator move.
@@ -1199,6 +1223,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		ResumeHandler:      resumeHandler,
 		AbortHandler:       abortHandler,
 		AckEffectsHandler:  ackHandler,
+		MonitorAckHandler:  monitorAckHandler,
 		PauseHandler:       pauseHandler,
 		ExtendTokenHandler: extendHandler,
 		StopHandler:        stopHandler,

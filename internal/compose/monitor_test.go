@@ -245,7 +245,7 @@ func TestMonitorBothDoorsRefuse(t *testing.T) {
 	// Named, not just non-nil: BuildRoot has plenty of other ways to
 	// fail, and a test satisfied by any of them would keep passing after
 	// the check it is about was deleted.
-	const want = "collects k8s_cluster_health, k8s_findings_diff on its own behalf"
+	const want = "runs k8s_cluster_health, k8s_findings_diff on its own behalf"
 
 	err := CheckRoster(b, specs, DispatchAuto)
 	if err == nil {
@@ -266,5 +266,79 @@ func TestMonitorBothDoorsRefuse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("BuildRoot refused for another reason: %v", err)
+	}
+}
+
+// The ack tool rides the same fence (v0.5 W4.6), and it matters more
+// here than for collection. A collect tool the model could reach lets it
+// gather facts ungated; an ack tool it could reach lets it SUPPRESS ITS
+// OWN ALERTS — and the producer's triage write is typically not
+// permission-gated on its side, so this check is the only thing in front
+// of it. "There is no ack tool the model can call" has to be a property
+// of the build, not a rule in a prompt.
+
+func ackBundle() workload.Bundle {
+	b := monitorBundle()
+	b.Monitor.Ack = &workload.MonitorAck{Tool: "k8s_findings_ack"}
+	return b
+}
+
+func TestMonitorRefusesASpecialistThatNamesTheAckTool(t *testing.T) {
+	specs := enumeratedRoster()
+	specs[0].Tools.MCP[0].Tools = append(specs[0].Tools.MCP[0].Tools, "k8s_findings_ack")
+
+	err := CheckMonitorCollectSurface(ackBundle(), specs)
+	if err == nil {
+		t.Fatal("a roster holding the ack tool was accepted; the model can silence its own alerts")
+	}
+	if !strings.Contains(err.Error(), "k8s_findings_ack") {
+		t.Errorf("refusal does not name the ack tool: %v", err)
+	}
+	// The remedy has to point at the line the operator wrote. An
+	// operator who declared monitor.ack and is told to edit
+	// monitor.collect goes looking for a block that is not there.
+	if !strings.Contains(err.Error(), "monitor.ack") {
+		t.Errorf("refusal = %v, want the remedy to name monitor.ack", err)
+	}
+	if strings.Contains(err.Error(), "monitor.collect") {
+		t.Errorf("refusal = %v, want it not to blame monitor.collect for an ack tool", err)
+	}
+}
+
+// A roster that reaches both gets both blocks named, once each: the
+// operator has two lines to edit and the message says so.
+func TestMonitorNamesBothBlocksWhenARosterReachesBoth(t *testing.T) {
+	specs := enumeratedRoster()
+	specs[0].Tools.MCP[0].Tools = append(specs[0].Tools.MCP[0].Tools, "k8s_findings_ack", "k8s_findings_diff")
+
+	err := CheckMonitorCollectSurface(ackBundle(), specs)
+	if err == nil {
+		t.Fatal("a roster reaching both the collect tool and the ack tool was accepted")
+	}
+	if !strings.Contains(err.Error(), "monitor.ack / monitor.collect") {
+		t.Errorf("refusal = %v, want both blocks named", err)
+	}
+}
+
+// The shape validateMonitorAck permits and this check must still fence:
+// an ack block with no collection at all. Monitor.Enabled() is false
+// here, so a check that early-returned on it would leave the ack tool
+// reachable by every roster in the workload.
+func TestMonitorFencesAnAckOnlyWorkload(t *testing.T) {
+	b := monitorBundle()
+	b.Monitor = workload.Monitor{Ack: &workload.MonitorAck{Tool: "k8s_findings_ack"}}
+	specs := enumeratedRoster()
+	specs[0].Tools.MCP[0].Tools = append(specs[0].Tools.MCP[0].Tools, "k8s_findings_ack")
+
+	if err := CheckMonitorCollectSurface(b, specs); err == nil {
+		t.Fatal("an ack-only workload was not fenced; Monitor.Enabled() is false but the tool is still mast's to run")
+	}
+}
+
+// And the roster the fence is written for still passes with an ack block
+// present, or declaring one bans diagnosis.
+func TestMonitorAcceptsAnEnumeratedRosterWithAnAck(t *testing.T) {
+	if err := CheckMonitorCollectSurface(ackBundle(), enumeratedRoster()); err != nil {
+		t.Errorf("an enumerated roster that reaches neither the collect tools nor the ack tool was refused: %v", err)
 	}
 }

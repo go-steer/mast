@@ -576,6 +576,69 @@ type Monitor struct {
 	// else, which is the right default for a workload nobody has told
 	// where to post.
 	Notify *MonitorNotify `yaml:"notify,omitempty"`
+
+	// Ack is the tool an operator's acknowledgement is forwarded to
+	// (v0.5 W4.6). Absent means the daemon's ack route answers 404: a
+	// workload that declares nowhere to forward an ack cannot take one.
+	Ack *MonitorAck `yaml:"ack,omitempty"`
+}
+
+// MonitorAck is the inbound half of a monitoring cycle (v0.5 W4.6): an
+// operator says "I have seen this one, stop telling me", and mast
+// forwards that to whoever owns the finding's state.
+//
+//	monitor:
+//	  ack:
+//	    tool: k8s_findings_ack
+//	    args: {window: 4h}
+//
+// # Which direction this runs in
+//
+// Every other monitor block reads. This one writes, and to a store mast
+// does not own: the suppression lives with the producer of the
+// transitions, because that is the only place the next cycle's
+// classification can read it from. mast's part is smaller and is the
+// part nothing else can do — authenticate the operator, record who
+// asked and when, and forward. The producer owns the window and the
+// state; mast owns the attribution.
+//
+// # Why the model cannot reach it
+//
+// For the same structural reason a collect tool cannot: an ack tool is
+// run by mast on its own behalf, and internal/compose refuses to start
+// if it is reachable from any roster. That fence matters more here than
+// it does for collection. A suppression is a mute button on the
+// monitoring, the producer's own triage-status write is typically not
+// permission-gated, and mast's authn is therefore the only thing
+// standing in front of it. An agent that could silence its own alerts
+// is not a monitoring system.
+//
+// # What is deliberately not here
+//
+// A verdict, a grant, a freshness window, a change-set signature. An
+// ack is not a mutation approval — see docs/orchestration-design.md,
+// "Ack routing" — and giving it the write gate's machinery would put a
+// suppression into the decision export as an adjudication, which is how
+// "who approved this change" quietly starts meaning "who muted an
+// alert".
+//
+// And a per-request window. How long a suppression lasts is the
+// producer's policy, set through args for the deployment; there is no
+// consumer for a per-request one until an in-chat ack button exists,
+// and a knob mast passes through without understanding is a knob it
+// cannot validate.
+type MonitorAck struct {
+	// Tool is the wired tool an ack is forwarded to. It resolves
+	// against the same toolsets everything else does.
+	Tool string `yaml:"tool"`
+
+	// Args are literal arguments merged UNDER the two mast supplies:
+	// subject_key (what the operator acked) and ack_by (who they are).
+	// Deployment facts belong here — which cluster, how long a
+	// suppression lasts. An attempt to pin subject_key or ack_by is
+	// refused at load, because a bundle that names the acker names it
+	// for everyone.
+	Args map[string]any `yaml:"args,omitempty"`
 }
 
 // MonitorNotify is the egress half of a monitoring cycle (v0.5 W4.5):
@@ -667,8 +730,7 @@ func (m Monitor) Enabled() bool { return len(m.Collect) > 0 }
 func (m Monitor) TransitionsKey() string { return strings.TrimSpace(m.TransitionsFrom) }
 
 // CollectTools returns the tool names the collection leg runs, in
-// declaration order and de-duplicated. This is the set internal/compose
-// keeps out of every roster.
+// declaration order and de-duplicated.
 func (m Monitor) CollectTools() []string {
 	seen := make(map[string]bool, len(m.Collect))
 	out := make([]string, 0, len(m.Collect))
@@ -681,6 +743,45 @@ func (m Monitor) CollectTools() []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// AckTool is the tool an operator acknowledgement is forwarded to, or
+// "" for a workload that takes no acks (v0.5 W4.6).
+func (m Monitor) AckTool() string {
+	if m.Ack == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.Ack.Tool)
+}
+
+// AckArgs returns the bundle's literal ack arguments. The caller merges
+// mast's two over the top of these, never under them.
+func (m Monitor) AckArgs() map[string]any {
+	if m.Ack == nil {
+		return nil
+	}
+	return m.Ack.Args
+}
+
+// SelfRunTools returns every tool mast runs on this workload's behalf
+// outside the model's dispatch path — the collection calls and the ack
+// forward. This is the set internal/compose keeps out of every roster.
+//
+// One list rather than two because the fence is one rule: a tool mast
+// runs ungated must be reachable by nobody else. Which direction it
+// runs in is why the exception exists, not what bounds it.
+func (m Monitor) SelfRunTools() []string {
+	out := m.CollectTools()
+	ack := m.AckTool()
+	if ack == "" {
+		return out
+	}
+	for _, n := range out {
+		if n == ack {
+			return out
+		}
+	}
+	return append(out, ack)
 }
 
 // A2A is the workload's A2A-server exposure (docs/a2a-design.md, "Which

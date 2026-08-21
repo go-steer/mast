@@ -74,6 +74,17 @@ import (
 // EndInvocation is a no-op and Ended is always false: there is no
 // invocation to end, and answering true would tell a tool to stop
 // before it started.
+//
+// # The ack leg shares it (v0.5 W4.6)
+//
+// An operator's acknowledgement runs the bundle's monitor.ack tool
+// through the same seam, and needs the same nothing: no turn, no
+// invocation, nobody to confirm to. It goes one step further and passes
+// an empty sessionID — a collection call at least belongs to the fire it
+// opened, while an ack arrives when a human reads their chat, which is
+// rarely the moment a cycle is running. Group 3's refusals read the same
+// either way, which is why their messages name the seam rather than the
+// caller.
 type collectContext struct {
 	context.Context
 
@@ -152,14 +163,14 @@ func (c *collectContext) Ended() bool                                          {
 // call has no invocation and nobody is waiting on it, so starting that
 // flow would wedge the cycle rather than ask anyone anything.
 func (c *collectContext) RequestConfirmation(hint string, _ any) error {
-	return errors.New("a monitor.collect call cannot ask for confirmation: it runs before the model is woken, on no invocation, with nobody waiting to answer (hint was: " + hint + ")")
+	return errors.New("a tool mast runs on its own behalf cannot ask for confirmation: it runs outside any turn, on no invocation, with nobody waiting to answer (hint was: " + hint + ")")
 }
 
 // SearchMemory refuses for the same reason it would fail anyway: there
 // is no memory service on this path. An explicit error beats ADK's
 // nil-Memory panic.
 func (c *collectContext) SearchMemory(context.Context, string) (*memory.SearchResponse, error) {
-	return nil, errors.New("a monitor.collect call has no memory service to search")
+	return nil, errors.New("a tool mast runs on its own behalf has no memory service to search")
 }
 
 // --- derivations -----------------------------------------------------

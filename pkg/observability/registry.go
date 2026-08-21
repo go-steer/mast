@@ -163,6 +163,26 @@ var monitorNotifyOutcomes = []string{
 	MonitorNotifyError,
 }
 
+// Monitoring-ack outcomes (mast_monitor_acks_total{outcome}) for the
+// v0.5 W4.6 ingress leg. Two outcomes and no more: mast either got the
+// operator's acknowledgement to the producer that owns the suppression,
+// or it did not. Whether a suppression was redundant, already in force,
+// or applied to a subject nothing is currently reporting are all the
+// producer's questions, and counting mast's guesses at them here would
+// be counting an opinion mast is careful not to have.
+const (
+	// MonitorAckForwarded: the producer's ack tool accepted it.
+	MonitorAckForwarded = "forwarded"
+	// MonitorAckError: it did not. The attributed record is still
+	// durable — mast knows who asked and that the suppression did not
+	// take, which is the state an operator has to be able to see.
+	MonitorAckError = "error"
+)
+
+// monitorAckOutcomes is the fixed label set primed for
+// mast_monitor_acks_total{outcome}.
+var monitorAckOutcomes = []string{MonitorAckForwarded, MonitorAckError}
+
 // Auto-resume outcomes for AutoResume (mast_autoresume_total{outcome}).
 // A fixed vocabulary, mirroring cmd/mast's boot-time auto-resume
 // decision tree (#41): every interrupted candidate the boot pass
@@ -273,6 +293,7 @@ type Registry struct {
 	scheduledFires  *prometheus.CounterVec
 	monitorNotifies *prometheus.CounterVec
 	monitorDigests  *prometheus.CounterVec
+	monitorAcks     *prometheus.CounterVec
 	a2aTasks        *prometheus.CounterVec
 	aguiRuns        *prometheus.CounterVec
 	aguiRunDur      *prometheus.HistogramVec
@@ -364,6 +385,9 @@ func New() *Registry {
 	r.monitorDigests = counter("mast_monitor_digest_wakes_total",
 		"Monitoring cycles that spoke because the notify deadman expired rather than because anything changed.",
 		"workload")
+	r.monitorAcks = counter("mast_monitor_acks_total",
+		"Operator acknowledgements taken on the daemon ingress and forwarded to the producer that owns the suppression.",
+		"workload", "outcome")
 
 	// A2A server (#78). Task lifecycle outcomes for inbound A2A tasks
 	// driven through the runTurnPre chokepoint (Stage B) plus cancels
@@ -426,6 +450,9 @@ func (r *Registry) Prime(workload string) {
 		r.monitorNotifies.WithLabelValues(workload, outcome)
 	}
 	r.monitorDigests.WithLabelValues(workload)
+	for _, outcome := range monitorAckOutcomes {
+		r.monitorAcks.WithLabelValues(workload, outcome)
+	}
 	for _, outcome := range a2aTaskOutcomes {
 		r.a2aTasks.WithLabelValues(workload, outcome)
 	}
@@ -581,6 +608,17 @@ func (r *Registry) MonitorDigestWake(workload string) {
 		return
 	}
 	r.monitorDigests.WithLabelValues(workload).Inc()
+}
+
+// MonitorAck records one operator acknowledgement taken on the ingress
+// (one of the MonitorAck* constants). Counted per ack rather than per
+// subject: two operators acking the same finding is two people asking
+// for quiet, and an audit that collapsed them would lose the second.
+func (r *Registry) MonitorAck(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.monitorAcks.WithLabelValues(workload, outcome).Inc()
 }
 
 // A2ATask records one A2A server task lifecycle transition with the

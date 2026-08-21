@@ -48,9 +48,25 @@ import (
 // tool that mast runs ungated at the top of the cycle and that a
 // specialist can also call mid-turn is the worst of both: the audited
 // answer to "was this write approved?" becomes "it depends which door it
-// came through", and W4.6's "there is no ack tool the model can call"
-// stops being a structural fact and becomes a convention someone has to
+// came through", and "there is no ack tool the model can call" stops
+// being a structural fact and becomes a convention someone has to
 // remember when they next edit a roster.
+//
+// # The ack tool is fenced by the same rule (v0.5 W4.6)
+//
+// monitor.ack names the tool an operator's acknowledgement is forwarded
+// to, and it is checked here alongside the collection calls because the
+// fence is one rule, not two. It matters more for this one. A collect
+// tool the model could also reach would let the model gather facts
+// ungated; an ack tool it could reach would let it SUPPRESS ITS OWN
+// ALERTS — and the producer's triage-status write is typically not
+// permission-gated on its side, so mast's ingress authn is the only
+// thing in front of it (docs/orchestration-design.md, "Ack routing").
+//
+// This is what makes "acks enter through the operator ingress, never
+// through the tool loop" a property of the build rather than a rule in
+// a prompt. An agent that cannot see the tool cannot be talked into
+// calling it.
 //
 // # Three ways a roster reaches a tool, and all three are refused
 //
@@ -88,10 +104,7 @@ import (
 // collection leg is that it is ungated — an embed that wants the
 // property has to declare the roster it is claiming.
 func CheckMonitorCollectSurface(b workload.Bundle, specs []specialists.Spec) error {
-	if !b.Monitor.Enabled() {
-		return nil
-	}
-	collect := b.Monitor.CollectTools()
+	collect := b.Monitor.SelfRunTools()
 	if len(collect) == 0 {
 		return nil
 	}
@@ -101,35 +114,64 @@ func CheckMonitorCollectSurface(b workload.Bundle, specs []specialists.Spec) err
 	}
 	hasCatalog := len(b.ToolCatalog.MCP) > 0
 	named := strings.Join(collect, ", ")
+	// Which block claimed a name changes the remedy, so the messages
+	// below name it rather than saying "monitor.collect" at an operator
+	// who wrote monitor.ack.
+	blockOf := make(map[string]string, len(collect))
+	for _, n := range b.Monitor.CollectTools() {
+		blockOf[n] = "monitor.collect"
+	}
+	if ack := b.Monitor.AckTool(); ack != "" {
+		if _, ok := blockOf[ack]; !ok {
+			blockOf[ack] = "monitor.ack"
+		}
+	}
 
 	for _, s := range specs {
 		if s.Mode == specialists.ModeSingleTurn {
 			continue
 		}
 		if hasCatalog && s.Tools.InheritsAllMCP() {
-			return fmt.Errorf("compose: workload %q collects %s on its own behalf, but specialist %q declares no tools.mcp allowlist, which grants it the workload's whole tool catalog including those tools; a tool mast runs ungated at the top of a cycle must be reachable by nothing else. Enumerate the tools the specialist needs, or write `mcp: []` if it needs none",
+			return fmt.Errorf("compose: workload %q runs %s on its own behalf, but specialist %q declares no tools.mcp allowlist, which grants it the workload's whole tool catalog including those tools; a tool mast runs ungated on its own behalf must be reachable by nothing else. Enumerate the tools the specialist needs, or write `mcp: []` if it needs none",
 				b.Name, named, s.Name)
 		}
 		for _, al := range s.Tools.MCP {
 			if len(al.Tools) == 0 {
-				return fmt.Errorf("compose: workload %q collects %s on its own behalf, but specialist %q allows MCP server %q with no tools: list, which grants it every tool on that server; mast cannot tell whether a collect tool is among them without connecting to it, so this is refused rather than guessed. Enumerate the tools the specialist needs",
+				return fmt.Errorf("compose: workload %q runs %s on its own behalf, but specialist %q allows MCP server %q with no tools: list, which grants it every tool on that server; mast cannot tell whether one of those tools is among them without connecting to it, so this is refused rather than guessed. Enumerate the tools the specialist needs",
 					b.Name, named, s.Name, al.Server)
 			}
 			if bad := collectNames(al.Tools, isCollect); len(bad) > 0 {
-				return fmt.Errorf("compose: workload %q collects %s on its own behalf, but specialist %q allows %s on MCP server %q; the collection leg is ungated precisely because no model holds it, and a tool reachable through both doors makes \"was this approved?\" depend on which one it came through. Drop it from the allowlist, or drop it from monitor.collect and let the model call it under the write gate",
-					b.Name, named, s.Name, strings.Join(bad, ", "), al.Server)
+				return fmt.Errorf("compose: workload %q runs %s on its own behalf, but specialist %q allows %s on MCP server %q; those calls are ungated precisely because no model holds them, and a tool reachable through both doors makes \"was this approved?\" depend on which one it came through. Drop it from the allowlist, or drop it from %s and let the model call it under the write gate",
+					b.Name, named, s.Name, strings.Join(bad, ", "), al.Server, blocksOf(bad, blockOf))
 			}
 		}
 		if bad := collectNames(s.Tools.Builtin, isCollect); len(bad) > 0 {
-			return fmt.Errorf("compose: workload %q collects %s on its own behalf, but specialist %q allows built-in tool(s) %s; drop them from the allowlist, or drop them from monitor.collect",
-				b.Name, named, s.Name, strings.Join(bad, ", "))
+			return fmt.Errorf("compose: workload %q runs %s on its own behalf, but specialist %q allows built-in tool(s) %s; drop them from the allowlist, or drop them from %s",
+				b.Name, named, s.Name, strings.Join(bad, ", "), blocksOf(bad, blockOf))
 		}
 	}
 	return nil
 }
 
-// collectNames returns the sorted subset of names that the collection
-// leg claims.
+// blocksOf names the monitor blocks the offending tools came from, so
+// the remedy in an error message points at the line the operator wrote.
+func blocksOf(bad []string, blockOf map[string]string) string {
+	seen := make(map[string]bool, 2)
+	var out []string
+	for _, n := range bad {
+		block := blockOf[n]
+		if block == "" || seen[block] {
+			continue
+		}
+		seen[block] = true
+		out = append(out, block)
+	}
+	sort.Strings(out)
+	return strings.Join(out, " / ")
+}
+
+// collectNames returns the sorted subset of names that mast runs on its
+// own behalf.
 func collectNames(names []string, isCollect map[string]bool) []string {
 	var bad []string
 	for _, n := range names {

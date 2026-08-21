@@ -110,6 +110,8 @@ agui:
 | `monitor.transitions_from` | string | Optional. Names the `monitor.collect` key whose result carries the run-to-run classification — what is new, escalated, resolved since the last cycle. That result is parsed into the envelope's `transitions` block instead of being passed through raw. Must name a key some `collect` entry files a result under, or it is a load error. It names *where* the classification comes from, never what it may say: mast has no vocabulary of transition classes. See [`transitions_from:`](#transitions_from--the-classification-comes-from-the-tool) below. |
 | `monitor.notify.conversation` | string | Required when a `notify:` block is present. Where a speaking cycle posts — the conversation id switchboard knows, e.g. `#sre-oncall` or a platform id. Requires an `edge_trigger.scheduled` block, for the same reason `collect` does: a cycle speaks at the end of a cycle, so with no cadence it never speaks. The ingress URL and its bearer token are the **daemon's** (`--notify-url`, `MAST_NOTIFY_TOKEN`), not the bundle's — deployment facts, so one bundle moves between staging and production unedited. See [`notify:`](#notify--speaking-only-when-something-changed) below. |
 | `monitor.notify.digest_after` | duration | Optional deadman. After this long with nothing sent, the next cycle speaks whether or not anything changed. Omitted or `0s` = no deadman, and the workload may stay silent indefinitely. Wall-clock, not a count of quiet cycles: a monitor that has been quiet for a week is otherwise indistinguishable from one that died a week ago. |
+| `monitor.ack.tool` | string | Optional. The wired tool an operator's acknowledgement is forwarded to, which arms `POST /monitor-ack` on the daemon; without the block that route answers `404`. Unlike `collect` and `notify` it needs **no** cadence — an ack arrives from an operator, not from a cycle. Fenced like a collect tool (reachable from no roster), and refused if it is also a `collect` tool: a cycle that acked what it just classified would suppress findings nobody asked to suppress. See [`ack:`](#ack--taking-an-acknowledgement-back) below. |
+| `monitor.ack.args` | map | Literal arguments merged **under** the two mast supplies from the request itself, `subject_key` and `ack_by`. Deployment policy goes here — which cluster, how long a suppression lasts. Pinning either reserved name is a load error: a bundle that named the acker would name them for everyone. |
 | `a2a.expose` | bool | Opt this workload into the [A2A server](/reference/cli/#a2a-server) surface (`--a2a-listen`). Default false — A2A exposure is an external contract, so it is never automatic. |
 | `a2a.skill_name`, `a2a.skill_description` | strings | The skill id/name and human-readable summary published on the agent card. `skill_name` defaults to the workload name; `skill_description` to the workload description. |
 | `a2a.input_schema`, `a2a.output_schema` | maps | A **mast-side** convention only: mast may validate inbound task inputs against them and fold them into the skill description. Spec `AgentSkill` has no schema fields, so they do **not** round-trip through the agent card as machine-readable schema. |
@@ -803,13 +805,103 @@ Every cycle's outcome is on
 `replaced`, `rolled`, `quiet`, `health`, `error`. A healthy monitor is
 mostly `quiet`.
 
+### `ack:` — taking an acknowledgement back
+
+Everything above runs outward. `ack` is the one leg that runs the other way:
+an operator reads a finding in the chat, says "I have seen this one", and the
+monitoring stops reporting it.
+
+```yaml
+monitor:
+  ack:
+    tool: k8s_findings_ack
+    args: {window: 4h}
+```
+
+That arms `POST /monitor-ack` on the daemon. A workload with no `ack:` block
+answers `404` there — nowhere to forward one.
+
+```bash
+curl -s -X POST http://localhost:7777/monitor-ack \
+  -H 'Authorization: Bearer '"$MAST_INJECT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"subject":"ns/checkout/oom-restarts","reason":"known, fix rolling out"}'
+```
+
+```json
+{
+  "workload": "cluster-watch",
+  "subject": "ns/checkout/oom-restarts",
+  "ack_by": "alice@example.com",
+  "previously_acked_by": "bob@example.com",
+  "previously_acked_at": "2026-08-21T07:02:11Z"
+}
+```
+
+The `subject` is the producer's subject key, verbatim from the classification
+mast reported — mast does not parse it and has no vocabulary for what a
+subject is.
+
+#### Who owns what
+
+The suppression lives with the producer of the transitions. It is the only
+place the *next* cycle's classification can read it from, so mast forwarding
+and then keeping its own copy of "how long this is muted" would be a second,
+wrong answer to a question already answered. `monitor.ack.args` is where the
+deployment's policy goes — which cluster, how long — and there is no
+per-request window.
+
+What the producer cannot do is say **who asked**. Its ack surface takes an
+identity string from whoever calls it and has no way to check it. mast can,
+because the ack came through an authenticated ingress, so the split is:
+
+| | Store of record for |
+|---|---|
+| The producer | the suppression — whether a subject is muted, and until when |
+| mast | the attribution — who acked, when, from what credential, with what note |
+
+mast writes its record **before** forwarding. A forward that then fails
+leaves an attributed ack the suppression never reached, which is visibly
+different from nobody having acked at all; the operator is told, and acking
+again is the recovery.
+
+#### `ack_by` comes from the credential, never the body
+
+The identity mast forwards and records is the one that authenticated the
+request. A body carrying `ack_by` is **refused with a `400`** naming the
+field — not ignored, because silently dropping a field a client believed in
+produces an audit line naming the wrong person with no sign anything went
+wrong.
+
+A relay acking on a human's behalf names them the supported way, with the
+`X-Asserted-Caller` header, which works only for a credential the users file
+provisioned to assert. Both are kept: the human is the acker, the relay is
+recorded alongside. This is the rule `/resume` settled for approvals, and it
+matters at least as much here — see [Who a resume
+names](/reference/cli/#who-a-resume-names).
+
+#### An ack is not an approval
+
+They share an operator, a chat window and a verb, and nothing else. An
+approval mints a grant that licenses a write to the world and is consumed on
+use. An ack asserts no diagnosis, authorizes no change, and carries no
+verdict, no grant, no freshness window and no change-set signature. It does
+not go through the write gate and **does not appear in the decision export** —
+otherwise "who approved this change" would quietly start meaning "who muted
+an alert".
+
+The count is on `mast_monitor_acks_total{workload,outcome}`: `forwarded` or
+`error`, and nothing between them.
+
 ### The fence
 
 The exception is narrow because it is enforced, not because it is
-documented. A tool named in `monitor.collect` must be reachable by nothing
-else, and the daemon refuses to start otherwise — before it wires MCP, so an
-operator without credentials reads the roster problem rather than a `403`
-standing in for it. Three ways a roster reaches a tool, all three refused:
+documented. A tool mast runs on its own behalf — everything named in
+`monitor.collect`, plus the one named in `monitor.ack` — must be reachable by
+nothing else, and the daemon refuses to start otherwise, before it wires MCP,
+so an operator without credentials reads the roster problem rather than a
+`403` standing in for it. Three ways a roster reaches a tool, all three
+refused:
 
 1. a specialist names it outright, on an MCP server or among its built-ins;
 2. a specialist allows an MCP server with no `tools:` list, which grants it
@@ -822,6 +914,14 @@ standing in for it. Three ways a roster reaches a tool, all three refused:
 so they reach nothing. That is what makes a bounded monitoring roster the
 clearest form of the shape — its model holds no tools whatsoever and still
 gets the transitions.
+
+The fence matters most for the ack tool. A collect tool a model could also
+reach would let it gather facts ungated; an ack tool it could reach would let
+it **suppress its own alerts**, and the producer's triage-status write is
+typically not permission-gated on its side, so the daemon's ingress
+authentication is the only thing in front of it. "There is no ack tool the
+model can call" is a property of the build — an agent that cannot see a tool
+cannot be talked into calling it.
 
 ### When collection fails
 

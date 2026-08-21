@@ -113,6 +113,28 @@ recovered — one on each edge, not one per failing cycle.
 | `mast_monitor_notifications_total` | `workload`, `outcome` | Monitoring cycles by what they told the chat ingress. Outcomes: `posted` (opened a message), `appended` (extended the open one), `replaced` (the ingress had forgotten the body, so the whole text was re-sent), `rolled` (the message was full and the timeline moved to its continuation), `quiet` (nothing changed — no request, no model call), `health` (a mast-authored broken/recovered notice), `error` (the send failed). |
 | `mast_monitor_digest_wakes_total` | `workload` | Cycles that spoke because `digest_after` expired rather than because anything changed. Separate from the outcome above because "did anything change" and "did the deadman have to fire" are different questions: a workload whose digest wakes are its *only* notifications is one nothing has happened to, or one whose classifier has quietly stopped classifying. |
 
+### Monitoring-ack family (v0.5)
+
+The other direction: a workload that declares
+[`monitor.ack`](/reference/workload-bundle/#ack--taking-an-acknowledgement-back)
+counts the operator acknowledgements that arrived on `POST /monitor-ack` and
+were forwarded to whoever owns the finding state.
+
+Two outcomes and no more, because mast is doing two things here and neither
+has a middle state: it recorded who asked, and it forwarded. `error` covers
+both halves failing and is the one to alert on — an operator who pressed the
+button and was told nothing believes an alert is muted that is not, and the
+next cycle will report the subject again. There is no retry: acking again is
+the recovery, and the audit shows both attempts.
+
+This family counts acks, not suppressions. How long one lasts, and whether a
+repeat was redundant, is the producer's business; mast forwards a repeat ack
+regardless and counts it.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_monitor_acks_total` | `workload`, `outcome` | Operator acknowledgements taken on the daemon ingress. Outcomes: `forwarded` (recorded and accepted by the producer's ack tool), `error` (the durable record or the forward failed — the suppression did not take). |
+
 ## Traces
 
 Trace export is env-gated OTel: a no-op unless `OTEL_EXPORTER_OTLP_*`

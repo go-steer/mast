@@ -24,7 +24,7 @@ start a daemon; it exits `2` with the misplaced-flag error, because
 | `--dispatch` | *(unset)* | Dispatch shape: `coordinator` (SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (whole roster investigates concurrently, one `_synthesis` specialist merges), `bounded` (one `SingleTurn` specialist, one model call, a report forced to a schema), or `auto` (read the shape off the roster — it never picks `bounded`, because a cost ceiling is declared, never inferred). **Unset takes the bundle's own `dispatch:`, then `coordinator`**; the flag wins only when the operator actually typed it. `fanout` requires a read-only roster and `bounded` a single schema-declaring `SingleTurn` specialist — see [the bundle reference](/reference/workload-bundle/). |
 | `--model` | `echo` | `echo` (offline fake, no credentials), `scripted` (JSONL recorded-turn replay; path via `MAST_SCRIPT`, strict matching via `MAST_SCRIPT_STRICT=1`), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`. |
 | `--provider` | — | Provider alias: `echo`, `scripted`, `gemini`, `vertex`, `anthropic`, or `anthropic-vertex`. Validates `--model` when both are set; picks the provider's default model from the `--task` profile's tier when `--model` is unset. The alias also picks the backend within a family, and the two families differ in what happens without one. `vertex` serves `gemini-*` against Vertex AI (`GOOGLE_CLOUD_PROJECT` + ADC; location from `GOOGLE_CLOUD_LOCATION` / `GOOGLE_CLOUD_REGION`, default `global`) — with no alias, only `GOOGLE_GENAI_USE_VERTEXAI=true` gets you there, and a project alone does not. For `claude-*`, no alias means `ANTHROPIC_API_KEY` selects the first-party API, then a Vertex project (`ANTHROPIC_VERTEX_PROJECT_ID` / `GOOGLE_CLOUD_PROJECT`) selects Vertex. See [credentials](/concepts/providers/#credentials). |
-| `--listen` | `:7777` | HTTP bind address for `/inject`, `/resume`, `/abort`, `/metrics`. |
+| `--listen` | `:7777` | HTTP bind address for `/inject`, `/resume`, `/abort`, `/monitor-ack`, `/metrics`. |
 | `--attach-listen` | (empty) | Operator attach surface (HTTP/SSE for [mast-web](https://github.com/go-steer/mast-web) and other attach clients): a TCP address like `127.0.0.1:8484`, or a Unix socket as `unix:/path/mast.sock`. Empty = disabled. Requires `--session-db` (live-tail pumps from the eventlog overlay). Non-loopback TCP binds are refused unless auth is configured — set `MAST_ATTACH_TOKEN`. Serve mode only. |
 | `--a2a-listen` | (empty) | [A2A](https://a2a-protocol.org) server surface: a TCP address like `127.0.0.1:7780`. Empty = disabled. Publishes an agent card and a JSON-RPC 2.0 endpoint (`POST /a2a`) for workloads that opt in via the bundle's `a2a.expose` section. Card endpoints (`/.well-known/agent-card.json`, `/.well-known/agent-card/<name>.json`) are public; `/a2a` is authenticated when `MAST_A2A_TOKEN` is set, with per-skill scope enforcement. Non-loopback binds are refused without a token (`tasks/cancel` is destructive). Serve mode only. See [A2A server](#a2a-server). |
 | `--agui-listen` | (empty) | [AG-UI](https://docs.ag-ui.com/introduction) server surface: a TCP address like `127.0.0.1:7781`. Empty = disabled. Serves a per-workload HTTP+SSE run endpoint and a `/agui/agents.json` discovery descriptor for workloads that opt in via the bundle's `agui.expose` section. Authenticated when `MAST_AGUI_TOKEN` is set (per-workload scope enforcement); rate limits via `MAST_AGUI_RATE`/`MAST_AGUI_BURST`. Non-loopback binds are refused without a token (a run drives a budgeted turn). Serve mode only. See [AG-UI server](#ag-ui-server). |
@@ -188,8 +188,11 @@ approve button is the case it exists for. Both are checked at startup: a
 proxy list with no table, or one naming an identity the table doesn't
 have, refuses to boot rather than issuing 403s later.
 
-The table only says **who approved**; it is not a second way in. `/inject`,
-`/abort` and the rest still take `MAST_INJECT_TOKEN` and nothing else.
+The table says **who did something a name belongs on**; it is not a second
+way in. Two routes read it — `/resume`, where the name is who approved, and
+[`/monitor-ack`](/reference/workload-bundle/#ack--taking-an-acknowledgement-back),
+where it is who silenced a finding. `/inject`, `/abort` and the rest still
+take `MAST_INJECT_TOKEN` and nothing else.
 
 `MAST_INJECT_TOKEN` keeps working alongside the table, and a resume that
 presents it is still recorded as `shared-bearer-token` — configuring a
@@ -205,6 +208,11 @@ There is deliberately **no approver field in the resume body**. An
 attribution a caller writes about itself is worth nothing after an
 incident, so mast takes it from the credential instead — the same rule the
 [write gate](/reference/write-gate/) applies to its own approver.
+
+`/monitor-ack` goes one step further and **refuses** a body carrying
+`ack_by` rather than ignoring it: on that route mast's authentication is
+the only thing in front of the producer's suppression, so a client that
+believed it had named someone is told it did not.
 
 ### Abort (terminal since v0.2)
 
