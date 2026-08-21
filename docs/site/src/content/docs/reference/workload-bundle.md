@@ -104,6 +104,9 @@ agui:
 | `edge_trigger.scheduled.interval` | duration | Required in the block. How often the workload wakes itself, with nothing calling in — `15m`, `1h`, `24h`. Minimum `1s`. A malformed or missing value is a load error naming the file, because a cadence that fails to parse at runtime is a workload you believe is running and that never wakes up. See [`scheduled:`](#scheduled--a-workload-that-wakes-itself) below. |
 | `edge_trigger.scheduled.jitter` | duration | Optional random offset added to each fire, drawn afresh every time. Defaults to a tenth of the interval, capped at `30s`; `0s` is honored as a declaration. Must be shorter than the interval. It is not decoration: N replicas started by one rollout otherwise wake on the same second. |
 | `edge_trigger.scheduled.prompt` | string | What the workload is being woken up to do. Delivered as prose after the wake-up envelope, so it reaches the roster as you wrote it. A schedule with no prompt runs the roster against the envelope alone, which is a workload guessing at its own job. |
+| `monitor.collect[].tool` | string | Required in each entry. A wired tool mast runs **on its own behalf** at the top of each scheduled cycle, before the model is woken; the results arrive in the wake-up envelope under `collected`. Requires an `edge_trigger.scheduled` block — a collection with no cadence never runs. No tool named here may be reachable from any specialist's allowlist, and the daemon refuses to start if one is. See [`monitor:`](#monitor--the-facts-a-cycle-gathers-for-itself) below. |
+| `monitor.collect[].args` | map | Literal arguments for the call, e.g. `{transitions: "new,escalated,resolved"}`. There is no `args_from`: a collection call is not about any particular object, so there is nothing to map arguments from. |
+| `monitor.collect[].as` | string | The key this call's result is filed under in the envelope. Defaults to the tool name; needed only when one workload collects from the same tool twice. Two entries filed under one key is a load error. |
 | `a2a.expose` | bool | Opt this workload into the [A2A server](/reference/cli/#a2a-server) surface (`--a2a-listen`). Default false — A2A exposure is an external contract, so it is never automatic. |
 | `a2a.skill_name`, `a2a.skill_description` | strings | The skill id/name and human-readable summary published on the agent card. `skill_name` defaults to the workload name; `skill_description` to the workload description. |
 | `a2a.input_schema`, `a2a.output_schema` | maps | A **mast-side** convention only: mast may validate inbound task inputs against them and fold them into the skill description. Spec `AgentSkill` has no schema fields, so they do **not** round-trip through the agent card as machine-readable schema. |
@@ -554,6 +557,96 @@ Fires are counted by `mast_scheduled_fires_total{workload,outcome}` —
 `ran`, `skipped` (a tick that came due during a drain), `error`, and
 `missed` (one per tick coalesced away after an outage). A run that fails is
 not retried: the next tick is the retry, and it samples a fresher world.
+
+## `monitor:` — the facts a cycle gathers for itself
+
+A scheduled fire on its own wakes the model with a tick and a prompt, and
+leaves it to work out what to look at. `monitor.collect` runs the looking
+first, as mast rather than as the model:
+
+```yaml
+edge_trigger:
+  scheduled:
+    interval: 15m
+
+monitor:
+  collect:
+    - tool: k8s_cluster_health
+      as: health
+    - tool: k8s_findings_diff
+      args: {transitions: "new,escalated,resolved"}
+      as: transitions
+```
+
+The calls run in declaration order, serially, before any model call. Their
+results reach the roster inside the wake-up envelope:
+
+```json
+{
+  "kind": "scheduled",
+  "workload": "cluster-watch",
+  "tick": "2026-08-21T10:00:00Z",
+  "collected": {
+    "health": { "…": "whatever the tool returned" },
+    "transitions": { "…": "whatever the tool returned" }
+  }
+}
+```
+
+### Why this is not just a tool the model holds
+
+Because of what the interesting tools are. Knowing what *changed* since the
+last run means asking something that keeps per-run state, and a tool that
+advances persisted state as a side effect of answering is a mutating tool —
+correctly so. Under the default `hitl.on_mutation: require_approval`, a
+model holding that tool parks the cycle for an operator on **every fire**.
+An unattended monitor that needs someone awake to authorize finding out
+whether anything changed is not unattended. (And a tool nothing has
+classified is mutating by default, so this is the common case, not a corner
+of it.)
+
+So the collection is mast's. Three things follow, all of them deliberate:
+
+- **Nothing gates it**, because no model asked for anything. The write gate
+  stays registered and stays in force for everything the model *does* call.
+- **It costs zero model calls**, by construction rather than by tuning — a
+  leg the model is not part of cannot spend a token. A monitoring cycle on a
+  [bounded roster](#bounded-rosters) therefore costs exactly one model call,
+  the same as an injected incident.
+- **mast learns nothing about your domain.** It runs the calls you named and
+  passes the results through unchanged. What a transition *means* is the
+  collected tool's business.
+
+### The fence
+
+The exception is narrow because it is enforced, not because it is
+documented. A tool named in `monitor.collect` must be reachable by nothing
+else, and the daemon refuses to start otherwise — before it wires MCP, so an
+operator without credentials reads the roster problem rather than a `403`
+standing in for it. Three ways a roster reaches a tool, all three refused:
+
+1. a specialist names it outright, on an MCP server or among its built-ins;
+2. a specialist allows an MCP server with no `tools:` list, which grants it
+   every tool on that server (refused whether or not a collect tool is on
+   that server today — mast cannot tell without connecting to it);
+3. a specialist declares no `tools.mcp` key at all, which inherits the whole
+   catalog. Write `mcp: []` if it needs no tools.
+
+`SingleTurn` specialists are exempt: they are built with no toolsets at all,
+so they reach nothing. That is what makes a bounded monitoring roster the
+clearest form of the shape — its model holds no tools whatsoever and still
+gets the transitions.
+
+### When collection fails
+
+The cycle fails, before any model call. Not "collect what you can and wake
+the model with the rest": a cycle whose diff failed and whose scan succeeded
+would hand the model a snapshot with no transitions attached, and the honest
+reading of "no transitions" is "nothing changed". A monitor that reports calm
+because its collection broke is worse than one that reports nothing, because
+only the second is visibly broken. The fire is counted `error` on
+`mast_scheduled_fires_total`, the reason is logged against the tick, and the
+cadence continues to the next one.
 
 ## Budget fields
 

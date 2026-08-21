@@ -114,6 +114,20 @@ type scheduledPayload struct {
 	Kind     string `json:"kind"`
 	Workload string `json:"workload"`
 	Tick     string `json:"tick"`
+
+	// Collected is what the workload's monitor.collect block gathered
+	// before this turn started, keyed by the bundle's `as:` names (v0.5
+	// W4.2). Absent on a workload that declares no monitor block.
+	//
+	// It rides in the envelope rather than arriving as a second message
+	// because a cycle's facts and the tick they were sampled at are one
+	// thing: a roster that reads the transitions has to be able to say
+	// WHICH fire they belong to, and two messages can be interleaved by
+	// a resume. The results are passed through exactly as the tools
+	// returned them — mast does not summarize, re-key or reclassify
+	// them, because what a transition means belongs to the tool that
+	// classified it.
+	Collected map[string]any `json:"collected,omitempty"`
 }
 
 // scheduledSessionID names the session one tick's run owns.
@@ -407,14 +421,22 @@ func (t *scheduledTrigger) persist(ctx context.Context, lastFire time.Time, fire
 	return t.store.SaveSchedule(wctx, t.userID, rec)
 }
 
-// newScheduledFireCallback builds what a tick actually does: open a
-// fresh session owned by the daemon's user, stamp the scheduler's
+// newScheduledFireCallback builds what a tick actually does: collect on
+// mast's own behalf if the workload declares a monitor block, then open
+// a fresh session owned by the daemon's user, stamp the scheduler's
 // identity on it, and drive one turn through the same chokepoint every
 // other turn kind uses (runTurnPre) — no privileged side path, so the
 // abort/gate-pause refusals, the turn lock, the budget meter, the
 // watchdog, and the write gate all apply to a scheduled run exactly as
 // they do to an injected one.
-func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, ensure func(string)) func(context.Context, time.Time) error {
+//
+// The collection happens BEFORE runTurnPre, not inside it, and that
+// ordering is the whole of W4.2: everything runTurnPre touches is about
+// a model call, and the collection leg's claim is that it is not one.
+// A collection failure therefore returns before a turn is launched, so
+// the tick costs nothing and the failure is visible as an errored fire
+// rather than as a model run that concluded nothing was wrong.
+func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, collector *monitorCollector, ensure func(string)) func(context.Context, time.Time) error {
 	var prompt string
 	if bundle != nil && bundle.EdgeTrigger.Scheduled != nil {
 		prompt = bundle.EdgeTrigger.Scheduled.Prompt
@@ -437,10 +459,19 @@ func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *tran
 			ctx, cancel = context.WithTimeout(ctx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
 			defer cancel()
 		}
+		// The collection leg. It runs under the fire's context, so the
+		// wallclock ceiling above bounds the whole cycle rather than
+		// only the model's half of it — a wedged MCP server is exactly
+		// the way an unattended cycle stops without anyone noticing.
+		collected, err := collector.collect(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("monitoring cycle for tick %s: %w", tick.UTC().Format(time.RFC3339), err)
+		}
 		body, err := json.Marshal(scheduledPayload{
-			Kind:     "scheduled",
-			Workload: workloadName,
-			Tick:     tick.UTC().Format(time.RFC3339),
+			Kind:      "scheduled",
+			Workload:  workloadName,
+			Tick:      tick.UTC().Format(time.RFC3339),
+			Collected: collected,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal scheduled payload: %w", err)

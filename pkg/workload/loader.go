@@ -114,6 +114,9 @@ func (b *Bundle) validate() error {
 			return err
 		}
 	}
+	if err := b.validateMonitor(); err != nil {
+		return err
+	}
 	seenTools := make(map[string]bool, len(b.ToolCatalog.Tools))
 	for _, p := range b.ToolCatalog.Tools {
 		if p.Name == "" {
@@ -126,6 +129,44 @@ func (b *Bundle) validate() error {
 		if err := validatePrecondition(p); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateMonitor checks what the bundle alone can check about the
+// collection leg (v0.5 W4.2).
+//
+// Whether a named tool is wired at all is checked at the moment it is
+// used, where the toolsets are — the same split validatePrecondition
+// makes, and for the same reason: enumerating a live toolset means
+// connecting to every MCP server, which is not something a YAML parse
+// should do. Whether a named tool has leaked into a specialist's reach
+// is checked at composition, where the roster is.
+func (b *Bundle) validateMonitor() error {
+	if !b.Monitor.Enabled() {
+		return nil
+	}
+	// A collection with nothing to trigger it is a block an operator
+	// believes is running and that has never once run. Refuse it here
+	// rather than let the daemon come up quietly doing nothing — the
+	// same argument EffectiveInterval makes about a cadence that does
+	// not parse.
+	if b.EdgeTrigger.Scheduled == nil {
+		return fmt.Errorf("monitor.collect names %d call(s) but the workload declares no edge_trigger.scheduled block; the collection leg runs at the top of a scheduled cycle, so without a cadence it never runs at all", len(b.Monitor.Collect))
+	}
+	seen := make(map[string]bool, len(b.Monitor.Collect))
+	for i, c := range b.Monitor.Collect {
+		if strings.TrimSpace(c.Tool) == "" {
+			return fmt.Errorf("monitor.collect[%d] names no tool", i)
+		}
+		key := c.Key()
+		if seen[key] {
+			// Two entries filed under one key means one result silently
+			// overwrites the other. The fix depends on which case it is,
+			// so the message names both.
+			return fmt.Errorf("monitor.collect files two results under %q; give one of them an `as:` key, or drop the duplicate", key)
+		}
+		seen[key] = true
 	}
 	return nil
 }

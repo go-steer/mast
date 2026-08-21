@@ -119,31 +119,47 @@ func (ts *toolSchemas) resolve(name string) (tool.Tool, error) {
 	return t, nil
 }
 
-// read runs a read-only tool on mast's own behalf and returns its
-// result, for change-set freshness preconditions (v0.4 W7).
+// runOwnBehalf runs a wired tool that no model asked for and returns
+// its result.
 //
-// This is the one place mast calls a tool that no model asked for. It
-// is deliberately narrow: the tool comes from the same wired toolsets
-// everything else here resolves against, the caller (the write gate)
-// only ever passes a tool the bundle declared as a precondition read,
-// and internal/compose refuses to start if that tool is classified
-// mutating. The result goes into a digest and a handful of declared
-// fields, and never into the transcript — the model is not told what
-// mast checked, because the check is about the operator's approval and
-// not about the agent's reasoning.
+// There are exactly TWO callers, and the count is the point — this is
+// mast's whole surface for calling a tool outside the model's dispatch
+// path, and each caller is a named exception with its own fence:
+//
+//   - read (v0.4 W7): a change-set freshness precondition. Fenced by
+//     CLASSIFICATION — the write gate only ever passes a tool the
+//     bundle declared as a precondition read, and internal/compose
+//     refuses to start if that tool is classified mutating. The
+//     exception can only widen towards safer calls.
+//   - collect (v0.5 W4.2): a monitoring cycle's collection and
+//     state-advance legs. Fenced by REACHABILITY, because
+//     classification cannot fence it — the whole reason the call is
+//     mast's is that it is mutating and would otherwise park the cycle
+//     for a human on every fire. compose.CheckMonitorCollectSurface
+//     refuses to start if a collect tool is reachable from any roster.
+//
+// A third caller needs its own fence and its own paragraph here, not a
+// third call site.
+//
+// Two properties are shared and neither is optional.
 //
 // ADK's runnable-tool interface is unexported (tool.Tool is name and
-// description only), so the handle is asserted rather than imported;
-// a tool that does not satisfy it cannot be a precondition read, which
-// is reported as such rather than treated as "nothing changed".
+// description only), so the handle is asserted rather than imported; a
+// tool that does not satisfy it is reported as unrunnable rather than
+// treated as an empty answer. Silence and "nothing changed" are the two
+// results this seam must never confuse, in both directions: a
+// precondition that reads as unmoved approves a stale change set, and a
+// collection that reads as empty is a monitor that has stopped
+// monitoring.
 //
 // The handle is unwrapped first. The wired toolsets carry pkg/mcp's
-// digesting wrap, which exists to shrink what a *model* reads; this
-// read goes into a digest and a field comparison instead, so a digest
-// envelope here would be pure loss — it drops the fields the operator's
-// approval was recorded against and stamps a fresh call id on every
-// call, which reads as "the cluster moved" forever after.
-func (ts *toolSchemas) read(ctx adkagent.Context, name string, args map[string]any) (map[string]any, error) {
+// digesting wrap, which exists to shrink what a *model* reads. Neither
+// caller is a model: the precondition read goes into a digest and a
+// field comparison, and the collection result goes into a transition
+// classification. A digest envelope on either is pure loss — it drops
+// the very fields the comparison is made of and stamps a fresh call id
+// on every call, which reads as "the cluster moved" forever after.
+func (ts *toolSchemas) runOwnBehalf(ctx adkagent.Context, name string, args map[string]any, unrunnable string) (map[string]any, error) {
 	t, err := ts.resolve(name)
 	if err != nil {
 		return nil, err
@@ -153,14 +169,40 @@ func (ts *toolSchemas) read(ctx adkagent.Context, name string, args map[string]a
 		Run(ctx adkagent.Context, args any) (map[string]any, error)
 	})
 	if !ok {
-		return nil, fmt.Errorf("tool %q cannot be run by mast directly, so it cannot serve as a precondition read", name)
+		return nil, fmt.Errorf("tool %q cannot be run by mast directly, so it cannot %s", name, unrunnable)
 	}
 	if args == nil {
 		args = map[string]any{}
 	}
-	result, err := runner.Run(ctx, args)
+	return runner.Run(ctx, args)
+}
+
+// read runs a read-only tool on mast's own behalf, for change-set
+// freshness preconditions (v0.4 W7).
+//
+// The result never reaches the transcript — the model is not told what
+// mast checked, because the check is about the operator's approval and
+// not about the agent's reasoning. See runOwnBehalf for the fence.
+func (ts *toolSchemas) read(ctx adkagent.Context, name string, args map[string]any) (map[string]any, error) {
+	result, err := ts.runOwnBehalf(ctx, name, args, "serve as a precondition read")
 	if err != nil {
 		return nil, fmt.Errorf("precondition read %s: %w", name, err)
+	}
+	return result, nil
+}
+
+// collect runs one of a monitoring cycle's declared collection calls on
+// mast's own behalf (v0.5 W4.2).
+//
+// Unlike read, the result IS handed to the model — as the turn's input,
+// already gathered. That is the whole trade: the model reasons over the
+// transitions and never holds the tool that produced them, so the
+// collection leg costs zero model calls by construction rather than by
+// measurement. See runOwnBehalf for the fence.
+func (ts *toolSchemas) collect(ctx adkagent.Context, name string, args map[string]any) (map[string]any, error) {
+	result, err := ts.runOwnBehalf(ctx, name, args, "serve as a monitor.collect call")
+	if err != nil {
+		return nil, fmt.Errorf("monitor collection %s: %w", name, err)
 	}
 	return result, nil
 }

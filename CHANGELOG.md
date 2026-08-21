@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- **A monitoring cycle gathers its own facts, before the model is woken
+  and for zero model calls.** A workload can now declare a
+  `monitor.collect` block: an ordered list of tool calls mast makes on
+  its own behalf at the top of each scheduled fire, whose results reach
+  the roster inside the wake-up envelope under `collected` (#242, W4.2).
+
+  The shape is forced by what the interesting tools are. Knowing what
+  *changed* since the last run means asking something that keeps per-run
+  state, and a tool that advances persisted state as a side effect of
+  answering is a mutating tool — correctly so, and mast's predicate
+  defaults every un-annotated MCP tool to mutating anyway. Under the
+  shipped default `hitl.on_mutation: require_approval`, a model holding
+  that tool parks the cycle for an operator on *every fire*. An
+  unattended monitor that needs somebody awake to authorize finding out
+  whether anything changed is not unattended. The two alternatives were
+  worse: declaring the diff `mutating: false` puts a false statement
+  into an audited override, and a dry-run-then-advance-later split
+  contradicts the ordering the notify half needs.
+
+  So the collection leg is mast's, and it is fenced. The write gate's
+  precondition read is bounded by *classification* — compose refuses a
+  read that is mutating, so that exception can only widen towards safer
+  calls. This one inverts that, so it is bounded by *reachability*:
+  `compose.CheckMonitorCollectSurface` refuses to start if a collect
+  tool is reachable from any roster, including through the two
+  un-enumerated grants (`mcp:` with no `tools:` list, and no `tools.mcp`
+  key at all) that the capability split exempts a declared change
+  executor from. The refusal runs ahead of MCP wiring, so an operator
+  without credentials reads the roster problem rather than a `403`
+  standing in for it. `SingleTurn` specialists are exempt because they
+  are built with no toolsets at all.
+
+  The cost claim is structural rather than measured — a leg the model is
+  not part of cannot spend a token — and is asserted anyway, off both
+  meter surfaces `/steps` reads: a bounded monitoring cycle that
+  collects costs exactly one model call, the same as an injected
+  incident that does not. A collection failure aborts the cycle before
+  any model call and counts as an errored fire; waking the model with a
+  partial picture would let a monitor report calm because its collection
+  broke, which is worse than reporting nothing because only the second
+  is visibly broken.
+
 - **A judged nightly no longer loses a corpus row to a provider's rate
   limiter.** On 2026-08-21 three of the 31 scenarios came back
   `Error 429 ... RESOURCE_EXHAUSTED` from Vertex, so the board scored 28

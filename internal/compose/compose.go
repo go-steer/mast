@@ -318,6 +318,13 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		return nil, nil, err
 	}
 
+	// And the mirror of it: a tool mast runs ungated on its own behalf
+	// at the top of a monitoring cycle must not also be reachable from
+	// inside a turn (v0.5 W4.2).
+	if err := CheckMonitorCollectSurface(cfg.Bundle, cfg.Specs); err != nil {
+		return nil, nil, err
+	}
+
 	// The bounded roster is checked before anything is constructed, not
 	// at the terminal arm below, so a roster that can never be bounded
 	// is refused without first resolving a tier, opening a provider
