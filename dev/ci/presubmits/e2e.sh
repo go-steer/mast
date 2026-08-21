@@ -30,8 +30,13 @@
 #     (docs/v0.4-plan.md §3, W7.0). Plus W4.1's cadence: a workload
 #     that wakes itself keeps its phase across a crash and does not pay
 #     for the ticks it was down for.
+#   scripts/uat-v0.5.sh — the v0.5 monitoring work: a scheduled cycle
+#     gathers its own facts before the model is woken, for no model
+#     calls of its own, and the daemon refuses a roster that could
+#     reach those same tools through a specialist (docs/v0.5-plan.md,
+#     W4.2).
 #
-# All three run, in order, and a failure in any fails the presubmit. The
+# All four run, in order, and a failure in any fails the presubmit. The
 # v0.2 harness is the spine and stays exactly as it is; each release's
 # additions go in their own script rather than growing that one, so an
 # acceptance pass can be read and re-run on its own.
@@ -45,3 +50,4 @@ cd "$(dirname "$0")/../../.."
 scripts/uat-v0.2.sh
 scripts/uat-v0.3.sh
 scripts/uat-v0.4.sh
+scripts/uat-v0.5.sh

@@ -82,20 +82,20 @@
 #          approval arrives at a process that never saw the diagnoser,
 #          and still covers the whole set
 #
-#   U-bounded-cost (W4.3 `/steps`; W4.2 `/collect`, v0.5) — what one
-#     cycle costs. The other legs above are about what a run DOES; this
-#     one is about what it SPENDS, which is the question an operator
-#     answers before letting a workload run unattended on a timer:
+#   U-bounded-cost (W4.3 `/steps`) — what one cycle costs. The other
+#     legs above are about what a run DOES; this one is about what it
+#     SPENDS, which is the question an operator answers before letting a
+#     workload run unattended on a timer:
 #       /steps  the shipped examples/workloads/bounded-triage bundle
 #               answers one incident in exactly ONE model call, with a
 #               report forced to the finding schema — asserted off the
 #               meter, on both surfaces that publish it, and paired
 #               with the refusal that keeps the number honest (a roster
 #               that would need an orchestrator will not start)
-#       /collect (W4.2, v0.5) zero-token collection — cluster data
-#               gathered with no model call at all. Stubbed here rather
-#               than left unwritten so the row's other half has a home
-#               the day it lands
+#     The other half of the cost claim — zero-token COLLECTION, board
+#     row 9 — shipped in v0.5 and lives in scripts/uat-v0.5.sh, not
+#     here. Row 9 must not be implied by row 10's green, and a leg that
+#     only runs when v0.4's whole pass runs is not independent of it.
 #
 #   U-decisions (W8, the harvest) — the same two-call set, exported
 #     with the daemon stopped: one record per adjudicated CALL (so one
@@ -748,80 +748,6 @@ cp -r "${SCHED}" "${SCHEDGATE}"
 mk_scheduled_workload "${SCHEDGATE}/workload.yaml" require_approval ApplyChange
 mk_changeset_workload "${EXPIRING}/workload.yaml" 1s
 
-# ---- the collection fixtures (W4.2, v0.5) ---------------------------
-# The shipped bounded-triage bundle plus a monitor block, because the
-# claim needs both halves in one workload: `bounded` is what makes the
-# model's own cost a constant to compare against, and the monitor block
-# is what has to add nothing to it. Its specialist is SingleTurn and
-# holds no tools at all, which is why this roster passes the collection
-# fence — it is the clearest form of the whole idea.
-#
-# read_status is declared MUTATING here, which it is not, and that is
-# the point rather than a fixture bug. The tool a real monitor collects
-# from — a run-to-run finding diff — advances persisted state as a side
-# effect of answering, so it is mutating and is right to be; and mast's
-# predicate defaults every un-annotated MCP tool to mutating anyway.
-# Declaring it mutating under on_mutation: require_approval is what
-# makes the leg's second claim testable: the cycle must NOT park.
-BCOLLECT="${WORK}/bounded-collect"
-cp -r "${REPO}/examples/workloads/bounded-triage" "${BCOLLECT}"
-cp "${FIXTURE}/mcp.json" "${BCOLLECT}/mcp.json"
-cat > "${BCOLLECT}/workload.yaml" <<'YAML'
-# Harness fixture for scripts/uat-v0.4.sh's U-bounded-cost/collect leg.
-# examples/workloads/bounded-triage with a monitor block and a cadence.
-name: uat-bounded-collect
-description: Fixture workload for the mast v0.5 zero-token collection leg.
-mode: single_session
-
-dispatch: bounded
-
-tool_catalog:
-  mcp:
-    - server: uat-blocker
-  tools:
-    - name: read_status
-      mutating: true
-
-specialists:
-  - incident-report
-
-budget:
-  max_wallclock_seconds: 120
-
-hitl:
-  # Spelled out because it is what the leg varies against: under this
-  # policy a model holding read_status would park every fire.
-  on_mutation: require_approval
-
-monitor:
-  collect:
-    - tool: read_status
-      as: status
-
-edge_trigger:
-  scheduled:
-    # Long enough that one fire lands and the assertions finish well
-    # before the next tick, so the counters below are a single cycle's
-    # and not a race with the second.
-    interval: 10s
-    jitter: 0s
-    prompt: 'A monitoring cycle woke you: {"reason":"CrashLoopBackOff"}. Report on what was gathered.'
-YAML
-
-# The refusal's fixture: the v0.4 scheduled roster, whose uat-worker
-# already names read_status in its allowlist, plus a monitor block that
-# collects it. One tool, two doors — which is the thing the fence
-# exists to make impossible.
-BCREFUSE="${WORK}/collect-refuse"
-cp -r "${SCHED}" "${BCREFUSE}"
-mk_scheduled_workload "${BCREFUSE}/workload.yaml" apply ReadStatus
-cat >> "${BCREFUSE}/workload.yaml" <<'YAML'
-
-monitor:
-  collect:
-    - tool: read_status
-YAML
-
 # ====================================================================
 # U-proposed-change (W7.0) — the producer contract
 # ====================================================================
@@ -1301,93 +1227,6 @@ BREF="$(grep -- 'failed to construct root agent' "${LOG}" || true)"
 assert_has "the refusal counts what it found" "${BREF}" '14 specialists'
 assert_has "and names them" "${BREF}" 'triage-classifier'
 assert_has "and says what the shape takes instead" "${BREF}" 'takes exactly one'
-
-# ---- /collect: zero-token collection (W4.2, v0.5) -------------------
-# The other half of the bounded claim, and the harder one. /steps says a
-# cycle's REASONING is one model call; this says the cycle's FACTS cost
-# none at all, because mast gathers them itself before the model is
-# woken.
-#
-# Read off the same two meter surfaces /steps reads, for the same
-# reason: latency and token totals move with the model, the prompt and
-# the machine, so a cost claim inferred from either is a claim about the
-# afternoon it was measured. Here the count is doing double duty — the
-# collection leg's own cost is the DIFFERENCE between this cycle and a
-# bounded incident, and /steps has already pinned that at one.
-say "U-bounded-cost/collect: a monitoring cycle gathers its facts for zero model calls"
-WL="${BCOLLECT}"
-DISPATCH=
-DB="${WORK}/b-collect.db"
-LOG="${WORK}/b-collect.log"
-reset_blocker
-start_daemon "${LOG}"
-
-# Armed before anything fires, and it says which calls: an operator's
-# first question about a monitor is what it is going to run.
-BCARM="$(grep -- 'monitoring cycle armed' "${LOG}" || true)"
-assert_has "the daemon armed the collection leg at startup" "${BCARM}" 'read_status'
-
-if wait_for 60 sched_fires_atleast "${LOG}" 1; then
-  ok "the cadence fired with nothing calling it"
-else
-  bad "the cadence never fired"
-fi
-BCSID="$(log_field "${LOG}" 'scheduled trigger fired' session)"
-assert_state "the cycle finished on its own" "${BCSID}" idle
-
-# It ran, once, before the model. The blocker's ledger is the
-# independent witness: the daemon's own log line says it collected, and
-# the tool's ledger says it was called.
-assert_eq "the collection call fired exactly once" "$(calls_count read_status)" 1
-BCCOL="$(grep -- 'collected before waking the model' "${LOG}" || true)"
-assert_has "the daemon says what it gathered" "${BCCOL}" 'status'
-assert_has "and which cycle it gathered it for" "${BCCOL}" "${BCSID}"
-
-# THE ASSERTION THE WORKSTREAM EXISTS FOR. One fire, one model call —
-# the same number /steps measured for a bounded incident with no
-# collection at all. The collection leg's cost is the difference, and
-# the difference is zero.
-assert_eq "the whole cycle cost one model call" "$(model_calls "${LOG}")" 1
-assert_eq "and the exported counter agrees" \
-  "$(metric_value 'mast_model_calls_total{workload="uat-bounded-collect"}')" 1
-
-# The second claim, and the reason the collection leg is mast's at all.
-# read_status is declared mutating and the workload's policy is
-# require_approval, so a model holding this tool would have parked the
-# cycle for an operator — at whatever hour the cadence came due. Nothing
-# parked, because no model asked for anything.
-assert_no_log "nothing parked for an operator" "${LOG}" 'HITL PAUSE'
-# The gate is REGISTERED — the bundle asked for it and mast obliged —
-# and it adjudicated nothing, because nothing came through the door it
-# watches. Both halves matter: a leg that passed because the gate was
-# absent would be proving the wrong thing.
-assert_has "the write gate was in force" "$(grep -- 'write gate registered' "${LOG}" || true)" 'require_approval'
-assert_no_log "and it was never asked to adjudicate" "${LOG}" '"msg":"write gate"'
-stop_term
-
-# ---- /collect: the exception is fenced, and the fence is startup ----
-# Ungated is only safe while it is unreachable. A tool mast runs on its
-# own behalf at the top of a cycle and that a specialist can also call
-# mid-turn makes "was this write approved?" depend on which door it came
-# through — so the daemon must refuse the roster rather than serve it.
-say "U-bounded-cost/collect: a roster that can also reach the collect tool will not start"
-DB="${WORK}/b-cfence.db"
-LOG="${WORK}/b-cfence.log"
-if start_refused "${LOG}" "${BCREFUSE}" coordinator; then
-  ok "the daemon refused the roster instead of serving it"
-else
-  bad "the daemon came up with read_status reachable through both doors"
-fi
-BCREF="$(grep -- 'failed to construct root agent' "${LOG}" || true)"
-[ -n "${BCREF}" ] || note "no refusal logged; last line was: $(tail -n 1 "${LOG}")"
-assert_has "the refusal names the specialist" "${BCREF}" 'uat-worker'
-assert_has "and the tool both doors reach" "${BCREF}" 'read_status'
-assert_has "and says the collection leg is why" "${BCREF}" 'on its own behalf'
-# Credential-free, like the /steps refusal and for the same reason: the
-# check runs in compose.CheckRoster, ahead of any MCP wiring, so an
-# operator without credentials reads the roster problem rather than a
-# 403 standing in for it.
-assert_no_log "it refused before wiring MCP" "${LOG}" 'MCP toolset wired'
 
 # ====================================================================
 # U-scheduled (W4.1) — the workload wakes itself, and keeps its phase
