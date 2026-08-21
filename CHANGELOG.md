@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **The metrics reference page is now checked against a real scrape.**
+  `docs/site/.../reference/metrics.md` enumerates every family
+  `pkg/observability` constructs, with labels and fixed vocabularies.
+  Nothing verified that, and the drift is silent in the direction that
+  matters: a family added without a page edit is a metric no dashboard
+  learns exists, and a renamed one leaves a page that reads like
+  documentation and behaves like a broken query.
+
+  `pkg/observability`'s new gate primes a registry, does a GET on
+  `Handler()`, and compares the parsed scrape against the parsed page
+  in both directions — family names, label names, and the enumerated
+  label values, which `Prime` materializes and which therefore appear
+  in the scrape. The comparison deliberately reads the *published*
+  artifact rather than regenerating expected names from
+  `prometheus.CounterOpts`; upstream derived its column that way and
+  got two names wrong.
+
+  The drift that prompted it is fixed too: `docs/observability-design.md`
+  listed `mast_scheduled_fires_total` and `mast_a2a_server_tasks_total`
+  in neither its shipped nor its design-target column, and left the two
+  AG-UI families reading as unshipped. All four are now in a delimited
+  shipped inventory the same test holds to the registry, and the A2A /
+  AG-UI design-target sketches say how the shipped families differ from
+  them (`{workload}`, not `{skill}`; `interrupted`/`aborted`/`rejected`,
+  not `interrupt`/`cancelled`). `mast_turns_total`'s v0.4
+  `watchdog_halt` outcome is recorded there as well.
+
+- **Five site links stopped hard-coding the deploy base.** Content is
+  supposed to write `/reference/cli/` and let the
+  `remark-prepend-base` plugin add `/mast` at build time; five links
+  said `/mast/...` outright, which the plugin skips. They work today and
+  would 404 the day the base changes — the one event the plugin exists
+  to survive. `dev/tools/docs-lint` grew a fourth rule so they cannot
+  come back.
+
 - **A specialist dispatched by the planner is billed to the workload
   that dispatched it.** The planner runs every `invoke_specialist` call
   on a runner of its own, and a private runner is a private event

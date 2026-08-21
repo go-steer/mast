@@ -19,8 +19,9 @@
 #   1. numeric tool/specialist counts   ("13 tools", "13-specialist")
 #   2. hard-coded container/image/variant counts
 #   3. pinned @vX.Y.Z installs of our own module
+#   4. site links that hard-code the deploy base (/mast/...)
 #
-# core-agent's fourth rule (wrong-major v1.X.Y prose pins) is
+# core-agent's fifth rule (wrong-major v1.X.Y prose pins) is
 # deliberately not ported yet: mast is pre-1.0 and its v0.x status
 # lines are legitimate. Revisit at v1.0.
 #
@@ -88,6 +89,21 @@ check_pinned_installs() {
     }' || true
 }
 
+# Check 4: a content link that hard-codes the deploy base. The
+# remark-prepend-base plugin adds Astro's `base` to every root-relative
+# markdown link at build time, so content is supposed to say
+# `/reference/cli/`. A link that already says `/mast/reference/cli/` is
+# skipped by the plugin — it works today and silently 404s the day the
+# base changes, which is the one event the plugin exists to survive.
+check_hardcoded_base() {
+  local path="$1"
+  grep -n -E '\]\(/mast/' "$path" 2>/dev/null | \
+    awk -F: -v p="$path" '{
+      msg = "link hard-codes the deploy base — write (/reference/...); remark-prepend-base adds /mast at build time";
+      printf "%s:%s: %s\n", p, $1, msg
+    }' || true
+}
+
 # ---- driver -----------------------------------------------------------
 
 run_all_checks() {
@@ -99,6 +115,7 @@ run_all_checks() {
       check_tool_counts "$path"
       check_image_counts "$path"
       check_pinned_installs "$path"
+      check_hardcoded_base "$path"
     )
     if [[ -n "$out" ]]; then
       printf '%s\n' "$out"
@@ -141,6 +158,8 @@ Install with:
 ```
 go get github.com/go-steer/mast/cmd/mast@v0.1.0
 ```
+
+See the [CLI reference](/mast/reference/cli/) — a link that hard-codes the base.
 EOF
 
   local out=0
@@ -154,8 +173,11 @@ EOF
   n=$(check_pinned_installs "$tmp/fixture.md" | wc -l)
   (( n >= 1 )) || { echo "self-test: check_pinned_installs fired 0 times, expected ≥1"; out=1; }
 
+  n=$(check_hardcoded_base "$tmp/fixture.md" | wc -l)
+  (( n >= 1 )) || { echo "self-test: check_hardcoded_base fired 0 times, expected ≥1"; out=1; }
+
   if (( out == 0 )); then
-    echo "docs-lint self-test: OK (all 3 rules fired on the fixture)"
+    echo "docs-lint self-test: OK (all 4 rules fired on the fixture)"
   fi
   return $out
 }

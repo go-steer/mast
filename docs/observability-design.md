@@ -97,9 +97,11 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 ### Metric families
 
+<!-- shipped-metric-families:start — pkg/observability/metrics_page_test.go asserts that every family the registry actually constructs is named between these markers. A family that ships and is listed nowhere here is the drift #228 was filed for; a family below that is only a design target belongs after the marker, not before it. -->
+
 *(Shipped v0.1, 2026-07-26 — `pkg/observability` resolves this catalog for v0.1 as a deliberately **lean seven-counter-family set**, all fed from the same event-stream loop the budget meter folds:*
 
-- *`mast_turns_total{workload, outcome}` — outcome ∈ `ok` / `error` / `budget_exceeded` (fixed vocabulary; see the correction below)*
+- *`mast_turns_total{workload, outcome}` — outcome ∈ `ok` / `error` / `budget_exceeded` (fixed vocabulary; see the correction below) — plus `watchdog_halt` since v0.4 (added 2026-08-21 to this list; the behavioral watchdog's halt is deliberately distinct from `error`, because it is the backstop working, and from `budget_exceeded`, because the session has runway left)*
 - *`mast_model_calls_total{workload}`*
 - *`mast_tokens_total{workload, kind}` — kind ∈ `prompt` / `candidates`*
 - *`mast_cost_usd_total{workload}` — priced by the budget meter; the registry is only the export surface*
@@ -118,6 +120,22 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 - *`mast_timed_pause_fires_total{workload, outcome}` — timed-pause scheduler fires; outcome ∈ `resumed` / `skipped` / `error`*
 
 *These are the shipped names for the durable-execution surface; the design-target `mast_pauses_total` / `mast_pause_duration_seconds` / `mast_resumes_total` families listed under "Pause / resume" below were the pre-implementation sketch and were superseded — the shipped families split by the mechanism that emits them (gate vs timed, operator vs planned-stop) rather than by a single `reason` label, and pause-duration histograms remain deferred. The plane-A `pause_session` builtin's own metric lives with the planner surface and is a documented follow-on.)*
+
+*(Shipped v0.2, 2026-08-11 — the protocol servers. The A2A server (#78) and the AG-UI server (#84) each count what they drive through the `runTurnPre` chokepoint. Recorded here 2026-08-21: both surfaces shipped their families and neither was written into this inventory, which is exactly the failure #228 was filed for. Note that both are labelled by **`workload`**, not by `skill` or `thread`, and that the shipped AG-UI vocabulary is not the sketch's — the design-target entries under "A2A" and "AG-UI" below are annotated accordingly:*
+
+- *`mast_a2a_server_tasks_total{workload, outcome}` — task-lifecycle transitions; outcome ∈ `submitted` / `working` / `input-required` / `completed` / `failed` / `canceled` / `rejected`, the wire task-state vocabulary (the string values match `pkg/a2a`'s `TaskState` constants)*
+- *`mast_agui_runs_total{workload, outcome}` — runs by terminal disposition; outcome ∈ `success` / `interrupted` / `error` / `aborted` / `rejected`*
+- *`mast_agui_run_duration_seconds{workload}` — histogram of executed-run wallclock; a pre-turn refusal (draining, an unaddressable session id) is not timed, so the histogram counts runs that reached the turn*
+
+*The one histogram in the shipped set: everything else is a counter, and duration distributions elsewhere remain deferred.)*
+
+*(Shipped v0.4, 2026-08-17 — the scheduled trigger (W4.1). Recorded here 2026-08-21 alongside the A2A/AG-UI families, same omission:*
+
+- *`mast_scheduled_fires_total{workload, outcome}` — ticks by what became of them; outcome ∈ `ran` / `skipped` (came due during a drain) / `error` (the run failed; the tick is spent and the next tick is the retry) / `missed` (coalesced away — the daemon was down when it came due)*
+
+*Three of the four outcomes are not runs, deliberately: a scheduled workload that stopped doing its work is indistinguishable from a healthy one unless the ticks it declined to run are counted too. `missed` is the alert — it is the only place a cadence reports that the daemon was not there, because mast does not catch up on a missed tick.)*
+
+<!-- shipped-metric-families:end -->
 
 **Session lifecycle:**
 - `mast_sessions_started_total{workload, task_class, tenant}` — counter
@@ -169,15 +187,15 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 - `mast_watchdog_signals_total{signal_type, workload}` — counter
 - `mast_watchdog_signal_to_action_seconds` — histogram (signal-to-effect latency)
 
-**A2A:**
+**A2A:** *(design-target sketch — `mast_a2a_server_tasks_total` shipped in v0.2 labelled `{workload, outcome}`, not `{skill, outcome}`: a skill label is per-agent-card cardinality mast declined, and the workload is what every other family is keyed by. See the shipped inventory above; the rest below is unshipped.)*
 - `mast_a2a_server_tasks_total{skill, outcome}` — counter (tasks accepted by mast's A2A server)
 - `mast_a2a_server_task_duration_seconds{skill}` — histogram
 - `mast_a2a_server_auth_failures_total{reason}` — counter
 - `mast_a2a_client_calls_total{remote, skill, outcome}` — counter (outbound A2A calls)
 - `mast_a2a_client_call_duration_seconds{remote, skill}` — histogram
 
-**AG-UI:**
-- `mast_agui_runs_total{workload, outcome}` — counter (`outcome` ∈ `success` / `interrupt` / `error` / `cancelled`)
+**AG-UI:** *(design-target sketch — `mast_agui_runs_total` and `mast_agui_run_duration_seconds` shipped in v0.2; see the shipped inventory above for the vocabulary that actually ships, which is not the one sketched here. The rest below is unshipped.)*
+- `mast_agui_runs_total{workload, outcome}` — counter (`outcome` ∈ `success` / `interrupt` / `error` / `cancelled`) *(shipped as `interrupted` / `aborted` / `rejected` — the sketch's `interrupt` and `cancelled` are not exported)*
 - `mast_agui_run_duration_seconds{workload}` — histogram
 - `mast_agui_active_threads{workload}` — gauge
 - `mast_agui_interrupts_total{workload, reason}` — counter (per HITL / durability pause)
