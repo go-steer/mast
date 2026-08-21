@@ -146,7 +146,12 @@ func CheckRoster(b workload.Bundle, specs []specialists.Spec, dispatch Dispatch)
 			return err
 		}
 	}
-	return nil
+	// The planner ignores `dispatch:` entirely, so this one is keyed on
+	// the bundle rather than on `resolved` — and it belongs here for the
+	// reason above: a roster mast will refuse should not cost an OAuth
+	// token fetch first, and a write-path refusal is the last one an
+	// operator should have to read past a 403 to find (#235).
+	return CheckPlannerWriteSurface(b, specs)
 }
 
 // rosterNames renders a roster for an error message, in the order the

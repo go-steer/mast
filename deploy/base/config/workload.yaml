@@ -116,6 +116,15 @@ hitl:
 # and --dispatch is ignored. run_shape_* vocabulary tools are declared
 # but return not_implemented until v0.2 wires the reference-graph
 # library.
+#
+# Uncommenting this on THIS roster is refused at startup, deliberately.
+# invoke_specialist runs each specialist on a runner of its own, and the
+# write gate is a runner plugin, so change-executor's mutating calls
+# would fire without the approval `hitl:` above asks for and without a
+# durable record of what they did (go-steer/mast#235). Drop
+# change-executor from the roster, or set `hitl.on_mutation: apply` if
+# those writes are genuinely meant to fire unattended. Coordinator and
+# graph dispatch are unaffected.
 # planner:
 #   enabled: true
 

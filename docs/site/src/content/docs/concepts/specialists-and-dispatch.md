@@ -207,6 +207,10 @@ error naming the file rather than an incident that behaves oddly:
   `output_schema:`, or one that also enables the planner → refused, naming
   what it found
 - a graph roster with no classifier or no `_fallback` → not routable
+- a planner roster holding a `change_executor` while `hitl.on_mutation`
+  asks for the write to be gated → refused, because the gate cannot reach
+  inside a dispatch
+  ([the write gate](/reference/write-gate/))
 
 Startup also logs every `change_executor` in the roster, so "which
 specialists here can change my cluster" is one log line instead of an
