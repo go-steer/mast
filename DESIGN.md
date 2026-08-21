@@ -93,6 +93,7 @@ the version named in the library API design's import-surface table.
 | `pkg/router` | LLM-as-router classifier (SingleTurn) used by graph dispatch. |
 | `pkg/specialists` | Subagent-as-tool: `.tmpl` files (YAML frontmatter) with budgets, model overrides, tool allowlists ([`docs/specialists-design.md`](./docs/specialists-design.md)). |
 | `pkg/workload` | Workload bundles: declarative YAML naming specialists, tool catalog, budgets, HITL policy. |
+| `pkg/monitor` | The run-to-run classification a monitoring cycle carries: parses the record stream a bundle's `monitor.transitions_from` key names (logfmt or flat JSON, one record per line, mandatory `scanned=/findings=` summary) into a `monitor.Set` the scheduled envelope ships whole. Domain-neutral by construction — no enum of transition classes, no severity comparison, no fingerprinting; the classifier's verdict is consumed verbatim. |
 | `pkg/planner` | Supervisor-body planner scaffold (`plan`/`finish_plan`; `invoke_remote_agent` composes here). |
 | `pkg/envelope` | Inject payloads — the unattended entry-point contract. |
 | `pkg/config` | `.agents/` discovery (workloads, specialists, MCP refs, A2A registrations) ([`docs/config-layout-design.md`](./docs/config-layout-design.md)). |
@@ -153,7 +154,9 @@ invariant every provider adapter's wire test is held to — see
 loop is daemon-side in `cmd/mast/schedtrigger.go`, reading the
 bundle's `scheduled:` section; a cycle's collection leg
 (`cmd/mast/monitor.go`, `cmd/mast/monitorctx.go`) runs ahead of it,
-off the bundle's `monitor.collect` block.
+off the bundle's `monitor.collect` block, and parses the one result
+named by `monitor.transitions_from` through `pkg/monitor` before the
+envelope is built.
 
 ## Key contracts worth knowing before changing anything
 
@@ -186,6 +189,19 @@ off the bundle's `monitor.collect` block.
   is fenced by *reachability*: `compose.CheckMonitorCollectSurface`
   refuses to start if a collect tool is reachable from any roster. A
   third caller needs a third fence, not a third call site.
+- **What changed since last run is the classifier's answer, not
+  mast's.** A cycle may check that a transition record is *well
+  formed* and may not check that it is *right*: a record with no
+  `subject_key` is malformed (nothing downstream can ack or
+  de-duplicate a subject it cannot name), an unrecognized transition
+  class is simply a class mast has not seen. The one integrity lever
+  is the stream's trailing `scanned=/findings=` summary — without it,
+  or with a `findings=` count that disagrees with the records parsed,
+  the result is void rather than quiet, because a truncated answer and
+  "nothing changed" must not read the same. Adding a severity ladder,
+  a fingerprint, or a local heuristic here re-implements
+  [`k8s-lookout`](https://github.com/go-steer/k8s-lookout) inside mast
+  and is the bug this contract exists to prevent.
 - **Unknown tools count as mutating.** The mutation predicate is
   default-deny: a tool nothing has classified is gated, so a bundle
   cannot get write access by omission. Un-gating is an audited
@@ -214,10 +230,12 @@ off the bundle's `monitor.collect` block.
 Deferrals are decisions ([`AGENTS.md`](./AGENTS.md) house rule #7);
 the owning doc names the version that lifts each one, and the
 [roadmap](https://go-steer.github.io/mast/roadmap/) is the
-user-facing view. Highlights: cross-run finding state and the chat
-egress half of unattended monitoring (v0.5, and deliberately owned by
-[`k8s-lookout`](https://github.com/go-steer/k8s-lookout) and
-switchboard rather than by mast); pre-call budget gating (today a
+user-facing view. Highlights: the chat egress half of unattended
+monitoring (v0.5, and deliberately owned by switchboard rather than by
+mast — cross-run finding state itself landed on `main` after v0.4 as
+`monitor.transitions_from`, which *consumes*
+[`k8s-lookout`](https://github.com/go-steer/k8s-lookout)'s
+classification rather than growing one here); pre-call budget gating (today a
 ceiling is crossed by the call that reports it); the remaining AG-UI
 slices (`agui://` federation client, per-key `StateDelta`, webhook
 push, client-declared tools,

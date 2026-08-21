@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **What changed since the last run comes out of the classifier, and
+  mast does not second-guess it.** A workload can now point
+  `monitor.transitions_from` at one of its `monitor.collect` keys; the
+  result filed under that key is parsed into a transition set and rides
+  the wake-up envelope as `transitions` — `{"scanned": 412, "records":
+  [...]}` — alongside the raw `collected` results (#242, W4.4).
+
+  The point of the feature is what it refuses to contain. There is no
+  enum of transition classes, no severity comparison, no fingerprint,
+  no "is this really new" check: a record's `transition=` value is the
+  producer's own string, carried through to the model verbatim, and an
+  unrecognized class is simply one mast has not seen.
+  [`k8s-lookout`](https://github.com/go-steer/k8s-lookout) already
+  keeps the per-run state and does the classification; a second
+  implementation here would be a second thing to disagree with the
+  first. `transitions_from` names *where* the verdict comes from, never
+  what the verdict may say. The loader checks only that the key names a
+  result some `monitor.collect` entry actually files.
+
+  The one judgement mast does make is whether the bytes are a whole
+  answer. A record stream is one record per line — logfmt or flat JSON,
+  detected per line — terminated by a mandatory `scanned=<n>
+  findings=<n> elapsed=<d>` summary, and a result without that line, or
+  whose `findings=` disagrees with the records parsed, is void rather
+  than quiet. A truncated stream is a prefix of a healthy answer, and
+  the notify half declines to page on "nothing changed"; the two must
+  not read the same. A record classified with no `subject_key` is
+  malformed for the same reason — nothing downstream can ack or
+  de-duplicate a subject it cannot name. Malformed aborts the cycle
+  before any model call, on the same grounds as a failed collection: a
+  monitor reporting calm because its parsing broke is worse than one
+  reporting nothing.
+
+  A quiet cycle is explicit, not absent. A workload that classifies and
+  saw no change ships `"records": []`; a workload that names no source
+  ships no `transitions` key at all. "We looked and nothing changed"
+  and "we do not know" are different facts, and W4.5 acts on only one
+  of them. The parsed set replaces the raw text under `collected`
+  rather than accompanying it, so the model is never handed two
+  spellings of the same fact.
+
 - **A monitoring cycle gathers its own facts, before the model is woken
   and for zero model calls.** A workload can now declare a
   `monitor.collect` block: an ordered list of tool calls mast makes on

@@ -22,6 +22,7 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 
+	"github.com/go-steer/mast/pkg/monitor"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -53,6 +54,22 @@ import (
 //   - mast still learns nothing about the domain. It runs the calls the
 //     bundle names and passes the results through; what a transition
 //     means is the collected tool's business, not mast's (W4.4).
+//
+// # W4.4: reading the classification without owning it
+//
+// The third point is the one W4.4 had to hold onto while making the
+// classification usable. A cycle that only carries opaque tool output
+// cannot decide whether anything changed, and "notify only on change"
+// (W4.5) is a decision mast has to make on its own at 3am.
+//
+// The seam that satisfies both is `monitor.transitions_from`: the
+// bundle names WHICH collected result is the classification, mast
+// parses it for shape, and every judgement inside it stays the
+// producer's. What mast gains is the ability to say "this cycle
+// classified four things and one of them is new"; what mast still
+// cannot say is whether a given finding should have been called new.
+// See pkg/monitor — the checks there are all "is this a whole answer",
+// never "is this the right answer".
 
 // monitorCollector runs a workload's declared collection calls at the
 // top of each scheduled fire.
@@ -63,6 +80,11 @@ type monitorCollector struct {
 	appName string
 	userID  string
 
+	// transitionsKey is the collect key whose result is parsed as the
+	// run-to-run classification, or "" for a workload that collects raw
+	// facts and lets the model read them (v0.5 W4.4).
+	transitionsKey string
+
 	// now is the injection point for the duration in the log line, the
 	// same seam scheduledTrigger uses and for the same reason.
 	now func() time.Time
@@ -70,13 +92,33 @@ type monitorCollector struct {
 
 func newMonitorCollector(logger *slog.Logger, mon workload.Monitor, run func(adkagent.Context, string, map[string]any) (map[string]any, error), appName, userID string) *monitorCollector {
 	return &monitorCollector{
-		calls:   mon.Collect,
-		run:     run,
-		logger:  logger,
-		appName: appName,
-		userID:  userID,
-		now:     func() time.Time { return time.Now().UTC() },
+		calls:          mon.Collect,
+		run:            run,
+		logger:         logger,
+		appName:        appName,
+		userID:         userID,
+		transitionsKey: mon.TransitionsKey(),
+		now:            func() time.Time { return time.Now().UTC() },
 	}
+}
+
+// cycleFacts is everything one fire gathered before the model was woken.
+//
+// Two fields rather than one map because they are read by different
+// things: Collected is for the model, which gets it in the envelope and
+// reasons over it, and Transitions is for mast, which has to decide
+// whether this cycle is worth waking anyone about (W4.5) without
+// understanding a word of it.
+type cycleFacts struct {
+	// Collected is the raw results keyed by the bundle's `as:` names.
+	// The classification's own raw result is NOT here — see Transitions.
+	Collected map[string]any
+
+	// Transitions is the parsed classification, or nil if the workload
+	// named none. Nil and empty are different answers: nil is "this
+	// workload does not classify", empty is "it classified, and nothing
+	// changed".
+	Transitions *monitor.Set
 }
 
 // enabled reports whether this workload collects at all. A nil collector
@@ -118,24 +160,51 @@ func (c *monitorCollector) clock() time.Time {
 // gap and is W4.5's, where the egress client lives. Until then the
 // signal is the errored-fire counter and the log line, which is what
 // every other unattended failure in mast surfaces as.
-func (c *monitorCollector) collect(ctx context.Context, sessionID string) (map[string]any, error) {
+// A MALFORMED CLASSIFICATION ABORTS IT TOO, for the same reason and
+// with more force. The whole point of naming a transitions source is
+// that mast reads it; a truncated or unparseable answer read leniently
+// becomes an empty transition set, and an empty transition set is the
+// wire for "all quiet". W4.5 will decline to notify on exactly that. So
+// the parse is strict and its failure ends the cycle — see pkg/monitor
+// for what "malformed" is allowed to mean, which is never "a class mast
+// has not heard of".
+func (c *monitorCollector) collect(ctx context.Context, sessionID string) (cycleFacts, error) {
 	if !c.enabled() {
-		return nil, nil
+		return cycleFacts{}, nil
 	}
 	start := c.clock()
 	cctx := newCollectContext(ctx, c.appName, c.userID, sessionID)
 	out := make(map[string]any, len(c.calls))
 	names := make([]string, 0, len(c.calls))
+	facts := cycleFacts{}
 	for _, call := range c.calls {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("collection of %q: %w", call.Key(), err)
+			return cycleFacts{}, fmt.Errorf("collection of %q: %w", call.Key(), err)
 		}
 		result, err := c.run(cctx, call.Tool, call.Args)
 		if err != nil {
-			return nil, err
+			return cycleFacts{}, err
+		}
+		if key := call.Key(); key != "" && key == c.transitionsKey {
+			set, err := monitor.ParseResult(result)
+			if err != nil {
+				return cycleFacts{}, fmt.Errorf("monitor.transitions_from names %q, collected from %q: %w", key, call.Tool, err)
+			}
+			// Filed under Transitions and NOT also under Collected. The
+			// model reads one spelling of this fact — the parsed one —
+			// because a wake-up carrying both the records and the text
+			// they were read from invites the model to reconcile two
+			// copies of the same answer, and to reach for the raw text
+			// the moment the two look different.
+			facts.Transitions = &set
+			names = append(names, key)
+			continue
 		}
 		out[call.Key()] = result
 		names = append(names, call.Key())
+	}
+	if len(out) > 0 {
+		facts.Collected = out
 	}
 	if c.logger != nil {
 		// Deliberately does NOT claim "0 model calls". A log line mast
@@ -147,6 +216,20 @@ func (c *monitorCollector) collect(ctx context.Context, sessionID string) (map[s
 		c.logger.Info("monitoring cycle collected before waking the model",
 			"session", sessionID, "collected", names,
 			"took", c.clock().Sub(start).String())
+		if facts.Transitions != nil {
+			// The tally is built from the classes that turned up, not
+			// from a list mast keeps — so a class lookout ships after
+			// this line was written appears in it, correctly counted,
+			// with no change here. `scanned` is on the line because a
+			// cycle with nothing changed and nothing scanned is a
+			// broken monitor, and the two are indistinguishable
+			// without it.
+			c.logger.Info("monitoring cycle classified what changed",
+				"session", sessionID, "source", c.transitionsKey,
+				"scanned", facts.Transitions.Scanned,
+				"transitions", len(facts.Transitions.Transitions),
+				"classes", facts.Transitions.Classes())
+		}
 	}
-	return out, nil
+	return facts, nil
 }

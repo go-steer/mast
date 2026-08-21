@@ -1013,8 +1013,15 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			// door for a tool call no model asked for (v0.5 W4.2).
 			collector := newMonitorCollector(logger, bundle.Monitor, toolSchemas.collect, appName, defaultUserID)
 			if collector.enabled() {
-				logger.Info("monitoring cycle armed; these calls run before the model is woken",
-					"workload", workloadName, "collect", bundle.Monitor.CollectTools())
+				// transitions_from is on the line because it changes what
+				// a failed cycle means: the named result is parsed, and a
+				// classifier that answers badly stops the fire rather than
+				// reaching the model as an absence (v0.5 W4.4).
+				args := []any{"workload", workloadName, "collect", bundle.Monitor.CollectTools()}
+				if key := bundle.Monitor.TransitionsKey(); key != "" {
+					args = append(args, "transitions_from", key)
+				}
+				logger.Info("monitoring cycle armed; these calls run before the model is woken", args...)
 			}
 			st := newScheduledTrigger(store, logger, obs, tracker, workloadName, defaultUserID, interval, jitter,
 				newScheduledFireCallback(r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, collector, att.ensure))

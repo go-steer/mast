@@ -157,6 +157,110 @@ func TestLoad_MonitorErrors(t *testing.T) {
 	}
 }
 
+// The W4.4 half: which collected result carries the run-to-run
+// classification.
+
+func TestLoad_MonitorTransitionsFrom(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  collect:
+    - tool: k8s_cluster_health
+      as: health
+    - tool: k8s_findings_diff
+      args: {transitions: "new,escalated,resolved"}
+      as: transitions
+  transitions_from: transitions
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := b.Monitor.TransitionsKey(); got != "transitions" {
+		t.Errorf("TransitionsKey() = %q, want transitions", got)
+	}
+}
+
+// TestLoad_MonitorTransitionsFromMustNameACollectedResult: naming a key
+// nothing files is a workload that believes it is watching for change
+// and is not. It would fail on the first fire regardless; failing at
+// load names the typo and lists what was actually collected.
+func TestLoad_MonitorTransitionsFromMustNameACollectedResult(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  collect:
+    - tool: k8s_cluster_health
+      as: health
+    - tool: k8s_findings_diff
+      as: diff
+  transitions_from: transitions
+`)
+	_, err := workload.Load(path)
+	if err == nil {
+		t.Fatal("Load accepted a transitions_from naming nothing collected")
+	}
+	if !strings.Contains(err.Error(), `names "transitions"`) {
+		t.Errorf("error = %v, want it to name the missing key", err)
+	}
+	// And it says what IS there, so the fix does not need a second
+	// look at the file.
+	if !strings.Contains(err.Error(), "collected: diff, health") {
+		t.Errorf("error = %v, want it to list the collected keys", err)
+	}
+}
+
+// The default key is the tool name, so a workload that collects one
+// tool without an alias can point at it by tool name.
+func TestLoad_MonitorTransitionsFromDefaultKey(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  collect:
+    - tool: k8s_findings_diff
+  transitions_from: k8s_findings_diff
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := b.Monitor.TransitionsKey(); got != "k8s_findings_diff" {
+		t.Errorf("TransitionsKey() = %q", got)
+	}
+}
+
+// Collecting raw facts and letting the model read them is a supported
+// shape. transitions_from is what a workload adds when it wants mast to
+// know whether anything changed — it is not a requirement for
+// collecting.
+func TestLoad_MonitorTransitionsFromIsOptional(t *testing.T) {
+	path := writeBundle(t, "b.yaml", `name: x
+specialists: [a]
+edge_trigger:
+  scheduled:
+    interval: 15m
+monitor:
+  collect:
+    - tool: k8s_cluster_health
+`)
+	b, err := workload.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := b.Monitor.TransitionsKey(); got != "" {
+		t.Errorf("TransitionsKey() = %q, want empty", got)
+	}
+}
+
 // TestLoad_MonitorAliasesDoNotCollide: two calls to the same tool are
 // fine as long as they are filed apart, which is what `as:` is for.
 func TestLoad_MonitorAliasesDoNotCollide(t *testing.T) {
