@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **One recording, replayed per concurrent branch.** `--model=scripted`
+  holds a position in a transcript, and an offline fake collapses every
+  per-specialist model override back to the one instance — so a whole
+  roster shared one cursor while fan-out ran its analysts at the same
+  time. Three branches walked one script between them, which the mutex
+  around the cursor made quieter rather than safer: `-race` stayed
+  silent, and the symptom was a `script exhausted` from whichever branch
+  lost the race, or a branch that succeeded having replayed another
+  branch's turn.
+
+  A replay is now per ADK branch — its own cursor over its own decode of
+  the same recording, each starting at turn 0. A three-analyst fan-out
+  against a one-turn recording is three analysts that each replay that
+  turn. **Nothing changes for a sequential shape**: a coordinator, a
+  planner, a single-agent replay and a resumed run all inherit their
+  parent's branch unchanged, so they go on consuming one script in one
+  order, exactly as recorded. Keying on the branch rather than on each
+  model call is what preserves that — a second user turn is a new call
+  that must continue the recording, not restart it.
+
+  Two things this does not do, both deliberate: one transcript cannot
+  describe N *different* branches (a recorded turn does not name the
+  agent it belongs to, and teaching it to is a wire-format change that
+  goes to core-agent's `pkg/recording` first), and two invocations
+  running at once in one process still share the unbranched replay.
+  A malformed transcript now also fails at `NewScripted` rather than at
+  whichever consumer happened to call first.
+
 - **A fourth watchdog signal, for the loop neither of the other two can
   see.** `dominant-tool-call` trips when one call accounts for 8 of the
   last 12 — the `a a a b a a a c a a a` shape, where every interloper
