@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v0.5.0 (2026-08-29)
+## v0.5.0 (2026-08-30)
 
 *A scheduled cycle gathers its own facts without spending a token, learns
 what changed from the classifier rather than from mast, speaks only when
