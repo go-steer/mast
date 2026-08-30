@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+## v0.5.0 (2026-08-29)
+
+*A scheduled cycle gathers its own facts without spending a token, learns
+what changed from the classifier rather than from mast, speaks only when
+something did, and takes an operator's acknowledgement without pretending it
+was an approval.* v0.4 shipped the schedule and left the cycle empty; v0.5
+fills it, and the whole release turns on one decision about who makes the
+calls that fill it.
+
+A run-to-run finding diff advances persisted state as a side effect of
+answering, which makes it mutating — and under the shipped
+`hitl.on_mutation: require_approval` default, a model holding that tool
+parks the cycle for a human on every fire. An unattended monitor that needs
+an approval to find out whether anything changed is not one. Declaring the
+tool non-mutating would have put a false statement into an audited override,
+and a dry-run-then-advance-later contradicts the ordering the notify path
+depends on. So **the collection and state-advance legs are mast's, not the
+model's**: a workload declares `monitor.collect`, mast runs those calls
+itself at the top of each fire, and composition refuses to start if a
+collect tool is reachable from any roster — including through the two
+un-enumerated grants the capability split exempts a change executor from.
+The cost claim then holds structurally, because a leg the model is not part
+of cannot spend a token, and it is measured on both meter surfaces anyway.
+
+The consequence worth knowing is what mast then declines to do with the
+facts it gathered. The transitions are consumed verbatim from
+[`k8s-lookout`](https://github.com/go-steer/k8s-lookout): no mast-side
+fingerprinting, no severity comparison, no re-derivation of `escalated`. A
+cycle whose classifier reported nothing does not wake the model at all —
+not "wakes it and declines to post" — and the only evidence such a cycle ran
+is a counter, deliberately, so that a healthy monitor and a dead one stop
+looking alike. The one judgement mast does make is completeness rather than
+correctness: a truncated record stream is a prefix of a healthy answer, so a
+missing or disagreeing summary voids the cycle before any model call.
+
+Parity scoreboard: **17 of 19** rows green at this tag, up from 11 at the
+v0.4.0 tag (`docs/v0.3-plan.md` §1). v0.4 said the parity claim was v0.5's
+to make, and mast has flipped every row that was mast's to flip. Two of the
+six that moved — resource-name normalization and chat egress — were wholly
+k8s-lookout's and switchboard's, and had been green since 2026-08-15 without
+this repo noticing. The two still red, in-chat Approve/Reject and the
+approver allowlist, are switchboard's to write; mast's accountability for
+them is that the resume shape and the `X-Asserted-Caller` path do not move
+underneath, which is now a test asserting the JSON names, verdict and scope
+vocabularies and status codes as strings rather than as constants.
+
+Landing alongside that scope rather than inside the claim above: the
+tool-calling half of the eval board — a call is scored by its arguments and
+its result rather than by its name, and a consequential miss is charged to
+the tool that would have answered it — plus a durable budget ledger so a
+ceiling bounds a workload instead of a process, MCP response digesting with
+a way back to the full payload, a Vertex alias for Gemini, and the
+attach-mode ACL work. Two measurement fixes are worth reading on their own:
+the two judged nightlies were never measuring the same resilience, because
+one SDK retries a provider's 429 twice and the other not at all; and the
+v0.2 UAT's long-standing flake was `pipefail` promoting curl's EPIPE over a
+matched `grep -q`, at nine sites, three of which were failing open.
+
+**What this release will not let you do.** A monitoring workload that also
+remediates — a planner roster holding a `change_executor` — is refused at
+startup whenever `hitl.on_mutation` asks for the write to be gated. The
+write gate and the effect outbox are runner plugins and `invoke_specialist`
+builds its runner without them, so the alternative was executing an
+unapproved write on a bundle that had asked for approval; the same roster
+runs under `coordinator` or `graph`, where the gate reaches it. Under
+`on_mutation: apply` the refusal does not fire, because there was no gate
+for a dispatch to bypass — but the outbox record is still missing there, so
+an interrupted dispatch leaves no dangling intent to scan for and no
+recorded completion to replay. That is the durability the unattended posture
+this release is built for actually wants, and it is documented rather than
+refused over. This is containment; the boundary decision is #235.
+
 - **The wire contract switchboard codes against is now pinned as
   literals.** `/resume` and `/monitor-ack` are consumed from another
   repo, so their JSON field names, the verdict and scope vocabularies

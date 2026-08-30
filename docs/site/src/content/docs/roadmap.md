@@ -1,12 +1,14 @@
 ---
 title: Roadmap
-description: What v0.4 ships, and what lands after it — honestly.
+description: What v0.5 ships, and what lands after it — honestly.
 ---
 
-mast is at **v0.4.0** — an operator approves the exact call that will fire,
-the loop runs on a schedule without an orchestrator, and every verdict becomes
-a labelled eval row. On the v0.3.0 write gate and the v0.2.0
-durable-execution spine. See [Shipped in v0.4.0](#shipped-in-v040) below.
+mast is at **v0.5.0** — a scheduled cycle gathers its own facts without
+spending a token, learns what changed from the classifier rather than from
+mast, speaks only when something did, and takes an operator's acknowledgement
+without pretending it was an approval. On the v0.4.0 change set, the v0.3.0
+write gate and the v0.2.0 durable-execution spine. See [Shipped in
+v0.5.0](#shipped-in-v050--unattended-monitoring-end-to-end) below.
 
 **All eleven v0.1 exit criteria from the fork design are green.** The
 `--task` profile criterion cleared with the P1.3a/P1.3b adapter ports and
@@ -368,9 +370,20 @@ eval row.*
   See [`--watchdog`](/reference/cli/) and
   [`safety.watchdog`](/reference/workload-bundle/).
 
-## Next: v0.5 — unattended monitoring, end to end
+## Shipped in v0.5.0 — unattended monitoring, end to end
 
-The parity claim. **Most of the other two projects' halves have now landed**:
+The parity claim, and the release names the rows it did not make: the
+scoreboard reads **17 of 19** at this tag, up from 11 at v0.4.0, and the two
+still open are switchboard's — in-chat Approve/Reject and the approver
+allowlist. Every row that was mast's to flip is flipped. mast's accountability
+for the two that are not is that the resume shape and the caller-attribution
+header do not move underneath switchboard while it writes them, which is a
+test that asserts the JSON names, the verdict and scope vocabularies and the
+status codes as strings rather than as constants — a Go rename compiles and
+passes every behavioural test in the package, and breaks a client this
+compiler cannot see.
+
+**Most of the other two projects' halves have now landed**:
 [k8s-lookout](https://github.com/go-steer/k8s-lookout) ships cross-run finding
 state and resource-name normalization — a scan diffed against the previous one
 into new / ongoing / escalated / resolved / suppressed, keyed by a normalized
@@ -379,9 +392,10 @@ switchboard ships agent-initiated chat egress, so a monitoring loop with an
 escalation to raise at 3am no longer needs a thread someone else started.
 Still theirs to do: in-chat Approve/Reject with an approver allowlist.
 
-On mast's side: zero-token collection, wiring the finding diff, notifying only
-on change (with a failed post that does not resurrect the diff next cycle), and
-ack windows. One decision shapes all four. A finding diff genuinely *writes* —
+On mast's side, four things: zero-token collection, wiring the finding diff,
+notifying only on change (with a failed post that does not resurrect the diff
+next cycle), and ack plumbing. One decision shapes all four. A finding diff
+genuinely *writes* —
 it advances the stored state as a side effect of answering — so if the model
 were the one to call it, every cycle would stop and ask an operator for
 permission to find out whether anything had changed, which is not unattended
@@ -535,6 +549,44 @@ the answer as `k8s_resource_top: 3 miss(es) → 0`. The scores would not have
 shown it either way — a fix worth having moves `intent_coverage` by a fraction
 of one row's mean. The competing hypothesis is that the models reason past the
 tool rather than fail to find it, and the same experiment separates the two.
+
+## What v0.5.0 will not let you do
+
+A monitoring workload that also **remediates** — a planner roster holding a
+`change_executor` — is refused at startup whenever `hitl.on_mutation` asks for
+the write to be gated. The write gate and the effect outbox are runner
+plugins, and `invoke_specialist` builds its runner without them, so a mutating
+call made inside a planner dispatch would neither park nor dry-run and would
+leave no durable record of what it did. Refusing is the honest answer to that:
+the alternative is executing an unapproved write on a bundle that asked for
+approval. The escape is cheap — the same roster runs under `coordinator` or
+`graph`, where the runner carries the gate — and the startup error names the
+specialist and says so.
+
+Under `on_mutation: apply` the refusal does not fire, because there was no
+gate for a dispatch to bypass. What is still missing there is the outbox
+record, so an interrupted dispatch leaves no dangling intent to scan for and
+no recorded completion to replay. That is exactly the durability the
+unattended posture this release is built for wants, which is why it is written
+down here rather than left to be discovered.
+
+Letting the gate reach inside a dispatch is a boundary decision rather than a
+wiring change — an approval park suspends a turn to be resumed from a durable
+session, and a dispatch's sub-session is in-memory and dies with the tool
+call. It is tracked as
+[#235](https://github.com/go-steer/mast/issues/235), and the containment check
+comes out with whatever lands.
+
+## Next
+
+- **The dispatch write boundary** (#235 above) — either give the sub-run the
+  host's session service under a derived id, or consult the gate at the
+  dispatch boundary and accept that one answer authorizes every call the
+  specialist then makes. The first is the real fix and costs the context
+  isolation the private sub-session exists to provide; the second is cheap and
+  coarse.
+- **The last two parity rows** are switchboard's: in-chat Approve/Reject, and
+  an approver allowlist.
 
 ## Further out
 
