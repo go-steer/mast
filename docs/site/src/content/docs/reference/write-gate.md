@@ -38,8 +38,24 @@ unattended — there is no gate to bypass under `apply`, though the missing
 outbox record still costs you exactly-once replay if a dispatch is
 interrupted.
 
-This is containment, not the fix; letting the gate reach inside a dispatch
-is [#235](https://github.com/go-steer/mast/issues/235).
+**This refusal is permanent, and it is worth knowing why.** A park is not a
+suspended turn: it writes its question into the session event log, and a
+resume matches that log and re-enters at the root agent. A planner
+dispatch runs on a private, in-memory session that dies with the tool
+call, and nothing re-enters a dispatch mid-flight — so there is nowhere
+for an approval to come back to. `coordinator` and `graph` dispatch get
+the gate at full per-call fidelity precisely *because* they share the
+session log.
+
+Asking you to approve `invoke_specialist` instead would not be the same
+promise. That call's arguments are a specialist name and a sentence of
+prose, so you would be approving an intention, with no typed arguments to
+review, nothing to edit, and an audit record naming the dispatch rather
+than the change. Approving a change and approving an agent are different
+things, and mast would rather refuse than blur them.
+
+What remains genuinely owed is the missing outbox record under `apply`
+— [#235](https://github.com/go-steer/mast/issues/235).
 :::
 
 ## What a parked call looks like

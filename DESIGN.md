@@ -195,14 +195,32 @@ when somebody reads their chat.
   dispatch. Accounting does reach it — the sub-run's spend and
   watchdog signal travel out-of-band through `SubRunSink`, which is the
   standing proof that a host-owned concern *can* cross this boundary
-  without being a plugin. Until the gate does,
+  without being a plugin. So
   `compose.CheckPlannerWriteSurface` refuses any planner roster holding
   a `change_executor` while `hitl.on_mutation` asks for the write to be
   gated; `apply` is exempt, because there was no gate to bypass, and
   what is missing there is the outbox record rather than the approval.
-  That refusal is containment, not the design — it comes out with
-  whatever settles [#235](https://github.com/go-steer/mast/issues/235),
-  and its doc comment says so, so it cannot quietly become permanent.
+- **That refusal is the design for the gate, and a gap for the
+  outbox.** The two halves came apart under measurement (2026-08-31,
+  [#235](https://github.com/go-steer/mast/issues/235)). The **gate**
+  cannot cross and no wiring makes it: a park writes its question into
+  the session event log and returns normally — the turn is not
+  suspended — and a resume matches that log and re-enters at the *root*.
+  A dispatch sub-session is in-memory, dies with the tool call, and
+  nothing re-enters a dispatch mid-flight. Coordinator and graph
+  dispatch get the gate at full per-call fidelity *because* they share
+  the log (`pkg/approval/dispatchseam_test.go`). Planner dispatch exists
+  to keep a private session, and a private session is what puts a resume
+  round trip out of reach; gating `invoke_specialist` itself instead
+  would have the operator approve a specialist name and a prose string,
+  which is the behaviour lead row **L7** was written to beat. The
+  **outbox** half has no such obstacle, because recording is
+  one-directional: `SubRunSink` sees a mutating `FunctionCall` before
+  the tool body runs (`pkg/planner/outboxseam_test.go`). What it cannot
+  be is a durable sub-session — `Store.ScanInterrupted` lists one
+  `AppName` and the sub-runner uses `"planner_dispatch"`
+  (`pkg/transcript/dispatchscope_test.go`) — so the record belongs in
+  the outer session. Still owed.
 - **mast calls a tool nobody asked for in exactly three places, and
   each has its own fence.** `cmd/mast/toolschemas.go`'s `runOwnBehalf`
   is the whole surface: the write gate's precondition read, a
@@ -309,10 +327,15 @@ mast's — the last two parity rows; mast's side is a wire-contract test
 that the resume shape and `X-Asserted-Caller` do not move underneath
 them.
 
-Still deferred here: **letting the write gate reach inside a planner
-dispatch** ([#235](https://github.com/go-steer/mast/issues/235); the
-combination is refused at composition until it lands — see the
-contracts above); **pre-call budget gating** (today a ceiling is
+Settled rather than deferred, as of 2026-08-31: **the write gate does
+not reach inside a planner dispatch, and will not** — the combination
+stays refused at composition, for the structural reason in the
+contracts above ([#235](https://github.com/go-steer/mast/issues/235)).
+What that issue still owes is the **outbox record under
+`on_mutation: apply`**, where nothing is refused and nothing is
+recorded.
+
+Still deferred here: **pre-call budget gating** (today a ceiling is
 crossed by the call that reports it, because the meter folds usage out
 of the event stream after a call returns, and a crossed specialist
 ceiling stops the session rather than handing the coordinator a
