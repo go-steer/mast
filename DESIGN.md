@@ -1,6 +1,6 @@
-# mast — architecture (v0.4)
+# mast — architecture (v0.5)
 
-**Status:** current as of v0.4.0 (2026-08-17). This is the map of what
+**Status:** current as of v0.5.0 (2026-08-30). This is the map of what
 actually ships — the working architecture for contributors and
 embedders. The *why* behind each subsystem lives in the design corpus
 under [`docs/`](./docs/README.md) (start with
@@ -188,6 +188,21 @@ when somebody reads their chat.
   from the outbox instead of asking an operator to re-approve a
   mutation that already fired. Reordering them is a correctness bug,
   not a preference.
+- **Those plugins are runner-scoped, and a planner dispatch builds its
+  own runner.** `invoke_specialist` constructs a runner in the tool
+  body (`pkg/planner/dispatch.go`) with no `PluginConfig`, so neither
+  the outbox nor the write gate reaches a mutating call made inside a
+  dispatch. Accounting does reach it — the sub-run's spend and
+  watchdog signal travel out-of-band through `SubRunSink`, which is the
+  standing proof that a host-owned concern *can* cross this boundary
+  without being a plugin. Until the gate does,
+  `compose.CheckPlannerWriteSurface` refuses any planner roster holding
+  a `change_executor` while `hitl.on_mutation` asks for the write to be
+  gated; `apply` is exempt, because there was no gate to bypass, and
+  what is missing there is the outbox record rather than the approval.
+  That refusal is containment, not the design — it comes out with
+  whatever settles [#235](https://github.com/go-steer/mast/issues/235),
+  and its doc comment says so, so it cannot quietly become permanent.
 - **mast calls a tool nobody asked for in exactly three places, and
   each has its own fence.** `cmd/mast/toolschemas.go`'s `runOwnBehalf`
   is the whole surface: the write gate's precondition read, a
@@ -274,31 +289,44 @@ when somebody reads their chat.
   fixes land wherever found first, then port within a week
   ([`docs/fork-design.md`](./docs/fork-design.md) sync discipline).
 
-## Deliberately not in v0.4
+## Deliberately not in v0.5
 
 Deferrals are decisions ([`AGENTS.md`](./AGENTS.md) house rule #7);
 the owning doc names the version that lifts each one, and the
 [roadmap](https://go-steer.github.io/mast/roadmap/) is the
-user-facing view. Highlights: the in-chat Approve/Reject surface
-(v0.5; unattended monitoring's four legs all landed on `main` after
-v0.4 as `monitor.collect`, `monitor.transitions_from`,
-`monitor.notify` and `monitor.ack`, which *consume*
-[`k8s-lookout`](https://github.com/go-steer/k8s-lookout)'s
+user-facing view.
+
+Unattended monitoring's four legs shipped in v0.5 as `monitor.collect`,
+`monitor.transitions_from`, `monitor.notify` and `monitor.ack`, which
+*consume* [`k8s-lookout`](https://github.com/go-steer/k8s-lookout)'s
 classification and switchboard's ingress rather than growing either
-here; an ack window is deferred permanently rather than to a version,
-because the expiry belongs to the producer); pre-call budget gating
-(today a ceiling is crossed by the call that reports it); the remaining AG-UI
-slices (`agui://` federation client, per-key `StateDelta`, webhook
-push, client-declared tools,
-[`docs/ag-ui-design.md`](./docs/ag-ui-design.md)); the `run_shape_*`
-planner vocabulary wired to the reference-graph library (it returns
-`not_implemented` in the shipped scaffold); multi-session attach (ACL
-store, per-caller auth, operator session creation) and `mode:
-multi_session` bundles; skills consumption
+here. Two things around them stay out on purpose. An **ack window** is
+deferred permanently rather than to a version, because the expiry
+belongs to the producer and a clock kept here would be a second
+suppression state to disagree with. The **in-chat Approve/Reject
+surface** and its approver allowlist are switchboard's to write, not
+mast's — the last two parity rows; mast's side is a wire-contract test
+that the resume shape and `X-Asserted-Caller` do not move underneath
+them.
+
+Still deferred here: **letting the write gate reach inside a planner
+dispatch** ([#235](https://github.com/go-steer/mast/issues/235); the
+combination is refused at composition until it lands — see the
+contracts above); **pre-call budget gating** (today a ceiling is
+crossed by the call that reports it, because the meter folds usage out
+of the event stream after a call returns, and a crossed specialist
+ceiling stops the session rather than handing the coordinator a
+refusal it can route around); the remaining AG-UI slices (`agui://`
+federation client, per-key `StateDelta`, webhook push, client-declared
+tools, [`docs/ag-ui-design.md`](./docs/ag-ui-design.md)); the
+`run_shape_*` planner vocabulary wired to the reference-graph library
+(it returns `not_implemented` in the shipped scaffold); multi-session
+attach (ACL store, per-caller auth, operator session creation) and
+`mode: multi_session` bundles; skills consumption
 ([`docs/skills-design.md`](./docs/skills-design.md)); audit-derived
 memory ([`docs/memory-design.md`](./docs/memory-design.md), gated on
 core-agent's shared-memory stack); OTel *metrics* export (Prometheus
 scrape + OTel traces only). Providers beyond Gemini and Claude are a
 proposal, not a plan —
 [`docs/model-support-design.md`](./docs/model-support-design.md)
-targets v0.5+ and nothing in it is settled.
+targets a later release and nothing in it is settled.
