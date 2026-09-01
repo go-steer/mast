@@ -182,8 +182,38 @@ func mutatingNames(names []string, pred effects.Predicate) []string {
 // pkg/planner/dispatch.go and in the write-gate reference page, and not
 // one worth refusing a startup over.
 //
-// This is containment, not the fix. #235 carries the three candidate
-// boundaries; whichever lands, this check comes out with it.
+// # Why this check is permanent
+//
+// It was written as containment, with a promise to come out when #235
+// settled a boundary. That promise is withdrawn (2026-08-31): the gate
+// cannot cross this seam, and no wiring makes it.
+//
+// A park is not a suspended turn. RequestConfirmation writes the
+// question into the SESSION EVENT LOG and the callback then returns
+// normally with an "awaiting approval" result; the resume matches that
+// log and re-enters at the ROOT (pkg/approval/dispatchseam_test.go).
+// A dispatch sub-session is in-memory, dies with the tool call, and
+// nothing re-enters a dispatch mid-flight — so an approval has nowhere
+// to come back to. Coordinator and graph dispatch are gated at full
+// per-call fidelity precisely BECAUSE they share the log, which is why
+// the escape hatch below is a real answer and not a consolation.
+//
+// Gating invoke_specialist itself was the other candidate and is worse
+// than refusing. Its arguments are a specialist name and a prose
+// string, so the operator would approve an intention: no typed
+// arguments to review, nothing to edit, no per-change-set grant to
+// bind, N mutations collapsed into one park, and a Decision record
+// naming the dispatch rather than the change. Lead row L7 exists to
+// distinguish mast from "a static list of tool names to interrupt on;
+// the arguments are whatever the model produces on resume" — that is a
+// description of boundary gating.
+//
+// What #235 still owes is the outbox record under `apply` (see above),
+// which is a recording problem rather than an approval one and does not
+// inherit the obstacle: recording is one-directional, and SubRunSink
+// sees a mutating FunctionCall before the tool body runs
+// (pkg/planner/outboxseam_test.go). Closing that will not delete this
+// check.
 func CheckPlannerWriteSurface(b workload.Bundle, specs []specialists.Spec) error {
 	if !b.Planner.Enabled {
 		return nil
