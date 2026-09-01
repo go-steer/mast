@@ -209,8 +209,13 @@ error naming the file rather than an incident that behaves oddly:
 - a graph roster with no classifier or no `_fallback` → not routable
 - a planner roster holding a `change_executor` while `hitl.on_mutation`
   asks for the write to be gated → refused, because the gate cannot reach
-  inside a dispatch
-  ([the write gate](/reference/write-gate/))
+  inside a dispatch. **This one is permanent**, not a gap waiting to be
+  wired: an approval comes back through the session event log, and a
+  dispatch's session is private and in-memory by design. The message
+  names three ways forward — run the same roster under `coordinator` or
+  `graph`, or set `on_mutation: apply` and accept that the writes fire
+  (they are still recorded). [The write gate](/reference/write-gate/)
+  has the full argument.
 
 Startup also logs every `change_executor` in the roster, so "which
 specialists here can change my cluster" is one log line instead of an

@@ -219,7 +219,13 @@ when somebody reads their chat.
   be is a durable sub-session — `Store.ScanInterrupted` lists one
   `AppName` and the sub-runner uses `"planner_dispatch"`
   (`pkg/transcript/dispatchscope_test.go`) — so the record belongs in
-  the outer session. Still owed.
+  the outer session, and as of 2026-09-01 it is there
+  (`pkg/effects/subrun.go`). So the refusal is not waiting on anything:
+  what it names is what an operator does. Its message offers
+  `coordinator`, `graph`, and `on_mutation: apply`, and each of the
+  three is composed in `internal/compose/plannerwrite_test.go` — a way
+  out that nobody built is worse than none, because the operator spends
+  their next hour on it.
 - **mast calls a tool nobody asked for in exactly three places, and
   each has its own fence.** `cmd/mast/toolschemas.go`'s `runOwnBehalf`
   is the whole surface: the write gate's precondition read, a
