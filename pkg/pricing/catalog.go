@@ -45,9 +45,14 @@ type Options struct {
 // a new Catalog and swap atomically via the consumer's chosen
 // pointer-store mechanism.
 func NewCatalog(opts Options) (*Catalog, error) {
+	// The two generated tables share one layer. Their key spaces cannot
+	// collide — a qualified key always contains "/" and a bare model id
+	// never does — and merging them here means the layered precedence
+	// chain and the prefix fallback work on qualified keys without
+	// knowing they exist.
 	c := &Catalog{
 		cfgOverride: lowerKeys(opts.CfgOverride),
-		builtin:     lowercopyRates(builtin),
+		builtin:     lowercopyRates(builtin, builtinByBackend),
 	}
 
 	if opts.AgentsDir != "" {
@@ -74,16 +79,23 @@ func NewCatalog(opts Options) (*Catalog, error) {
 	return c, nil
 }
 
-// lowercopyRates clones an already-lowercased Rates map (used for
-// builtin, which is hand-curated lowercase but should never be
-// mutated by lookups or tests).
-func lowercopyRates(src map[string]Rates) map[string]Rates {
-	if len(src) == 0 {
+// lowercopyRates clones already-lowercased Rates maps into one (used
+// for the generated tables, which are lowercase by construction but
+// should never be mutated by lookups or tests). Later maps win on a
+// duplicate key; the generated tables have none.
+func lowercopyRates(srcs ...map[string]Rates) map[string]Rates {
+	n := 0
+	for _, s := range srcs {
+		n += len(s)
+	}
+	if n == 0 {
 		return nil
 	}
-	out := make(map[string]Rates, len(src))
-	for k, v := range src {
-		out[k] = v
+	out := make(map[string]Rates, n)
+	for _, s := range srcs {
+		for k, v := range s {
+			out[k] = v
+		}
 	}
 	return out
 }

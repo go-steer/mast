@@ -110,6 +110,46 @@ request asked for rather than let a whole session drop to the flat rate —
 which would keep the ceiling honest but lose every per-model rate including
 cache reads, the largest term on a cache-warm agent.
 
+### The same model on two backends is two prices
+
+Claude is sold first-party by Anthropic and resold on Vertex AI; Gemini is
+sold through the Developer API and through Vertex. Those are four billing
+relationships, and nothing guarantees the two prices for a model stay equal
+— so the rate table is keyed on the **pair**, `<backend>/<model>`, with the
+bare model ID as a fallback. The four backend names are `anthropic`,
+`anthropic-vertex`, `gemini` and `vertex`.
+
+(As of this writing, every model mast ships costs the same on both of its
+backends. The pair is how the table is built anyway: the alternative is
+being correct by coincidence, and finding out otherwise from a bill.)
+
+The backend is **not** whatever you passed to `--provider`. That flag is an
+alias, and the environment can override where it lands:
+`GOOGLE_GENAI_USE_VERTEXAI=true` sends a plain `gemini` run to Vertex, and
+with no alias at all Anthropic picks first-party when `ANTHROPIC_API_KEY` is
+set and Vertex when only a GCP project is. mast resolves the backend once,
+with the same code that builds the client, so the row that prices a call is
+the row for the backend that will bill it.
+
+For an override this means you can price one backend without touching the
+other. A negotiated first-party rate goes in as `anthropic/claude-opus-5`
+and leaves your Vertex spend on the catalog rate; a bare `claude-opus-5` row
+still applies to both, which is usually what you want:
+
+```json
+{
+  "version": 1,
+  "models": {
+    "anthropic/claude-opus-5": { "input_per_mtok": 12.0, "output_per_mtok": 60.0 },
+    "claude-haiku-4-5":        { "input_per_mtok":  0.8, "output_per_mtok":  4.0 }
+  }
+}
+```
+
+Precedence and prefix matching work the same on qualified keys, so
+`anthropic-vertex/claude-opus-4-5@20251101` finds an
+`anthropic-vertex/claude-opus-4-5` row.
+
 ### Some rates have an expiry date, and the catalog cannot say so
 
 A launch price is often introductory, and a `max_cost_usd` sized against

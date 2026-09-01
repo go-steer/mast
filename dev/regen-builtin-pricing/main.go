@@ -38,6 +38,22 @@
 // that class of drift; the UpdatedAt field lets operators see how
 // old the current builtin snapshot is.
 //
+// Backend-qualified rates ride along too, in a second map. A rate is a
+// property of the (backend, model) pair, not of the model id: the same
+// claude-opus-5 is reachable through api.anthropic.com and through
+// Vertex, and the same gemini-3.7-flash through the Gemini Developer
+// API and through Vertex. LiteLLM prices those separately, under
+// prefixed keys ("vertex_ai/claude-opus-5", "gemini/gemini-3.7-flash"),
+// and this generator used to throw every one of them away — leaving
+// mast's lookup keyed on a bare id that cannot say which backend billed
+// the tokens. It got the right answer only because the two tables
+// happen to agree today, which nothing checked and nothing enforced.
+//
+// See backends below for the four pairs mast can resolve. Emitting a
+// row per pair, even when it duplicates the bare row, is the point: the
+// key names the thing being priced, and a future divergence shows up as
+// a one-row diff instead of as a wrong ceiling.
+//
 // Context windows ride along in the same file for the same reason.
 // The parent project's hand-maintained window table said
 // gemini-2.5-pro held 2,000,000 input tokens (a carry-over from
@@ -118,6 +134,33 @@ const defaultLiteLLMSource = "https://raw.githubusercontent.com/BerriAI/litellm/
 // reseller on the market; pricing a model we cannot resolve buys
 // nothing and makes the diff unreadable.
 var familyPrefixes = []string{"gemini-", "claude-"}
+
+// backends are the four (backend, family) pairs mast can resolve a
+// --provider alias and the environment down to, paired with how LiteLLM
+// spells the same pair.
+//
+// Mast is the name mast uses for the backend — the same strings as
+// internal/compose.ProviderGemini / ProviderVertex and
+// pkg/providers/anthropic.ProviderName / VertexProviderName — and it is
+// what gets emitted as the "<backend>/<model>" key prefix. Using mast's
+// vocabulary rather than LiteLLM's keeps upstream's spelling
+// ("vertex_ai-anthropic_models") out of mast's own namespace, so a
+// caller that has resolved a backend can build the key without a
+// translation table.
+//
+// Prefix is LiteLLM's key prefix for that backend; empty means the
+// backend's rates live under the unprefixed id. Note the asymmetry that
+// makes this worth writing down: LiteLLM's unprefixed claude-* keys are
+// ANTHROPIC first-party, while its unprefixed gemini-* keys are VERTEX.
+// The bare rows this generator has always emitted are therefore a
+// mixture of two backends, which is exactly the ambiguity the qualified
+// rows remove.
+var backends = []struct{ Mast, Prefix, Family string }{
+	{"anthropic", "", "claude-"},
+	{"anthropic-vertex", "vertex_ai/", "claude-"},
+	{"gemini", "gemini/", "gemini-"},
+	{"vertex", "", "gemini-"},
+}
 
 // nameExclusions drops models that pass every metadata check but are
 // not general-purpose chat agents. Each needs a name rule because
@@ -245,7 +288,9 @@ func main() {
 		}
 	}
 
-	src, err := render(kept, now, *source)
+	qualified := qualifyByBackend(kept, all)
+
+	src, err := render(kept, qualified, now, *source)
 	if err != nil {
 		die("render: %v", err)
 	}
@@ -263,8 +308,8 @@ func main() {
 	if err := os.WriteFile(*outPath, src, 0o644); err != nil { //nolint:gosec // generator output, not user data
 		die("write %s: %v", *outPath, err)
 	}
-	fmt.Fprintf(os.Stderr, "regen-builtin-pricing: wrote %d entries to %s (UpdatedAt=%s)\n",
-		len(kept), *outPath, now.Format("2006-01-02"))
+	fmt.Fprintf(os.Stderr, "regen-builtin-pricing: wrote %d entries (+%d backend-qualified) to %s (UpdatedAt=%s)\n",
+		len(kept), len(qualified), *outPath, now.Format("2006-01-02"))
 }
 
 // --- drift checking (--check) --------------------------------------
@@ -612,7 +657,6 @@ func eligible(name string, e liteLLMEntry, today time.Time) (ok bool, family boo
 func selectModels(all map[string]liteLLMEntry, today time.Time) ([]generatedEntry, []rejection) {
 	var kept []generatedEntry
 	var rejected []rejection
-	const million = 1_000_000.0
 	for name, e := range all {
 		ok, family, why := eligible(name, e, today)
 		if !ok {
@@ -621,42 +665,147 @@ func selectModels(all map[string]liteLLMEntry, today time.Time) ([]generatedEntr
 			}
 			continue
 		}
-		out := generatedEntry{
-			Name:                name,
-			ContextWindowTokens: *e.MaxInputTokens,
-			// Round to 6 decimals so binary-repr artifacts from
-			// per-token → per-Mtok multiplication (0.0000001 * 1M
-			// producing 0.09999999999999999 instead of 0.1) don't
-			// pollute the file. Six decimals = $0.000001/M, orders
-			// of magnitude finer than any real rate we'll see.
-			InputPerMTok:  round6(*e.InputCostPerToken * million),
-			OutputPerMTok: round6(*e.OutputCostPerToken * million),
-			Provider:      e.LiteLLMProvider,
-		}
-		if e.CacheReadInputTokenCost != nil && *e.CacheReadInputTokenCost > 0 {
-			out.CachedInputPerMTok = round6(*e.CacheReadInputTokenCost * million)
-		}
-		// Cache-WRITE rate (Anthropic's cache_creation_input_tokens).
-		// Absent for models without prompt-cache writes; zero is
-		// LiteLLM's "not supported" placeholder, same as the read rate.
-		if e.CacheCreationInputTokenCost != nil && *e.CacheCreationInputTokenCost > 0 {
-			out.CacheCreationInputPerMTok = round6(*e.CacheCreationInputTokenCost * million)
-		}
-		kept = append(kept, out)
+		kept = append(kept, ratesOf(name, e))
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].Name < kept[j].Name })
 	sort.Slice(rejected, func(i, j int) bool { return rejected[i].Name < rejected[j].Name })
 	return kept, rejected
 }
 
+// ratesOf reads the rate fields off one LiteLLM entry and labels them
+// with the map key they will be emitted under. Shared by the bare-id
+// pass and the backend-qualified pass so a rate can never be read one
+// way for one key and a different way for the other.
+//
+// Callers must have established that the cost fields are present;
+// eligible() does it for the bare pass and findUpstream for the
+// qualified one.
+func ratesOf(key string, e liteLLMEntry) generatedEntry {
+	const million = 1_000_000.0
+	out := generatedEntry{
+		Name:     key,
+		Provider: e.LiteLLMProvider,
+		// Round to 6 decimals so binary-repr artifacts from
+		// per-token → per-Mtok multiplication (0.0000001 * 1M
+		// producing 0.09999999999999999 instead of 0.1) don't
+		// pollute the file. Six decimals = $0.000001/M, orders
+		// of magnitude finer than any real rate we'll see.
+		InputPerMTok:  round6(*e.InputCostPerToken * million),
+		OutputPerMTok: round6(*e.OutputCostPerToken * million),
+	}
+	if e.MaxInputTokens != nil {
+		out.ContextWindowTokens = *e.MaxInputTokens
+	}
+	if e.CacheReadInputTokenCost != nil && *e.CacheReadInputTokenCost > 0 {
+		out.CachedInputPerMTok = round6(*e.CacheReadInputTokenCost * million)
+	}
+	// Cache-WRITE rate (Anthropic's cache_creation_input_tokens).
+	// Absent for models without prompt-cache writes; zero is
+	// LiteLLM's "not supported" placeholder, same as the read rate.
+	if e.CacheCreationInputTokenCost != nil && *e.CacheCreationInputTokenCost > 0 {
+		out.CacheCreationInputPerMTok = round6(*e.CacheCreationInputTokenCost * million)
+	}
+	return out
+}
+
+// qualifyByBackend emits one row per (backend, model) pair, for every
+// model the bare pass already selected. Selection is deliberately driven
+// off `kept` rather than off a second sweep of the catalog: the models
+// mast ships a rate for are settled by eligible(), and this pass only
+// asks "what does each backend charge for one of those", never "is
+// there another model to add".
+//
+// A pair with no upstream row is skipped rather than invented. Vertex
+// does not offer claude-mythos-5, for instance, so no
+// anthropic-vertex/claude-mythos-5 row exists to emit; a lookup for that
+// pair falls back to the bare id, which is the behavior every lookup had
+// before this map existed.
+func qualifyByBackend(kept []generatedEntry, all map[string]liteLLMEntry) []generatedEntry {
+	var out []generatedEntry
+	for _, k := range kept {
+		for _, b := range backends {
+			if !strings.HasPrefix(k.Name, b.Family) {
+				continue
+			}
+			e, ok := findUpstream(all, b.Prefix, k.Name)
+			if !ok {
+				continue
+			}
+			out = append(out, ratesOf(b.Mast+"/"+k.Name, e))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// findUpstream locates one backend's entry for a model, tolerating the
+// two spellings Vertex uses for a version suffix, and refuses an entry
+// whose cost fields are missing or are LiteLLM's zero placeholder — the
+// same screen eligible() applies to the bare pass. Returning !ok there
+// (rather than emitting a zero row) keeps the fallback to the bare id,
+// which is a real rate.
+func findUpstream(all map[string]liteLLMEntry, prefix, id string) (liteLLMEntry, bool) {
+	for _, key := range upstreamKeys(prefix, id) {
+		e, ok := all[key]
+		if !ok {
+			continue
+		}
+		if e.InputCostPerToken == nil || e.OutputCostPerToken == nil {
+			continue
+		}
+		if *e.InputCostPerToken == 0 && *e.OutputCostPerToken == 0 {
+			continue
+		}
+		return e, true
+	}
+	return liteLLMEntry{}, false
+}
+
+// upstreamKeys spells one model id the ways a backend's table might
+// carry it, most specific first.
+//
+// Vertex publishes a dated model as "<base>@<date>" where the
+// unprefixed Anthropic table spells it "<base>-<date>", and tags the
+// undated pointer "@default". Both forms have to be tried or every
+// dated id would miss and silently fall back to the bare row.
+func upstreamKeys(prefix, id string) []string {
+	if prefix == "" {
+		return []string{id}
+	}
+	keys := []string{prefix + id}
+	if i := strings.LastIndex(id, "-"); i > 0 && isDateSuffix(id[i+1:]) {
+		keys = append(keys, prefix+id[:i]+"@"+id[i+1:])
+	}
+	return append(keys, prefix+id+"@default")
+}
+
+// isDateSuffix reports whether s is a bare YYYYMMDD stamp.
+func isDateSuffix(s string) bool {
+	if len(s) != 8 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // render produces the final gofmt'd builtin.go source. Header
 // documents when + from where + how to regenerate so the next
 // contributor doesn't have to reconstruct that context.
-func render(kept []generatedEntry, updatedAt time.Time, source string) ([]byte, error) {
+func render(kept, qualified []generatedEntry, updatedAt time.Time, source string) ([]byte, error) {
 	var sb strings.Builder
 	sb.WriteString(fileHeader(updatedAt, source))
 	sb.WriteString("var builtin = map[string]Rates{\n")
 	for _, e := range kept {
+		sb.WriteString(renderEntry(e, updatedAt))
+	}
+	sb.WriteString("}\n\n")
+	sb.WriteString(byBackendDoc)
+	sb.WriteString("var builtinByBackend = map[string]Rates{\n")
+	for _, e := range qualified {
 		sb.WriteString(renderEntry(e, updatedAt))
 	}
 	sb.WriteString("}\n\n")
@@ -723,6 +872,11 @@ func fileHeader(updatedAt time.Time, source string) string {
 // eligible() in dev/regen-builtin-pricing/main.go — adjust the rule
 // there, never this file.
 //
+// Three tables, one pass: bare-id rates, (backend, model) rates, and
+// context windows. The second exists because a rate belongs to the
+// backend that served the tokens, not to the model id — see
+// builtinByBackend's own comment.
+//
 // Issue #259 context: this file used to be hand-authored, drifted
 // silently, and shipped rates that were off by 20-30x during the
 // v2.7.0-dev.3 demo drive. The regen path is the mitigation — every
@@ -736,6 +890,25 @@ import "time"
 
 `, updatedAt.Format("2006-01-02"), source, "`", "`")
 }
+
+// byBackendDoc documents the generated (backend, model) table in the
+// output file.
+const byBackendDoc = `// builtinByBackend prices the (backend, model) pair rather than the
+// model id, under keys of the form "<backend>/<model>". The backend
+// names are mast's own — "anthropic", "anthropic-vertex", "gemini",
+// "vertex" — so a caller that has resolved which backend will serve a
+// call can build the key directly. Read it through LookupFor.
+//
+// The bare ` + "`builtin`" + ` table above cannot express this: LiteLLM's
+// unprefixed claude-* rates are Anthropic first-party while its
+// unprefixed gemini-* rates are Vertex, so the bare table is a mixture
+// of two backends that happens to be right only while each family's
+// backends charge the same. That is true as of this regen and is not a
+// guarantee anyone makes.
+//
+// Not every pair exists: a model a backend does not serve has no row,
+// and LookupFor falls back to the bare id for it.
+`
 
 // contextWindowDoc documents the generated window table in the output
 // file. LiteLLM's max_input_tokens is the authority here: the
@@ -759,9 +932,26 @@ const contextWindowDoc = `// builtinContextWindows is the max INPUT window per m
 const builtinAccessor = `// Builtin returns a defensive copy of the compiled-in table. Used
 // by tests + by tools that want to inspect what shipped (e.g. a
 // future ` + "`/pricing list builtin`" + ` view).
+//
+// Bare model ids only. The backend-qualified rows are a separate table
+// with a separate accessor, because the invariants differ: every entry
+// here is a model mast will run, and so must carry a tier and a context
+// window, while a qualified row is a price for a model already listed
+// here and carries neither.
 func Builtin() map[string]Rates {
 	out := make(map[string]Rates, len(builtin))
 	for k, v := range builtin {
+		out[k] = v
+	}
+	return out
+}
+
+// BuiltinByBackend returns a defensive copy of the compiled-in
+// (backend, model) table, keyed "<backend>/<model>". See LookupFor for
+// the resolution order that consults it.
+func BuiltinByBackend() map[string]Rates {
+	out := make(map[string]Rates, len(builtinByBackend))
+	for k, v := range builtinByBackend {
 		out[k] = v
 	}
 	return out

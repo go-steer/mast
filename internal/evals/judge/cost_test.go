@@ -61,7 +61,7 @@ func TestCostSpecs_PricesTwoDifferentRates(t *testing.T) {
 		t.Errorf("the small tier priced at $%.5f/1K and the frontier tier at $%.5f/1K; the check compares two rates and these do not differ in the direction that makes it a check",
 			analyst.RatePer1K, synth.RatePer1K)
 	}
-	if rootRate := compose.RatePer1K(root); analyst.RatePer1K == rootRate {
+	if rootRate := compose.RatePer1K("anthropic", root); analyst.RatePer1K == rootRate {
 		t.Errorf("the analyst priced at the root's own rate $%.5f/1K, so a run against %s could not tell a working tier from a broken one",
 			rootRate, root)
 	}

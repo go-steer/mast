@@ -186,6 +186,43 @@ func (c *Catalog) Lookup(modelID string) (Rates, bool) {
 	return r, ok
 }
 
+// LookupFor returns the rates for a model as served by a named backend
+// — "anthropic", "anthropic-vertex", "gemini", "vertex" — and is the
+// lookup a caller should prefer whenever it knows which backend will
+// bill the tokens.
+//
+// A rate is a property of the (backend, model) pair. The same
+// claude-opus-5 is reachable first-party and through Vertex; the same
+// gemini-3.7-flash through the Developer API and through Vertex. Lookup
+// cannot tell those apart, and the bare table it consults is itself a
+// mixture — LiteLLM's unprefixed claude-* rates are first-party
+// Anthropic while its unprefixed gemini-* rates are Vertex.
+//
+// Resolution is qualified-then-bare: the "<backend>/<model>" key first
+// (through the full layer precedence, so an operator override of a
+// qualified key still wins), and the bare model id if no qualified row
+// exists. The fallback is what makes this safe to call everywhere —
+// a pair no table prices resolves exactly as Lookup would, rather than
+// reporting the model unpriced and dropping the session's cost to zero.
+//
+// An empty backend is exactly Lookup, which is the right behavior for
+// an offline fake or a model whose backend could not be resolved.
+func (c *Catalog) LookupFor(backend, modelID string) (Rates, bool) {
+	r, _, ok := c.LookupForWithSource(backend, modelID)
+	return r, ok
+}
+
+// LookupForWithSource is LookupFor plus the layer that served the rate.
+// See LookupWithSource for the source-name vocabulary.
+func (c *Catalog) LookupForWithSource(backend, modelID string) (Rates, string, bool) {
+	if backend != "" {
+		if r, src, ok := c.LookupWithSource(backend + "/" + modelID); ok {
+			return r, src, true
+		}
+	}
+	return c.LookupWithSource(modelID)
+}
+
 // LookupWithSource is Lookup + the name of the catalog layer that
 // served the rate (SourceCfgOverride / SourceProjectFile /
 // SourceUserManual / SourceUserExternal / SourceBuiltin). Empty

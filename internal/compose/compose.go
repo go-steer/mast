@@ -676,29 +676,81 @@ func geminiClientConfig(provider string) (*genai.ClientConfig, error) {
 // used, scoped to the two Anthropic backends. CacheSystem stays off,
 // matching core-agent's default (no non-test caller ever enabled it).
 func anthropicProvider(ctx context.Context, provider string) (*anthropic.Provider, error) {
-	switch provider {
-	case anthropic.ProviderName:
-		return anthropic.New(anthropic.Options{})
-	case anthropic.VertexProviderName:
+	backend, err := anthropicBackend(provider)
+	if err != nil {
+		return nil, err
+	}
+	if backend == anthropic.VertexProviderName {
 		return anthropic.NewVertex(ctx, anthropic.VertexOptions{})
-	case ProviderGemini, ProviderVertex:
+	}
+	return anthropic.New(anthropic.Options{})
+}
+
+// anthropicBackend resolves a --provider alias plus the environment to
+// the Anthropic backend that will actually serve claude-* models.
+//
+// Split out from anthropicProvider because two callers need the answer
+// and they must not be able to disagree: the client builder above, and
+// the price lookup in RatePer1K. A rate belongs to the backend that
+// bills the tokens, so a pricing path that guessed the backend on its
+// own could quote Vertex's number for a first-party call — the failure
+// this split exists to make unrepresentable.
+func anthropicBackend(provider string) (string, error) {
+	switch provider {
+	case anthropic.ProviderName, anthropic.VertexProviderName:
+		return provider, nil
+	case ProviderGemini, ProviderVertex, "":
 		// A Gemini-family alias picks a Gemini backend; it says nothing
 		// about Anthropic's. A roster may still name a claude-*
 		// specialist under a gemini root — cross-provider overrides are
 		// allowed (see NewModelResolver) — so detect the backend the
 		// same way the no-alias path does rather than refusing a model
 		// the alias was never about.
-		return anthropicProvider(ctx, "")
-	case "":
 		if os.Getenv(anthropic.EnvAPIKey) != "" {
-			return anthropic.New(anthropic.Options{})
+			return anthropic.ProviderName, nil
 		}
 		if os.Getenv(anthropic.EnvVertexProject) != "" || os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
-			return anthropic.NewVertex(ctx, anthropic.VertexOptions{})
+			return anthropic.VertexProviderName, nil
 		}
-		return nil, fmt.Errorf("claude-* models need ANTHROPIC_API_KEY (first-party) or a Vertex project (ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT), or an explicit --provider=anthropic|anthropic-vertex")
+		return "", fmt.Errorf("claude-* models need ANTHROPIC_API_KEY (first-party) or a Vertex project (ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT), or an explicit --provider=anthropic|anthropic-vertex")
 	default:
-		return nil, fmt.Errorf("provider %q cannot serve claude-* models (want `anthropic` or `anthropic-vertex`)", provider)
+		return "", fmt.Errorf("provider %q cannot serve claude-* models (want `anthropic` or `anthropic-vertex`)", provider)
+	}
+}
+
+// Backend resolves the --provider alias and the environment to the
+// backend that will serve modelName: one of anthropic.ProviderName,
+// anthropic.VertexProviderName, ProviderGemini, or ProviderVertex.
+//
+// It returns "" — meaning "price this by bare model id" — for an
+// offline fake, for a model in neither family, and for a claude-* model
+// whose backend cannot be resolved from the environment. That last case
+// is not silently wrong: BuildModel is about to fail on the same
+// condition with a message naming the missing variables, so the run
+// never reaches a point where the quoted price could matter.
+//
+// This is the key half of pricing.LookupFor. The alias alone is not the
+// answer: --provider="" with GOOGLE_GENAI_USE_VERTEXAI set runs Gemini
+// on Vertex, and --provider="" with only a Vertex project set runs
+// Claude on Vertex. Keying a price on the flag rather than on the
+// resolved backend would get both of those wrong.
+func Backend(provider, modelName string) string {
+	switch {
+	case IsOfflineFake(modelName):
+		return ""
+	case strings.HasPrefix(modelName, "claude-"):
+		backend, err := anthropicBackend(provider)
+		if err != nil {
+			return ""
+		}
+		return backend
+	case strings.HasPrefix(modelName, "gemini-"):
+		if geminiOnVertex(provider) {
+			return ProviderVertex
+		}
+		return ProviderGemini
+	default:
+		return ""
 	}
 }
 
@@ -717,8 +769,18 @@ var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
 	return c
 })
 
-// RatePer1K derives pkg/budget's flat USD-per-1K-total-tokens rate
-// for a model name (budget.Limits.RatePer1K — API unchanged).
+// RatePer1K derives pkg/budget's flat USD-per-1K-total-tokens rate for
+// a model as served under a given --provider alias
+// (budget.Limits.RatePer1K).
+//
+// The price is looked up for the (backend, model) pair, not the model
+// id: Backend resolves the alias and the environment to the backend
+// that will actually bill the tokens, and pricing.LookupFor prices that
+// pair, falling back to the bare id when no backend-qualified row
+// exists. Passing the alias rather than the resolved backend is
+// deliberate — every caller has the alias, none of them should be
+// re-deriving the backend, and Backend is shared with the code that
+// builds the client so the two cannot drift.
 //
 // Gemini and Claude rates come from pkg/pricing's builtin catalog
 // (longest-prefix lookup, so dated/suffixed IDs land). The catalog prices
@@ -733,18 +795,35 @@ var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
 // The echo fake keeps its inflated rate: offline smoke tests
 // (scripts/demo-spike2.sh scenario 3) trip small caps with it. The
 // scripted replay and toolactor share it — all offline test doubles.
-func RatePer1K(modelName string) float64 {
+func RatePer1K(provider, modelName string) float64 {
+	return ratePer1K(builtinCatalog(), provider, modelName)
+}
+
+// ratePer1K is RatePer1K against an explicit catalog. The catalog is a
+// parameter only so tests can price the same model differently on two
+// backends: every rate mast ships agrees across the backends serving it,
+// so nothing built from the real table can tell whether the pair or the
+// bare id was read.
+func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
+	backend := Backend(provider, modelName)
+	blend := func() (float64, bool) {
+		r, ok := c.LookupFor(backend, modelName)
+		if !ok || r.IsZero() {
+			return 0, false
+		}
+		return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000, true
+	}
 	switch {
 	case modelName == "echo", modelName == "scripted", modelName == "toolactor":
 		return 0.05 // inflated so offline smoke tests can trip small caps
 	case strings.HasPrefix(modelName, "claude-"):
-		if r, ok := builtinCatalog().Lookup(modelName); ok && !r.IsZero() {
-			return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000
+		if rate, ok := blend(); ok {
+			return rate
 		}
 		return 0.003 // catalog miss: haiku-class flat fallback, never zero
 	case strings.HasPrefix(modelName, "gemini-"):
-		if r, ok := builtinCatalog().Lookup(modelName); ok && !r.IsZero() {
-			return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000
+		if rate, ok := blend(); ok {
+			return rate
 		}
 		return 0.0006 // catalog miss: pre-catalog flat spike rate
 	default:
@@ -786,7 +865,7 @@ func MeterScopes(specs []specialists.Spec, provider, rootModelName string) map[s
 			MaxCostUSD: s.Budget.MaxCostUSD,
 		}
 		if name := SpecModelName(s, provider, rootModelName); name != "" && !fake {
-			l.RatePer1K = RatePer1K(name)
+			l.RatePer1K = RatePer1K(provider, name)
 		}
 		if l == (budget.Limits{}) {
 			continue

@@ -57,7 +57,7 @@ returns text is not a provider that works.
 | **R1** | **Resolvable** from `--model`, a specialist `model:`, and a specialist `tier:` — and unresolvable *fails at construction*, never at the incident | The property `NewModelResolver` and `TierModelName` already enforce; a new provider must not become the first quiet downgrade |
 | **R2** | **Agent-loop correct**: tool calls round-trip with their real input schema, multi-turn tool loops survive, reasoning/thinking blocks round-trip where the API requires echoing them, streaming accumulates, finish reasons map | The empty-schema P0 above. Measured, not eyeballed — see R8 |
 | **R3** | **Usage measured per turn**: prompt, completion, total, cache-read, cache-write, reasoning — each either a number or an explicit *not reported*, never a zero standing in for unknown | "Same usage/stats as Gemini and Claude" is the ask; the zero-vs-unknown distinction is what makes a cost figure auditable |
-| **R4** | **Priced, or explicitly unpriced**: a catalog entry keyed to the backend that actually served the tokens, or a rendered `$—` | `pkg/pricing` already refuses to render `$0` for an unknown rate. A new backend must not silently inherit a wrong rate — which is [#178](https://github.com/go-steer/mast/issues/178) today for Claude on Vertex |
+| **R4** | **Priced, or explicitly unpriced**: a catalog entry keyed to the backend that actually served the tokens, or a rendered `$—` | `pkg/pricing` already refuses to render `$0` for an unknown rate. A new backend must not silently inherit a wrong rate — [#178](https://github.com/go-steer/mast/issues/178)'s case, Claude on Vertex, and the symmetric one nobody filed: Gemini on the Developer API priced off Vertex's row. Both closed by v0.6 W10.0; the *requirement* stands, and what a new backend now owes is its rows and its name in the backend allowlist |
 | **R5** | **Tiered in both directions**: `modeltier.Classify` knows the model, `taskclass.ModelForTier` can name it | Without the reverse direction `--task` is inert and the small-tier-parent guard goes quiet; without the forward direction `tier:` rosters cannot run on the provider at all |
 | **R6** | **Budget-enforceable**: `RatePer1K` resolves and `budget.Meter` prices the turn from the catalog rather than the flat fallback | A `max_cost_usd` ceiling on an unpriced model is a ceiling in name only |
 | **R7** | **Observable**: `/usage` per-turn rows, `/stats`, `mast_*` metrics, and the per-specialist cost attribution `MeterScopes` produces | v0.4's `J-cost-tier` check asserts tier resolution against *reported* `ModelVersion`; a provider that doesn't populate it can't be checked |
@@ -340,12 +340,32 @@ Four changes to `pkg/pricing` + the generator, in dependency order:
    [#178](https://github.com/go-steer/mast/issues/178). Adding OpenAI-on-Azure
    and Grok-on-Vertex without this would be shipping three more instances of a
    bug we have already filed. This change closes #178 rather than joining it.
+
+   **Shipped for the four backends mast serves today** (v0.6 W10.0, 2026-09-01),
+   which is (1) and (2) below for `anthropic`, `anthropic-vertex`, `gemini` and
+   `vertex`. `pricing.LookupFor(backend, model)` tries `<backend>/<model>` and
+   falls back to the bare id; `compose.Backend` resolves the alias *and* the
+   environment to the backend that will bill the call, and is the same resolver
+   `BuildModel` uses so a price cannot name a backend the client did not. A new
+   profile inherits the mechanism and owes only its generator rows and its entry
+   in the four-backend allowlist that `TestBuiltinByBackend_Shape` pins.
 2. **Widen `familyPrefixes` and rehabilitate the `/` rule.** The generator drops
    any LiteLLM key containing `/` as router noise (`main.go:451`). Under (1)
    those keys become the *useful* ones: `vertex_ai/…`, `xai/…`,
    `azure/…` map onto profile-qualified mast keys. The eligibility predicate
    (chat mode, function calling published and true, not deprecated, text
    modality) carries over unchanged and is the right filter for the wider set.
+
+   **Done for the current families** by the same change: a `backends` table maps
+   each mast backend to its LiteLLM prefix, `qualifyByBackend` walks it, and the
+   emitted rows land in a **second** map, `builtinByBackend`, rather than in
+   `builtin`. The split is not cosmetic — the tier and context-window tables are
+   keyed on bare model ids and `pkg/pricing`'s cross-table invariants demand a
+   row in each for every key in `builtin`, so a qualified key there would demand
+   a duplicate tier and window for a name nothing looks up. `NewCatalog` merges
+   the two into one layer, which is what lets an operator override a single
+   pair from a pricing file and lets prefix fallback work on qualified keys.
+   Widening to a new profile is then a row in `backends`, not a new mechanism.
 3. **Model the rate shapes we currently cannot express.** OpenAI's GPT-5.6
    family bills requests over 272K input tokens at 2× input and 1.5× output
    **for the whole request**, adds a 10% uplift on data-residency endpoints, and
@@ -502,7 +522,7 @@ Six slices. Each names its exit criterion; none is "the code compiles".
 |---|---|---|
 | **M0** | Usage detail sidecar ([§4.3](#43-usage-one-normalized-record-carried-beside-the-genai-one)) + the meter reading it. **Before any new provider**, retrofitted onto Anthropic | The cache-write undercount is gone: a cache-warming Claude turn prices within a cent of Anthropic's own console figure, pinned by a fixture test. Zero-vs-unreported is distinguishable in `/usage` |
 | **M1** | Provider profiles ([§4.2](#42-a-model-is-named-by-profile-model-id)): registry, config surface, `--provider` opens up, `providerFamily` and `BuildModel` resolve through it | The four shipped backends run unchanged through profiles, with the prefix path kept only as a compat fallback. A bogus profile fails at construction naming the profile |
-| **M2** | Pricing by (profile, model) ([§4.5](#45-pricing-and-the-self-hosted-cost-fiction) 1–2) | **Closes [#178](https://github.com/go-steer/mast/issues/178)**: Claude-on-Vertex prices off the Vertex table. Generator emits profile-qualified keys; cross-table invariant tests extended to every profile with a tier map |
+| **M2** | Pricing by (profile, model) ([§4.5](#45-pricing-and-the-self-hosted-cost-fiction) 1–2). **Done for the four shipped backends** — v0.6 W10.0, 2026-09-01 | **Closes [#178](https://github.com/go-steer/mast/issues/178)**: Claude-on-Vertex prices off the Vertex table. Generator emits profile-qualified keys; cross-table invariant tests extended to every profile with a tier map. Met for `anthropic`/`anthropic-vertex`/`gemini`/`vertex`; what M2 still owes is the profile-registry spelling of the key once M1 lands, since W10.0 keys on the backend name and a profile is the more general thing |
 | **M3** | `pkg/providers/openai` — `openai-chat` first, `openai-responses` wrapping ADK's | A recorded-turn fixture drives a full tool loop offline in the U/E tiers for both dialects, and the E-tier differentiator evals (exactly-once, refusal, rejection, budget) pass against it. Then a J-tier live run against OpenAI + Vertex MaaS + xAI, with tool-calling metrics from [#168–#172](https://github.com/go-steer/mast/issues/172) at parity with the Claude baseline — **that parity is the gate on calling any of them supported**. `J-cost-tier` needs the per-profile identity rule of [§3](#3-what-the-code-assumes-today)'s tenth seam before a MaaS id can pass it |
 | **M4** | Self-hosted: capability declaration, `metrics_url` scrape, unpriced-by-default, `cached_tokens` reliability flag | A vLLM profile runs the triage bundle end to end; `/usage` shows tokens per turn, `$—` for cost, and a session-scoped prefix-cache-hit-rate labelled fleet-level |
 | **M5** | Claude on Bedrock; the built-in long-tail profiles; Azure | Each ships with a tier map, catalog rows, and a live smoke, or it ships as a documented profile template with no support claim |
