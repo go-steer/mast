@@ -593,9 +593,23 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		logger.Error("sub-agent/tool name collision", "names", hits)
 		return fmt.Errorf("composition names both a sub-agent and a mutating tool %q: a mutating tool sharing a specialist's name is invisible to the effect outbox — rename the specialist or the tool", strings.Join(hits, ", "))
 	}
+	// Where a planner dispatch's mutating calls are recorded, since the
+	// outbox plugin cannot see them (#235, v0.6 W9.3). The user ID is
+	// bound here rather than resolved per write: the store can find one
+	// by scanning the app's session list, but that scan would sit in
+	// front of every dispatched mutating call.
+	subIntents := compose.SubRunIntentStore{Store: store, UserID: defaultUserID}
+	subObs.attachRecording(subIntents, effPred, effSubAgents)
+
 	outboxPlugin, err := effects.New(effects.Config{
 		Predicate:     effPred,
 		SubAgentNames: effSubAgents,
+		// A dispatched specialist's mutating calls are in neither this
+		// session's log nor any log this process will ever scan, so the
+		// outbox is told about them out of band — the same way its spend
+		// crosses the boundary (#226). Merged before the ack filter, so
+		// `mast sessions ack-effects` clears these too.
+		ExternalDangling: subIntents.Dangling,
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return store.EffectsAckedAt(ctx, "", sid)
 		},
@@ -1008,6 +1022,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			dispatchMode: dispatchMode,
 			pred:         effPred,
 			subAgents:    effSubAgents,
+			external:     subIntents.Dangling,
 			window:       autoResumeWindow,
 		}
 		go func() {

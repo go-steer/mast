@@ -18,7 +18,8 @@ mutation is gated — unattended writes have to be asked for.
 The gate is a runner plugin, and under `planner` dispatch
 `invoke_specialist` runs its specialist on a runner of its own — built
 without it. A mutating call made from inside a planner dispatch would
-neither park nor dry-run, and would leave no effect-outbox record.
+neither park nor dry-run — it would simply execute, and the operator who
+asked for approval would never be asked.
 
 So **that combination does not start.** A bundle that enables the planner,
 holds a `capability: change_executor` specialist, and asks for anything
@@ -34,9 +35,11 @@ executor(s) change-executor: …
 Run that roster under `coordinator` or `graph`, where the runner carries
 the gate and everything on this page applies normally. Or set
 `hitl.on_mutation: apply` if the writes are genuinely meant to fire
-unattended — there is no gate to bypass under `apply`, though the missing
-outbox record still costs you exactly-once replay if a dispatch is
-interrupted.
+unattended — there is no gate to bypass under `apply`. Those dispatched
+mutations are still *recorded*: mast writes each one to the session's
+effect ledger before the call is made, so an interrupted dispatch leaves
+a visible dangling intent rather than a silent one (see below). What
+`apply` gives up is the stop, not the record.
 
 **This refusal is permanent, and it is worth knowing why.** A park is not a
 suspended turn: it writes its question into the session event log, and a
@@ -54,9 +57,42 @@ review, nothing to edit, and an audit record naming the dispatch rather
 than the change. Approving a change and approving an agent are different
 things, and mast would rather refuse than blur them.
 
-What remains genuinely owed is the missing outbox record under `apply`
-— [#235](https://github.com/go-steer/mast/issues/235).
 :::
+
+## Dispatched writes are recorded even when they are not gated
+
+The gate cannot cross into a planner dispatch, but *recording* can:
+recording is one-directional, and nothing has to come back. So mast
+records anyway.
+
+Every planner dispatch gets a per-dispatch recorder on the same seam
+that meters its spend. Before a dispatched specialist's mutating call
+runs, its intent — tool name, call id, the specialist that raised it —
+is written durably to the session's operations row; when the call
+returns, the intent is paired off. If the process dies in between, the
+intent is left dangling, and mast treats it exactly as it treats a
+dangling call in the session's own log:
+
+- the session's next turn enters **ambiguous-effect mode** and refuses
+  mutating calls until an operator says the effect has been checked
+  (`mast sessions ack-effects <session>`, same as any other dangling
+  effect);
+- the boot-time auto-resume scan counts it as a dangling mutation and
+  declines to resume the session unattended. (That gate only applies
+  under `coordinator` dispatch today — auto-resume is coordinator-only
+  — so for a planner workload the live effect is the refusal above.)
+
+Two things this deliberately does *not* do. The record never lands in
+the session's event log, so the planner's model never sees the
+specialist's individual calls — that isolation is the reason the
+dispatch shape exists, and buying the guarantee by giving it up would
+be a bad trade. And the record is not an approval: it tells you what a
+dispatch was in the middle of, after the fact. If you need to be asked
+first, run the roster under `coordinator` or `graph`.
+
+If the record itself cannot be written, the dispatch stops. Under
+`apply` the record is the only control a dispatched write has, and a
+control that fails open is not one.
 
 ## What a parked call looks like
 

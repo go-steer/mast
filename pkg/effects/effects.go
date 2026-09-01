@@ -166,6 +166,15 @@ type Config struct {
 	// the scan wedges mast's default composition on its happy path.
 	SubAgentNames map[string]bool
 
+	// ExternalDangling returns intents this process recorded for the
+	// session OUTSIDE its event log — in practice the mutating calls a
+	// planner dispatch made on its private sub-runner, which the outbox
+	// plugin never saw and the log therefore never carried (#235; see
+	// subrun.go). Merged into the turn snapshot before the ack filter, so
+	// an operator's ack clears them the same way it clears the log's own.
+	// Optional; nil means this host records none.
+	ExternalDangling func(ctx context.Context, sessionID string) []DanglingIntent
+
 	// AckedAt returns the operator's effects-acknowledgement watermark
 	// for a session, if one exists (pkg/transcript reads it from the
 	// companion ops row). Dangling intents at or before the watermark
@@ -312,6 +321,12 @@ func (o *outbox) beforeRun(ictx agent.InvocationContext) (*genai.Content, error)
 		return nil, nil
 	}
 	st := scanHistory(sess.Events(), o.cfg.Predicate, o.cfg.SubAgentNames)
+	if o.cfg.ExternalDangling != nil {
+		if ext := o.cfg.ExternalDangling(ictx, sess.ID()); len(ext) > 0 {
+			st.dangling = append(st.dangling, ext...)
+			sortByTimestamp(st.dangling)
+		}
+	}
 	if len(st.dangling) > 0 && o.cfg.AckedAt != nil {
 		if ack, ok := o.cfg.AckedAt(ictx, sess.ID()); ok {
 			kept := st.dangling[:0]
@@ -579,13 +594,16 @@ func ScanDangling(events session.Events, pred Predicate, subAgents map[string]bo
 			out.Repairable = append(out.Repairable, c.intent)
 		}
 	}
-	byTS := func(ds []DanglingIntent) {
-		sort.Slice(ds, func(i, j int) bool { return ds[i].Timestamp.Before(ds[j].Timestamp) })
-	}
-	byTS(out.Mutating)
-	byTS(out.Repairable)
-	byTS(out.Deferred)
+	sortByTimestamp(out.Mutating)
+	sortByTimestamp(out.Repairable)
+	sortByTimestamp(out.Deferred)
 	return out
+}
+
+// sortByTimestamp orders intents oldest-first, the order every consumer
+// reports them in and the order an ack watermark is applied against.
+func sortByTimestamp(ds []DanglingIntent) {
+	sort.Slice(ds, func(i, j int) bool { return ds[i].Timestamp.Before(ds[j].Timestamp) })
 }
 
 // confirmationGatedCallID extracts the original function-call ID an

@@ -183,6 +183,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	// only way its spend reaches this turn's ceilings is the observer
 	// seam compose threads into the planner (#226).
 	meter := budget.New(meterConfig(cfg, &bundle, specs, modelName))
+	seam := &subRunMeter{m: meter}
 	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:         bundle,
 		Specs:          specs,
@@ -191,7 +192,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 		Dispatch:       compose.DispatchAuto,
 		Logger:         cfg.Logger,
 		PauseRecorder:  pauseRecorder(cfg),
-		SubRunObserver: subRunMeter{meter},
+		SubRunObserver: seam,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: build workload %q: %w", bundle.Name, err)
@@ -204,7 +205,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	}
 
 	msg := genai.NewContentFromText(input, genai.RoleUser)
-	return runTurn(ctx, cfg, root, &bundle, meter, newSessionID(), msg)
+	return runTurn(ctx, cfg, root, &bundle, meter, seam, newSessionID(), msg)
 }
 
 // Run is the single-agent convenience: one Chat-mode agent with the
@@ -225,7 +226,7 @@ func Run(ctx context.Context, cfg Config, instruction, input string) (*Result, e
 		return nil, fmt.Errorf("mast: build agent: %w", err)
 	}
 	msg := genai.NewContentFromText(input, genai.RoleUser)
-	return runTurn(ctx, cfg, root, nil, budget.New(meterConfig(cfg, nil, nil, modelName)), newSessionID(), msg)
+	return runTurn(ctx, cfg, root, nil, budget.New(meterConfig(cfg, nil, nil, modelName)), nil, newSessionID(), msg)
 }
 
 // ListSessions returns the operator projections (pkg/transcript) for
@@ -271,6 +272,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		return nil, err
 	}
 	meter := budget.New(meterConfig(cfg, &bundle, specs, modelName))
+	seam := &subRunMeter{m: meter}
 	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:         bundle,
 		Specs:          specs,
@@ -279,7 +281,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		Dispatch:       compose.DispatchAuto,
 		Logger:         cfg.Logger,
 		PauseRecorder:  pauseRecorder(cfg),
-		SubRunObserver: subRunMeter{meter},
+		SubRunObserver: seam,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: build workload %q: %w", bundle.Name, err)
@@ -292,7 +294,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		})},
 	}
 	msg.Parts[0].FunctionResponse.ID = interruptID
-	return runTurn(ctx, cfg, root, &bundle, meter, sessionID, msg)
+	return runTurn(ctx, cfg, root, &bundle, meter, seam, sessionID, msg)
 }
 
 // AckEffects records the operator's acknowledgement of ambiguous prior
@@ -504,19 +506,67 @@ func libraryWatchdogMode(bundle *workload.Bundle) (watchdog.Mode, error) {
 // name is ignored too — a meter attributes by the event's own Author,
 // which is what makes a per-specialist ceiling bind here.
 //
-// One value is both the observer and every dispatch's sink: a meter
-// carries no per-dispatch state to scope, and nothing accumulates that
-// a Close would have to flush. The library build wires no watchdog —
-// cmd/mast is where that sink has a boundary to respect.
-type subRunMeter struct{ m *budget.Meter }
+// The library build wires no watchdog — cmd/mast is where that sink has
+// a boundary to respect.
+//
+// # Late binding, and why this is a pointer
+//
+// The seam has to exist before the root is built, because the planner's
+// dispatch tool takes it at construction. The other half of what it does
+// — recording a dispatched specialist's mutating calls where the outbox
+// can find them (#235, v0.6 W9.3) — needs the effects predicate and the
+// session store, and both are derived inside runTurn from the composed
+// root. So the meter is set at construction and bindRecorder supplies
+// the rest before the turn starts. Same shape as cmd/mast's
+// daemonSubRunObserver, and for the same reason.
+type subRunMeter struct {
+	m       *budget.Meter
+	records func(sessionID, specialist string) *effects.SubRunRecorder
+}
 
-func (s subRunMeter) SubRun(_, _ string) planner.SubRunSink { return s }
+// bindRecorder gives the seam its recording half. A nil records function
+// (no session service, so nothing durable to record against) leaves the
+// seam metering-only, which is what it was through v0.5.
+func (s *subRunMeter) bindRecorder(f func(sessionID, specialist string) *effects.SubRunRecorder) {
+	s.records = f
+}
 
-func (s subRunMeter) Observe(ev *adksession.Event) error { return s.m.Observe(ev) }
+// SubRun opens one dispatch's sink. The session ID is the OUTER
+// session's; the specialist name is ignored by the meter — it attributes
+// by the event's own Author, which is what makes a per-specialist
+// ceiling bind here — and used by the recorder for attribution the log
+// cannot supply.
+func (s *subRunMeter) SubRun(sessionID, specialist string) planner.SubRunSink {
+	sink := &subRunSink{m: s.m}
+	if s.records != nil {
+		sink.rec = s.records(sessionID, specialist)
+	}
+	return sink
+}
 
-func (s subRunMeter) Close() {}
+// subRunSink is one dispatch's sink for the library build.
+type subRunSink struct {
+	m   *budget.Meter
+	rec *effects.SubRunRecorder
+}
 
-func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, meter *budget.Meter, sessionID string, msg *genai.Content) (*Result, error) {
+// Observe meters first and records last, the ordering cmd/mast's sink
+// documents at length: the recorder writes a durable "this may have
+// mutated" claim, and a ceiling that fires on the same event stops the
+// call before it is made.
+func (s *subRunSink) Observe(ev *adksession.Event) error {
+	if err := s.m.Observe(ev); err != nil {
+		return err
+	}
+	if s.rec == nil {
+		return nil
+	}
+	return s.rec.Observe(ev)
+}
+
+func (s *subRunSink) Close() {}
+
+func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, meter *budget.Meter, seam *subRunMeter, sessionID string, msg *genai.Content) (*Result, error) {
 	svc := cfg.Sessions
 	if svc == nil {
 		svc = adksession.InMemoryService()
@@ -540,13 +590,54 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	if hits := effects.CheckNameCollisions(subAgents, pred, policies); len(hits) > 0 {
 		return nil, fmt.Errorf("mast: composition names both a sub-agent and a mutating tool %q: a mutating tool sharing a specialist's name is invisible to the effect outbox — rename the specialist or the tool", strings.Join(hits, ", "))
 	}
+	// Dispatched mutations (#235, v0.6 W9.3). A planner's specialist runs
+	// past a private runner, so this plugin never sees its tool calls; the
+	// observer seam does, and records them out-of-band on the outer
+	// session's companion ops row. Binding is late because the seam is
+	// built before the root (the dispatch tool needs it at construction
+	// time) and the predicate is only known here.
+	//
+	// Only with a caller-supplied session service: a nil Sessions means a
+	// fresh in-memory service per call, so there is no later turn and no
+	// resume for the record to inform, and writing one would be pure cost.
+	var externalDangling func(context.Context, string) []effects.DanglingIntent
+	if cfg.Sessions != nil {
+		subIntents := compose.SubRunIntentStore{Store: ackStore, UserID: userID}
+		externalDangling = subIntents.Dangling
+		if seam != nil {
+			seam.bindRecorder(func(sid, specialist string) *effects.SubRunRecorder {
+				rec, err := effects.NewSubRunRecorder(effects.SubRunRecorderConfig{
+					Store:         subIntents,
+					SessionID:     sid,
+					Specialist:    specialist,
+					Predicate:     pred,
+					SubAgentNames: subAgents,
+					Logger:        cfg.Logger,
+				})
+				if err != nil {
+					// Loud, not fatal: a dispatch that cannot be recorded
+					// is worse than one that is, but killing the turn over
+					// it trades a recording gap for an availability one.
+					if cfg.Logger != nil {
+						cfg.Logger.Error("dispatched mutations will go UNRECORDED for this sub-run",
+							"session", sid, "specialist", specialist, "err", err)
+					}
+					return nil
+				}
+				return rec
+			})
+		}
+	}
 	outboxPlugin, err := effects.New(effects.Config{
 		Predicate:     pred,
 		SubAgentNames: subAgents,
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return ackStore.EffectsAckedAt(ctx, "", sid)
 		},
-		Logger: cfg.Logger,
+		// Merged before the ack filter, so `mast ack-effects` clears a
+		// dispatched dangling intent on the same terms as an in-band one.
+		ExternalDangling: externalDangling,
+		Logger:           cfg.Logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: construct effects outbox: %w", err)
