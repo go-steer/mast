@@ -176,11 +176,12 @@ func mutatingNames(names []string, pred effects.Predicate) []string {
 //
 // The refusal is scoped to the promise that is actually broken. Under
 // `apply` the gate was never going to stop the call, so nothing about
-// the dispatch changes what executes. What is still missing there is
-// the outbox record, which costs exactly-once replay after an
-// interrupted dispatch — a real gap, named at the call site in
-// pkg/planner/dispatch.go and in the write-gate reference page, and not
-// one worth refusing a startup over.
+// the dispatch changes what executes. The recording gap that used to
+// remain there is closed as of v0.6 W9.3: the observer seam writes each
+// dispatched mutating intent and completion to the outer session's
+// companion ops row, and the outbox folds them into its dangling scan
+// (pkg/effects/subrun.go). What `apply` gives up is the stop, not the
+// record.
 //
 // # Why this check is permanent
 //
@@ -208,12 +209,13 @@ func mutatingNames(names []string, pred effects.Predicate) []string {
 // the arguments are whatever the model produces on resume" — that is a
 // description of boundary gating.
 //
-// What #235 still owes is the outbox record under `apply` (see above),
-// which is a recording problem rather than an approval one and does not
-// inherit the obstacle: recording is one-directional, and SubRunSink
-// sees a mutating FunctionCall before the tool body runs
-// (pkg/planner/outboxseam_test.go). Closing that will not delete this
-// check.
+// The other half of #235 — the outbox record — was a recording problem
+// rather than an approval one and did not inherit the obstacle:
+// recording is one-directional, and SubRunSink sees a mutating
+// FunctionCall before the tool body runs
+// (pkg/planner/outboxseam_test.go). It shipped in v0.6, and closing it
+// did not delete this check: a record of what a dispatch did is not a
+// chance to say no before it does it.
 func CheckPlannerWriteSurface(b workload.Bundle, specs []specialists.Spec) error {
 	if !b.Planner.Enabled {
 		return nil
@@ -232,6 +234,6 @@ func CheckPlannerWriteSurface(b workload.Bundle, specs []specialists.Spec) error
 		return nil
 	}
 	sort.Strings(executors)
-	return fmt.Errorf("compose: workload %q enables the planner and declares hitl.on_mutation: %s, but its roster holds change executor(s) %s: the write gate and the effect outbox are runner plugins and invoke_specialist runs each specialist on a runner of its own, so a mutating call made inside a dispatch would neither park nor dry-run and would leave no durable record of what it did (go-steer/mast#235). Run this roster under dispatch: coordinator or graph, where the gate reaches it; or set hitl.on_mutation: apply if these writes are genuinely meant to fire unattended and unrecorded",
+	return fmt.Errorf("compose: workload %q enables the planner and declares hitl.on_mutation: %s, but its roster holds change executor(s) %s: the write gate and the effect outbox are runner plugins and invoke_specialist runs each specialist on a runner of its own, so a mutating call made inside a dispatch would neither park nor dry-run — it would execute, and the operator who wrote this policy would never be asked (go-steer/mast#235). Run this roster under dispatch: coordinator or graph, where the gate reaches it; or set hitl.on_mutation: apply if these writes are genuinely meant to fire unattended, which records each dispatched mutation on the session's effect ledger but stops none of them",
 		b.Name, policy, strings.Join(executors, ", "))
 }

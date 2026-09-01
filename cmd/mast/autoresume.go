@@ -90,7 +90,13 @@ type autoResumer struct {
 	// drift from what the outbox considers dangling.
 	pred      effects.Predicate
 	subAgents map[string]bool
-	window    time.Duration
+	// external reports dangling intents this daemon recorded outside the
+	// session's log — a planner dispatch's mutating calls (#235). Shared
+	// with the outbox's ExternalDangling for the same reason pred and
+	// subAgents are shared: the eligibility gate must not be able to
+	// consider a session clean that the next turn will refuse.
+	external func(ctx context.Context, sessionID string) []effects.DanglingIntent
+	window   time.Duration
 }
 
 // run is the boot pass: scan interrupted sessions and drive a
@@ -170,7 +176,16 @@ func (a *autoResumer) resumeOne(ctx context.Context, c transcript.InterruptedCan
 	//    a response would falsely claim the effect did not happen).
 	//    Operator territory. A dangling DELEGATION/control call is
 	//    engine-reconstruct territory the slice does not drive.
+	//    A dispatched specialist's mutating call is in neither this
+	//    session's log nor any log this process scans, so it is folded in
+	//    from the ops row (#235). Slice-1 is coordinator-only and a
+	//    dispatch is a planner shape, so this cannot bite today — it is
+	//    here so that widening the dispatch scope above cannot silently
+	//    reopen the once-and-only-once guarantee.
 	scan := effects.ScanDangling(c.Events, a.pred, a.subAgents)
+	if a.external != nil {
+		scan = scan.WithExternal(a.external(ctx, c.SessionID))
+	}
 	if len(scan.Mutating) > 0 {
 		log.Warn("auto-resume skipped: dangling mutating intent (ambiguous effect); operator ack required",
 			"dangling_mutating", len(scan.Mutating))

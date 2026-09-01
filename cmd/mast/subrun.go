@@ -20,6 +20,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/watchdog"
@@ -66,6 +67,15 @@ type daemonSubRunObserver struct {
 	workload string
 	logger   *slog.Logger
 
+	// The v0.6 W9.3 recording half (#235): where a dispatched
+	// specialist's mutating intents are written, and how they are
+	// classified. Attached separately from the accounting sinks because
+	// they become available at a different point in startup — the
+	// predicate needs the loaded bundle, which buildRoot returns.
+	intents   effects.IntentStore
+	pred      effects.Predicate
+	subAgents map[string]bool
+
 	// unattributed fires once, for the sub-run event that arrives with
 	// no outer session to bill. It should be unreachable — every
 	// dispatch runs inside a turn, and a turn has a session — but the
@@ -83,6 +93,18 @@ func (o *daemonSubRunObserver) attach(meters *meterPool, obs *observability.Regi
 	o.workload, o.logger = workload, logger
 }
 
+// attachRecording gives the observer the durable-intent half (#235).
+// Separate from attach because the effects predicate and the composed
+// sub-agent set are derived from the loaded bundle, which is not in hand
+// when the observer is constructed — and because a host may legitimately
+// meter dispatches without recording them (the one-shot path has no
+// session to record against).
+func (o *daemonSubRunObserver) attachRecording(intents effects.IntentStore, pred effects.Predicate, subAgents map[string]bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.intents, o.pred, o.subAgents = intents, pred, subAgents
+}
+
 // SubRun implements planner.SubRunObserver: one sink per dispatch,
 // holding the sinks as they stood when the dispatch opened.
 //
@@ -93,7 +115,29 @@ func (o *daemonSubRunObserver) attach(meters *meterPool, obs *observability.Regi
 func (o *daemonSubRunObserver) SubRun(sessionID, specialist string) planner.SubRunSink {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
+	var rec *effects.SubRunRecorder
+	if o.intents != nil && o.pred != nil && sessionID != "" {
+		var err error
+		rec, err = effects.NewSubRunRecorder(effects.SubRunRecorderConfig{
+			Store:         o.intents,
+			SessionID:     sessionID,
+			Specialist:    specialist,
+			Predicate:     o.pred,
+			SubAgentNames: o.subAgents,
+			Logger:        o.logger,
+		})
+		if err != nil && o.logger != nil {
+			// Configuration, not runtime: every field is fixed at startup,
+			// so this is either always broken or never. Loud rather than
+			// fatal — the dispatch still meters and is still watchdogged,
+			// and the composition refusal already keeps a gated roster off
+			// this path entirely.
+			o.logger.Error("planner dispatch will not record its mutating calls",
+				"session", sessionID, "specialist", specialist, "error", err.Error())
+		}
+	}
 	return &daemonSubRun{
+		recorder:   rec,
 		owner:      o,
 		sessionID:  sessionID,
 		specialist: specialist,
@@ -130,6 +174,10 @@ type daemonSubRun struct {
 	workload string
 	logger   *slog.Logger
 
+	// recorder is the durable-intent half (#235); nil when this host
+	// records none.
+	recorder *effects.SubRunRecorder
+
 	seen   map[string]struct{}
 	halted error
 }
@@ -142,7 +190,7 @@ type daemonSubRun struct {
 // package doc says the event-stream seam cannot give: here the run
 // being stopped IS the specialist's.
 //
-// The three consumers run in a deliberate order. Metrics first, because
+// The four consumers run in a deliberate order. Metrics first, because
 // the call that crosses a ceiling still happened and still cost money —
 // a token count that omits the last call is the one an operator
 // reconciling a provider bill would trip over. Then the watchdog, whose
@@ -150,6 +198,14 @@ type daemonSubRun struct {
 // session the watchdog halts is refused until an operator resets it,
 // where a budget stop is cleared by raising the ceiling. Then the
 // meter.
+//
+// The intent recorder (#235) goes LAST, and inverts the metrics-first
+// rule on purpose. Every consumer above it can still stop the sub-run,
+// and a mutating FunctionCall reaches this sink BEFORE the tool body
+// runs (pkg/planner/outboxseam_test.go) — so recording earlier would
+// leave a durable "this may have mutated" record for a call that a
+// watchdog trip or a budget ceiling then prevented, wedging the session
+// into ambiguous-effect mode over an effect that never happened.
 func (r *daemonSubRun) Observe(ev *session.Event) error {
 	if ev == nil {
 		return nil
@@ -157,9 +213,6 @@ func (r *daemonSubRun) Observe(ev *session.Event) error {
 	r.obs.Observe(ev, r.workload)
 	if err := r.watch(ev); err != nil {
 		return err
-	}
-	if r.meters == nil {
-		return nil
 	}
 	if r.sessionID == "" {
 		r.owner.unattributed.Do(func() {
@@ -170,7 +223,15 @@ func (r *daemonSubRun) Observe(ev *session.Event) error {
 		})
 		return nil
 	}
-	return r.meters.meter(r.sessionID).Observe(ev)
+	if r.meters != nil {
+		if err := r.meters.meter(r.sessionID).Observe(ev); err != nil {
+			return err
+		}
+	}
+	if r.recorder == nil {
+		return nil
+	}
+	return r.recorder.Observe(ev)
 }
 
 // Close implements planner.SubRunSink: the end-of-run drain, the same

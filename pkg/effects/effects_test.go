@@ -135,6 +135,12 @@ type harness struct {
 }
 
 func newHarness(t *testing.T, script func(*model.LLMRequest) *model.LLMResponse) *harness {
+	return newHarnessWith(t, script, nil)
+}
+
+// newHarnessWith is newHarness plus the external-dangling hook (#235):
+// the dispatched mutations the log cannot hold, folded in at beforeRun.
+func newHarnessWith(t *testing.T, script func(*model.LLMRequest) *model.LLMResponse, external func(context.Context, string) []DanglingIntent) *harness {
 	t.Helper()
 	h := &harness{
 		svc:     sqliteService(t),
@@ -197,6 +203,7 @@ func newHarness(t *testing.T, script func(*model.LLMRequest) *model.LLMResponse)
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
 			return h.store.EffectsAckedAt(ctx, "", sid)
 		},
+		ExternalDangling: external,
 	})
 	if err != nil {
 		t.Fatalf("effects.New: %v", err)

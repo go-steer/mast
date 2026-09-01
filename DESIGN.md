@@ -198,10 +198,9 @@ when somebody reads their chat.
   without being a plugin. So
   `compose.CheckPlannerWriteSurface` refuses any planner roster holding
   a `change_executor` while `hitl.on_mutation` asks for the write to be
-  gated; `apply` is exempt, because there was no gate to bypass, and
-  what is missing there is the outbox record rather than the approval.
-- **That refusal is the design for the gate, and a gap for the
-  outbox.** The two halves came apart under measurement (2026-08-31,
+  gated; `apply` is exempt, because there was no gate to bypass.
+- **That refusal is the design for the gate; the outbox half is
+  closed.** The two halves came apart under measurement (2026-08-31,
   [#235](https://github.com/go-steer/mast/issues/235)). The **gate**
   cannot cross and no wiring makes it: a park writes its question into
   the session event log and returns normally — the turn is not
@@ -331,9 +330,16 @@ Settled rather than deferred, as of 2026-08-31: **the write gate does
 not reach inside a planner dispatch, and will not** — the combination
 stays refused at composition, for the structural reason in the
 contracts above ([#235](https://github.com/go-steer/mast/issues/235)).
-What that issue still owes is the **outbox record under
-`on_mutation: apply`**, where nothing is refused and nothing is
-recorded.
+The other half of that issue — the **outbox record** — shipped
+2026-09-01: a per-dispatch recorder on the same observer seam that
+meters a dispatch writes each mutating intent and completion to the
+session's companion ops row (`pkg/effects/subrun.go`,
+`pkg/transcript/subrun.go`), and the outbox and the auto-resume scan
+fold them in. An interrupted dispatch now leaves a visible dangling
+intent, so `apply` gives up the stop and not the record. Recording
+could cross the boundary the gate cannot because it is
+one-directional; the record never enters the session log the planner's
+model reads, and it is not an approval.
 
 Still deferred here: **pre-call budget gating** (today a ceiling is
 crossed by the call that reports it, because the meter folds usage out

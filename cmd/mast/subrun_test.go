@@ -19,6 +19,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"google.golang.org/adk/v2/model"
@@ -27,6 +28,7 @@ import (
 
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
+	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
@@ -238,5 +240,92 @@ func TestDaemonSubRunDedupIsPerDispatchAndSignalsSpanThem(t *testing.T) {
 	}
 	if halt == nil {
 		t.Fatal("identical calls across dispatches never tripped; the dedup set is shared between them")
+	}
+}
+
+// fakeSubRunIntents is a stand-in for the ops-row store: it records what
+// the daemon's sink asked to persist, nothing more.
+type fakeSubRunIntents struct {
+	mu        sync.Mutex
+	recorded  []string
+	completed []string
+}
+
+func (f *fakeSubRunIntents) RecordSubRunIntents(_ context.Context, _, _ string, intents []effects.DanglingIntent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, in := range intents {
+		f.recorded = append(f.recorded, in.ToolName)
+	}
+	return nil
+}
+
+func (f *fakeSubRunIntents) CompleteSubRunIntents(_ context.Context, _ string, callIDs []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completed = append(f.completed, callIDs...)
+	return nil
+}
+
+func mutatingCallEvent(author, tool, id string) *session.Event {
+	ev := toolCallEvent(author, tool, id)
+	ev.InvocationID = "inv-1"
+	return ev
+}
+
+// The recorder attaches on the same seam the meter does (#235). It must
+// reach a dispatch, and — because attachRecording is a separate call
+// from attach — it must not be lost when only one of them has run.
+func TestDaemonSubRunObserverRecordsDispatchedMutations(t *testing.T) {
+	store := &fakeSubRunIntents{}
+	sub := &daemonSubRunObserver{}
+	sub.attach(newMeterPool(nil, nil, "", "echo"), observability.New(), nil, nil, "w", discardLogger())
+	sub.attachRecording(store, effects.NewPredicate(nil), nil)
+
+	sink := sub.SubRun("incident-abc", "remediator")
+	if err := sink.Observe(mutatingCallEvent("remediator", "scale_up", "c1")); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	sink.Close()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.recorded) != 1 || store.recorded[0] != "scale_up" {
+		t.Fatalf("recorded = %v, want [scale_up]", store.recorded)
+	}
+}
+
+// The intent recorder runs LAST on this seam, after the budget meter.
+// An intent record claims a mutating call is ABOUT to happen; every
+// consumer ahead of it can still stop the sub-run first, and recording
+// early would wedge the session into ambiguous-effect mode over a
+// mutation a ceiling prevented.
+func TestDaemonSubRunObserverDoesNotRecordACallItStops(t *testing.T) {
+	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
+	built, err := buildRoot(context.Background(), discardLogger(),
+		mastagent.NewEchoModel("echo"), "", "echo", dir, "coordinator", hostSeams{})
+	if err != nil {
+		t.Fatalf("buildRoot: %v", err)
+	}
+	store := &fakeSubRunIntents{}
+	sub := &daemonSubRunObserver{}
+	sub.attach(newMeterPool(built.bundle, built.specs, "", "echo"), observability.New(), nil, nil, built.bundle.Name, discardLogger())
+	sub.attachRecording(store, effects.NewPredicate(nil), nil)
+
+	sink := sub.SubRun("incident-abc", "OOMKilled")
+	defer sink.Close()
+
+	// 10k tokens at echo's $0.05/1K is $0.50, twice OOMKilled's $0.25:
+	// the meter refuses, and the event carries a mutating call.
+	over := mutatingCallEvent("OOMKilled", "scale_up", "c9")
+	over.UsageMetadata = spend("OOMKilled", 10_000).UsageMetadata
+	if err := sink.Observe(over); !errors.Is(err, budget.ErrExceeded) {
+		t.Fatalf("sink said %v, want the budget refusal", err)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.recorded) != 0 {
+		t.Fatalf("recorded = %v; a call the meter refused never happened, and a record of it would wedge the session for nothing", store.recorded)
 	}
 }
