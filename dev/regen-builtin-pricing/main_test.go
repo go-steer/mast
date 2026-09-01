@@ -301,8 +301,11 @@ func TestRender_ProducesCompilableGoWithExpectedShape(t *testing.T) {
 		{Name: "cached-model", InputPerMTok: 1.5, CachedInputPerMTok: 0.15, OutputPerMTok: 9, ContextWindowTokens: 1_048_576, Provider: "fake"},
 		{Name: "no-cache-model", InputPerMTok: 1, OutputPerMTok: 5, ContextWindowTokens: 200_000, Provider: "fake"},
 	}
+	qualified := []generatedEntry{
+		{Name: "fake/cached-model", InputPerMTok: 2.5, CachedInputPerMTok: 0.25, OutputPerMTok: 19, ContextWindowTokens: 1_048_576, Provider: "fake"},
+	}
 	when := time.Date(2026, 7, 16, 12, 34, 56, 0, time.UTC)
-	src, err := render(kept, when, "test-source")
+	src, err := render(kept, qualified, when, "test-source")
 	if err != nil {
 		// format.Source failure = uncompilable output; the whole point
 		// of the render step is to guarantee this doesn't happen.
@@ -342,7 +345,32 @@ func TestRender_ProducesCompilableGoWithExpectedShape(t *testing.T) {
 	if strings.Contains(got, "12, 34, 56") {
 		t.Errorf("wall-clock leaked into output — same-day regens will produce diff noise")
 	}
-	// The second map — context windows — must be emitted for the same
+	// The backend-qualified map is a separate table on purpose: its keys
+	// carry a "<backend>/" prefix, and the companion tier and
+	// context-window tables are keyed on bare model IDs only.
+	backIdx := strings.Index(got, "var builtinByBackend = map[string]Rates{")
+	if backIdx < 0 {
+		t.Fatalf("backend-qualified map missing:\n%s", got)
+	}
+	backEnd := backIdx + strings.Index(got[backIdx:], "\n}\n")
+	if backEnd < backIdx {
+		t.Fatalf("backend-qualified map is unterminated:\n%s", got)
+	}
+	byBackend := got[backIdx:backEnd]
+	if !strings.Contains(byBackend, `"fake/cached-model":`) || !strings.Contains(byBackend, "InputPerMTok: 2.5, CachedInputPerMTok: 0.25") {
+		t.Errorf("qualified row missing/wrong shape:\n%s", byBackend)
+	}
+	// The two tables are merged into one catalog layer, so a bare ID
+	// leaking into the qualified map would shadow the bare table's own
+	// row with whatever rate the qualified pass computed.
+	if strings.Contains(byBackend, `"no-cache-model":`) {
+		t.Errorf("bare ID leaked into the backend-qualified map:\n%s", byBackend)
+	}
+	if !strings.Contains(got, "func BuiltinByBackend() map[string]Rates") {
+		t.Errorf("BuiltinByBackend accessor missing:\n%s", got)
+	}
+
+	// The third map — context windows — must be emitted for the same
 	// models, or usage.ContextWindowSizeFor silently falls back to its
 	// coarse substring table for whatever is missing.
 	winIdx := strings.Index(got, "var builtinContextWindows = map[string]int{")
@@ -356,6 +384,13 @@ func TestRender_ProducesCompilableGoWithExpectedShape(t *testing.T) {
 		if !strings.Contains(windows, want) {
 			t.Errorf("context-window map missing %s:\n%s", want, windows)
 		}
+	}
+	// Windows are a property of the model, not of the backend serving
+	// it, and pkg/pricing's invariant tests require a window row for
+	// every key in the bare table. A qualified key here would demand a
+	// duplicate row keyed on a name nothing looks up.
+	if strings.Contains(windows, "fake/") {
+		t.Errorf("qualified key leaked into the context-window map:\n%s", windows)
 	}
 	if !strings.Contains(got, "func BuiltinContextWindow(modelID string) (int, bool)") {
 		t.Errorf("BuiltinContextWindow accessor missing:\n%s", got)
@@ -387,7 +422,7 @@ func TestRound6_HandlesBinaryReprArtifacts(t *testing.T) {
 // that differ only in their UpdatedAt.
 func renderDay(t *testing.T, entries []generatedEntry, y int, m time.Month, d int) []byte {
 	t.Helper()
-	src, err := render(entries, time.Date(y, m, d, 0, 0, 0, 0, time.UTC), "canned://litellm")
+	src, err := render(entries, nil, time.Date(y, m, d, 0, 0, 0, 0, time.UTC), "canned://litellm")
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -436,11 +471,11 @@ func TestNormalize_DateOnlyRegenIsNotDrift(t *testing.T) {
 func TestNormalize_SourceProvenanceIsNotDrift(t *testing.T) {
 	t.Parallel()
 	day := time.Date(2026, time.August, 15, 0, 0, 0, 0, time.UTC)
-	fromURL, err := render(threeEntries(), day, defaultLiteLLMSource)
+	fromURL, err := render(threeEntries(), nil, day, defaultLiteLLMSource)
 	if err != nil {
 		t.Fatalf("render url: %v", err)
 	}
-	fromFile, err := render(threeEntries(), day, "/tmp/litellm-snapshot.json")
+	fromFile, err := render(threeEntries(), nil, day, "/tmp/litellm-snapshot.json")
 	if err != nil {
 		t.Fatalf("render file: %v", err)
 	}

@@ -226,7 +226,7 @@ func RunCost(ctx context.Context, root adkmodel.LLM, rootName, provider, scratch
 	board := &CostBoard{
 		Provider:  providerOrAuto(provider),
 		RootModel: rootName,
-		RootRate:  compose.RatePer1K(rootName),
+		RootRate:  compose.RatePer1K(provider, rootName),
 	}
 
 	svc, err := database.NewSessionService(
@@ -271,7 +271,7 @@ func RunCost(ctx context.Context, root adkmodel.LLM, rootName, provider, scratch
 	// compose.MeterScopes for the roster — because a hand-written scope
 	// table would make this check evidence about the fixture.
 	meter := budget.New(budget.Config{
-		Limits: budget.Limits{RatePer1K: compose.RatePer1K(rootName)},
+		Limits: budget.Limits{RatePer1K: compose.RatePer1K(provider, rootName)},
 		Scopes: compose.MeterScopes(specs, provider, rootName),
 	})
 	seen := &modelVersions{}
@@ -306,7 +306,7 @@ func scopeCost(s specialists.Spec, m *budget.Meter, seen *modelVersions, provide
 		Tier:     s.Tier,
 		Resolved: resolved,
 		Ran:      seen.forAuthor(s.Name),
-		WantRate: compose.RatePer1K(resolved),
+		WantRate: compose.RatePer1K(provider, resolved),
 	}
 	tokens, cost, calls, ok := m.ScopeSnapshot(s.Name)
 	if !ok {
@@ -315,7 +315,7 @@ func scopeCost(s specialists.Spec, m *budget.Meter, seen *modelVersions, provide
 	row.Calls, row.Tokens, row.CostUSD = calls, tokens, cost
 	if tokens > 0 {
 		row.GotRate = cost / float64(tokens) * 1000
-		row.AtParentRate = float64(tokens) / 1000 * compose.RatePer1K(rootName)
+		row.AtParentRate = float64(tokens) / 1000 * compose.RatePer1K(provider, rootName)
 	}
 	return row
 }

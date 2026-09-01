@@ -126,11 +126,21 @@ type Limits struct {
 	// Unknown models fall through to RatePer1K, so a catalog miss never
 	// silently drops a session's cost to zero. Unpriced counts them.
 	//
+	// Nothing in mast sets this yet; RatePer1K is the live path. Before
+	// it becomes one, it owes the backend: a rate is a property of the
+	// (backend, model) pair, not of the model, and ModelVersion names
+	// only the model. Priced here it would resolve through
+	// Catalog.Lookup, which is the bare-id half of a table whose bare
+	// Claude rows are first-party and whose bare Gemini rows are
+	// Vertex's. The pair-keyed entry point is pricing.LookupFor, and
+	// what it needs is the backend internal/compose.Backend resolved for
+	// the call — which is not on the event and would have to be carried
+	// here.
+	//
 	// On a scope, nil means "inherit the session's catalog", matching
-	// RatePer1K's rule below. A per-scope catalog is unusual — a rate is
-	// a property of the model, and the model is on the event — but the
-	// inherit rule costs nothing and keeps the two price knobs behaving
-	// alike.
+	// RatePer1K's rule below. A per-scope catalog is unusual — the model
+	// is on the event — but the inherit rule costs nothing and keeps the
+	// two price knobs behaving alike.
 	Catalog *pricing.Catalog
 
 	// RatePer1K is the flat USD price per 1K total tokens (spike

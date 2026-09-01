@@ -442,6 +442,19 @@ func resolveModel(ctx context.Context, cfg Config) (model.LLM, string, error) {
 	return llm, cfg.ModelName, nil
 }
 
+// libraryProvider is the --provider alias the library surface runs
+// under: none. resolveModel builds every model with the same empty
+// alias, so compose.Backend resolves the same backend the client was
+// built against, and the price follows it. Named rather than written as
+// a bare "" so the pricing calls read as the deliberate choice they are.
+//
+// The one case it cannot speak for is a caller-supplied Config.Model
+// that forced a backend itself; mast sees only the model's name there,
+// and prices it by the environment like any other. A caller that needs
+// the price pinned to the backend it chose should set Config.Budget's
+// RatePer1K outright.
+const libraryProvider = ""
+
 // limits derives the meter ceilings: Config.Budget verbatim when set
 // (with a zero rate filled from the model pricing), otherwise the
 // bundle's budget block over the model's flat rate.
@@ -449,11 +462,11 @@ func limits(cfg Config, bundle *workload.Bundle, modelName string) budget.Limits
 	if cfg.Budget != nil {
 		l := *cfg.Budget
 		if l.RatePer1K == 0 {
-			l.RatePer1K = compose.RatePer1K(modelName)
+			l.RatePer1K = compose.RatePer1K(libraryProvider, modelName)
 		}
 		return l
 	}
-	l := budget.Limits{RatePer1K: compose.RatePer1K(modelName)}
+	l := budget.Limits{RatePer1K: compose.RatePer1K(libraryProvider, modelName)}
 	if bundle != nil {
 		l.MaxCostUSD = bundle.Budget.MaxCostUSD
 		l.MaxTurns = bundle.Budget.MaxTurns
@@ -468,7 +481,7 @@ func limits(cfg Config, bundle *workload.Bundle, modelName string) budget.Limits
 func meterConfig(cfg Config, bundle *workload.Bundle, specs []specialists.Spec, modelName string) budget.Config {
 	return budget.Config{
 		Limits: limits(cfg, bundle, modelName),
-		Scopes: compose.MeterScopes(specs, "", modelName),
+		Scopes: compose.MeterScopes(specs, libraryProvider, modelName),
 	}
 }
 

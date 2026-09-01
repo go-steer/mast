@@ -75,11 +75,11 @@ func TestMeterScopes_OverridePricesAtItsOwnTier(t *testing.T) {
 	if !ok {
 		t.Fatal("a model override alone should mint a scope: it changes the price")
 	}
-	want := RatePer1K("claude-haiku-4-5")
+	want := RatePer1K("", "claude-haiku-4-5")
 	if math.Abs(got.RatePer1K-want) > 1e-12 {
 		t.Errorf("analyst rate = %v, want haiku's %v", got.RatePer1K, want)
 	}
-	if parent := RatePer1K(root); math.Abs(got.RatePer1K-parent) < 1e-12 {
+	if parent := RatePer1K("", root); math.Abs(got.RatePer1K-parent) < 1e-12 {
 		t.Fatalf("fixture is not discriminating: haiku and %s price identically at %v", root, parent)
 	}
 }
@@ -99,11 +99,11 @@ func TestMeterScopes_TierPricesAtItsResolvedModel(t *testing.T) {
 	if !ok {
 		t.Fatal("a tier alone should mint a scope: it changes the price")
 	}
-	want := RatePer1K("claude-haiku-4-5") // the small tier for a claude root
+	want := RatePer1K("", "claude-haiku-4-5") // the small tier for a claude root
 	if math.Abs(got.RatePer1K-want) > 1e-12 {
 		t.Errorf("diagnoser rate = %v, want the small tier's %v", got.RatePer1K, want)
 	}
-	if parent := RatePer1K(root); math.Abs(got.RatePer1K-parent) < 1e-12 {
+	if parent := RatePer1K("", root); math.Abs(got.RatePer1K-parent) < 1e-12 {
 		t.Fatalf("fixture is not discriminating: the small tier and %s price identically at %v", root, parent)
 	}
 }
