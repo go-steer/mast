@@ -564,27 +564,31 @@ approval. The escape is cheap — the same roster runs under `coordinator` or
 specialist and says so.
 
 Under `on_mutation: apply` the refusal does not fire, because there was no
-gate for a dispatch to bypass. What is still missing there is the outbox
-record, so an interrupted dispatch leaves no dangling intent to scan for and
-no recorded completion to replay. That is exactly the durability the
-unattended posture this release is built for wants, which is why it is written
-down here rather than left to be discovered.
+gate for a dispatch to bypass. In v0.5.0 the outbox record was missing there
+too, so an interrupted dispatch left no dangling intent to scan for and no
+recorded completion to replay.
 
-Letting the gate reach inside a dispatch is a boundary decision rather than a
-wiring change — an approval park suspends a turn to be resumed from a durable
-session, and a dispatch's sub-session is in-memory and dies with the tool
-call. It is tracked as
-[#235](https://github.com/go-steer/mast/issues/235), and the containment check
-comes out with whatever lands.
+**Both halves are settled since, and they settled differently.** The record
+shipped on `main` 2026-09-01: a per-dispatch recorder writes each mutating
+intent to the session's operations row before the call runs, so an interrupted
+dispatch now leaves a visible dangling intent. The **gate** is not coming, and
+[#235](https://github.com/go-steer/mast/issues/235) closed on that answer
+rather than on a fix. An approval comes back through the session event log —
+a park writes its question there and a resume re-enters at the root — and a
+dispatch runs on a private in-memory session that dies with the tool call, so
+there is nowhere for an answer to return to. Giving the sub-run the host's
+session service would buy the gate by spending the context isolation the shape
+exists for; gating `invoke_specialist` itself would have you approve a
+specialist name and a sentence of prose. So the refusal is the design, and
+what it names — `coordinator`, `graph`, `on_mutation: apply` — is what you do.
 
 ## Next
 
-- **The dispatch write boundary** (#235 above) — either give the sub-run the
-  host's session service under a derived id, or consult the gate at the
-  dispatch boundary and accept that one answer authorizes every call the
-  specialist then makes. The first is the real fix and costs the context
-  isolation the private sub-session exists to provide; the second is cheap and
-  coarse.
+- **A cost ceiling that refuses a call instead of noticing it afterwards.**
+  Spend is folded after the fact today, so the call that crosses a cap has
+  already been paid for. The pre-call check goes in front of that fold, and a
+  crossed specialist ceiling should hand the coordinator a refusal it can
+  route around rather than stopping the session.
 - **The last two parity rows** are switchboard's: in-chat Approve/Reject, and
   an approver allowlist.
 

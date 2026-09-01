@@ -1020,8 +1020,15 @@ Carried forward from 2026-08-21, in the order they are worth doing:
    from being one. **Contained the same day** by `compose.CheckPlannerWriteSurface`: the combination
    is refused at composition, on both doors (`BuildRoot` and the pre-MCP `CheckRoster`), scoped to
    the promise actually broken — `on_mutation: apply` is exempt, since there is no gate under
-   `apply` for a dispatch to bypass. That is containment, not the fix; #235 stays open for the
-   boundary decision, and the check comes out with whichever answer lands.
+   `apply` for a dispatch to bypass. That was containment, not the fix. **Resolved 2026-09-01
+   and #235 closed, in two different directions:** the outbox half shipped (a per-dispatch
+   recorder on the observer seam writes each mutating intent to the outer session's companion
+   ops row), and the gate half will not — an approval returns through the session event log and
+   a dispatch's session is private and in-memory, so the check is permanent and the escape it
+   names is the answer. **Nothing is owed upstream**, and this one is checkable rather than
+   assumed: core-agent has no `invoke_specialist` and no dispatch tool that builds a runner in
+   a tool body — its only `planner` is the name of a sub-agent in a test — so the seam this
+   defect lives on does not exist there.
 
 Two open questions that are not ports and need an owner: whether mast follows upstream's
 park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it collides with what
