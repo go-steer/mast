@@ -44,7 +44,9 @@
 #          produces) is a complete report — nothing recorded, nothing
 #          refused, one call
 #       C  a change naming a tool the workload does not declare is
-#          REFUSED back to the specialist, which retries
+#          REFUSED back to the specialist, which retries until its own
+#          ceiling closes that path (loudly, but without failing the
+#          incident — v0.6 W10.3)
 #       D  a change whose arguments the tool would reject is REFUSED
 #          the same way, so leg A is shown to check the arguments and
 #          not merely the name
@@ -436,6 +438,17 @@ assert_log_atleast() {
   if [ "${got}" -ge "$4" ]; then ok "$1 (${got})"; else bad "$1 (${got}, want >= $4)"; fi
 }
 
+# assert_log_atmost <label> <logfile> <pattern> <n> — the mirror, and it
+# earns its place separately: a ceiling is a contract even where an exact
+# count is not. A refused specialist may retry as often as its cap allows
+# and no oftener, which is checkable without pinning the fake's
+# arithmetic.
+assert_log_atmost() {
+  local got
+  got="$(grep -c -- "$3" "$2" || true)"
+  if [ "${got}" -le "$4" ]; then ok "$1 (${got})"; else bad "$1 (${got}, want <= $4)"; fi
+}
+
 assert_no_log() {
   if grep -q -- "$3" "$2"; then bad "$1 — log contains: $3"; else ok "$1"; fi
 }
@@ -806,12 +819,16 @@ reset_blocker
 export MAST_FAKE_PROPOSED_CHANGE=kubectl_scale
 start_daemon "${LOG}"
 
-# 500, and that is the right answer. A refusal comes back to the
-# specialist to fix, and this one cannot fix it — the invented tool is
-# all the fake has to offer — so it retries until its turn budget runs
-# out and the incident fails loudly. The alternative, accepting a report
-# mast could not check, is the failure this workstream exists to prevent.
-assert_http "the incident fails rather than shipping the proposal" "$(inject_uat pc1 ReadStatus)" 500
+# A refusal comes back to the specialist to fix, and this one cannot fix
+# it — the invented tool is all the fake has to offer — so it retries
+# until its own max_turns runs out. Through v0.5 that ended the session
+# and the incident failed with a 500. As of v0.6 W10.3 a specialist's
+# ceiling closes that specialist's path and the turn routes on, so the
+# incident reaches an end: 202 here says the run finished, NOT that the
+# proposal was accepted. The line this leg holds is unchanged — mast must
+# not ship a report it could not check — and the assertions below are
+# what hold it now that the status code no longer does.
+assert_http "the incident reaches an end rather than hanging" "$(inject_uat pc1 ReadStatus)" 202
 assert_state "the run ended" incident-pc1 idle
 assert_log_atleast "the report was refused" "${LOG}" 'change_set_refused' 1
 assert_has "the refusal names the invented tool" \
@@ -821,6 +838,20 @@ assert_no_log "nothing was recorded" "${LOG}" 'change set proposed'
 # reach an end, because a contract that kills the incident is worse than
 # the prose it replaced.
 assert_log_atleast "the specialist got another turn" "${LOG}" 'function_call:finish_task' 2
+# And a bounded number of them. The ceiling is the assertion, not a
+# formality: this report is invalid against the worker's output_schema,
+# ADK answers an invalid finish_task with a retry instruction rather than
+# an error, and a retry that the gate refuses costs nothing — so before
+# pkg/agent's UnreportableRefusal this leg did not fail, it spun, to
+# 3,292 calls in the ninety seconds curl was willing to wait.
+assert_log_atmost "and not an unbounded number of them" "${LOG}" 'function_call:finish_task' 10
+# The quiet ending is what needs watching now. An incident that no longer
+# 500s must still say, unmissably, that a path was closed unfinished —
+# otherwise W10.3 traded a loud wrong answer for a silent one.
+assert_log_atleast "the closed path is on the record at WARN" "${LOG}" \
+  'BUDGET CEILING — a specialist was refused; the turn routed on' 1
+assert_has "and the record names the specialist that was stopped" \
+  "$(grep -- 'BUDGET CEILING' "${LOG}" || true)" 'uat-worker'
 stop_term
 
 # ---- leg D: arguments the tool would reject are refused -------------
@@ -834,9 +865,15 @@ reset_blocker
 export MAST_FAKE_PROPOSED_CHANGE='[{"tool":"apply_change","arguments":"{\"nope\":1}"}]'
 start_daemon "${LOG}"
 
-assert_http "the incident fails rather than shipping the proposal" "$(inject_uat pd1 ReadStatus)" 500
+# Same ending as leg C, and for the same reason: see its comment on why
+# a spent specialist stops being a 500 as of v0.6 W10.3.
+assert_http "the incident reaches an end rather than hanging" "$(inject_uat pd1 ReadStatus)" 202
 assert_state "the run ended" incident-pd1 idle
 assert_log_atleast "the report was refused" "${LOG}" 'change_set_refused' 1
+assert_log_atmost "the specialist retried within its cap, not forever" "${LOG}" \
+  'function_call:finish_task' 10
+assert_log_atleast "the closed path is on the record at WARN" "${LOG}" \
+  'BUDGET CEILING — a specialist was refused; the turn routed on' 1
 # The refusal is about the ARGUMENTS: it names the one the specialist
 # sent and the one the tool actually declares. Leg C's refusal could not
 # say this — there was no tool to read a schema off.

@@ -357,9 +357,17 @@ check refuses only what it can prove (`max_turns` is now exact; tokens
 and cost stop *at* the cap rather than one call past it) and never
 estimates the size of the next call.
 
-Still deferred here: the routing half of the same problem — **a crossed
-specialist ceiling stops the session** rather than handing the
-coordinator a refusal it can route around; the remaining AG-UI slices (`agui://`
+The routing half shipped the same day. **A specialist that reaches its
+own ceiling closes one path, not the session**: `budget.Scope` reports
+whose ceiling an enforcement error was, the turn drivers stop only for
+the workload's own, and the refused specialist's `finish_task` report
+goes back to the coordinator as something to route around. The trip is
+still counted (`mast_budget_trips_total`), logged, listed per specialist
+on `GET /guardrails`, and returned to a library caller as
+`mast.Result.Exhausted` — a workload that quietly loses half its roster
+would otherwise return the same `nil` as one that did not.
+
+Still deferred here: the remaining AG-UI slices (`agui://`
 federation client, per-key `StateDelta`, webhook push, client-declared
 tools, [`docs/ag-ui-design.md`](./docs/ag-ui-design.md)); the
 `run_shape_*` planner vocabulary wired to the reference-graph library

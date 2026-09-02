@@ -1848,8 +1848,9 @@ func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, provider, m
 		limits.MaxTurns = bundle.Budget.MaxTurns
 	}
 	// Per-specialist ceilings compose under the workload's; a
-	// specialist that declares a tighter cap stops the run on its own
-	// (pkg/budget, "Scopes").
+	// specialist that declares a tighter cap spends it on its own and
+	// closes that one path — the turn routes on (pkg/budget, "Scopes",
+	// and budget.Scope for who a ceiling belonged to).
 	cfg := budget.Config{Limits: limits, Scopes: compose.MeterScopes(specs, provider, modelName)}
 	return &meterPool{
 		cfg:           cfg,
@@ -2087,7 +2088,13 @@ func (mp *meterPool) preflight(sessionID string) error {
 	// would let it start a turn that refuses its own first call and answer
 	// "I am out of budget" forever, which is the wedge this function
 	// exists to turn into a 409.
-	trips := mp.meter(sessionID).PrecludedAll()
+	//
+	// The session's own ceilings, not the roster's (W10.3). A spent
+	// specialist closes one path; the session still has a coordinator, the
+	// rest of the roster and every non-dispatching tool, and refusing the
+	// turn at the door would make a per-specialist cap a way to kill the
+	// workload — the opposite of what a per-specialist cap is for.
+	trips := mp.meter(sessionID).PrecludedSession()
 	if len(trips) == 0 {
 		return nil
 	}
@@ -2709,26 +2716,50 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// synthesized answer rather than an error, so a turn the ceiling
 	// stopped would otherwise complete looking like a turn that finished;
 	// the delta is what tells the caller which it was.
+	//
+	// Two counts, because the two have different outcomes (W10.3). Every
+	// refusal is worth reporting; only the workload's own stops the turn.
 	refusalsBefore, _ := meter.Refusals()
+	sessionRefusalsBefore, _ := meter.SessionRefusals()
 
-	// The turn stopped because a ceiling refused a call. Same outcome and
-	// the same counter as the post-hoc fold, because from an operator's
-	// side they are the same event; the error is budget.ErrRefused rather
-	// than ErrExceeded because nothing was spent crossing anything.
-	refusalStopped := func() error {
-		n, first := meter.Refusals()
-		if n <= refusalsBefore {
+	// A ceiling stopped the turn itself. Same outcome and the same counter
+	// as the post-hoc fold, because from an operator's side they are the
+	// same event; the error is budget.ErrRefused rather than ErrExceeded
+	// because nothing was spent crossing anything.
+	sessionRefused := func() error {
+		n, first := meter.SessionRefusals()
+		if n <= sessionRefusalsBefore {
 			return nil
 		}
 		tokens, cost, calls := meter.Snapshot()
 		logger.Error("BUDGET CEILING — refused a model call before it was made",
 			"turn", label, "session", sessionID,
 			"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
-			"refusals", n-refusalsBefore, "reason", first.Error(),
+			"refusals", n-sessionRefusalsBefore, "reason", first.Error(),
 		)
 		obs.BudgetTrip(workloadName)
 		ts.complete(observability.OutcomeBudgetExceeded, first)
 		return first
+	}
+
+	// And a specialist's own ceiling, which is not a stop: the refusal went
+	// back to whoever dispatched it as an answer it can route around, and
+	// the turn carried on. It still trips the counter and still says so in
+	// the log, because "one of this workload's specialists can no longer be
+	// used" is exactly the thing an operator alerting on budget trips wants
+	// to hear about, and the turn finishing is what makes it easy to miss.
+	noteScopedRefusals := func() {
+		n, first := meter.Refusals()
+		sn, _ := meter.SessionRefusals()
+		scopedNew := (n - refusalsBefore) - (sn - sessionRefusalsBefore)
+		if scopedNew <= 0 {
+			return
+		}
+		logger.Warn("BUDGET CEILING — a specialist was refused; the turn routed on",
+			"turn", label, "session", sessionID,
+			"refusals", scopedNew, "reason", first.Error(),
+		)
+		obs.BudgetTrip(workloadName)
 	}
 
 	// Export the turn's cost delta whichever way the turn ends. The
@@ -2812,15 +2843,33 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		obs.Observe(event, workloadName)
 		if berr := meter.Observe(event); berr != nil {
 			tokens, cost, calls := meter.Snapshot()
-			logger.Error("BUDGET EXCEEDED — aborting session turn",
-				"turn", label, "session", sessionID,
-				"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
-				"error", berr.Error(),
-			)
-			cancel()
-			obs.BudgetTrip(workloadName)
-			ts.complete(observability.OutcomeBudgetExceeded, berr)
-			return berr
+			// A specialist crossing its own cap is not the session's
+			// problem any more (W10.3). It used to cancel here because
+			// cancelling was the only way to stop the specialist making
+			// another call; since W10.2 the pre-call gate stops it, and
+			// stopping one specialist is all a per-specialist ceiling ever
+			// meant. The call that crossed is still folded, still priced
+			// and still in the ledger — Observe did that before it
+			// returned — and the coordinator gets a refusal to route
+			// around on its next dispatch.
+			if scope, ok := budget.Scope(berr); ok {
+				logger.Warn("BUDGET CEILING — a specialist crossed its own cap; the session continues",
+					"turn", label, "session", sessionID, "specialist", scope,
+					"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
+					"error", berr.Error(),
+				)
+				obs.BudgetTrip(workloadName)
+			} else {
+				logger.Error("BUDGET EXCEEDED — aborting session turn",
+					"turn", label, "session", sessionID,
+					"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
+					"error", berr.Error(),
+				)
+				cancel()
+				obs.BudgetTrip(workloadName)
+				ts.complete(observability.OutcomeBudgetExceeded, berr)
+				return berr
+			}
 		}
 		// And the pre-call half, checked in the same place and for the
 		// same reason the fold above cancels rather than waiting for the
@@ -2831,7 +2880,12 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		// it burned the ceiling and stopped. The event carrying the
 		// refusal has already been logged and folded by the time we get
 		// here, so the reason is in the transcript before the turn unwinds.
-		if rerr := refusalStopped(); rerr != nil {
+		//
+		// Only the workload's own ceiling stops the turn. A refused
+		// specialist leaves the coordinator holding an answer and a roster,
+		// and what bounds *that* loop is the coordinator's own calls, which
+		// are real and priced against the very ceiling checked here.
+		if rerr := sessionRefused(); rerr != nil {
 			cancel()
 			return rerr
 		}
@@ -2849,9 +2903,14 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// cleanly, because that is what a refusal is. The caller asked for
 	// work that did not happen; reporting OK would hide a budget stop
 	// behind an answer that says "I am out of budget" in prose.
-	if rerr := refusalStopped(); rerr != nil {
+	if rerr := sessionRefused(); rerr != nil {
 		return rerr
 	}
+	// The turn is finishing, so anything left over was a specialist's and
+	// the workload worked around it. Reported once, here, rather than per
+	// event: the meter keeps the first reason, and a fan-out refused ten
+	// times says the same thing ten times.
+	noteScopedRefusals()
 	tokens, cost, calls := meter.Snapshot()
 	logger.Info("turn complete", "turn", label, "session", sessionID, "events", events,
 		"session_tokens", tokens, "session_cost_usd", fmt.Sprintf("%.4f", cost), "session_model_calls", calls)

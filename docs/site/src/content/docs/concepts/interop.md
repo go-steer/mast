@@ -280,7 +280,7 @@ spinning inside *one* dispatch — has no interleaver at all.
 **A trip here halts the session, not just the dispatch.** This is the
 deliberate difference from a crossed budget cap, which stops only the
 dispatch and hands the planner the reason
-([budgets](/concepts/budgets/#a-crossed-specialist-ceiling-stops-the-session)).
+([budgets](/concepts/budgets/#a-spent-specialist-closes-one-path-not-the-session)).
 A ceiling is
 cumulative, so stopping the sub-run is the whole remedy. A watchdog trip is
 a latch meaning *this session is behaving pathologically and an operator

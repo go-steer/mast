@@ -96,8 +96,11 @@ func TestResetRefusesAGrantThatWouldNotClearTheTrip(t *testing.T) {
 		t.Fatalf("err = %v, want ErrGuardrailRetrip", err)
 	}
 	// The refusal has to be actionable: the numbers say what to raise.
-	if !strings.Contains(err.Error(), "model calls") {
-		t.Errorf("error = %v, want the still-crossed dimension named", err)
+	// Since W10.2 they are the preclusion's ("would be model call (turn)
+	// 4 of a cap of 2") rather than the overshoot's, because that is the
+	// arithmetic the next turn will be refused on.
+	if !strings.Contains(err.Error(), "turn") || !strings.Contains(err.Error(), "cap of 2") {
+		t.Errorf("error = %v, want the still-blocking dimension and its cap named", err)
 	}
 	if !resp.Guardrails.Halted {
 		t.Error("refusal carries no state; the client must re-GET to render anything")
@@ -170,9 +173,12 @@ func TestResetNeverImposesANewCeiling(t *testing.T) {
 	}
 }
 
-// A specialist's own ceiling stops the whole run, so an operator who
-// only sees the session's numbers raises the wrong budget and watches
-// the session wedge again on the next turn.
+// A specialist's own ceiling is that specialist's, and since W10.3 the
+// projection has to keep the two apart in both directions: the session
+// is not halted by it, and a session-level grant neither clears it nor
+// is blocked by it. What the operator must not be able to do is miss it
+// — so the scope row carries it, and the session's reset says the name
+// out loud on its way past.
 func TestScopeTripIsAttributedAndClearedSeparately(t *testing.T) {
 	g := newGuardrailView(
 		budget.Limits{MaxCostUSD: 100, RatePer1K: 0.05},
@@ -182,28 +188,49 @@ func TestScopeTripIsAttributedAndClearedSeparately(t *testing.T) {
 	_ = m.Observe(spend("OOMKilled", 10_000)) // $0.50 against a $0.25 cap
 
 	got := g.info(gsid)
-	if !got.Halted {
-		t.Fatal("a crossed specialist ceiling halts the run; the projection says otherwise")
+	if got.Halted || got.CostCeiling.Tripped {
+		t.Fatalf("a spent specialist halted the session: %+v", got)
 	}
 	if len(got.CostCeiling.Scopes) != 1 || !got.CostCeiling.Scopes[0].Tripped {
 		t.Fatalf("scopes = %+v, want OOMKilled reported over", got.CostCeiling.Scopes)
 	}
-	if !strings.Contains(got.CostCeiling.Reason, "OOMKilled") {
-		t.Errorf("session reason = %q, want the specialist named", got.CostCeiling.Reason)
+	if !strings.Contains(got.CostCeiling.Scopes[0].Reason, "0.25") {
+		t.Errorf("scope reason = %q, want the specialist's own cap named", got.CostCeiling.Scopes[0].Reason)
 	}
-	// The session has $99.50 of headroom; raising it buys nothing.
-	if _, err := g.reset(gsid, attach.GuardrailResetRequest{AdditionalBudgetUSD: 50}); !errors.Is(err, attach.ErrGuardrailRetrip) {
-		t.Fatalf("a session grant appeared to clear a specialist trip: %v", err)
+	// The session has $99.50 of headroom, so a session grant is not
+	// refused — refusing it would be holding the workload hostage to a
+	// ceiling that is not stopping it. It also buys nothing the operator
+	// was after, and the message has to admit that: a bare "nothing was
+	// tripped" here is true and useless.
+	sessionResp, err := g.reset(gsid, attach.GuardrailResetRequest{AdditionalBudgetUSD: 50})
+	if err != nil {
+		t.Fatalf("a specialist's ceiling blocked a session grant: %v", err)
 	}
+	if len(sessionResp.Reset) != 0 {
+		t.Errorf("reset = %v; the session grant cleared nothing", sessionResp.Reset)
+	}
+	if !strings.Contains(sessionResp.Message, "OOMKilled") {
+		t.Errorf("message = %q, want the still-spent specialist named", sessionResp.Message)
+	}
+	if !sessionResp.Guardrails.CostCeiling.Scopes[0].Tripped {
+		t.Error("the session grant reported the specialist recovered")
+	}
+
 	resp, err := g.reset(gsid, attach.GuardrailResetRequest{Scope: "OOMKilled", AdditionalBudgetUSD: 0.5})
 	if err != nil {
 		t.Fatalf("scope reset: %v", err)
 	}
-	if resp.Guardrails.Halted {
-		t.Errorf("still halted after raising the specialist's cap: %+v", resp.Guardrails.CostCeiling)
+	if len(resp.Reset) != 1 || resp.Reset[0] != attach.GuardrailCostCeiling {
+		t.Errorf("reset = %v, want the specialist's ceiling reported cleared", resp.Reset)
+	}
+	if resp.Guardrails.CostCeiling.Scopes[0].Tripped {
+		t.Errorf("still spent after raising the specialist's cap: %+v", resp.Guardrails.CostCeiling.Scopes[0])
 	}
 	if !strings.Contains(resp.Message, "OOMKilled") {
 		t.Errorf("message = %q, want it to say whose budget moved", resp.Message)
+	}
+	if strings.Contains(resp.Message, "admit no further call") {
+		t.Errorf("message = %q, want no leftover-exhaustion tail: the roster is whole again", resp.Message)
 	}
 }
 

@@ -184,10 +184,10 @@ There is also a `planner` scaffold — a supervisor-body root whose
 library lands. It is declared, not finished; the [roadmap](/roadmap/) says
 where it sits. Its one working door, `invoke_specialist`, runs each
 specialist on a runner of its own — which changes nothing about what a
-dispatch costs you, but does change what a crossed cap does: it stops the
-dispatch and hands the planner the reason, instead of stopping the
-session. See
-[budgets](/concepts/budgets/#a-crossed-specialist-ceiling-stops-the-session).
+dispatch costs you, and, since v0.6, nothing about what a spent cap does
+either: it stops the specialist and hands whoever dispatched it the
+reason, here as a `"status": "halted"` result the planner reads. See
+[budgets](/concepts/budgets/#a-spent-specialist-closes-one-path-not-the-session).
 The
 watchdog watches those dispatches too, and a trip there does stop the
 session; see

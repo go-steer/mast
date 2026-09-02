@@ -279,13 +279,22 @@ func TestRunWorkloadBudgetOverride(t *testing.T) {
 	}
 }
 
-// TestRunWorkloadSpecialistBudgetStopsFirst: the library path meters
-// per-specialist ceilings too. The bundle declares none, so the only
-// ceiling in the run is the one ImagePullBackOff declares for itself —
-// and the run stops on it, naming it. (TestRunWorkloadProgrammaticBundle
-// is the same roster without the cap, and it completes: the cap is what
-// changes the outcome, not the fixture.)
-func TestRunWorkloadSpecialistBudgetStopsFirst(t *testing.T) {
+// TestRunWorkloadSpecialistSpendsItsOwnCeiling: the library path meters
+// per-specialist ceilings too, and since v0.6 W10.3 spending one is not
+// the end of the run. The bundle declares no ceiling of its own, so the
+// only one here is what ImagePullBackOff declares for itself: it makes
+// its call, crosses its cap doing so, and the workload finishes. What is
+// left behind is an entry in Result.Exhausted — that specialist can no
+// longer be dispatched, and the caller is told which and by how much.
+//
+// Through v0.5 this asserted the opposite: budget.ErrExceeded, no
+// Result, the session gone. That was never a decision, only the absence
+// of one — cancelling the run was the single lever the driver had for
+// stopping a specialist from calling again, and the pre-call gate (W10.2)
+// is a narrower one. (TestRunWorkloadProgrammaticBundle is the same
+// roster without the cap; both now complete, and what the cap changes is
+// the accounting, not the outcome.)
+func TestRunWorkloadSpecialistSpendsItsOwnCeiling(t *testing.T) {
 	bundle, specs := triageBundle(false)
 	for i := range specs {
 		if specs[i].Name == "ImagePullBackOff" {
@@ -295,13 +304,28 @@ func TestRunWorkloadSpecialistBudgetStopsFirst(t *testing.T) {
 			specs[i].Budget = specialists.Budget{MaxCostUSD: 1e-9}
 		}
 	}
-	_, err := mast.RunWorkload(context.Background(), mast.Config{ModelName: "echo"},
+	res, err := mast.RunWorkload(context.Background(), mast.Config{ModelName: "echo"},
 		bundle, specs, injectInput)
-	if !errors.Is(err, budget.ErrExceeded) {
-		t.Fatalf("err = %v, want budget.ErrExceeded from the specialist's own cap", err)
+	if err != nil {
+		t.Fatalf("RunWorkload: err = %v, want the run to survive a specialist spending its own cap", err)
 	}
-	if !strings.Contains(err.Error(), "ImagePullBackOff") {
-		t.Errorf("error = %q, want it to name the specialist whose ceiling stopped the run", err)
+	if !strings.Contains(res.Output, "[echo triage] diagnosed from envelope") {
+		t.Errorf("Output = %q, want the specialist's digest: it crossed its cap *finishing*, not instead of finishing", res.Output)
+	}
+	if len(res.Exhausted) == 0 {
+		t.Fatal("Result.Exhausted is empty; want the specialist whose ceiling can admit no further call")
+	}
+	var named bool
+	for _, tr := range res.Exhausted {
+		if tr.Scope == "ImagePullBackOff" && tr.Dimension == budget.DimensionCostUSD {
+			named = true
+		}
+		if tr.Scope == "" {
+			t.Errorf("Exhausted contains a session-scoped trip %+v; the workload declared no ceiling", tr)
+		}
+	}
+	if !named {
+		t.Errorf("Exhausted = %+v, want the ImagePullBackOff cost ceiling", res.Exhausted)
 	}
 }
 

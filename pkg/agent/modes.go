@@ -86,8 +86,14 @@ type TaskAgentConfig struct {
 
 	// RefusalPayload builds the finish_task arguments this agent reports
 	// with when a CallGate on the context refuses its next model call.
-	// Required for an agent with an OutputSchema, for the reason
-	// StallPayload is; nil means DefaultRefusalPayload. See precall.go.
+	//
+	// Nil means DefaultRefusalPayload for an agent with no OutputSchema,
+	// and UnreportableRefusal for one that has a schema mast cannot fill
+	// without inventing a finding — a refusal there is answered in plain
+	// text and the delegation resolves to nothing. Supply one if the
+	// schema can say "not done" in its own vocabulary; it must validate
+	// against the schema, because an invalid finish_task is a retry
+	// instruction and not an error. See precall.go.
 	RefusalPayload RefusalPayload
 }
 
@@ -112,10 +118,36 @@ func NewTaskAgent(cfg TaskAgentConfig) (adkagent.Agent, error) {
 		OutputSchema:             cfg.OutputSchema,
 		DisallowTransferToParent: cfg.DisallowTransferToParent,
 		DisallowTransferToPeers:  cfg.DisallowTransferToPeers,
-		BeforeModelCallbacks:     gated(cfg.RefusalPayload, cfg.BeforeModelCallbacks),
+		BeforeModelCallbacks:     gated(refusalPayloadFor(cfg), cfg.BeforeModelCallbacks),
 		AfterModelCallbacks:      cfg.AfterModelCallbacks,
 		Mode:                     llmagent.ModeTask,
 	})
+}
+
+// refusalPayloadFor resolves what this Task agent reports when a
+// ceiling refuses its next model call.
+//
+// The interesting case is the one nobody configures: a spec that
+// declares an output_schema and no RefusalPayload. DefaultRefusalPayload
+// is wrong there — finish_task's parameters *are* the output schema, so
+// {"result": string} fails validation, and ADK answers an invalid
+// finish_task with "you could retry calling this tool" rather than with
+// an error. A refused agent that retries is refused again, submits the
+// same invalid report, and spins for free.
+//
+// Refusing to construct such an agent would be the stallGuard precedent,
+// and it is the wrong call here: it would take a workload that runs
+// today and stop it at startup over a ceiling that may never be
+// reached. UnreportableRefusal keeps the agent buildable and makes the
+// refusal terminal instead — see precall.go.
+func refusalPayloadFor(cfg TaskAgentConfig) RefusalPayload {
+	if cfg.RefusalPayload != nil {
+		return cfg.RefusalPayload
+	}
+	if cfg.OutputSchema != nil {
+		return UnreportableRefusal
+	}
+	return DefaultRefusalPayload
 }
 
 // gated puts the cost-ceiling check in front of a caller's own Before

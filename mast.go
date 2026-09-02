@@ -155,6 +155,19 @@ type Result struct {
 
 	// Usage is the session's cumulative usage after the turn.
 	Usage Usage
+
+	// Exhausted lists the specialists whose own ceilings can no longer
+	// admit a call, with the arithmetic behind each.
+	//
+	// A specialist here did not stop the run: it was refused, the
+	// coordinator was handed that refusal as an answer and routed on, and
+	// the turn finished normally (v0.6 W10.3). That is the point of a
+	// per-specialist cap, and it is also why this field exists — a run
+	// that quietly lost half its roster returns the same nil error as one
+	// that did not, and an unattended caller has nowhere else to find out.
+	// The workload's own ceiling is not reported here; it comes back as an
+	// error, because there is nothing left to route to.
+	Exhausted []budget.Trip
 }
 
 // RunWorkload executes one turn of a programmatically-registered
@@ -700,10 +713,14 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	// A delta rather than a total: the meter is the caller's, and a
 	// caller that reuses one across runs would otherwise have every later
 	// run report the first one's refusal.
-	refusalsBefore, _ := meter.Refusals()
+	//
+	// The session's refusals, not every refusal (W10.3). A specialist
+	// refused at its own cap hands the coordinator an answer to route
+	// around; only the workload's own ceiling ends the run.
+	sessionRefusalsBefore, _ := meter.SessionRefusals()
 	refused := func() error {
-		n, first := meter.Refusals()
-		if n <= refusalsBefore {
+		n, first := meter.SessionRefusals()
+		if n <= sessionRefusalsBefore {
 			return nil
 		}
 		return fmt.Errorf("mast: session %q: %w", sessionID, first)
@@ -757,10 +774,21 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 			cancel()
 			return nil, fmt.Errorf("mast: session %q: %w", sessionID, terr)
 		}
+		// A specialist crossing its own cap does not end the run (W10.3):
+		// it used to cancel here only because cancelling was the one way
+		// to stop that specialist calling again, and the pre-call gate
+		// does that now. The call that crossed is folded and priced either
+		// way — Observe did that before it returned.
 		if berr := meter.Observe(event); berr != nil {
-			cancel()
-			res.Usage.Tokens, res.Usage.CostUSD, res.Usage.ModelCalls = meter.Snapshot()
-			return nil, fmt.Errorf("mast: session %q: %w", sessionID, berr)
+			if _, isScope := budget.Scope(berr); !isScope {
+				cancel()
+				res.Usage.Tokens, res.Usage.CostUSD, res.Usage.ModelCalls = meter.Snapshot()
+				return nil, fmt.Errorf("mast: session %q: %w", sessionID, berr)
+			}
+			if cfg.Logger != nil {
+				cfg.Logger.Warn("BUDGET CEILING — a specialist crossed its own cap; the run continues",
+					"session", sessionID, "error", berr.Error())
+			}
 		}
 		// The pre-call half, stopping the stream for the same reason the
 		// fold above does. A refusal costs nothing, so a retry loop above
@@ -791,6 +819,16 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 		}
 	}
 	res.Usage.Tokens, res.Usage.CostUSD, res.Usage.ModelCalls = meter.Snapshot()
+	// Scoped entries only: a session ceiling that precludes another call
+	// is not a spent *specialist*, and it is already the reason the caller
+	// is holding an error rather than this Result on every path where it
+	// mattered. What is left is the roster view — which paths this run
+	// closed behind it.
+	for _, t := range meter.PrecludedAll() {
+		if t.Scope != "" {
+			res.Exhausted = append(res.Exhausted, t)
+		}
+	}
 
 	// Backstop for the same check, for a refusal inside a sub-agent whose
 	// run surfaces no event here. The stream ended cleanly, so without

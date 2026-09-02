@@ -49,32 +49,39 @@
 //
 // Composition is tightest-cap-wins by construction rather than by
 // arithmetic: every event is checked against its scope and against the
-// session, and whichever ceiling is crossed first stops the run. A
-// scope's ceiling is reported ahead of the session's on the event that
-// crosses both, because the specialist is the more specific fact and
-// the workload's cap would have been crossed on a later call anyway.
+// session, and whichever ceiling is reached first stops what it holds.
+// A scope's ceiling is reported ahead of the session's on the event
+// that crosses both, because the specialist is the more specific fact
+// and the workload's cap would have been crossed on a later call
+// anyway.
+//
+// # Who a ceiling stops
+//
+// A ceiling holder is either the workload or one specialist, and since
+// v0.6 the two have different consequences. Scope(err) reports which an
+// enforcement error belonged to: a scoped one closes that specialist's
+// path, and the turn drivers log it, count it, and route on; an
+// unscoped one ends the turn. Through v0.5 both ended the turn, which
+// was never a decision — Observe runs on the event stream, outside the
+// specialist's own run, where the run context was the only lever
+// available. Allow is the lever that was missing, and it is per-call
+// and per-agent (see allow.go).
+//
+// The counting follows the same split. Refusals reports every refusal,
+// for the metric and the log line; SessionRefusals reports only the
+// workload's own, for the driver deciding whether to stop. Each keeps
+// its own first reason on purpose: the first refusal of a turn is
+// usually a specialist's, and a driver that stopped on the session's
+// cap while quoting a specialist's reason would send an operator to
+// raise the wrong ceiling.
 //
 // # Known limitations (findings, not TODOs)
 //
 // Metering at the event stream is enforcement-after-the-call — a single
-// runaway call is only caught once its usage event lands. Pre-call
-// gating needs a model-layer interceptor (wrap model.LLM) or ADK's
-// BeforeModel plugin callback; both compose with this meter rather than
-// replacing it.
-//
-// A crossed scope ceiling stops the session, not just the specialist,
-// because the event stream is outside the specialist's own run and the
-// only lever there is the run context. Stopping one specialist and
-// handing the coordinator a refusal it can route around is the better
-// shape, and it needs the pre-call seam above.
-//
-// One dispatch shape already has that better shape, by accident of
-// where its seam sits: a planner sub-run is observed from inside the
-// tool call that started it, so an error from Observe there stops the
-// specialist and returns the planner a labelled partial, leaving the
-// session alive (see planner.SubRunObserver). Coordinator and graph
-// dispatch still stop the session, and will until the pre-call seam
-// exists.
+// runaway call is only priced once its usage event lands. This meter
+// stays the ledger; Allow is asked in front of it, and refuses only
+// where the arithmetic is a proof rather than an estimate, so the two
+// disagree by at most one call.
 package budget
 
 import (
@@ -87,8 +94,10 @@ import (
 	"github.com/go-steer/mast/pkg/pricing"
 )
 
-// ErrExceeded is returned by Observe once the session's cumulative
-// usage crosses a ceiling. Callers should abort the run.
+// ErrExceeded is returned by Observe once cumulative usage crosses a
+// ceiling. Callers should abort the run — unless Scope reports the
+// ceiling was one specialist's, in which case one path is closed and
+// the run can continue without it.
 var ErrExceeded = errors.New("budget exceeded")
 
 // Limits are the ceilings for one session. Zero values mean unlimited.
@@ -205,6 +214,14 @@ type Meter struct {
 	refusals     int
 	firstRefusal error
 
+	// The subset of those a specialist cannot be blamed for. Counted
+	// separately rather than filtered on read because only the first
+	// reason is kept, and the first refusal of a turn is often a
+	// specialist's while the one that has to stop the turn is the
+	// workload's (see SessionRefusals).
+	sessionRefusals     int
+	firstSessionRefusal error
+
 	// onSpend is Config.OnSpend. Set at construction and never mutated,
 	// so Observe reads it without the lock.
 	onSpend func(Spend)
@@ -285,7 +302,7 @@ func (m *Meter) fold(ev *session.Event) (Spend, error) {
 		u := m.spent[ev.Author]
 		u.add(tokens, spend)
 		if err := check(scope, u); err != nil {
-			return s, fmt.Errorf("%w: specialist %q: %s", ErrExceeded, ev.Author, err)
+			return s, scopedTo(ev.Author, fmt.Errorf("%w: specialist %q: %s", ErrExceeded, ev.Author, err))
 		}
 	}
 	if err := check(m.limits, &m.total); err != nil {

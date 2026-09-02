@@ -966,21 +966,27 @@ checked on every model call it authors; `max_wallclock_seconds` bounds
 each activation of its node under graph dispatch. Composition with the
 workload's ceilings is by construction rather than arithmetic: each call
 is measured against the specialist's ceiling and the workload's, and
-whichever is crossed first stops the run. When one call crosses both, the
+whichever is reached first stops what it holds — the specialist, or the
+whole run. When one call crosses both, the
 error names the specialist — the more specific fact, and the one an
 operator acts on. A specialist that declares a `model:` override or a
 `tier:` is priced at the rate of the model it actually runs on — a tier is
 priced off what it resolved to — so a cheap analyst's tokens are not billed
 at the synthesizer's.
 
-Two limits are worth knowing. A ceiling is checked both before a call and
+One limit is worth knowing. A ceiling is checked both before a call and
 after it, but the pre-call check refuses only what it can prove — so
 `max_turns` is exact, while a call that starts with dollars or tokens to
 spare always finishes and is billed for what it turns out to cost. The cap
 bounds total spend within one call's overshoot; it does not pre-authorize a
-call. And a crossed specialist ceiling stops the session rather than just
-that specialist — handing the coordinator a refusal it could route around
-is not wired up yet.
+call.
+
+A specialist's own ceiling stops that specialist and not the session: the
+coordinator is handed the refusal and routes around it, so a workload with
+budget elsewhere finishes with a path missing rather than failing. The loss
+is reported on `mast_budget_trips_total`, in the daemon log, per specialist
+under `cost_ceiling.scopes[]`, and in `mast.Result.Exhausted`
+([budgets](/concepts/budgets/#a-spent-specialist-closes-one-path-not-the-session)).
 
 ### Env-var overrides
 

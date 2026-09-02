@@ -106,7 +106,7 @@ func (m *Meter) allow(author string) error {
 		return nil
 	}
 	if t := p[0]; t.Scope != "" {
-		return fmt.Errorf("%w: specialist %q: %s", ErrRefused, t.Scope, t.Reason)
+		return scopedTo(t.Scope, fmt.Errorf("%w: specialist %q: %s", ErrRefused, t.Scope, t.Reason))
 	}
 	return fmt.Errorf("%w: %s", ErrRefused, p[0].Reason)
 }
@@ -117,6 +117,13 @@ func (m *Meter) noteRefusal(err error) {
 	m.refusals++
 	if m.firstRefusal == nil {
 		m.firstRefusal = err
+	}
+	if _, scoped := Scope(err); scoped {
+		return
+	}
+	m.sessionRefusals++
+	if m.firstSessionRefusal == nil {
+		m.firstSessionRefusal = err
 	}
 }
 
@@ -144,12 +151,48 @@ func (m *Meter) Refusals() (n int, first error) {
 	return m.refusals, m.firstRefusal
 }
 
+// SessionRefusals is Refusals counting only the refusals no specialist
+// can be blamed for — the workload's own ceilings.
+//
+// The two differ in what a driver may do about them (W10.3). A refused
+// specialist is one path closed and the coordinator can try another, so
+// the turn goes on; a refused *workload* has nothing left to try, and the
+// turn has to stop. Refusals is therefore the right count for "say
+// something happened" — the trip metric, the log line — and this is the
+// right one for "stop".
+func (m *Meter) SessionRefusals() (n int, first error) {
+	if m == nil {
+		return 0, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessionRefusals, m.firstSessionRefusal
+}
+
+// PrecludedSession lists the *workload's* own ceilings that already make
+// another call impossible, ignoring every specialist's.
+//
+// This is the question a turn door asks (W10.3). A precluded specialist
+// closes one path and the coordinator can route around it, so a session
+// whose roster is half spent still has work it can do; a precluded
+// workload has nothing left to try, and starting a turn on it buys a
+// refusal and a log line. PrecludedAll is the reporting view and answers
+// a different question — "what is this operator looking at".
+func (m *Meter) PrecludedSession() []Trip {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return precluded("", m.limits, &m.total)
+}
+
 // PrecludedAll lists every ceiling on the meter — the session's and each
 // scope's — that already makes another call impossible. It is Trips's
 // pre-call counterpart in the same way Precluded is crossed's, and it
-// reports the whole meter for the reason TripsAfter does: any precluded
-// ceiling wedges the session, so a caller deciding whether a session can
-// still run has to see all of them.
+// reports the whole meter because that is what an operator surface
+// renders: a specialist that can no longer be dispatched is worth showing
+// even when the session as a whole is fine.
 func (m *Meter) PrecludedAll() []Trip {
 	if m == nil {
 		return nil
@@ -160,6 +203,38 @@ func (m *Meter) PrecludedAll() []Trip {
 	out := precluded("", m.limits, &m.total)
 	for _, name := range m.sortedScopesLocked() {
 		out = append(out, precluded(name, m.scopes[name], m.spent[name])...)
+	}
+	return out
+}
+
+// PrecludedAfter is TripsAfter's pre-call counterpart: the ceilings that
+// would still make another call impossible if scope's were raised by add.
+// scope "" targets the session.
+//
+// A reset needs this rather than TripsAfter for the reason the turn door
+// does. A grant that leaves the target sitting *exactly* on its new cap
+// has crossed nothing and cleared nothing — the operator would get a 200,
+// the next turn would be refused, and the only visible difference is that
+// their grant is gone.
+func (m *Meter) PrecludedAfter(scope string, add Limits) []Trip {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sessionLimits := m.limits
+	if scope == "" {
+		sessionLimits = raise(sessionLimits, add)
+	}
+	out := precluded("", sessionLimits, &m.total)
+
+	for _, name := range m.sortedScopesLocked() {
+		l := m.scopes[name]
+		if name == scope {
+			l = raise(l, add)
+		}
+		out = append(out, precluded(name, l, m.spent[name])...)
 	}
 	return out
 }
