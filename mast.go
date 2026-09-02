@@ -689,6 +689,26 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// And in front of the call as well (W10.2). Observe below stays as
+	// the ledger; this is what keeps a workload one call from its cap
+	// from spending that call to find out. Same context-borne gate the
+	// daemon installs, for the same reason — it is what reaches a
+	// planner-dispatched specialist, which on this surface is the
+	// common case.
+	ctx = mastagent.WithCallGate(ctx, meter)
+
+	// A delta rather than a total: the meter is the caller's, and a
+	// caller that reuses one across runs would otherwise have every later
+	// run report the first one's refusal.
+	refusalsBefore, _ := meter.Refusals()
+	refused := func() error {
+		n, first := meter.Refusals()
+		if n <= refusalsBefore {
+			return nil
+		}
+		return fmt.Errorf("mast: session %q: %w", sessionID, first)
+	}
+
 	// Behavioral watchdog (pkg/watchdog). Every other turn-driving path
 	// in this repo taps the event stream — the daemon at runTurnPre,
 	// the one-shot in runOneShot — and this one did not, so a
@@ -742,6 +762,15 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 			res.Usage.Tokens, res.Usage.CostUSD, res.Usage.ModelCalls = meter.Snapshot()
 			return nil, fmt.Errorf("mast: session %q: %w", sessionID, berr)
 		}
+		// The pre-call half, stopping the stream for the same reason the
+		// fold above does. A refusal costs nothing, so a retry loop above
+		// the model — a contract validator handing a report back to be
+		// fixed, say — never runs out of anything and spins on free calls.
+		// Before W10.2 it burned the ceiling and stopped.
+		if rerr := refused(); rerr != nil {
+			cancel()
+			return nil, rerr
+		}
 		if event == nil {
 			continue
 		}
@@ -762,6 +791,18 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 		}
 	}
 	res.Usage.Tokens, res.Usage.CostUSD, res.Usage.ModelCalls = meter.Snapshot()
+
+	// Backstop for the same check, for a refusal inside a sub-agent whose
+	// run surfaces no event here. The stream ended cleanly, so without
+	// this the caller gets a Result whose Output is prose saying the
+	// budget ran out — readable by a person, invisible to the `if err !=
+	// nil` above it. budget.ErrRefused rather than ErrExceeded: the
+	// ceiling held, and nothing was spent crossing it. Nil result, matching
+	// every other stopped-run path on this function rather than inventing
+	// a third convention for the one case that ends tidily.
+	if rerr := refused(); rerr != nil {
+		return nil, rerr
+	}
 	return res, nil
 }
 

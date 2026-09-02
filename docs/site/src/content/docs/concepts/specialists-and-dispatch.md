@@ -186,7 +186,9 @@ where it sits. Its one working door, `invoke_specialist`, runs each
 specialist on a runner of its own — which changes nothing about what a
 dispatch costs you, but does change what a crossed cap does: it stops the
 dispatch and hands the planner the reason, instead of stopping the
-session. See [budgets](/concepts/budgets/#two-limits-worth-knowing). The
+session. See
+[budgets](/concepts/budgets/#a-crossed-specialist-ceiling-stops-the-session).
+The
 watchdog watches those dispatches too, and a trip there does stop the
 session; see
 [it watches inside a planner dispatch too](/concepts/interop/#it-watches-inside-a-planner-dispatch-too).

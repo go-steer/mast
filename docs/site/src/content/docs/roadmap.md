@@ -597,10 +597,12 @@ what it names — `coordinator`, `graph`, `on_mutation: apply` — is what you d
 - **AG-UI remaining slices** — the `agui://` federation client, per-key
   `StateDelta` emission, activity/reasoning events, webhook push, and
   client-declared tool acceptance.
-- **Pre-call budget gating** — today a ceiling is crossed by the call that
-  reports it, and a crossed specialist ceiling stops the session rather
-  than handing the coordinator a refusal it can route around. Both need a
-  seam in front of the model call rather than behind it.
+- **A crossed specialist ceiling should be a refusal, not a session stop.**
+  Pre-call gating itself has landed — a ceiling is now checked before a
+  call as well as after, so `max_turns` is exact and a workload sitting on
+  its cost cap stops there. What is left is the routing half: when a
+  specialist trips its own cap the coordinator loses the session, instead
+  of getting a refusal it can route around.
 - **Planner shapes** — the `run_shape_*` vocabulary tools wired to the
   reference-graph library (they return `not_implemented` in the v0.2
   scaffold), plus more starters: supervisor+workers, sequential pipeline,

@@ -200,6 +200,50 @@ func TestOperatorGrantIsReplayedAfterARestart(t *testing.T) {
 	}
 }
 
+// The wedge W10.2 opened and closed in the same change.
+//
+// preflight used to ask Trips() — has a ceiling been *crossed*. The
+// pre-call gate means a well-behaved session now stops exactly *on* its
+// cap without crossing anything, so Trips() is empty and the door swings
+// open, and the session starts a turn whose every model call is refused
+// and which answers "I am out of budget" in prose. Forever, on every
+// schedule fire, looking like a session that is answering.
+//
+// 20k tokens at echo's $0.05/1K is $1.00 against a $1.00 cap: met, not
+// crossed. Ask Trips() here and this test fails with a turn that ran.
+func TestASessionStoppedExactlyOnItsCapIsRefusedAtTheDoor(t *testing.T) {
+	_, ledger, guards := spendDB(t)
+	ctx := context.Background()
+	const sid = "incident-at-cap"
+
+	first := restartPool(t, ledger, guards, nil)
+	first.restore(ctx, sid)
+	if err := first.meter(sid).Observe(spend("coordinator", 20_000)); err != nil {
+		t.Fatalf("$1.00 against a $1.00 cap was reported as crossed (%v); this fixture is about the case where it is not", err)
+	}
+	if got := first.meter(sid).Trips(); len(got) != 0 {
+		t.Fatalf("the post-hoc fold reports %d trips at exactly the cap; the wedge this test is about cannot happen", len(got))
+	}
+
+	next := &loopingModel{rounds: 2}
+	h := newTurnHarnessOpts(t, next, watchdog.ModeWarn, pokeTool(t))
+	h.meters = restartPool(t, ledger, guards, nil)
+
+	err := h.turn(ctx, sid)
+	if err == nil {
+		t.Fatal("a session sitting exactly on its cost ceiling started a turn")
+	}
+	if !errors.Is(err, inject.ErrConflict) {
+		t.Errorf("refusal err = %v, want inject.ErrConflict (409, the operator has to reset it)", err)
+	}
+	if got := next.calls.Load(); got != 0 {
+		t.Errorf("the refused turn still called the model %d times, want 0", got)
+	}
+	if !strings.Contains(err.Error(), "guardrails/reset") {
+		t.Errorf("refusal = %q, does not tell the operator how to clear it", err)
+	}
+}
+
 // Per-specialist ceilings are the same defect with a different key, and
 // the fix has to carry the author across the restart to re-attribute the
 // spend against whatever scopes the current roster declares.

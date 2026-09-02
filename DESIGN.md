@@ -347,11 +347,19 @@ could cross the boundary the gate cannot because it is
 one-directional; the record never enters the session log the planner's
 model reads, and it is not an approval.
 
-Still deferred here: **pre-call budget gating** (today a ceiling is
-crossed by the call that reports it, because the meter folds usage out
-of the event stream after a call returns, and a crossed specialist
-ceiling stops the session rather than handing the coordinator a
-refusal it can route around); the remaining AG-UI slices (`agui://`
+**Pre-call budget gating** shipped 2026-09-02. `budget.Meter.Allow`
+asks, before each call, whether a ceiling can still be respected;
+`agent.RefuseOnGate` is the `BeforeModelCallback` that asks it and
+synthesizes the agent's answer when it cannot, installed by the three
+`pkg/agent` constructors and armed per turn with `agent.WithCallGate`.
+`Observe` is unchanged and still the durable ledger — the pre-call
+check refuses only what it can prove (`max_turns` is now exact; tokens
+and cost stop *at* the cap rather than one call past it) and never
+estimates the size of the next call.
+
+Still deferred here: the routing half of the same problem — **a crossed
+specialist ceiling stops the session** rather than handing the
+coordinator a refusal it can route around; the remaining AG-UI slices (`agui://`
 federation client, per-key `StateDelta`, webhook push, client-declared
 tools, [`docs/ag-ui-design.md`](./docs/ag-ui-design.md)); the
 `run_shape_*` planner vocabulary wired to the reference-graph library

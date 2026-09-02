@@ -252,15 +252,30 @@ func TestRunWorkloadRefusesNameCollision(t *testing.T) {
 }
 
 // TestRunWorkloadBudgetOverride: Config.Budget overrides the bundle's
-// (absent) ceilings; a one-turn cap trips on the graph's second model
-// call and surfaces budget.ErrExceeded.
+// (absent) ceilings, and a one-turn cap stops the graph before its
+// second model call.
+//
+// Through v0.5 this asserted budget.ErrExceeded, because the second call
+// was made and the fold reported the overshoot. Since v0.6 W10.2 the
+// second call is refused before it is issued, so the run surfaces
+// budget.ErrRefused and the cap is exact — the assertion changed because
+// the behaviour improved, which is the point of asserting both sentinels
+// here rather than one. A caller that only needs "the budget stopped
+// this" should match on neither: it should read Result.Usage, or match
+// both.
 func TestRunWorkloadBudgetOverride(t *testing.T) {
 	bundle, specs := triageBundle(false)
 	_, err := mast.RunWorkload(context.Background(),
 		mast.Config{ModelName: "echo", Budget: &budget.Limits{MaxTurns: 1}},
 		bundle, specs, injectInput)
-	if !errors.Is(err, budget.ErrExceeded) {
-		t.Fatalf("RunWorkload with MaxTurns=1: err = %v, want budget.ErrExceeded", err)
+	if !errors.Is(err, budget.ErrRefused) {
+		t.Fatalf("RunWorkload with MaxTurns=1: err = %v, want budget.ErrRefused", err)
+	}
+	if errors.Is(err, budget.ErrExceeded) {
+		t.Errorf("err = %v, want it NOT to report a crossed ceiling: nothing was spent crossing this one", err)
+	}
+	if !strings.Contains(err.Error(), "cap of 1") {
+		t.Errorf("err = %v, want the reason to name the ceiling that refused the call", err)
 	}
 }
 

@@ -140,6 +140,23 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 			wantRetry: false,
 		},
 		{
+			// The pre-call half (v0.6 W10.2). Same kind and the same
+			// remedy as the two above — an operator who has to work out
+			// that "refused" and "exceeded" are the same wall is being
+			// asked to know mast's internals.
+			name:        "cost_ceiling from a refused call",
+			err:         errors.New("budget refused the call: would be model call (turn) 3 of a cap of 2"),
+			wantKind:    TurnErrorCostCeiling,
+			wantRetry:   false,
+			wantHintHas: "guardrails/reset",
+		},
+		{
+			name:      "cost_ceiling from a refused specialist call",
+			err:       errors.New(`budget refused the call: specialist "log-analyst": $0.0500 already at cap $0.0500 (25000 tokens over 4 calls); any further call exceeds it`),
+			wantKind:  TurnErrorCostCeiling,
+			wantRetry: false,
+		},
+		{
 			name:      "unknown for novel errors",
 			err:       errors.New("something nobody planned for"),
 			wantKind:  TurnErrorUnknown,
@@ -178,11 +195,26 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 // and this is the only thing that notices when it drifts. A miss here
 // is silent: the turn still fails, it just reports as "unknown" and
 // the operator never learns a reset would fix it.
+// There are two sentinels since v0.6 W10.2 and both have to land here,
+// so both are built from the real thing rather than from a copy of its
+// text.
 func TestClassifyTurnError_MatchesTheRealBudgetSentinel(t *testing.T) {
 	t.Parallel()
-	err := fmt.Errorf("%w: $0.0512 > cap $0.0500 (25600 tokens over 4 calls)", budget.ErrExceeded)
-	if got := ClassifyTurnError(err); got.Kind != TurnErrorCostCeiling {
-		t.Errorf("Kind = %q for %v, want %q", got.Kind, err, TurnErrorCostCeiling)
+
+	crossed := fmt.Errorf("%w: $0.0512 > cap $0.0500 (25600 tokens over 4 calls)", budget.ErrExceeded)
+	refused := fmt.Errorf("%w: would be model call (turn) 3 of a cap of 2", budget.ErrRefused)
+
+	for _, err := range []error{crossed, refused} {
+		if got := ClassifyTurnError(err); got.Kind != TurnErrorCostCeiling {
+			t.Errorf("Kind = %q for %v, want %q", got.Kind, err, TurnErrorCostCeiling)
+		}
+	}
+
+	// Same kind, different code. A surface that reported the refusal as
+	// BUDGET_EXCEEDED would be claiming spend for a call that was never
+	// made, which is the whole distinction W10.2 buys.
+	if a, b := ClassifyTurnError(crossed).Code, ClassifyTurnError(refused).Code; a == b {
+		t.Errorf("both sentinels classify as code %q; the wire cannot tell a crossed ceiling from a refused call", a)
 	}
 }
 
