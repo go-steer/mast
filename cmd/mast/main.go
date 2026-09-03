@@ -1838,9 +1838,9 @@ type meterPool struct {
 }
 
 func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, provider, modelName string) *meterPool {
-	// Pricing lives in the shared core (internal/compose.RatePer1K)
+	// Pricing lives in the shared core (internal/compose.MeterLimits)
 	// so the daemon and mast.RunWorkload derive identical costs.
-	limits := budget.Limits{RatePer1K: compose.RatePer1K(provider, modelName)}
+	limits := compose.MeterLimits(provider, modelName)
 	if bundle != nil {
 		limits.MaxCostUSD = bundle.Budget.MaxCostUSD
 		// Workload turn ceiling: one "turn" = one model call (see
