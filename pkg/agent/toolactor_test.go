@@ -294,3 +294,71 @@ func TestToolActor_ApprovedCallNeedsTheMarker(t *testing.T) {
 		t.Errorf("replicas = %v, want the fake's own 10 — unapproved prose was treated as an approval", got)
 	}
 }
+
+// refused builds the history entry a specialist leaves behind when its
+// own ceiling closed the path: a function response, not an error, whose
+// text opens with RefusalMarker.
+func refused(name string) *genai.Content {
+	return &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionResponse: &genai.FunctionResponse{
+		Name:     name,
+		Response: map[string]any{"result": RefusalText(name, "would be model call (turn) 2 of a cap of 1")},
+	}}}}
+}
+
+// answered is the same shape carrying an actual result.
+func answered(name string) *genai.Content {
+	return &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionResponse: &genai.FunctionResponse{
+		Name:     name,
+		Response: map[string]any{"result": "[toolactor] handled ReadStatus"},
+	}}}}
+}
+
+// A specialist the budget refused is not an answer; the coordinator has
+// to try the next path. This is the whole of what v0.6 W10.3 bought —
+// through v0.5 a spent specialist cancelled the run context, so "route
+// around it" was not a behavior anything could have had.
+func TestToolActor_CoordinatorRoutesAroundARefusedSpecialist(t *testing.T) {
+	m := NewToolActorModel("test")
+	req := &model.LLMRequest{
+		Tools:    toolSet("alpha", "beta"),
+		Contents: []*genai.Content{userContent(`{"reason":"ReadStatus"}`), refused("alpha")},
+	}
+	fc := firstFunctionCall(firstResponse(t, m, req))
+	if fc == nil {
+		t.Fatal("got final text, want a delegation to the path still within budget: " +
+			"a refusal read as an answer leaves the workload unfinished with budget to spare")
+	}
+	if fc.Name != "beta" {
+		t.Fatalf("delegated to %q, want beta", fc.Name)
+	}
+}
+
+// The other half, and what keeps the first from collapsing into "always
+// delegate again": a specialist that answered ends the turn. Without it
+// the coordinator would walk the whole roster on every successful run,
+// and each hop is a metered model call.
+func TestToolActor_CoordinatorStopsAtTheSpecialistThatAnswered(t *testing.T) {
+	m := NewToolActorModel("test")
+	req := &model.LLMRequest{
+		Tools:    toolSet("alpha", "beta"),
+		Contents: []*genai.Content{userContent(`{"reason":"ReadStatus"}`), answered("alpha")},
+	}
+	if fc := firstFunctionCall(firstResponse(t, m, req)); fc != nil {
+		t.Fatalf("delegated to %q after alpha answered; want final text", fc.Name)
+	}
+}
+
+// And when every path is spent the turn ends rather than spinning. The
+// coordinator's own calls are metered too, so a fake that kept
+// delegating would burn the session cap instead of reporting what it
+// could not do.
+func TestToolActor_CoordinatorEndsWhenEveryPathIsRefused(t *testing.T) {
+	m := NewToolActorModel("test")
+	req := &model.LLMRequest{
+		Tools:    toolSet("alpha", "beta"),
+		Contents: []*genai.Content{userContent(`{"reason":"ReadStatus"}`), refused("alpha"), refused("beta")},
+	}
+	if fc := firstFunctionCall(firstResponse(t, m, req)); fc != nil {
+		t.Fatalf("delegated to %q with the whole roster spent; want final text", fc.Name)
+	}
+}

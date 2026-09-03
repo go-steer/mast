@@ -157,10 +157,15 @@ type CostCeilingInfo struct {
 	WouldRetrip bool `json:"would_retrip"`
 
 	// Scopes reports each specialist that carries its own ceilings.
-	// A crossed scope stops the whole session — the meter's only lever
-	// is the run context — so an operator who resets the session cap
-	// while a specialist's is still crossed has bought nothing, and
-	// this list is how they see that before spending the grant.
+	//
+	// A crossed scope closes that specialist's path and leaves the
+	// session running (v0.6 W10.3); through v0.5 it stopped the whole
+	// session, because cancelling the run context was the meter's only
+	// lever. That is why this list is not redundant with Tripped: a
+	// workload can be serving turns through the rest of its roster
+	// while a specialist here sits spent, and an operator who resets
+	// the session cap without reading this has bought nothing for the
+	// path that actually stopped.
 	//
 	// mast-native. Empty when no specialist declares a budget.
 	Scopes []ScopeCeilingInfo `json:"scopes"`
