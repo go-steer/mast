@@ -77,16 +77,23 @@ const (
 // wiring this signal on its own — without the other two — gets it
 // undeferred and sees every dominant loop.
 //
-// # Not in the default set
+// # Not in the default set — decided, not pending (#227, v0.6)
 //
-// NewDefaultWatchdog does not wire this. mast's default posture is
-// `feedback`, so a third Critical detector changes what every
-// unattended workload is told about itself, and the cycle detector's
-// docstring already records that a polling workload is the known false
-// positive — a poll with any variation in it is precisely a dominant
-// call with interleaves. Defaulting it is a posture decision, and it
-// belongs with the open watchdog-governance question rather than with
-// the port.
+// NewDefaultWatchdog does not wire this, and as of 2026-09-02 that is
+// the answer rather than the absence of one. mast's default posture is
+// `feedback`, so an alert here is not a log line: it is steering
+// prepended to the next turn's prompt, on a workload with nobody
+// watching. And the cycle detector's docstring already records that a
+// polling workload is the known false positive — a poll with any
+// variation in it is precisely a dominant call with interleaves, which
+// is the shape v0.5's scheduled monitoring shipped. Defaulting this
+// would mean telling a correctly-polling workload it is stuck, which is
+// a worse default than not watching for the density case at all.
+//
+// Available to any caller that builds its own signal set and knows its
+// workload does not poll. Revisiting it is a posture decision and
+// belongs with the open watchdog-governance question, not with this
+// detector.
 type DominantToolCallSignal struct {
 	// Window is how many recent observations are considered.
 	Window int
