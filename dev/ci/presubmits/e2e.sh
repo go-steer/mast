@@ -35,8 +35,15 @@
 #     calls of its own, and the daemon refuses a roster that could
 #     reach those same tools through a specialist (docs/v0.5-plan.md,
 #     W4.2).
+#   scripts/uat-v0.6.sh — the v0.6 budget work: a ceiling stops a model
+#     call BEFORE it is paid for, so a capped workload spends its cap
+#     and not one call more; a specialist's ceiling closes that
+#     specialist's path and the turn routes on rather than the session
+#     ending; and a planner dispatch's mutating call — which no runner
+#     plugin of the outer session ever sees — is on the effect ledger
+#     after the process dies mid-call (docs/v0.6-plan.md, W9.x + W10.x).
 #
-# All four run, in order, and a failure in any fails the presubmit. The
+# All five run, in order, and a failure in any fails the presubmit. The
 # v0.2 harness is the spine and stays exactly as it is; each release's
 # additions go in their own script rather than growing that one, so an
 # acceptance pass can be read and re-run on its own.
@@ -51,3 +58,4 @@ scripts/uat-v0.2.sh
 scripts/uat-v0.3.sh
 scripts/uat-v0.4.sh
 scripts/uat-v0.5.sh
+scripts/uat-v0.6.sh

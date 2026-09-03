@@ -119,6 +119,21 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 		}
 		usage.TotalTokenCount = usage.PromptTokenCount + usage.CandidatesTokenCount
 
+		// Planner (supervisor body) turn. It has to be decided BEFORE the
+		// Task arm below, because the planner is offered finish_task
+		// alongside its control-plane vocabulary — so a fake that checked
+		// finish_task first would answer every planner workload by
+		// finishing it, having dispatched nothing. That is not a
+		// hypothetical: it is what this fake did until v0.6, which is why
+		// no UAT leg had ever driven a dispatch.
+		if _, ok := req.Tools[PlannerDispatchTool]; ok {
+			if name, ok := nextDispatchTarget(req); ok {
+				yield(functionCall(PlannerDispatchTool,
+					map[string]any{"name": name, "input": reason}, usage), nil)
+				return
+			}
+		}
+
 		_, hasFinish := req.Tools["finish_task"]
 		if hasFinish {
 			// Worker (Task) turn. An approved change set in the prompt
@@ -164,11 +179,18 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 			return
 		}
 
-		// Coordinator (Chat) turn: delegate to the worker's task tool once,
-		// then answer.
-		if deleg := delegationTool(toolNames); deleg != "" && !responded(req, deleg) {
-			yield(functionCall(deleg, map[string]any{"request": reason}, usage), nil)
-			return
+		// Coordinator (Chat) turn: delegate to a worker's task tool, then
+		// answer. A specialist the budget refused is skipped rather than
+		// counted as done — see refusedBy — so a roster that still holds
+		// paths within budget gets them tried.
+		for _, deleg := range delegationTools(toolNames) {
+			if responded(req, deleg) && !refusedBy(req, deleg) {
+				break // Answered. The turn's work is finished.
+			}
+			if !responded(req, deleg) {
+				yield(functionCall(deleg, map[string]any{"request": reason}, usage), nil)
+				return
+			}
 		}
 		// No tools and a forced output schema: the bounded shape (W4.3),
 		// where the one call has to return the report itself. Checked
@@ -300,17 +322,129 @@ func functionCall(name string, args map[string]any, usage *genai.GenerateContent
 	}
 }
 
-// delegationTool returns the single sub-agent "task" tool ADK installs on
-// the coordinator: the tool name that is neither finish_task nor one of
-// the fixture's MCP tools. Empty when none is offered.
-func delegationTool(names []string) string {
+// delegationTools returns the sub-agent "task" tools ADK installs on the
+// coordinator, in the order they were offered: the names that are
+// neither finish_task nor one of the fixture's MCP tools.
+func delegationTools(names []string) []string {
 	known := map[string]bool{"finish_task": true, "apply_change": true, "read_status": true}
+	var out []string
 	for _, n := range names {
 		if !known[n] {
-			return n
+			out = append(out, n)
 		}
 	}
-	return ""
+	return out
+}
+
+// refusedBy reports whether tool's response in the history is a cost
+// ceiling refusal rather than an answer.
+//
+// This is the seam Refused documents itself as existing for — "the seam
+// a coordinator's own summary logic should use to tell 'this specialist
+// had nothing to report' from 'this specialist was never allowed to
+// look'" — and using it here is what makes the fake a faithful double
+// for v0.6. A coordinator that treats a refusal as an answer takes the
+// one branch W10.3 exists to remove: the roster still holds paths
+// within budget and nobody tries them.
+//
+// The response is matched as marshalled JSON rather than by reaching
+// for a known field, because the refusal's shape depends on the
+// specialist's report contract (finish_task's {"result": ...} for an
+// agent with no output_schema, plain text for one whose schema mast
+// will not invent a finding to satisfy).
+func refusedBy(req *model.LLMRequest, tool string) bool {
+	if req == nil {
+		return false
+	}
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p == nil || p.FunctionResponse == nil || p.FunctionResponse.Name != tool {
+				continue
+			}
+			raw, err := json.Marshal(p.FunctionResponse.Response)
+			if err == nil && strings.Contains(string(raw), RefusalMarker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// PlannerDispatchTool is the planner's roster door (pkg/planner's
+// ToolInvokeSpecialist). Named here rather than imported, for the reason
+// ApprovedCallsMarker gives: pkg/planner's own tests use this package, so
+// the dependency can only run one way.
+const PlannerDispatchTool = "invoke_specialist"
+
+// RosterPreamble is the phrase in the planner's system instruction that
+// introduces the roster it may dispatch to. The fake reads the roster
+// from there because invoke_specialist takes a specialist NAME as an
+// argument — unlike a coordinator, whose roster arrives as one tool per
+// specialist and needs no prose at all.
+//
+// Coupled to pkg/planner's DefaultInstructionTemplate on purpose and by
+// the same arrangement as ApprovedCallsMarker: TestPlannerInstruction-
+// NamesTheRoster over there is what keeps the two strings one string. A
+// drifted phrase would not fail loudly — the fake would find no roster,
+// dispatch nothing, finish the workload, and every leg would pass while
+// testing an empty planner.
+const RosterPreamble = "run one specialist from the roster:"
+
+// nextDispatchTarget picks the roster entry this turn should dispatch:
+// the Nth, where N is how many dispatches the history already carries.
+//
+// Positional rather than by name because every dispatch comes back under
+// the one tool name — invoke_specialist — so the history cannot say WHICH
+// specialist answered, only how many have. Walking the roster in order
+// and stopping at its end is what gives a planner leg a definite length;
+// re-reading "has this tool been answered" would dispatch exactly once
+// however long the roster is.
+func nextDispatchTarget(req *model.LLMRequest) (string, bool) {
+	roster := plannerRoster(req)
+	n := handled(req)[PlannerDispatchTool]
+	if n >= len(roster) {
+		return "", false
+	}
+	return roster[n], true
+}
+
+// plannerRoster reads the specialist names out of the planner's system
+// instruction, in declaration order.
+func plannerRoster(req *model.LLMRequest) []string {
+	if req == nil || req.Config == nil || req.Config.SystemInstruction == nil {
+		return nil
+	}
+	var b strings.Builder
+	for _, p := range req.Config.SystemInstruction.Parts {
+		if p != nil && p.Text != "" {
+			b.WriteString(p.Text)
+		}
+	}
+	text := b.String()
+	i := strings.Index(text, RosterPreamble)
+	if i < 0 {
+		return nil
+	}
+	text = text[i+len(RosterPreamble):]
+	if end := strings.Index(text, "."); end >= 0 {
+		text = text[:end]
+	}
+	var out []string
+	for _, name := range strings.Split(text, ",") {
+		name = strings.TrimSpace(name)
+		// "(none declared)" is what the template renders for an empty
+		// roster. Treated as no roster rather than as a specialist, or the
+		// fake would dispatch to a name that cannot exist and turn a
+		// misconfigured workload into a tool error.
+		if name == "" || strings.HasPrefix(name, "(") {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // handled counts, per tool name, how many calls to it the history
