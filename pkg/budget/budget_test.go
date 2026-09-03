@@ -621,3 +621,50 @@ func TestAnUnresolvableModelVersionFallsThroughToLimitsModel(t *testing.T) {
 		t.Errorf("Unpriced() = %d, want 0 — the configured model prices this call", n)
 	}
 }
+
+// ---------------------------------------------------------------------
+// Thinking tokens.
+
+// Gemini reports thoughts as their own counter, additive to the
+// candidates: prompt + candidates + thoughts == total. They are billed at
+// the output rate, so pricing only the candidates undercounts output by
+// however much the model thought — which on a reasoning model is most of
+// it. A triage run measured against a live cluster spent 6,449 thinking
+// tokens against 1,180 candidate tokens.
+func TestThinkingTokensAreBilledAtTheOutputRate(t *testing.T) {
+	const prompt, out, thoughts = 1_000, 1_180, 6_449
+	ev := pricedEvent("", prompt, 0, out)
+	ev.UsageMetadata.ThoughtsTokenCount = thoughts
+	ev.UsageMetadata.TotalTokenCount = prompt + out + thoughts
+
+	m := NewMeter(Limits{Catalog: builtinCatalog(t), Model: "claude-sonnet-5"})
+	if err := m.Observe(ev); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	_, cost, _ := m.Snapshot()
+	// $2/MTok in, $10/MTok out over both output buckets.
+	want := prompt*2.0/1e6 + (out+thoughts)*10.0/1e6
+	if cost < want*0.999 || cost > want*1.001 {
+		t.Errorf("cost = $%.6f, want $%.6f", cost, want)
+	}
+	// The candidates-only figure is what this replaces. Stated as its own
+	// assertion because the two are within a factor of six, and a test
+	// that only checked the total to 1% would pass on either.
+	if candidatesOnly := prompt*2.0/1e6 + out*10.0/1e6; cost <= candidatesOnly*1.5 {
+		t.Errorf("cost = $%.6f, barely above the candidates-only $%.6f — thoughts were not billed", cost, candidatesOnly)
+	}
+}
+
+// The counter is Gemini's; Anthropic never sets it and folds thinking into
+// its own output count already. An event that reports no thoughts must
+// therefore price exactly as it did before the field was read at all.
+func TestNoThoughtsCountedMeansNoChangeInPrice(t *testing.T) {
+	m := NewMeter(Limits{Catalog: builtinCatalog(t), Model: "claude-sonnet-5"})
+	if err := m.Observe(pricedEvent("", 1_000_000, 0, 100_000)); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	_, cost, _ := m.Snapshot()
+	if want := 2.0 + 1.0; cost < want*0.99 || cost > want*1.01 {
+		t.Errorf("cost = $%.4f, want ~$%.4f", cost, want)
+	}
+}

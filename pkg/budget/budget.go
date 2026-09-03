@@ -397,7 +397,17 @@ func (m *Meter) priceOf(ev *session.Event, cat *pricing.Catalog, backend, model 
 			if prompt := int(u.PromptTokenCount); cached > prompt {
 				cached = prompt
 			}
-			out := int(u.CandidatesTokenCount)
+			// Thoughts are billed at the output rate and counted
+			// separately from the candidates: Gemini reports
+			// promptTokenCount + candidatesTokenCount + thoughtsTokenCount
+			// == totalTokenCount, so leaving them out is a straight
+			// undercount of output. On a reasoning model it is not a
+			// rounding error — a triage run measured here spent 6,449
+			// thinking tokens against 1,180 candidate tokens, so the
+			// omitted term was 85% of billable output. The field is
+			// Gemini-only; pkg/providers/anthropic never sets it, and
+			// Anthropic's own output count already includes thinking.
+			out := int(u.CandidatesTokenCount) + int(u.ThoughtsTokenCount)
 			return r.CostUSDWithCache(int(u.PromptTokenCount)-cached, cached, out), false
 		}
 		m.unpriced++
