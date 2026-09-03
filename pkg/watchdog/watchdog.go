@@ -211,11 +211,12 @@ type Signal interface {
 // custom signal list — the cycle detector is the one most likely to be
 // dropped, on a workload whose normal shape is a polling loop.
 //
-// DominantToolCallSignal is deliberately NOT in this set. It covers the
-// shape between the two loop detectors (#227) and is ready to wire, but
-// adding a third Critical detector to the default set changes what
-// every unattended workload is told about itself under mast's default
-// `feedback` posture. That is a posture decision, not a port.
+// DominantToolCallSignal is deliberately NOT in this set, and #227
+// settled that as the answer in v0.6 rather than leaving it pending. It
+// covers the shape between the two loop detectors and is ready to wire,
+// but under mast's default `feedback` posture an alert is steering the
+// next turn acts on — and the sentence directly above names the shape
+// it would fire on wrongly. See DominantToolCallSignal's docstring.
 func NewDefaultWatchdog() *DefaultWatchdog {
 	return &DefaultWatchdog{
 		signals: []Signal{
