@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+**A budget ceiling is durable when there is a database to write it to, not
+when an operator happens to be watching.** The spend ledger hung off the
+eventlog handle, the handle is built only under `--attach-listen`, and so a
+daemon started with `--session-db` alone got durable sessions and a
+`max_cost_usd` that reset on every restart — warned about in a message
+naming the wrong flag. The watchdog's halt is attach-gated for a real
+reason (`POST /guardrails/reset` is attach-only, and a halt nobody can
+clear is worse than one a restart forgets); the ledger inherited that
+argument by sharing plumbing with it. A ledger is not a latch. It now keys
+on `--session-db`, which is the condition it always needed, and the
+warning names that flag. The inversion mattered because the failure it
+guards against — a crash loop spending the cap once per restart — is an
+unattended one, and an unattended daemon is the least likely to have bound
+an operator socket. Grants still replay on a daemon with no attach
+surface, so a session an operator rescued does not come back wedged by a
+restart they never made ([#274](https://github.com/go-steer/mast/issues/274)).
+
+Fixing it exposed a drift the same issue covers: `eventlog.Open` injected
+both `busy_timeout` and `_txlock=immediate` on SQLite, while
+`OpenSessionService` injected only the first. That was survivable while
+ADK's session service was the sole writer on that connection — one write
+mutex kept it to one at a time — and stops being survivable the moment the
+ledger writes its own rows outside that mutex, because SQLite answers a
+snapshot upgrade with an immediate `SQLITE_BUSY` that `busy_timeout`
+deliberately never retries. Both settings are now injected on both paths,
+and the plain path has the concurrency test the overlay path already had.
+
 ## v0.6.0 (2026-09-03)
 
 *No mutating call goes unrecorded, no call is paid for before it is checked,

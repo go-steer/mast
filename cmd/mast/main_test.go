@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-steer/mast/pkg/eventlog"
 )
 
 func discardLogger() *slog.Logger {
@@ -66,15 +68,22 @@ func TestSessionDialector(t *testing.T) {
 // postgres driver with no DSN is an operator mistake, not a silent
 // in-memory downgrade (that would falsify Cloud Run durability).
 func TestBuildSessionServiceInMemory(t *testing.T) {
-	svc, err := buildSessionService(context.Background(), "sqlite", "", discardLogger())
+	svc, db, err := buildSessionService(context.Background(), "sqlite", "", discardLogger())
 	if err != nil {
 		t.Fatalf("buildSessionService(sqlite, \"\"): %v", err)
 	}
 	if svc == nil {
 		t.Fatal("buildSessionService(sqlite, \"\"): nil service")
 	}
+	// In-memory is the one configuration with nothing to persist to, so
+	// it is also the one that must report no connection: the durable
+	// stores key on this being nil (#274), and a non-nil handle here
+	// would wire a ledger onto a database that evaporates.
+	if db != nil {
+		t.Error("buildSessionService(sqlite, \"\"): got a DB for in-memory sessions, want nil")
+	}
 
-	if _, err := buildSessionService(context.Background(), "postgres", "", discardLogger()); err == nil {
+	if _, _, err := buildSessionService(context.Background(), "postgres", "", discardLogger()); err == nil {
 		t.Fatal("buildSessionService(postgres, \"\"): want error, got nil")
 	}
 }
@@ -84,12 +93,23 @@ func TestBuildSessionServiceInMemory(t *testing.T) {
 // test temp dir, never $HOME).
 func TestBuildSessionServiceSQLite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
-	svc, err := buildSessionService(context.Background(), "sqlite", path, discardLogger())
+	svc, db, err := buildSessionService(context.Background(), "sqlite", path, discardLogger())
 	if err != nil {
 		t.Fatalf("buildSessionService(sqlite, %q): %v", path, err)
 	}
 	if svc == nil {
 		t.Fatal("buildSessionService returned nil service")
+	}
+	// The other half of #274: with a DSN there is a connection, and the
+	// caller gets it. Everything about a durable ledger on the no-attach
+	// path rests on this not being nil.
+	if db == nil {
+		t.Fatal("buildSessionService returned no DB for an on-disk session store")
+	}
+	// And it is usable for a table mast owns, which is the actual point —
+	// NewSpendStore AutoMigrates on the connection it is handed.
+	if _, err := eventlog.NewSpendStore(context.Background(), db); err != nil {
+		t.Fatalf("NewSpendStore on the plain path's DB: %v", err)
 	}
 }
 
