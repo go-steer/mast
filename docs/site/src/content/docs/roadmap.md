@@ -1,14 +1,14 @@
 ---
 title: Roadmap
-description: What v0.5 ships, and what lands after it — honestly.
+description: What v0.6 ships, and what lands after it — honestly.
 ---
 
-mast is at **v0.5.0** — a scheduled cycle gathers its own facts without
-spending a token, learns what changed from the classifier rather than from
-mast, speaks only when something did, and takes an operator's acknowledgement
-without pretending it was an approval. On the v0.4.0 change set, the v0.3.0
-write gate and the v0.2.0 durable-execution spine. See [Shipped in
-v0.5.0](#shipped-in-v050--unattended-monitoring-end-to-end) below.
+mast is at **v0.6.0** — no mutating call goes unrecorded, no call is paid for
+before it is checked, and where enforcement cannot reach, mast refuses rather
+than pretends. On the v0.5.0 monitoring cycle, the v0.4.0 change set, the
+v0.3.0 write gate and the v0.2.0 durable-execution spine. See [Shipped in
+v0.6.0](#shipped-in-v060--a-ceiling-that-stops-a-call-and-a-refusal-that-is-the-design)
+below.
 
 **All eleven v0.1 exit criteria from the fork design are green.** The
 `--task` profile criterion cleared with the P1.3a/P1.3b adapter ports and
@@ -550,50 +550,114 @@ shown it either way — a fix worth having moves `intent_coverage` by a fraction
 of one row's mean. The competing hypothesis is that the models reason past the
 tool rather than fail to find it, and the same experiment separates the two.
 
-## What v0.5.0 will not let you do
+## Shipped in v0.6.0 — a ceiling that stops a call, and a refusal that is the design
+
+The first release the parity scoreboard did not choose. It reads 17 of 19 and
+the two rows still red are switchboard's to write, so this release states its
+own claim: **no mutating call goes unrecorded, no call is paid for before it
+is checked, and where enforcement cannot reach, mast refuses rather than
+pretends.** Nothing here adds a tool, a bundle block, an endpoint or a flag —
+if it shipped correctly, an existing bundle behaves the way its author already
+believed it did.
+
+- **A cost ceiling refuses the call that would cross it.** `max_turns`,
+  `max_tokens` and `max_cost_usd` are checked before the model is called
+  rather than after it answers. Spend used to be folded out of the event
+  stream only after a call returned, so the first thing that happened when a
+  workload ran out of money was that it spent more; on turns it was not
+  merely late but structurally unable to be right, because `max_turns` was
+  checked with `>` and **a workload capped at 3 turns had always made 4**.
+
+  The pre-call check asks a different question — not *has a ceiling been
+  crossed* but *can this ceiling still be respected*. It never estimates the
+  next call's size: a projection refuses affordable work on a bad guess and
+  permits unaffordable work on a worse one, and you cannot tell those apart
+  from outside. It refuses only where the arithmetic is a proof. The
+  post-hoc fold is untouched and is still the durable ledger.
+
+  A refusal is a synthesized response rather than an error — a cap that
+  fires must not arrive looking like a crashed tool — and it leaves no
+  phantom spend. From outside, `BUDGET_REFUSED` and `BUDGET_EXCEEDED` are
+  one wall reported with two codes: both are `cost_ceiling`, both carry the
+  reset hint, and they differ only in which one spent money.
+
+- **A spent specialist closes one path, not the session.** A crossed
+  specialist ceiling is handed to its coordinator as a report it can route
+  around, the same as a specialist that declines, and the workload finishes
+  through whatever paths still have budget. Only the workload's own ceiling
+  ends the turn — there is nothing left to route to. Through v0.5 the
+  opposite held, and it was never a decision: cancelling the run was the
+  only lever the after-the-fact fold had, so *one path is spent* and *the
+  workload is over* came out the same way.
+
+  Because a run that quietly loses half its roster otherwise looks exactly
+  like one that did not, the loss is reported in four places: the trip
+  counter and a WARN line naming the specialist, `cost_ceiling.scopes[]` on
+  `GET /guardrails`, and `Result.Exhausted` for a library caller. A
+  session-scoped guardrail reset says honestly when it cleared nothing, and
+  names who is still out and the `scope=` to raise them with.
+
+- **A dispatched specialist's mutations reach the effect ledger.** Under
+  `hitl.on_mutation: apply`, an interrupted planner dispatch now leaves a
+  dangling intent that the next boot's auto-resume scan can see. Recording
+  is one-directional, so unlike the write gate it crosses the dispatch
+  boundary freely: a recorder on the sub-run observer seam writes each
+  dispatch's mutating intents and completions to the outer session's
+  companion operations row. A failed intent write stops the dispatch —
+  under `apply`, that record is the only control the call has.
+
+- **A rate belongs to the (backend, model) pair.** Prices are keyed on
+  `<backend>/<model>` over `anthropic`, `anthropic-vertex`, `gemini` and
+  `vertex`, and looked up for the pair the call will actually be billed
+  against. Through v0.5 a price was something mast *reported*, and a
+  reported number can be approximately right; a pre-call ceiling makes a
+  price the input to a refusal, where it is either the price of the call
+  about to be made or it is not. It was not — the builtin table's bare
+  model ids are a mixture of two backends, so Claude-on-Vertex was priced
+  off the first-party row and Developer-API Gemini off the Vertex row. This
+  moves no number today, because every shipped model currently costs the
+  same on both of its backends; that agreement is upstream's to keep and
+  not mast's to depend on.
+
+- **The dominant-tool-call density detector stays opt-in**, recorded as a
+  decision rather than a pending one. The default watchdog posture is
+  `feedback`, so an alert is not a log line an operator triages — it is a
+  paragraph prepended to the next turn's prompt on a workload with nobody
+  watching, which makes a false positive an instruction. This detector's
+  false positive is a polling workload, which is exactly the shape v0.5's
+  scheduled monitoring ships. It remains available to any caller that
+  builds its own signal set and knows its workload does not poll.
+
+## What v0.6.0 will not let you do
 
 A monitoring workload that also **remediates** — a planner roster holding a
 `change_executor` — is refused at startup whenever `hitl.on_mutation` asks for
 the write to be gated. The write gate and the effect outbox are runner
 plugins, and `invoke_specialist` builds its runner without them, so a mutating
-call made inside a planner dispatch would neither park nor dry-run and would
-leave no durable record of what it did. Refusing is the honest answer to that:
-the alternative is executing an unapproved write on a bundle that asked for
-approval. The escape is cheap — the same roster runs under `coordinator` or
-`graph`, where the runner carries the gate — and the startup error names the
-specialist and says so.
+call made inside a planner dispatch would neither park nor dry-run. Refusing
+is the honest answer to that: the alternative is executing an unapproved write
+on a bundle that asked for approval. The escape is cheap — the same roster
+runs under `coordinator` or `graph`, where the runner carries the gate — and
+the startup error names the specialist and says so.
 
-Under `on_mutation: apply` the refusal does not fire, because there was no
-gate for a dispatch to bypass. In v0.5.0 the outbox record was missing there
-too, so an interrupted dispatch left no dangling intent to scan for and no
-recorded completion to replay.
-
-**Both halves are settled since, and they settled differently.** The record
-shipped on `main` 2026-09-01: a per-dispatch recorder writes each mutating
-intent to the session's operations row before the call runs, so an interrupted
-dispatch now leaves a visible dangling intent. The **gate** is not coming, and
+**This is the design, not containment**, and
 [#235](https://github.com/go-steer/mast/issues/235) closed on that answer
-rather than on a fix. An approval comes back through the session event log —
-a park writes its question there and a resume re-enters at the root — and a
+rather than on a fix. An approval comes back through the session event log — a
+park writes its question there and a resume re-enters at the root — and a
 dispatch runs on a private in-memory session that dies with the tool call, so
 there is nowhere for an answer to return to. Giving the sub-run the host's
 session service would buy the gate by spending the context isolation the shape
 exists for; gating `invoke_specialist` itself would have you approve a
-specialist name and a sentence of prose. So the refusal is the design, and
-what it names — `coordinator`, `graph`, `on_mutation: apply` — is what you do.
+specialist name and a sentence of prose. So what the refusal names —
+`coordinator`, `graph`, `on_mutation: apply` — is what you do, and each of
+those three is covered by a test that builds it.
+
+Under `on_mutation: apply` the refusal does not fire, because there was no
+gate for a dispatch to bypass. The **record** was missing there too through
+v0.5, and that half was separable and shipped in v0.6.0 — see above.
 
 ## Next
 
-- **A cost ceiling that refuses a call instead of noticing it afterwards.**
-  On `main`, unreleased. Spend used to be folded only after the fact, so the
-  call that crossed a cap had already been paid for; the pre-call check now
-  goes in front of that fold, which makes `max_turns` exact and stops a
-  workload *at* its cost cap rather than one call past it. The routing half
-  came with it: a specialist that reaches its own ceiling is refused rather
-  than crossing it, its coordinator is handed that refusal as an answer, and
-  the session carries on through whatever paths still have budget. The
-  workload's own ceiling still stops the turn — there is nothing left to
-  route to.
 - **The last two parity rows** are switchboard's: in-chat Approve/Reject, and
   an approver allowlist.
 

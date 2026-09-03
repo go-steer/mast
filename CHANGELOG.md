@@ -2,6 +2,256 @@
 
 ## Unreleased
 
+## v0.6.0 (2026-09-03)
+
+*No mutating call goes unrecorded, no call is paid for before it is checked,
+and where enforcement cannot reach, mast refuses rather than pretends.*
+
+This is the first release since the fork that the parity scoreboard did not
+choose. It reads **17 of 19** and the two rows still red are switchboard's to
+write, so v0.6 had to state its own claim. The claim is about the distance
+between what a bundle promises an operator and what the runtime enforces.
+Two places had one, and neither was a bug in the sense that something
+reported a wrong answer — both were cases where `hitl.on_mutation` or
+`budget.max_usd` said more than the code delivered, which is the specific
+failure this product exists to not have.
+
+**A ceiling is no longer crossed by the call that reports it.** Spend was
+folded out of the event stream after a call returned, so the first thing that
+happened when a workload ran out of money was that it spent more. On turns
+that was not merely late but structurally unable to be right: `max_turns` was
+checked with `>`, so **a workload capped at 3 turns had always made 4**. A
+pre-call check now sits in front of that fold and asks a different question —
+not *has a ceiling been crossed* but *can this ceiling still be respected* —
+which is answerable without guessing what the next call will cost. It never
+estimates, because a projection refuses affordable work on a bad guess and
+permits unaffordable work on a worse one and an operator cannot tell those
+apart; it refuses only where the arithmetic is a proof. The post-hoc fold is
+untouched and is still the durable ledger.
+
+**A specialist's ceiling is no longer the workload's.** Through v0.5,
+cancelling the run was the only lever the fold had, so *one path is spent* and
+*the workload is over* came out the same way because nothing could tell them
+apart. Now a crossed specialist ceiling is handed to its coordinator as a
+report it can route around, the same as a specialist that declines, and the
+session finishes through whatever paths still have budget. The workload's own
+ceiling still ends the turn — there is nothing left to route to.
+
+**And where enforcement cannot reach, the refusal is now the design.** v0.5's
+notes called the composition refusal on a planner roster holding a change
+executor *containment*, and pointed at
+[#235](https://github.com/go-steer/mast/issues/235) for the boundary
+decision. #235 is closed, and it closed on an answer rather than on a fix: a
+park is two halves that both live in the session event log and a resume
+re-enters at the root, while a planner dispatch runs on a private in-memory
+session that dies with the tool call — so there is nowhere for an approval to
+come back to. Gating `invoke_specialist` itself would have an operator approve
+a specialist name and a sentence of prose, which is lead row L7's own
+description of the competitor. Five artifacts that described the refusal as
+temporary now describe it as the answer, and name what you do instead —
+`coordinator`, `graph`, or `on_mutation: apply`. The **recording** half was
+separable and shipped: a dispatched specialist's mutating calls are on the
+effect ledger even though no plugin of the outer session ever sees them.
+
+Parity scoreboard: **17 of 19**, unchanged. No row moves, and that is the
+point — all five workstreams here sit behind rows that were already green,
+which is exactly why the board could not have chosen this release.
+
+**What this release does not do.** It adds no tool, no bundle block, no
+endpoint, and no flag. If v0.6 shipped correctly, an existing bundle behaves
+the way its author already believed it did. The one exception is the
+composition refusal above, and it is now the point rather than an
+embarrassment.
+
+- **A spent specialist closes one path, not the session.** A crossed
+  specialist ceiling is a refusal its coordinator can route around; only
+  the workload's own ceiling ends the turn (#252, W10.3).
+
+  The thing that tells them apart is typed. `budget.Scope(err)` answers
+  *whose* ceiling an enforcement error was, and it changes neither the
+  sentinel nor a byte of the message, because `pkg/attach`'s turn-error
+  classifier prefix-matches that text on purpose (#135/#208) and must
+  keep working without importing `pkg/budget`. It is an error type
+  rather than a substring test on the specialist's name because a
+  difference in outcome should not rest on prose.
+
+  **The runtime change is four branches; the work is what it does to
+  reporting.** A run that quietly loses half its roster returns the same
+  `nil` as one that did not. Four surfaces answer that: the trip counter
+  and a WARN line naming the specialist, `cost_ceiling.scopes[]` on
+  `GET /guardrails`, and `mast.Result.Exhausted` for a library caller —
+  scoped rows only, since the workload's own ceiling is already in the
+  error such a caller is holding instead of a `Result`. A session-scoped
+  guardrail reset now says honestly that it cleared nothing, and names
+  who is still out and the `scope=` to raise them with; before, it
+  reported clearing a trip it had never touched, and then — once that
+  was fixed — reported a cheerful "nothing was tripped" while a
+  specialist sat spent.
+
+  **Making a refusal cheap made retrying one free**, and that is the
+  finding worth carrying out of this release. A Task agent declaring an
+  `output_schema` has a `finish_task` whose parameters *are* that
+  schema, so a default refusal payload does not validate — and ADK
+  answers an invalid `finish_task` with *"you could retry calling this
+  tool"*, a retry instruction rather than an error. Refused call,
+  invalid report, retry, refused call, and no iteration costs a model
+  call or a token. The v0.4 acceptance legs spun to **3,292**
+  `finish_task` calls in ninety seconds, and had been passing for a
+  release only because the session was cancelled first. mast declines to
+  guess its way out: fabricating a schema-conforming finding was
+  available and is the one thing it must not do, because a refusal is
+  exactly the case where nothing was looked at, so a synthesized one
+  would put an invented fault into an incident stream. The delegation
+  resolves to nothing, and the loss is carried on the metric, the WARN
+  line and the API surface instead.
+
+- **A cost ceiling refuses the call that would cross it.** `max_turns`,
+  `max_tokens` and `max_cost_usd` are now checked before the model is
+  called rather than after it answers (#252, W10.1 / W10.2).
+
+  The seam is an `llmagent` `BeforeModelCallback`, chosen by measuring
+  it against a `model.LLM` wrapper on the one shape that discriminates
+  them — a planner dispatch. Both reach it; runner plugins are what that
+  boundary drops. What separates them is whose promise the identity is:
+  a per-agent ceiling needs the agent name, and the callback is handed
+  it as a declared parameter, where the wrapper would recover it by
+  asserting on a `context.Context` that ADK merely happens to populate.
+  The callback is installed inside `NewTaskAgent`, `NewSingleTurnAgent`
+  and `NewCoordinator` rather than at the eleven construction sites, and
+  first in the chain, so a caller's own callback cannot short-circuit
+  past a ceiling. It rides the Go context, never the session id — inside
+  a dispatch the session is the sub-runner's, and a meter resolved from
+  it would be a fresh empty one that approves everything.
+
+  **A refusal is a synthesized response, not an error and not a cancel.**
+  Returned as an error it would reach the caller in the field ADK
+  reserves for a broken tool, wrapped in three layers of workflow
+  plumbing; a cap that fires must not arrive looking like a crashed
+  tool. It is in the transcript where an operator reads it
+  (`agent.RefusalMarker`), and it leaves no phantom spend — the meter's
+  cost and the durable ledger's row count are asserted equal with and
+  without the gate, because a refusal that wrote to one and not the
+  other reconciles wrong.
+
+  Two consequences of a refusal costing nothing had to be handled rather
+  than noticed. The turn driver reported **OK** — the stream ends
+  cleanly and a caller's `if err != nil` never fires for work that did
+  not happen — so the driver reads a *delta* in the refusal count across
+  the turn, since a run that finished its work and happened to land
+  exactly on its cap did not stop for the budget. And the preflight door
+  had the mirror bug: it asked whether anything had *crossed*, but a
+  well-behaved session now stops **on** its cap without crossing, so it
+  would have answered "I am out of budget" in prose forever.
+
+  From outside this is one wall reported with two codes:
+  `BUDGET_REFUSED` and `BUDGET_EXCEEDED` are both `cost_ceiling` and
+  both carry the reset hint. They differ only in which one spent money.
+
+- **A rate belongs to the (backend, model) pair.** Prices are keyed on
+  `<backend>/<model>` over `anthropic`, `anthropic-vertex`, `gemini` and
+  `vertex`, and looked up for the pair the call will actually be billed
+  against (#178, W10.0).
+
+  Through v0.5 a price was something mast *reported*: a number on a
+  meter, next to a ledger row, in a release note. A number that is
+  reported can be approximately right. W10.2 makes a price the input to
+  a **refusal**, and a number a refusal is computed from is either the
+  price of the call about to be made or it is not. It was not:
+  `RatePer1K` took a model id and nothing else, and the builtin table is
+  keyed on bare ids that are a mixture of two backends — LiteLLM's
+  unprefixed `claude-*` rows are first-party Anthropic, its unprefixed
+  `gemini-*` rows are Vertex. So every Claude-on-Vertex call in mast's
+  history was priced off the first-party row **and** every
+  Developer-API Gemini call off the Vertex row, in the opposite
+  direction. Only the first half had been written down.
+
+  **The alias is not the backend**, and getting that wrong would have
+  moved the defect rather than fixed it: `GOOGLE_GENAI_USE_VERTEXAI`
+  sends a bare `--provider` to Vertex, and Anthropic picks first-party
+  or Vertex by which credential is present. The resolver is therefore
+  shared with the code that builds the client, so a price cannot name a
+  backend the call did not use. `pricing.LookupFor` falls back to the
+  bare id, so a pair upstream does not price keeps the rate it has
+  today rather than dropping to zero.
+
+  **This moves no number.** Measured against LiteLLM first: every
+  shipped model costs the same on both of its backends today. That
+  agreement is upstream's to keep and not mast's to depend on — which is
+  the argument for keying on the pair, not against it. It also means no
+  test built on the shipped table can tell a pair-keyed lookup from a
+  bare one, so the discriminating test prices the pairs apart in a
+  synthetic catalog. Closes the live defect
+  [#178](https://github.com/go-steer/mast/issues/178) left behind when
+  it was closed without code, and delivers the pricing half of
+  model-support M2.
+
+- **A dispatched specialist's mutations reach the effect ledger, out of
+  band.** Under `hitl.on_mutation: apply` — the policy the composition
+  refusal exempts, and what an unattended workload actually sets — an
+  interrupted planner dispatch now leaves a dangling intent the next
+  boot's auto-resume scan can see (#235, W9.3).
+
+  Recording is one-directional, so unlike the write gate it crosses the
+  boundary freely. A recorder on the sub-run observer seam writes each
+  dispatch's mutating intents and completions to the outer session's
+  **companion operations row**, and the boot scan folds them in. Not
+  primary-row session state, which is what this was first designed as:
+  ADK's database session service treats a session handle as a write
+  lease, and an out-of-band append to the primary row invalidates every
+  other holder's — and a dispatch writes at precisely the moment the
+  outer turn holds one, so it would have killed the very turn it was
+  recording.
+
+  The recorder runs **last** on the seam, after the budget meter and the
+  watchdog, because an intent record claims a call is *about* to happen
+  and every consumer ahead of it can still stop the sub-run; recording
+  first would wedge a session into ambiguous-effect mode over a mutation
+  a ceiling prevented. A failed intent write stops the dispatch — under
+  `apply`, the record is the only control that call has.
+
+- **The planner-dispatch refusal is permanent, and says why.** A planner
+  roster holding a `change_executor` is still refused at startup
+  whenever `hitl.on_mutation` asks for the write to be gated. What
+  changed is that five artifacts stopped describing that as a stopgap
+  awaiting #235 — a promise that had become the opposite of true, and a
+  reader who believed it would be waiting for something that is not
+  coming (#235, W9.1 / W9.2).
+
+  **The exit criterion was a composition test, and it earned the
+  distinction.** The refusal names three ways forward, so one test
+  builds each of them through both doors and another pins the words and
+  fails on hedging language. A stopgap can name a way out loosely; an
+  answer cannot, because an escape nobody composed costs the operator
+  the hour they spend on it.
+
+- **The dominant-tool-call density detector stays opt-in**, and that is
+  now recorded as a decision rather than as a pending one
+  ([#227](https://github.com/go-steer/mast/issues/227)). The reason is
+  not the detector's accuracy. mast's default watchdog posture is
+  `feedback`, so an alert is not a log line an operator triages — it is
+  a paragraph prepended to the next turn's prompt on a workload with
+  nobody watching, which makes a false positive an *instruction*. And
+  this detector's false positive is already written down one file over
+  in the cycle detector's docs: a polling workload, which is exactly the
+  shape v0.5's scheduled monitoring shipped. No behaviour changes; the
+  signal remains available to any caller that builds its own set and
+  knows its workload does not poll.
+
+- **`scripts/uat-v0.6.sh`** — 42 acceptance assertions against a real
+  daemon, offline and credential-free, wired into the e2e presubmit
+  alongside the four earlier releases'. It measures a capped workload
+  spending its cap and not one call more on two independently computed
+  meters, a specialist's cap closing one path while the incident
+  finishes through another, and a dispatched mutating call surviving a
+  mid-flight `SIGKILL` onto the effect ledger.
+
+  It also found that **no acceptance leg in any release had ever driven
+  a planner dispatch.** A planner is offered `finish_task` alongside its
+  control-plane vocabulary and the offline fake checked `finish_task`
+  first, so every planner workload in every harness was answered by
+  finishing it, having dispatched nothing. Every leg was green; the
+  suite simply had no planner in it.
+
 ## v0.5.0 (2026-08-30)
 
 *A scheduled cycle gathers its own facts without spending a token, learns
