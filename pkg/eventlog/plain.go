@@ -44,27 +44,61 @@ import (
 // write mutex is imposed — MVCC handles concurrent writers, and
 // serializing them would only cost throughput.
 func OpenSessionService(ctx context.Context, dialector gorm.Dialector) (session.Service, error) {
+	svc, _, err := OpenSessionServiceWithDB(ctx, dialector)
+	return svc, err
+}
+
+// OpenSessionServiceWithDB is OpenSessionService plus the connection it
+// opened, for callers that put their own tables on the same database —
+// the durable budget ledger (#274) is the first, as SessionACLStore is
+// on Open's side.
+//
+// Returning it is what lets spend durability key on "there is a
+// database" rather than on "the attach surface is bound", which was
+// never the condition it needed: a ledger is not a latch, so unlike the
+// guardrail halt it has nothing an operator must be able to clear. See
+// cmd/mast's wiring for the split.
+//
+// The DB is ADK's own handle, read reflectively, so a caller's writes
+// land on the connection the session service is already using. Nil for
+// a dialector whose service does not expose one, which callers must
+// treat as "no durable store here" rather than as an error — the
+// session service itself is still perfectly good.
+func OpenSessionServiceWithDB(ctx context.Context, dialector gorm.Dialector) (session.Service, *gorm.DB, error) {
 	sqlite := isSQLite(dialector)
 	if sqlite {
 		injectSQLitePragma(dialector, fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMs))
+		// Both of Open's settings, not just the first. The drift was
+		// invisible while the ADK service was the only writer on this
+		// path — serializedService's mutex kept it to one at a time —
+		// and stops being invisible the moment a caller takes the DB
+		// above and writes its own rows outside that mutex. Per Open's
+		// comment: busy_timeout alone does nothing for concurrent
+		// writers, because SQLite answers a snapshot upgrade with an
+		// immediate SQLITE_BUSY that busy_timeout deliberately never
+		// retries. IMMEDIATE takes the write lock up front and turns
+		// that into an ordinary wait. ADK's AppendEvent is exactly the
+		// read-then-write transaction that needs it.
+		injectSQLiteDSNParam(dialector, "_txlock", "immediate")
 	}
 	svc, err := adkdatabase.NewSessionService(dialector, defaultGormOpts(defaultOpenOpts())...)
 	if err != nil {
-		return nil, fmt.Errorf("eventlog: open ADK session service: %w", err)
+		return nil, nil, fmt.Errorf("eventlog: open ADK session service: %w", err)
 	}
 	if err := adkdatabase.AutoMigrate(svc); err != nil {
-		return nil, fmt.Errorf("eventlog: ADK AutoMigrate: %w", err)
+		return nil, nil, fmt.Errorf("eventlog: ADK AutoMigrate: %w", err)
 	}
+	db := adkGormDB(svc)
 	if !sqlite {
-		return svc, nil
+		return svc, db, nil
 	}
 	// WAL via the service's own connection (reflective handle — same
 	// mechanism Handle.Close uses). Best-effort like Open's step 3:
 	// some SQLite forms (:memory:) reject WAL.
-	if db := adkGormDB(svc); db != nil {
+	if db != nil {
 		_ = db.WithContext(ctx).Exec("PRAGMA journal_mode=WAL").Error
 	}
-	return &serializedService{inner: svc}, nil
+	return &serializedService{inner: svc}, db, nil
 }
 
 // serializedService funnels all writes through one mutex — the

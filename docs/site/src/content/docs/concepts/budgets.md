@@ -364,11 +364,10 @@ process*, which is not what anyone bought. mast's restarts are automatic
 and unattended, so an in-memory accumulator would let a crash loop spend
 the cap once per restart, indefinitely.
 
-With `--attach-listen` (which already requires `--session-db`), each
-priced model call is written to a ledger mast owns, and a session's first
-turn after a restart folds it back before anything runs: a workload
-stopped by `max_cost_usd: 5.00` after $5.02 comes back at $5.02, not at
-zero. So does each specialist's own accumulator, so per-specialist
+With `--session-db` set, each priced model call is written to a ledger
+mast owns, and a session's first turn after a restart folds it back before
+anything runs: a workload stopped by `max_cost_usd: 5.00` after $5.02
+comes back at $5.02, not at zero. So does each specialist's own accumulator, so per-specialist
 ceilings survive too — and so do the grants an operator handed over, which
 means a session rescued at $5.02 comes back rescued rather than wedged by
 a restart nobody made.
@@ -391,10 +390,20 @@ Three properties worth knowing:
   every session in the deployment. The read is retried on the next turn
   rather than remembered as "restored to nothing".
 
-Without `--attach-listen` there is no durable connection to write to, and
+The ledger needs a database and nothing else — an attach surface is not
+required, and through v0.6.0 it wrongly was (issue #274), which denied a
+durable ceiling to unattended daemons, the deployment least likely to bind
+an operator socket and most likely to crash-loop. Without `--session-db`
+sessions are in-memory, there is no durable connection to write to, and
 the accumulator is per-process as it was before; a daemon with budget
-ceilings and no attach surface says so at startup. Alert on
+ceilings and no session database says so at startup. Alert on
 `mast_budget_trips_total` either way.
+
+The watchdog's halt is durable on a narrower condition — it needs
+`--attach-listen` as well — because `POST /guardrails/reset` is the only
+thing that clears one, and a halt nobody can clear is worse than a halt
+that a restart forgets. A ledger has no such latch, which is why the two
+differ.
 
 ## Watching it
 

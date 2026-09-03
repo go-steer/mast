@@ -507,6 +507,10 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	var (
 		sessionSvc session.Service
 		elHandle   *eventlog.Handle
+		// The connection the durable stores go on, from whichever
+		// backend opened one. Nil only when sessions are in-memory,
+		// which is the one configuration with nothing to persist to.
+		durableDB *gorm.DB
 	)
 	if attachListen != "" {
 		if sessionDB == "" {
@@ -525,10 +529,11 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		}
 		defer func() { _ = elHandle.Close() }()
 		sessionSvc = elHandle.Service
+		durableDB = elHandle.DB
 		logger.Info("session db opened (eventlog overlay for attach)", "driver", sessionDrv)
 	} else {
 		var err error
-		sessionSvc, err = buildSessionService(turnCtx, sessionDrv, sessionDB, logger)
+		sessionSvc, durableDB, err = buildSessionService(turnCtx, sessionDrv, sessionDB, logger)
 		if err != nil {
 			logger.Error("failed to construct session service", "error", err.Error())
 			return err
@@ -672,43 +677,70 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	logger.Info("watchdog posture resolved", "mode", string(wdRes.Mode), "source", wdRes.Source)
 	wds := newWatchdogPool(wdRes.Mode)
 
-	// A halt that a restart clears is not a halt, and mast's restarts
-	// are automatic. Persist trips and resets to a table mast owns on
-	// the connection the eventlog overlay already holds — the same
-	// connection pkg/attach's session ACL store shares.
+	// Both durable stores live on whichever connection the session
+	// backend opened — the eventlog overlay's under --attach-listen, ADK's
+	// own otherwise. They are tables mast owns either way; what differs is
+	// only who else is on the connection (pkg/attach's session ACL store,
+	// on the overlay side).
 	//
-	// Only with an attach listener, and that is a correctness condition
-	// rather than a convenience: POST /guardrails/reset is attach-only,
-	// so persisting a halt on a daemon with no attach surface would
-	// leave an operator no way to clear it short of deleting a row.
-	// --attach-listen already requires --session-db, so the store exists
-	// exactly when the reset that clears it does.
-	if elHandle != nil {
-		gstore, err := eventlog.NewGuardrailStore(turnCtx, elHandle.DB)
+	// The two are wired on DIFFERENT conditions, and #274 is what happens
+	// when they share one.
+	var gstore *eventlog.GuardrailStore
+	if durableDB != nil {
+		gstore, err = eventlog.NewGuardrailStore(turnCtx, durableDB)
 		if err != nil {
 			logger.Error("failed to open the durable guardrail store", "error", err.Error())
 			return err
 		}
-		wds.durable(gstore, logger)
+	}
 
-		// The other half of the same promise (#175). A max_cost_usd
-		// ceiling is only a ceiling on what a workload spends per process
-		// until the spend itself is durable, and mast's restarts are
-		// automatic: a crash loop can spend the cap once per restart.
-		sstore, err := eventlog.NewSpendStore(turnCtx, elHandle.DB)
-		if err != nil {
-			logger.Error("failed to open the durable budget spend ledger", "error", err.Error())
-			return err
+	// A halt that a restart clears is not a halt, and mast's restarts are
+	// automatic — but the watchdog's durability stays attach-gated, and
+	// that is a correctness condition rather than a convenience: POST
+	// /guardrails/reset is attach-only, so persisting a halt on a daemon
+	// with no attach surface would leave an operator no way to clear it
+	// short of deleting a row. Don't durably latch what nobody can
+	// unlatch. --attach-listen already requires --session-db, so the
+	// store exists exactly when the reset that clears it does.
+	if elHandle != nil {
+		wds.durable(gstore, logger)
+	} else if wdRes.Mode.Enforces() {
+		// Said once, at startup, rather than discovered after a restart
+		// silently disarmed the backstop.
+		logger.Warn("watchdog is in enforce mode without --attach-listen: a halt will not survive a restart, and there is no reset endpoint to clear one")
+	}
+
+	// The ledger (#175) needs a database and nothing else. It is not a
+	// latch: there is no state an operator has to be able to clear, so the
+	// argument above does not reach it, and #274 was it inheriting that
+	// argument anyway by riding the same handle. A max_cost_usd ceiling
+	// only bounds what a workload spends *per process* until the spend is
+	// durable, and mast's restarts are automatic: a crash loop can spend
+	// the cap once per restart. A crash loop is an unattended failure
+	// mode, and an unattended daemon is the least likely to have bound an
+	// operator socket — so gating this on attach denied the ledger to
+	// exactly the deployment that needed it.
+	//
+	// gstore is passed for the grants half of restore(): a ceiling an
+	// operator raised through the attach surface must still be replayed on
+	// a later run that has no attach surface, or the restored spend wedges
+	// a session they already rescued. With no attach listener there are
+	// simply no grants to fold, and Fold says so cheaply.
+	if durableDB != nil {
+		sstore, serr := eventlog.NewSpendStore(turnCtx, durableDB)
+		if serr != nil {
+			logger.Error("failed to open the durable budget spend ledger", "error", serr.Error())
+			return serr
 		}
 		meters.durable(sstore, gstore, logger)
-	} else {
-		if wdRes.Mode.Enforces() {
-			// Said once, at startup, rather than discovered after a restart
-			// silently disarmed the backstop.
-			logger.Warn("watchdog is in enforce mode without --attach-listen: a halt will not survive a restart, and there is no reset endpoint to clear one")
-		}
-		if bundle != nil && (bundle.Budget.MaxCostUSD > 0 || bundle.Budget.MaxTurns > 0) {
-			logger.Warn("budget ceilings without --attach-listen: spend is not persisted, so a restart hands this workload its full budget back")
+	} else if bundle != nil && (bundle.Budget.MaxCostUSD > 0 || bundle.Budget.MaxTurns > 0) {
+		// Two ways to arrive here, and they are not the same operator
+		// mistake. Naming the wrong one is what #274 did.
+		if sessionDB == "" {
+			logger.Warn("budget ceilings without --session-db: sessions are in-memory, so spend is not persisted and a restart hands this workload its full budget back")
+		} else {
+			logger.Warn("budget ceilings without a durable ledger: the session backend opened no connection to write one to, so a restart hands this workload its full budget back",
+				"driver", sessionDrv)
 		}
 	}
 
@@ -2968,25 +3000,28 @@ func ensureSQLiteDir(dsn string) error {
 	return nil
 }
 
-func buildSessionService(ctx context.Context, driver, dsn string, logger *slog.Logger) (session.Service, error) {
+// The returned *gorm.DB is the connection the service opened, for the
+// durable stores to put their tables on; nil when sessions are in-memory
+// (#274). Callers treat nil as "nothing to persist to", not as an error.
+func buildSessionService(ctx context.Context, driver, dsn string, logger *slog.Logger) (session.Service, *gorm.DB, error) {
 	if dsn == "" {
 		if driver != "sqlite" {
-			return nil, fmt.Errorf("--session-db-driver=%s requires --session-db (a DSN); empty --session-db means in-memory sessions", driver)
+			return nil, nil, fmt.Errorf("--session-db-driver=%s requires --session-db (a DSN); empty --session-db means in-memory sessions", driver)
 		}
 		logger.Warn("no --session-db; sessions are in-memory and will NOT survive restart")
-		return session.InMemoryService(), nil
+		return session.InMemoryService(), nil, nil
 	}
 	dial, err := sessionDialector(driver, dsn)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Same storage hardening as the attach path (write serialization
-	// + busy_timeout + WAL for SQLite) minus the seq overlay — the
-	// raw service lost markers and transcript events to SQLITE_BUSY
-	// under concurrent sessions (#53).
-	svc, err := eventlog.OpenSessionService(ctx, dial)
+	// + busy_timeout + _txlock=immediate + WAL for SQLite) minus the
+	// seq overlay — the raw service lost markers and transcript events
+	// to SQLITE_BUSY under concurrent sessions (#53).
+	svc, db, err := eventlog.OpenSessionServiceWithDB(ctx, dial)
 	if err != nil {
-		return nil, fmt.Errorf("open session db (driver %s): %w", driver, err)
+		return nil, nil, fmt.Errorf("open session db (driver %s): %w", driver, err)
 	}
 	// Deliberately not logging the DSN: a Postgres DSN carries
 	// credentials. The sqlite path is safe and useful for operators.
@@ -2995,7 +3030,7 @@ func buildSessionService(ctx context.Context, driver, dsn string, logger *slog.L
 	} else {
 		logger.Info("session db opened", "driver", driver)
 	}
-	return svc, nil
+	return svc, db, nil
 }
 
 func logEvent(logger *slog.Logger, event *session.Event, sessionID string) {

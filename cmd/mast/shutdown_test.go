@@ -230,7 +230,7 @@ func TestTrackerMarkingDoesNotKillLiveTurn(t *testing.T) {
 // hardening as the attach path minus the overlay.
 func TestDefaultSessionPathConcurrentWrites(t *testing.T) {
 	ctx := context.Background()
-	svc, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
+	svc, _, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
 	if err != nil {
 		t.Fatalf("buildSessionService: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestTrackerMarkSkipsFinishedSession(t *testing.T) {
 // this failed ~1/40 sessions per run with no fault injection.
 func TestTrackerNoFalseInterruptedOnConcurrentFinish(t *testing.T) {
 	ctx := context.Background()
-	svc, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
+	svc, _, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
 	if err != nil {
 		t.Fatalf("buildSessionService: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestTrackerNoFalseInterruptedOnConcurrentFinish(t *testing.T) {
 // check. The second proves serialized same-session turns all land.
 func TestSessionTurnLocksPreventSameSessionCollision(t *testing.T) {
 	ctx := context.Background()
-	svc, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
+	svc, _, err := buildSessionService(ctx, "sqlite", filepath.Join(t.TempDir(), "sessions.db"), discardLogger())
 	if err != nil {
 		t.Fatalf("buildSessionService: %v", err)
 	}

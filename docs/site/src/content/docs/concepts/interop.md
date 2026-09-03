@@ -322,9 +322,15 @@ Restore fails open: an unreadable guardrail table logs a warning and the
 turn runs. A storage fault must not halt every session in the deployment
 with no trip behind it, and the per-turn backstops are all still armed.
 
-Budget *spend* is durable in the same place and on the same terms — a
-ledger of priced calls, folded back before the first turn after a restart,
-failing open the same way. See
+Budget *spend* is durable in the same place and fails open the same way —
+a ledger of priced calls, folded back before the first turn after a
+restart — but **not on the same terms**: it needs `--session-db` and not
+`--attach-listen`. A ledger is not a latch, so the reset-endpoint argument
+above does not reach it, and there is nothing an operator has to be able
+to clear. Through v0.6.0 it inherited that argument anyway by riding the
+same database handle, which denied a durable ceiling to unattended daemons
+— the deployment least likely to bind an operator socket and most likely
+to crash-loop (issue #274). See
 [spend survives a restart](/concepts/budgets/#spend-survives-a-restart).
 
 `POST /sessions/{id}/guardrails/reset` is the way out: a budget trip is
