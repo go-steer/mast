@@ -110,6 +110,13 @@ than a conversation:
 
 - **Interrupt ids are deterministic per specialist** (`approve-OOMKilled`),
   so an operator tool can construct one without reading the session.
+- **A resume re-enters at `Start`.** The graph re-runs from the classifier
+  rather than picking up where it parked, so what a run knows across a
+  pause is what it wrote down: the route it dispatched on, and the answer
+  given at each gate. Both are recorded in session state for exactly that
+  reason. An already-answered gate passes straight through on the later
+  turn without re-running its specialist. See [two
+  gates](/concepts/approvals/#two-gates-and-how-many-questions-they-add-up-to).
 - **Specialist nodes are terminal, with one structural exception.** A node
   runs and the graph ends — that is what makes the shape predictable. The
   exception is the remediation edge: a finding that carried a

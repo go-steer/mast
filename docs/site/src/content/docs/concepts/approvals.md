@@ -177,6 +177,34 @@ guessing which was meant.
 Field reference: [the report
 contract](/reference/workload-bundle/#the-one-property-mast-reads-proposed_change).
 
+### Two gates, and how many questions they add up to
+
+Under `graph` dispatch with `hitl.require_approval: true`, a remediation
+meets two gates, and they are not one gate asked twice:
+
+- the **finding gate** asks whether a diagnoser's report should be acted on
+  at all. Answering it is what routes the change set to the executor.
+- the **write gate** asks about each call, with its arguments, as the
+  executor makes it. Answering it is what changes the cluster.
+
+So a single-call remediation costs an operator two answers, and that is the
+design rather than a redundancy: approving a finding is not approving a
+call, and `hitl.change_set_ttl` does not collapse them — a grant is minted
+at the write gate for calls 2..N of a set, so a set of one has nothing to
+grant.
+
+What the executor does **not** add is a third question about its own
+report. By the time it has one, its calls have already been made, each past
+the write gate; approving the account afterwards would decide nothing.
+
+The two gates also arrive on separate turns, and stay answered. A
+specialist parked at the write gate has not produced a finding yet, so its
+node does not raise the finding gate over a result that does not exist; and
+an answer given at either gate is recorded, so re-entering the graph on a
+later turn does not ask for it again. Earlier versions did both — the two
+parks landed on one turn, and answering either stranded the other
+([#269](https://github.com/go-steer/mast/issues/269)).
+
 ## One answer for a set of calls — and what makes it go stale
 
 A remediation is often several calls: scale two Deployments, or patch a

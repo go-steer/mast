@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+**A change executor under `dispatch: graph` can now actually make the write
+an operator approved.** With `hitl.require_approval` and
+`hitl.on_mutation: require_approval` both on, one turn raised two parks: the
+write gate held the mutating call, and the executor's own node raised a
+result-approval interrupt on top of it — over a result that did not exist
+yet (`Result: <nil>`). Answering either one stranded the other, and the
+session went idle having changed nothing. The failure direction was safe;
+the remediation half of a triage-then-fix workload was not available at all.
+
+Two things were wrong and both are fixed. `workflow.RunNode` reports a child
+that parked exactly as it reports a child that finished with no output, so
+the node read a park as a return; it now runs children with
+`WithRaiseOnWait` and parks behind the child's question rather than adding
+one of its own. And a confirmation resume is not a workflow resume — it
+carries no `RequestInput` response, so the graph re-enters at `Start` as a
+fresh run with no resumed inputs — which meant a finding gate answered on an
+earlier turn was unanswered again one turn later, re-running its specialist
+and re-parking in front of the write the operator had just confirmed.
+Verdicts are now recorded in session state, the same durability the
+dispatched route already had.
+
+The change executor also no longer raises a result-approval gate of its own
+under `require_approval`. Its verdict was discarded on every path that could
+receive it, and it was asked after the calls had already been made, each
+past the write gate — a question with no consequence is worse than no
+question, because an operator answering it believes they are deciding
+something. A single-call remediation still costs two answers: one at the
+finding gate, one at the write gate
+([#269](https://github.com/go-steer/mast/issues/269)).
+
 **A budget ceiling is durable when there is a database to write it to, not
 when an operator happens to be watching.** The spend ledger hung off the
 eventlog handle, the handle is built only under `--attach-listen`, and so a

@@ -215,6 +215,7 @@ func Build(cfg Config) (adkagent.Agent, error) {
 		name := name
 		interruptID := "approve-" + name
 		stateKey := "triage:" + name
+		verdictKey := verdictStateKey + name
 		// A change executor does not hand off to itself, and it is the
 		// node that consumes the handoff rather than producing one.
 		isExecutor := executorName != "" && name == executorName
@@ -230,7 +231,33 @@ func Build(cfg Config) (adkagent.Agent, error) {
 				// resume turn's orphan FunctionResponse ("no function
 				// call event found..."). The upstream dynamic/hitl
 				// example uses exactly this ResumedInput-first shape.
-				if verdict, ok := ctx.ResumedInput(interruptID); ok {
+				//
+				// The answer is read from this turn if the operator just
+				// gave it, and from the session's own record if they gave
+				// it on an earlier one. Both, for the same reason the route
+				// is recorded (see recordedRoute): a confirmation resume is
+				// not a workflow resume. It carries no RequestInput
+				// response, so nothing re-schedules the waiting node and
+				// the graph re-enters at START as a fresh run with no
+				// ResumedInputs at all. A gate that only reads
+				// ctx.ResumedInput therefore forgets an answer it already
+				// has, re-runs its specialist, and asks again — so the
+				// write an operator confirmed at the gate downstream never
+				// gets past the finding gate upstream, one turn after
+				// answering it (#269).
+				verdict, answered := ctx.ResumedInput(interruptID)
+				answeredNow := answered
+				if !answered {
+					verdict, answered = recordedVerdict(ctx, verdictKey)
+				}
+				if answered {
+					if answeredNow {
+						rec := session.NewEvent(ctx, ctx.InvocationID())
+						rec.Actions.StateDelta = map[string]any{verdictKey: verdict}
+						if err := emit(rec); err != nil {
+							return nil, err
+						}
+					}
 					triage, err := ctx.State().Get(stateKey)
 					if err != nil {
 						triage = "(triage result unavailable: " + err.Error() + ")"
@@ -244,26 +271,59 @@ func Build(cfg Config) (adkagent.Agent, error) {
 						"triage":   triage,
 						"approval": verdict,
 					})
-					if isExecutor {
-						return out, nil
-					}
+					// No isExecutor case: the executor never raises this
+					// gate (see below), so it has no verdict of its own to
+					// come back to.
 					return routeChange(ctx, emit, cfg.ApprovedChangeSet, name, verdictApproved(verdict), out)
 				}
 
 				// First pass: run the specialist on the original incident
 				// envelope (the route node forwards only the route key).
-				result, err := workflow.RunNode[any](ctx, spNode, incidentText(ctx))
+				//
+				// WithRaiseOnWait because a specialist that parked is not a
+				// specialist that returned (#269). The write gate parks a
+				// mutating call as a long-running adk_request_confirmation,
+				// which leaves the child's iteration finished with the call
+				// unresolved — and RunNode reports that as (nil, nil),
+				// indistinguishable from a clean finish with no output.
+				// Without this option the node read the park as a result and
+				// raised its own approval interrupt on the same turn, asking
+				// an operator to approve a finding that does not exist yet
+				// ("Result: <nil>"). Two parks in one turn are not two
+				// questions: answering either one strands the other, and the
+				// approved write is never made.
+				result, err := workflow.RunNode[any](ctx, spNode, incidentText(ctx), workflow.WithRaiseOnWait())
 				if err != nil {
+					// A park is not a failure. ErrNodeInterrupted means the
+					// child already emitted its own interrupt upstream, so
+					// returning it parks this node behind that one question
+					// and adds none of its own; the dynamic node swallows the
+					// sentinel and the engine sees only the child's pause.
+					// The node re-runs when that park is answered, and the
+					// gates below are reached then, in the order an operator
+					// can actually answer them.
 					return nil, err
+				}
+				// The change executor's report is not a thing an operator
+				// approves, under either policy. What require_approval
+				// gates is a finding being ACTED ON, and by the time the
+				// executor has a report its calls have already been made —
+				// each of them past the write gate, which is the gate that
+				// applies to a writer and the only one that can still say
+				// no. Asking again here asked about writes that had already
+				// happened, and the answer was discarded on every path that
+				// could receive it: both branches below returned the result
+				// whatever the verdict said. A question with no consequence
+				// is worse than no question, because an operator answering
+				// it believes they are deciding something (#269).
+				if isExecutor {
+					return result, nil
 				}
 				if !cfg.Bundle.HITL.RequireApproval {
 					// No approval step to wait for, so the workload has
 					// already said yes to the roster acting on its own
 					// findings. Each of the executor's calls still meets
 					// the write gate, which is where on_mutation applies.
-					if isExecutor {
-						return result, nil
-					}
 					return routeChange(ctx, emit, cfg.ApprovedChangeSet, name, true, result)
 				}
 
@@ -391,6 +451,31 @@ func routeKey(input any, known map[string]string, prior string) string {
 // resume turn lands on the specialist that parked rather than on
 // whichever one a re-run classifier picks from an operator's answer.
 const routeStateKey = "mast_route"
+
+// verdictStateKey prefixes the record of what an operator answered at a
+// specialist's finding gate, one key per specialist.
+//
+// It is the same durability the route has and for the same turn: a
+// confirmation resume re-enters the graph as a fresh run, carrying only
+// the answer to the gate being confirmed. Without a record, every gate
+// answered on an earlier turn is unanswered again.
+const verdictStateKey = "mast_verdict:"
+
+// recordedVerdict reads an operator's answer back. Unreadable or absent
+// is "not answered", which puts the node on its first-pass path — the
+// pre-existing behavior, and the safe direction: a verdict that cannot
+// be read is not consent (see verdictApproved).
+func recordedVerdict(ctx adkagent.Context, key string) (any, bool) {
+	state := ctx.State()
+	if state == nil {
+		return nil, false
+	}
+	v, err := state.Get(key)
+	if err != nil || v == nil {
+		return nil, false
+	}
+	return v, true
+}
 
 // recordedRoute reads the route back. An unreadable or empty record is
 // "none": the caller then uses the classifier's own reply, which is the
