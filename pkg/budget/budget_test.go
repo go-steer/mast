@@ -496,3 +496,175 @@ func TestAScopeInheritsTheSessionCatalog(t *testing.T) {
 		t.Errorf("Unpriced() = %d, want 0", n)
 	}
 }
+
+// ---------------------------------------------------------------------
+// Limits.Model: the catalog key for a call that does not name its model.
+
+// The event is where the model name is *supposed* to come from, and on the
+// path this workload actually runs it is empty: ADK's streaming aggregator
+// rebuilds the final response — the only one carrying UsageMetadata —
+// without ModelVersion. A catalog that can only be reached from the event
+// is therefore a catalog that never prices a streaming Gemini call, and
+// the fallback it lands on is the flat rate it was configured to replace.
+func TestAnEventWithNoModelVersionIsPricedFromLimitsModel(t *testing.T) {
+	ev := pricedEvent("", 1_000_000, 0, 100_000)
+
+	blind := NewMeter(Limits{Catalog: builtinCatalog(t), RatePer1K: 0.05})
+	named := NewMeter(Limits{Catalog: builtinCatalog(t), RatePer1K: 0.05, Model: "claude-sonnet-5"})
+	if err := blind.Observe(ev); err != nil {
+		t.Fatalf("blind: %v", err)
+	}
+	if err := named.Observe(ev); err != nil {
+		t.Fatalf("named: %v", err)
+	}
+
+	// $2/MTok in and $10/MTok out.
+	_, cost, _ := named.Snapshot()
+	if want := 2.0 + 1.0; cost < want*0.99 || cost > want*1.01 {
+		t.Errorf("cost = $%.4f, want ~$%.4f — Limits.Model did not reach the catalog", cost, want)
+	}
+	if n := named.Unpriced(); n != 0 {
+		t.Errorf("Unpriced() = %d, want 0", n)
+	}
+	// And the state it replaces, pinned so the regression is legible: an
+	// unnamed call is a catalog miss, billed flat and counted as one.
+	if n := blind.Unpriced(); n != 1 {
+		t.Errorf("without Limits.Model: Unpriced() = %d, want 1", n)
+	}
+}
+
+// A tiered roster is the case that needs this: every specialist's event
+// arrives unnamed, so without a per-scope model they would all price at
+// the session's model and per-model cost attribution — the whole point of
+// tiering — would report the same rate for every tier.
+func TestAScopeModelPricesAnUnnamedCallAtItsOwnTier(t *testing.T) {
+	cat := builtinCatalog(t)
+	m := New(Config{
+		Limits: Limits{Catalog: cat, Model: "claude-sonnet-5"},
+		Scopes: map[string]Limits{"analyst": {Catalog: cat, Model: "claude-haiku-4-5"}},
+	})
+	ev := pricedEvent("", 1_000_000, 0, 100_000)
+	ev.Author = "analyst"
+	if err := m.Observe(ev); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	// Haiku is $1/$5, half of sonnet's $2/$10.
+	_, spend, _, ok := m.ScopeSnapshot("analyst")
+	if !ok {
+		t.Fatal("no scope recorded")
+	}
+	if want := 1.0 + 0.5; spend < want*0.99 || spend > want*1.01 {
+		t.Errorf("scope spend = $%.4f, want ~$%.4f — the scope was priced at the session's model", spend, want)
+	}
+}
+
+// A rate is a property of the (backend, model) pair, not of the model:
+// the same id can bill differently first-party and through a reseller,
+// which is why pkg/pricing keys rows by backend at all. Priced off the
+// bare id, a run against one backend would silently be charged at the
+// other's table.
+//
+// Every rate mast ships today happens to agree across the backends
+// serving it, so this needs a catalog where they disagree — otherwise it
+// would pass just as well against a meter that ignored Backend entirely.
+func TestTheBackendSelectsTheRateWhenTwoBackendsDisagree(t *testing.T) {
+	cat, err := pricing.NewCatalog(pricing.Options{CfgOverride: map[string]pricing.ModelRates{
+		"claude-sonnet-5":                  {InputPerMTok: 2, OutputPerMTok: 10},
+		"anthropic-vertex/claude-sonnet-5": {InputPerMTok: 20, OutputPerMTok: 100},
+	}})
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+	ev := pricedEvent("", 1_000_000, 0, 0)
+
+	for _, tc := range []struct {
+		backend string
+		want    float64
+	}{
+		{"", 2.0},                  // bare row: no backend resolved
+		{"anthropic", 2.0},         // no qualified row, falls back to bare
+		{"anthropic-vertex", 20.0}, // its own row, ten times the price
+	} {
+		t.Run(tc.backend, func(t *testing.T) {
+			m := NewMeter(Limits{Catalog: cat, Backend: tc.backend, Model: "claude-sonnet-5", RatePer1K: 0.05})
+			if err := m.Observe(ev); err != nil {
+				t.Fatalf("observe: %v", err)
+			}
+			_, cost, _ := m.Snapshot()
+			if cost < tc.want*0.99 || cost > tc.want*1.01 {
+				t.Errorf("cost on %q = $%.4f, want ~$%.4f", tc.backend, cost, tc.want)
+			}
+			if n := m.Unpriced(); n != 0 {
+				t.Errorf("Unpriced() = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// A ModelVersion the catalog cannot resolve is no better than an absent
+// one, so it must fall through to Limits.Model rather than end the search.
+// Anthropic-on-Vertex can echo a resource path (#210), and a dated Gemini
+// ID that lands after a catalog regeneration is the same shape of problem:
+// in both cases the configured name still prices, and refusing to try it
+// would throw away an exact figure the meter already had.
+func TestAnUnresolvableModelVersionFallsThroughToLimitsModel(t *testing.T) {
+	ev := pricedEvent("projects/p/locations/l/publishers/anthropic/models/claude-sonnet-5", 1_000_000, 0, 0)
+	m := NewMeter(Limits{Catalog: builtinCatalog(t), RatePer1K: 0.05, Model: "claude-sonnet-5"})
+	if err := m.Observe(ev); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	_, cost, _ := m.Snapshot()
+	if want := 2.0; cost < want*0.99 || cost > want*1.01 {
+		t.Errorf("cost = $%.4f, want ~$%.4f", cost, want)
+	}
+	if n := m.Unpriced(); n != 0 {
+		t.Errorf("Unpriced() = %d, want 0 — the configured model prices this call", n)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Thinking tokens.
+
+// Gemini reports thoughts as their own counter, additive to the
+// candidates: prompt + candidates + thoughts == total. They are billed at
+// the output rate, so pricing only the candidates undercounts output by
+// however much the model thought — which on a reasoning model is most of
+// it. A triage run measured against a live cluster spent 6,449 thinking
+// tokens against 1,180 candidate tokens.
+func TestThinkingTokensAreBilledAtTheOutputRate(t *testing.T) {
+	const prompt, out, thoughts = 1_000, 1_180, 6_449
+	ev := pricedEvent("", prompt, 0, out)
+	ev.UsageMetadata.ThoughtsTokenCount = thoughts
+	ev.UsageMetadata.TotalTokenCount = prompt + out + thoughts
+
+	m := NewMeter(Limits{Catalog: builtinCatalog(t), Model: "claude-sonnet-5"})
+	if err := m.Observe(ev); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	_, cost, _ := m.Snapshot()
+	// $2/MTok in, $10/MTok out over both output buckets.
+	want := prompt*2.0/1e6 + (out+thoughts)*10.0/1e6
+	if cost < want*0.999 || cost > want*1.001 {
+		t.Errorf("cost = $%.6f, want $%.6f", cost, want)
+	}
+	// The candidates-only figure is what this replaces. Stated as its own
+	// assertion because the two are within a factor of six, and a test
+	// that only checked the total to 1% would pass on either.
+	if candidatesOnly := prompt*2.0/1e6 + out*10.0/1e6; cost <= candidatesOnly*1.5 {
+		t.Errorf("cost = $%.6f, barely above the candidates-only $%.6f — thoughts were not billed", cost, candidatesOnly)
+	}
+}
+
+// The counter is Gemini's; Anthropic never sets it and folds thinking into
+// its own output count already. An event that reports no thoughts must
+// therefore price exactly as it did before the field was read at all.
+func TestNoThoughtsCountedMeansNoChangeInPrice(t *testing.T) {
+	m := NewMeter(Limits{Catalog: builtinCatalog(t), Model: "claude-sonnet-5"})
+	if err := m.Observe(pricedEvent("", 1_000_000, 0, 100_000)); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	_, cost, _ := m.Snapshot()
+	if want := 2.0 + 1.0; cost < want*0.99 || cost > want*1.01 {
+		t.Errorf("cost = $%.4f, want ~$%.4f", cost, want)
+	}
+}

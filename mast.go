@@ -469,17 +469,25 @@ func resolveModel(ctx context.Context, cfg Config) (model.LLM, string, error) {
 const libraryProvider = ""
 
 // limits derives the meter ceilings: Config.Budget verbatim when set
-// (with a zero rate filled from the model pricing), otherwise the
-// bundle's budget block over the model's flat rate.
+// (with any pricing it left unset filled from the model), otherwise the
+// bundle's budget block over the model's pricing.
 func limits(cfg Config, bundle *workload.Bundle, modelName string) budget.Limits {
+	priced := compose.MeterLimits(libraryProvider, modelName)
 	if cfg.Budget != nil {
 		l := *cfg.Budget
+		// Each price knob is filled independently, because a caller may
+		// have set one and not the other: a Budget carrying only a flat
+		// rate is the pre-catalog shape and still wants the catalog, and
+		// one carrying only a catalog still wants a fallback rate.
 		if l.RatePer1K == 0 {
-			l.RatePer1K = compose.RatePer1K(libraryProvider, modelName)
+			l.RatePer1K = priced.RatePer1K
+		}
+		if l.Catalog == nil {
+			l.Catalog, l.Backend, l.Model = priced.Catalog, priced.Backend, priced.Model
 		}
 		return l
 	}
-	l := budget.Limits{RatePer1K: compose.RatePer1K(libraryProvider, modelName)}
+	l := priced
 	if bundle != nil {
 		l.MaxCostUSD = bundle.Budget.MaxCostUSD
 		l.MaxTurns = bundle.Budget.MaxTurns

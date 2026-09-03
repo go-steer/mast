@@ -831,6 +831,35 @@ func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
 	}
 }
 
+// MeterLimits is the session-level price half of a budget.Limits: the
+// catalog that prices each call exactly, the (backend, model) pair it is
+// keyed by, and the flat rate behind all of it. Callers add the bundle's
+// ceilings.
+//
+// It exists because there were two of these — cmd/mast's meterPool and
+// the library's limits() — and both wrote `budget.Limits{RatePer1K:
+// compose.RatePer1K(provider, name)}` from memory. Pricing is meant to be
+// derived in exactly one place so the daemon and mast.RunWorkload cannot
+// bill the same run differently; the flat rate was, and the catalog now
+// is.
+//
+// The provider alias is passed for the reason RatePer1K takes it: the
+// backend is what the pair-keyed lookup needs, Backend is the one place
+// that resolves it, and no caller should be re-deriving it.
+//
+// Offline fakes get no catalog, for the same reason MeterScopes does not
+// price them: echo/scripted/toolactor produce no billable tokens, so a
+// real per-model rate would report money that provably was not spent.
+// They keep RatePer1K's inflated fake rate, which is what lets a smoke
+// test trip a small cap, and they never touch Meter.Unpriced.
+func MeterLimits(provider, modelName string) budget.Limits {
+	l := budget.Limits{RatePer1K: RatePer1K(provider, modelName)}
+	if !IsOfflineFake(modelName) {
+		l.Backend, l.Model, l.Catalog = Backend(provider, modelName), modelName, builtinCatalog()
+	}
+	return l
+}
+
 // MeterScopes derives the per-specialist budget scopes for a roster:
 // the ceilings a spec declares (`max_turns`, `max_cost_usd`) plus, when
 // it declares a `model:` override or a `tier:`, that model's price.
@@ -865,6 +894,12 @@ func MeterScopes(specs []specialists.Spec, provider, rootModelName string) map[s
 			MaxCostUSD: s.Budget.MaxCostUSD,
 		}
 		if name := SpecModelName(s, provider, rootModelName); name != "" && !fake {
+			// Both price knobs, from the one resolved name. The catalog
+			// supersedes the flat rate where it can price the call and
+			// the flat rate stays as its fallback, so a specialist on a
+			// model the catalog does not know still meters at roughly
+			// the right order of magnitude instead of at zero.
+			l.Backend, l.Model, l.Catalog = Backend(provider, name), name, builtinCatalog()
 			l.RatePer1K = RatePer1K(provider, name)
 		}
 		if l == (budget.Limits{}) {
