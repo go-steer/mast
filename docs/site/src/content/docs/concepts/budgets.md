@@ -235,31 +235,65 @@ report OK:
 - `mast_budget_trips_total` **increments either way**, so an alert written
   against the old behaviour keeps firing.
 
-## A crossed specialist ceiling stops the session
+## A spent specialist closes one path, not the session
 
-When a specialist trips its own cap, the whole run stops —
-the coordinator does not route around it and try someone else. A
-per-specialist ceiling is a safety limit, not a routing hint; treating it
-as "try the next one" would turn a tight cap into a way to burn the
-workload budget across the roster.
+When a specialist reaches its own cap, that specialist is refused and the
+session carries on. The refusal goes back to whoever dispatched it as an
+answer — a `finish_task` report saying it was stopped by a ceiling, whose
+budget, and by how much — and the coordinator routes around it the same
+way it handles a specialist that declines. The workload's *own* ceiling
+still stops the turn, because there is nothing left to route to.
 
-One exception, and it falls out of where the seam sits rather than from a
-policy: a specialist that trips its cap *inside a planner dispatch* stops
-only that dispatch. The planner gets its result back marked
-`"status": "halted"` with the reason, and its turn continues — the cap is
-observed from inside the tool call that started the sub-run, which is the
-one place mast can stop a specialist without stopping the session. What
-the planner does next is up to the planner; it is told, not overruled.
+This changed in v0.6. Through v0.5 a specialist's crossed cap cancelled
+the whole run, and that was never really a decision: cancelling was the
+only lever a turn driver had for stopping a specialist from calling again.
+The [pre-call gate](#the-ceiling-is-checked-before-the-call-and-after-it)
+is a narrower one — it stops the *call*, so the session no longer has to
+be collateral.
 
-The **watchdog** deliberately does not follow that exception. It watches
-the same dispatches, but a trip there halts the session as well as the
-dispatch, because a watchdog trip is a latch an operator has to clear
-rather than a cumulative total that stopping the sub-run already settles.
-See
+A per-specialist cap is still a safety limit and not a routing hint. What
+makes routing around one safe is that the cap is enforced where it is
+declared: the refused specialist cannot make another call whoever asks it
+to, so a coordinator retrying it gets the same refusal rather than a
+second budget. The workload cap is what bounds the roster as a whole.
+
+The thing to watch for is the quiet version. A workload that lost half its
+roster finishes and reports success, so mast makes the loss loud in four
+places:
+
+- `mast_budget_trips_total` **increments**, the same counter a crossed
+  ceiling moves. If you alert on budget trips, you already see this.
+- the daemon logs `BUDGET CEILING — a specialist was refused; the turn
+  routed on` at **WARN**, with the reason and the count.
+- `GET /sessions/{id}/guardrails` reports each specialist's own state
+  under `cost_ceiling.scopes[]`. The session's `tripped` stays `false`,
+  because the session is not the thing that stopped — check the scopes.
+- library callers get `mast.Result.Exhausted`, the specialists whose
+  ceilings can no longer admit a call, with the arithmetic behind each.
+
+Raising the session budget does **not** clear a specialist's cap, and
+`POST /guardrails/reset` says so rather than reporting a cleared ceiling
+it did not clear. Name the specialist to raise its own:
+
+```bash
+curl -X POST $MAST/sessions/incident-abc/guardrails/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"scope": "OOMKilled", "additional_budget_usd": 0.50}'
+```
+
+### Inside a planner dispatch
+
+A specialist that reaches its cap inside a planner dispatch has always
+stopped only that dispatch: the planner gets its result back marked
+`"status": "halted"` with the reason, and its turn continues. That used to
+be the one exception to a harsher rule; it is now the same rule, reached
+by a different route.
+
+The **watchdog** deliberately does not work this way. It watches the same
+dispatches, but a trip there halts the session as well as the dispatch,
+because a watchdog trip is a latch an operator has to clear rather than a
+cumulative total that stopping the sub-run already settles. See
 [it watches inside a planner dispatch too](/concepts/interop/#it-watches-inside-a-planner-dispatch-too).
-
-Both are deliberate, and both are the conservative reading. Neither is
-something to discover during an incident.
 
 ## Getting unstuck after a trip
 
@@ -287,10 +321,12 @@ curl -X POST $MAST/sessions/incident-abc/guardrails/reset \
 ```
 
 The read reports all three dimensions and each specialist's own ceilings,
-which matters because they fail differently: a session stopped by
-`max_turns: 40` has spent a fraction of a cent, and a session stopped by
-one specialist's `max_cost_usd: 0.25` has plenty of workload budget left.
-Both look like "the agent stopped answering".
+which matters because they fail differently — and because only one of them
+stops the session. A session stopped by `max_turns: 40` has spent a
+fraction of a cent and answers nothing at all; a workload that spent one
+specialist's `max_cost_usd: 0.25` is still answering, just with a path
+missing, and `cost_ceiling.tripped` on the session is `false`. Read
+`cost_ceiling.scopes[]` for that one.
 
 Three things the reset deliberately does *not* do:
 
@@ -306,9 +342,14 @@ Three things the reset deliberately does *not* do:
   a workload that declared no `max_turns` is a no-op, not a new cap.
 
 `scope` targets one specialist's ceilings; omit it for the session's own.
-Raising a specialist above the workload's cap still buys nothing — the
-workload ceiling is enforced independently, and it is still the outer
-bound.
+The two are judged separately, in both directions: a session grant is not
+refused because some specialist is still spent, and it does not report
+that specialist cleared either. What it does do is name it, so the reply
+to a session reset on a workload short a path reads *"raised the session
+budget (+$50.0000); nothing was tripped; specialist "OOMKilled" can admit
+no further call (raise with scope="OOMKilled")"*. Raising a specialist
+above the workload's cap still buys nothing — the workload ceiling is
+enforced independently, and it is still the outer bound.
 
 Every reset is logged with the authenticated caller that requested it, and
 recorded durably alongside the guardrail state when the daemon runs with

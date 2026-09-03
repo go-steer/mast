@@ -63,6 +63,28 @@
 // ordinary result. An agent that does not simply answers with the
 // refusal text and ends its turn, because there is nobody above it to
 // route around the ceiling.
+//
+// # An agent with no valid report shape answers in plain text
+//
+// A third case, and the one that has teeth. An agent that declares an
+// OutputSchema has a finish_task whose parameters are that schema, so
+// the default {"result": string} payload does not validate — and ADK
+// answers an invalid finish_task with a retry instruction rather than
+// an error, which is a loop this seam feeds for free: refused call,
+// invalid report, retry, refused call. Measured before it was fixed, a
+// v0.4 UAT leg spun to 3,292 finish_task calls in ninety seconds.
+//
+// mast will not close the loop by fabricating a conforming value. The
+// schema describes findings and a refusal is exactly the case where
+// nothing was looked at, so a synthesized one would put an invented
+// fault into an incident stream. Nor will it stop the session, which is
+// what W10.3 removed. It falls back to the plain-text answer above: the
+// agent's run ends, its delegation resolves to nothing, and the fact
+// that nothing came back is carried by the four surfaces that count a
+// trip rather than by a report that would have to be made up. A host
+// that can express "not done" in its own schema should say so by
+// supplying a RefusalPayload; UnreportableRefusal is what it gets if it
+// does not.
 
 package agent
 
@@ -188,6 +210,20 @@ func DefaultRefusalPayload(agentName, reason string) map[string]any {
 	return map[string]any{"result": RefusalText(agentName, reason)}
 }
 
+// UnreportableRefusal is the RefusalPayload for an agent whose report
+// shape mast cannot fill honestly: it returns no arguments, which
+// RefuseOnGate reads as "do not submit a report at all" and answers in
+// plain text instead.
+//
+// Returning nil is a decision and not a gap. The alternative is a
+// finish_task call the tool rejects, and ADK's rejection is a retry
+// instruction rather than an error, so the agent asks again, is refused
+// again, and submits the same invalid report — a loop that costs
+// nothing per iteration and therefore never ends. An unresolved
+// delegation is a worse answer than a good report and a much better one
+// than a spin.
+func UnreportableRefusal(agentName, reason string) map[string]any { return nil }
+
 // RefuseOnGate returns a BeforeModelCallback that asks the context's
 // CallGate before every model call and, when the gate refuses,
 // synthesizes the agent's answer instead of issuing the call.
@@ -232,7 +268,16 @@ func RefuseOnGate(payload RefusalPayload) llmagent.BeforeModelCallback {
 		// a call to a tool this turn did not declare turns a refusal
 		// into an unknown-tool error, which is the broken-tool shape
 		// this whole design exists to avoid.
-		if _, hasFinish := req.Tools[FinishTaskToolName]; !hasFinish {
+		_, hasFinish := req.Tools[FinishTaskToolName]
+		args := map[string]any(nil)
+		if hasFinish {
+			args = payload(name, err.Error())
+		}
+		// No channel to report through, or nothing valid to put in it.
+		// Both end the agent's turn with the refusal as its answer; see
+		// the package comment on UnreportableRefusal for why the second
+		// one is not allowed to guess.
+		if !hasFinish || args == nil {
 			return &model.LLMResponse{Content: &genai.Content{
 				Role:  genai.RoleModel,
 				Parts: []*genai.Part{{Text: RefusalText(name, err.Error())}},

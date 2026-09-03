@@ -585,10 +585,15 @@ what it names — `coordinator`, `graph`, `on_mutation: apply` — is what you d
 ## Next
 
 - **A cost ceiling that refuses a call instead of noticing it afterwards.**
-  Spend is folded after the fact today, so the call that crosses a cap has
-  already been paid for. The pre-call check goes in front of that fold, and a
-  crossed specialist ceiling should hand the coordinator a refusal it can
-  route around rather than stopping the session.
+  On `main`, unreleased. Spend used to be folded only after the fact, so the
+  call that crossed a cap had already been paid for; the pre-call check now
+  goes in front of that fold, which makes `max_turns` exact and stops a
+  workload *at* its cost cap rather than one call past it. The routing half
+  came with it: a specialist that reaches its own ceiling is refused rather
+  than crossing it, its coordinator is handed that refusal as an answer, and
+  the session carries on through whatever paths still have budget. The
+  workload's own ceiling still stops the turn — there is nothing left to
+  route to.
 - **The last two parity rows** are switchboard's: in-chat Approve/Reject, and
   an approver allowlist.
 
@@ -597,12 +602,6 @@ what it names — `coordinator`, `graph`, `on_mutation: apply` — is what you d
 - **AG-UI remaining slices** — the `agui://` federation client, per-key
   `StateDelta` emission, activity/reasoning events, webhook push, and
   client-declared tool acceptance.
-- **A crossed specialist ceiling should be a refusal, not a session stop.**
-  Pre-call gating itself has landed — a ceiling is now checked before a
-  call as well as after, so `max_turns` is exact and a workload sitting on
-  its cost cap stops there. What is left is the routing half: when a
-  specialist trips its own cap the coordinator loses the session, instead
-  of getting a refusal it can route around.
 - **Planner shapes** — the `run_shape_*` vocabulary tools wired to the
   reference-graph library (they return `not_implemented` in the v0.2
   scaffold), plus more starters: supervisor+workers, sequential pipeline,
