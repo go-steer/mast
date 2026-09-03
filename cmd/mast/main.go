@@ -2080,7 +2080,14 @@ func (mp *meterPool) markRestored(sessionID string) {
 // reset endpoint in the text, because from the caller's side they are
 // the same event: this session will not run until an operator says so.
 func (mp *meterPool) preflight(sessionID string) error {
-	trips := mp.meter(sessionID).Trips()
+	// Precluded, not crossed. Since W10.2 a ceiling is checked before the
+	// call as well as after, so a wedged session no longer has to have
+	// *crossed* anything — a workload that stopped exactly on its turn cap
+	// has zero trips and cannot make another call. Asking Trips() here
+	// would let it start a turn that refuses its own first call and answer
+	// "I am out of budget" forever, which is the wedge this function
+	// exists to turn into a 409.
+	trips := mp.meter(sessionID).PrecludedAll()
 	if len(trips) == 0 {
 		return nil
 	}
@@ -2688,6 +2695,42 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// aborting any in-flight model/tool work.
 	meter := meters.meter(sessionID)
 
+	// The pre-call half of the same ceiling (W10.2). Observe below is
+	// the durable ledger and stays exactly as it is — a call that
+	// crossed cost what it cost, and #175 needs that written down. This
+	// puts the meter in front of the call as well, so a workload one
+	// call from its cap does not have to spend that call to discover it.
+	// The gate rides the context on purpose: it is how the check reaches
+	// a planner-dispatched specialist, whose sub-runner has its own
+	// session id and would miss a meter looked up by session.
+	ctx = mastagent.WithCallGate(ctx, meter)
+
+	// What the meter had already refused before this turn. A refusal is a
+	// synthesized answer rather than an error, so a turn the ceiling
+	// stopped would otherwise complete looking like a turn that finished;
+	// the delta is what tells the caller which it was.
+	refusalsBefore, _ := meter.Refusals()
+
+	// The turn stopped because a ceiling refused a call. Same outcome and
+	// the same counter as the post-hoc fold, because from an operator's
+	// side they are the same event; the error is budget.ErrRefused rather
+	// than ErrExceeded because nothing was spent crossing anything.
+	refusalStopped := func() error {
+		n, first := meter.Refusals()
+		if n <= refusalsBefore {
+			return nil
+		}
+		tokens, cost, calls := meter.Snapshot()
+		logger.Error("BUDGET CEILING — refused a model call before it was made",
+			"turn", label, "session", sessionID,
+			"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
+			"refusals", n-refusalsBefore, "reason", first.Error(),
+		)
+		obs.BudgetTrip(workloadName)
+		ts.complete(observability.OutcomeBudgetExceeded, first)
+		return first
+	}
+
 	// Export the turn's cost delta whichever way the turn ends. The
 	// meter's session-cumulative cost is authoritative (pricing lives
 	// in pkg/budget); the counter only ever sees per-turn deltas.
@@ -2779,6 +2822,19 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 			ts.complete(observability.OutcomeBudgetExceeded, berr)
 			return berr
 		}
+		// And the pre-call half, checked in the same place and for the
+		// same reason the fold above cancels rather than waiting for the
+		// stream to end: a refusal costs nothing, so nothing above it ever
+		// runs out of anything. A contract loop that hands the specialist
+		// its refusal back and asks again — the change-set validator does
+		// exactly this — spins forever on free calls, where before W10.2
+		// it burned the ceiling and stopped. The event carrying the
+		// refusal has already been logged and folded by the time we get
+		// here, so the reason is in the transcript before the turn unwinds.
+		if rerr := refusalStopped(); rerr != nil {
+			cancel()
+			return rerr
+		}
 	}
 	// A cancelled stream can also just end, without surfacing an
 	// error. Either way the turn stopped because the watchdog stopped
@@ -2786,6 +2842,15 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	if terr := enf.Preflight(); terr != nil {
 		ts.complete(observability.OutcomeWatchdogHalt, terr)
 		return terr
+	}
+	// The backstop for the same check. A refusal that produced no event on
+	// this stream — one inside a sub-agent whose run does not surface
+	// here — never reaches the in-loop branch, and the stream then ends
+	// cleanly, because that is what a refusal is. The caller asked for
+	// work that did not happen; reporting OK would hide a budget stop
+	// behind an answer that says "I am out of budget" in prose.
+	if rerr := refusalStopped(); rerr != nil {
+		return rerr
 	}
 	tokens, cost, calls := meter.Snapshot()
 	logger.Info("turn complete", "turn", label, "session", sessionID, "events", events,

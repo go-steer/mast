@@ -973,12 +973,14 @@ operator acts on. A specialist that declares a `model:` override or a
 priced off what it resolved to — so a cheap analyst's tokens are not billed
 at the synthesizer's.
 
-Two limits are worth knowing. Metering reads the event stream, so a
-ceiling is crossed *by* the call that reports it: the cap bounds total
-spend within one call's overshoot, it does not pre-authorize a call.
-And a crossed specialist ceiling stops the session rather than just that
-specialist — handing the coordinator a refusal it could route around
-needs a pre-call seam mast does not have yet.
+Two limits are worth knowing. A ceiling is checked both before a call and
+after it, but the pre-call check refuses only what it can prove — so
+`max_turns` is exact, while a call that starts with dollars or tokens to
+spare always finishes and is billed for what it turns out to cost. The cap
+bounds total spend within one call's overshoot; it does not pre-authorize a
+call. And a crossed specialist ceiling stops the session rather than just
+that specialist — handing the coordinator a refusal it could route around
+is not wired up yet.
 
 ### Env-var overrides
 

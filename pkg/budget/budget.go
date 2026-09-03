@@ -198,6 +198,13 @@ type Meter struct {
 	// fold is refused rather than double-counted (see Restore).
 	restored bool
 
+	// refusals counts what Allow turned down, and firstRefusal keeps the
+	// reason it gave the first time. A refusal produces a synthesized
+	// answer rather than an error, so without this a turn stopped by its
+	// ceiling is indistinguishable from one that finished (see Refusals).
+	refusals     int
+	firstRefusal error
+
 	// onSpend is Config.OnSpend. Set at construction and never mutated,
 	// so Observe reads it without the lock.
 	onSpend func(Spend)

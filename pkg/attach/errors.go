@@ -167,6 +167,24 @@ func ClassifyTurnError(err error) TurnError {
 			Hint:      "The session is past a budget ceiling and every further turn will stop the same way. Raise it with POST /sessions/{id}/guardrails/reset (additional_budget_usd / additional_tokens / additional_turns).",
 		}
 
+	// The pre-call half of the same ceiling (v0.6 W10.2): the meter
+	// refused a call rather than reporting one that crossed. Same kind
+	// and the same remedy — from an operator's side this is one event,
+	// "the budget stopped the session" — but a distinct code, because
+	// the two differ in whether any money was spent and a surface that
+	// reported "exceeded" here would be claiming spend that did not
+	// happen. Kept adjacent to the case above for the same reason it is
+	// first: the reason string carries figures the HTTP-status patterns
+	// below would otherwise pick at.
+	case strings.HasPrefix(lower, "budget refused"):
+		return TurnError{
+			Kind:      TurnErrorCostCeiling,
+			Code:      "BUDGET_REFUSED",
+			Message:   firstSentence(msg),
+			Retryable: false,
+			Hint:      "A budget ceiling could not be respected by making the next model call, so it was not made — nothing was spent, and every further turn stops the same way. Raise it with POST /sessions/{id}/guardrails/reset (additional_budget_usd / additional_tokens / additional_turns).",
+		}
+
 	// NotFound — typically a model name / location mismatch
 	// (e.g. global-only model requested at a regional endpoint).
 	case containsAny(lower, "not_found", "not found") || code == "404":

@@ -171,17 +171,73 @@ be in force in 2027 on either model, size it against the later number.
 (`claude-sonnet-5`'s introductory $2 / $10 was scheduled to rise on
 2026-09-01 and will not — Anthropic made it the standard price.)
 
-## Two limits worth knowing
+## The ceiling is checked before the call, and after it
 
-**1. A ceiling is crossed *by* the call that reports it.** Cost and token
-counts arrive with a model response, so mast learns a call was expensive
-after it happened. `max_cost_usd: 5.00` means "stop once spend has reached
-$5", not "never exceed $5" — the call that carries you over completes and
-is billed. Size the cap with one call's worth of headroom, especially with
-large-context models.
+Two checks, asking different questions.
 
-**2. A crossed specialist ceiling stops the session, not just the
-specialist.** When a specialist trips its own cap, the whole run stops —
+**Before each model call**, mast asks whether the ceiling can still be
+respected — and refuses the call if the arithmetic says it cannot. That
+makes `max_turns` **exact**: `max_turns: 40` means the workload makes 40
+model calls, not 41. On tokens and dollars it means a workload sitting *at*
+its cap stops there rather than buying one more call to confirm what it
+already knows.
+
+**After each call**, the same ceilings are re-derived from what the
+provider actually reported. This is the ledger, and it is the number
+everything else reads.
+
+The pre-call check will not guess. It refuses only where the arithmetic is
+a proof — a call is one turn, and every real call adds tokens and cost — so
+it never estimates how large the *next* call will be. The consequence is
+the one number to size against:
+
+**A call that starts with headroom is always allowed to finish, and is
+billed for whatever it turns out to cost.** `max_cost_usd: 5.00` at $4.90
+spent permits the next call, and that call may be a $2 one. So the cap is
+still "stop at $5", not "never exceed $5" — but the overshoot is bounded by
+one call, and only ever a call there was room for. A cap you land exactly
+on costs nothing further.
+
+The alternative — predicting a call's cost and refusing on the estimate —
+would refuse affordable work on a bad guess and permit unaffordable work on
+a worse one, and nothing in the transcript would tell you which had
+happened.
+
+### What a refusal looks like from outside
+
+A refused call is not a crash and not a silence. The agent gets a
+synthesized answer saying it was stopped by a ceiling and why, so the
+reason is in the transcript where anyone reading the session finds it, and
+a coordinator reading its specialist's report can tell "found nothing" from
+"was never allowed to look".
+
+The turn still fails, though — a turn whose work did not happen must not
+report OK:
+
+- the **turn stops at the first refusal** and returns an error naming the
+  ceiling and the arithmetic. It stops rather than carrying on for the same
+  reason a crossed ceiling stops it: anything above the model that reacts to
+  a bad answer by asking for another one — a contract handing a report back
+  to be fixed, say — was bounded by the budget it was burning, and a refused
+  call burns nothing. Two sentinels, and they mean different things:
+  `budget.ErrRefused` is a call that did not happen, `budget.ErrExceeded` is
+  a call that happened and went over. Match both if you only care that the
+  budget stopped the run.
+- over attach it arrives as a `turn-error` of kind **`cost_ceiling`**,
+  `retryable: false`, with the reset endpoint in the hint — the same kind a
+  crossed ceiling gets, because from outside this is one event. The `code`
+  is what separates them: `BUDGET_REFUSED` against `BUDGET_EXCEEDED`. Key
+  your UI off the kind; read the code only if you need to say whether the
+  money was actually spent.
+- the **next turn is refused at the door** with `409` and the reset
+  endpoint, the same as a session that had crossed a ceiling. A scheduler
+  retrying every minute buys nothing.
+- `mast_budget_trips_total` **increments either way**, so an alert written
+  against the old behaviour keeps firing.
+
+## A crossed specialist ceiling stops the session
+
+When a specialist trips its own cap, the whole run stops —
 the coordinator does not route around it and try someone else. A
 per-specialist ceiling is a safety limit, not a routing hint; treating it
 as "try the next one" would turn a tight cap into a way to burn the
@@ -207,10 +263,13 @@ something to discover during an incident.
 
 ## Getting unstuck after a trip
 
-A trip is not a one-time event. Enforcement is re-derived every priced
-event by comparing the session's accumulated usage against its ceiling —
-there is no "tripped" flag to clear — so a session that is past its cap is
-past it on the next turn too, and the one after that. Left alone it
+A trip is not a one-time event. Enforcement is re-derived from the
+session's accumulated usage against its ceiling — there is no "tripped"
+flag to clear — so a session that is out of budget is out of it on the
+next turn too, and the one after that. *Out of budget* includes sitting
+exactly on a cap: the pre-call check refuses a turn that cannot make its
+first call, so such a session is refused at the door rather than answering
+"I am out of budget" once per prompt forever. Left alone it
 refuses every prompt, and a restart does not clear it either: the spend
 is [durable](#spend-survives-a-restart), so the arithmetic comes back with
 it. An operator is the way out.
@@ -275,12 +334,13 @@ a restart nobody made.
 
 Three properties worth knowing:
 
-- **A restored over-ceiling session is refused before the model, not
-  after.** Without durable spend, a wedged session bought one model call
-  per turn — the ceiling is crossed *by* the call that reports it — and
-  the overshoot was bounded by the process lifetime. Now that it is not,
-  the turn is refused up front with `409` naming the reset endpoint.
-  A scheduler retrying every minute buys nothing.
+- **A restored over-ceiling session is refused at the door, not one call
+  in.** Without durable spend, a wedged session bought a model call per
+  turn and the overshoot was bounded only by the process lifetime. Now
+  the turn is refused up front with `409` naming the reset endpoint — a
+  whole-turn refusal, above the per-call check, so a scheduler retrying
+  every minute gets an HTTP error rather than a session that starts and
+  immediately declines.
 - **What a call cost is recorded when the call is made**, not
   re-derived later. Rates move weekly; a session's spend is money that has
   already left the account, and re-pricing history at today's catalog

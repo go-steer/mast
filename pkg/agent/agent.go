@@ -72,7 +72,12 @@ func NewCoordinator(cfg CoordinatorConfig) (adkagent.Agent, error) {
 		Tools:       cfg.Tools,
 		Toolsets:    cfg.Toolsets,
 
-		BeforeModelCallbacks: cfg.BeforeModelCallbacks,
+		// gated first; see modes.go. A coordinator declares no
+		// finish_task, so a refusal here ends its turn with the reason
+		// as its answer — correct, because a coordinator refused by the
+		// *session's* ceiling has nothing above it to route around the
+		// ceiling with.
+		BeforeModelCallbacks: gated(nil, cfg.BeforeModelCallbacks),
 		AfterModelCallbacks:  cfg.AfterModelCallbacks,
 
 		Mode: llmagent.ModeChat,

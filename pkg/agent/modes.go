@@ -83,6 +83,12 @@ type TaskAgentConfig struct {
 	// FinishOnStall is the reason this field exists; see stall.go.
 	BeforeModelCallbacks []llmagent.BeforeModelCallback
 	AfterModelCallbacks  []llmagent.AfterModelCallback
+
+	// RefusalPayload builds the finish_task arguments this agent reports
+	// with when a CallGate on the context refuses its next model call.
+	// Required for an agent with an OutputSchema, for the reason
+	// StallPayload is; nil means DefaultRefusalPayload. See precall.go.
+	RefusalPayload RefusalPayload
 }
 
 // NewTaskAgent constructs a Task-mode agent. Suitable for
@@ -106,10 +112,36 @@ func NewTaskAgent(cfg TaskAgentConfig) (adkagent.Agent, error) {
 		OutputSchema:             cfg.OutputSchema,
 		DisallowTransferToParent: cfg.DisallowTransferToParent,
 		DisallowTransferToPeers:  cfg.DisallowTransferToPeers,
-		BeforeModelCallbacks:     cfg.BeforeModelCallbacks,
+		BeforeModelCallbacks:     gated(cfg.RefusalPayload, cfg.BeforeModelCallbacks),
 		AfterModelCallbacks:      cfg.AfterModelCallbacks,
 		Mode:                     llmagent.ModeTask,
 	})
+}
+
+// gated puts the cost-ceiling check in front of a caller's own Before
+// callbacks.
+//
+// Installed by the constructor rather than by each caller, which is the
+// point: W10.1 chose a BeforeModelCallback over a model.LLM wrapper
+// knowing the callback's one weakness was that a construction site
+// could forget it and fail open. There are eleven such sites across
+// mast, its examples and its evals, and "eleven places that must each
+// remember" is a defect waiting for the twelfth. Putting it in the
+// three constructors every mast agent is built through recovers the
+// wrapper's un-forgettability without taking on its dependence on an
+// undocumented ADK behaviour.
+//
+// It is inert unless a turn was started with WithCallGate, so an
+// embedder who never asked for a budget pays a nil map lookup per call
+// and nothing else.
+//
+// First in the chain, deliberately. A callback that runs before it
+// could short-circuit the call and skip the ceiling entirely; a
+// callback that runs after it never sees a call the gate refused, which
+// is correct — there is no request to inspect, because none is going to
+// be sent.
+func gated(payload RefusalPayload, own []llmagent.BeforeModelCallback) []llmagent.BeforeModelCallback {
+	return append([]llmagent.BeforeModelCallback{RefuseOnGate(payload)}, own...)
 }
 
 // SingleTurnAgentConfig bundles the parameters for constructing a
@@ -135,12 +167,13 @@ func NewSingleTurnAgent(cfg SingleTurnAgentConfig) (adkagent.Agent, error) {
 		return nil, fmt.Errorf("agent: SingleTurnAgent %q has no Model", cfg.Name)
 	}
 	return llmagent.New(llmagent.Config{
-		Name:         cfg.Name,
-		Description:  cfg.Description,
-		Instruction:  effectiveInstruction(cfg.Instruction, DefaultSingleTurnInstruction),
-		Model:        cfg.Model,
-		InputSchema:  cfg.InputSchema,
-		OutputSchema: cfg.OutputSchema,
-		Mode:         llmagent.ModeSingleTurn,
+		Name:                 cfg.Name,
+		Description:          cfg.Description,
+		Instruction:          effectiveInstruction(cfg.Instruction, DefaultSingleTurnInstruction),
+		Model:                cfg.Model,
+		InputSchema:          cfg.InputSchema,
+		OutputSchema:         cfg.OutputSchema,
+		BeforeModelCallbacks: gated(nil, nil),
+		Mode:                 llmagent.ModeSingleTurn,
 	})
 }
