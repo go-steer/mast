@@ -261,3 +261,21 @@ error naming the file rather than an incident that behaves oddly:
 Startup also logs every `change_executor` in the roster, so "which
 specialists here can change my cluster" is one log line instead of an
 intersection of three files.
+
+## A bundle built outside this repo
+
+The examples in `examples/workloads/` are shaped to demonstrate one thing
+each. For a bundle that was written to do a job rather than to illustrate a
+feature, see
+[**go-steer/mast-sre-agent**](https://github.com/go-steer/mast-sre-agent) —
+a GKE incident-triage roster ported from a four-agent Python ADK service:
+nine read-only diagnosers behind a `SingleTurn` classifier, one change
+executor holding the only mutating tools, a tool catalog probed from a
+live `tools/list` against Google's hosted MCP endpoints, and a report
+schema for each of the two roles.
+
+It is worth reading for what it measured as much as for its shape. It runs
+against a real cluster and records what that cost — how far apart two
+identical runs land, which reads are large enough to dominate a budget —
+which is the evidence behind [sizing a
+ceiling](/concepts/budgets/#sizing-one).
