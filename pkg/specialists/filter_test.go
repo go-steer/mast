@@ -48,7 +48,7 @@ func TestFilterToolsets(t *testing.T) {
 	offered := []tool.Toolset{gke, slack}
 
 	// An absent allowlist inherits everything.
-	if got := filterToolsets(Spec{Name: "s"}, offered); len(got) != 2 {
+	if got := filterToolsets(Spec{Name: "s"}, offered, nil); len(got) != 2 {
 		t.Fatalf("absent allowlist: got %d toolsets, want 2", len(got))
 	}
 
@@ -59,7 +59,7 @@ func TestFilterToolsets(t *testing.T) {
 	// writes `mcp: []` and is handed the cluster's write tools anyway is
 	// the failure this test exists to catch.
 	denyAll := Spec{Name: "s", Tools: ToolAllowlist{MCP: []MCPAllowlist{}}}
-	if got := filterToolsets(denyAll, offered); len(got) != 0 {
+	if got := filterToolsets(denyAll, offered, nil); len(got) != 0 {
 		t.Fatalf("`mcp: []`: got %d toolsets, want 0 — the documented deny-all spelling granted tools", len(got))
 	}
 
@@ -67,7 +67,7 @@ func TestFilterToolsets(t *testing.T) {
 	spec := Spec{Name: "s", Tools: ToolAllowlist{MCP: []MCPAllowlist{
 		{Server: "gke", Tools: []string{"get_pod"}},
 	}}}
-	got := filterToolsets(spec, offered)
+	got := filterToolsets(spec, offered, nil)
 	if len(got) != 1 || got[0].Name() != "gke" {
 		t.Fatalf("allowlist: got %v toolsets, want just gke", len(got))
 	}

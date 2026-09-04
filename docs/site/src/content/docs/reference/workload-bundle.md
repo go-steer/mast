@@ -282,6 +282,41 @@ the effect log use — including its default-deny-unknown rule, so a tool your
 roster rather than the incident. Classify the catalog with
 `tool_catalog.tools[].mutating`.
 
+### A name that matches nothing
+
+An allowlist is applied by dropping what does not match, so a name that
+matches nothing is not an error — it is a capability that quietly is not
+there. Both halves of an entry can go wrong that way, and mast answers each
+at the earliest point it honestly can.
+
+A **server** the workload does not declare fails the roster at startup,
+naming the specialist, the name, and the servers `tool_catalog.mcp` does
+declare:
+
+```
+compose: specialist "stuck-pod" allows MCP server "loggging", which the
+workload's tool_catalog.mcp does not declare (it declares "gke", "logging",
+"monitoring"); the allowlist is applied by dropping what does not match, so
+this grants the specialist nothing from it and would not have been reported
+at run time. Fix the name, or add the server to tool_catalog.mcp
+```
+
+A **tool** the server does not serve cannot be checked that early: knowing
+what a server serves means calling `tools/list`, and mast's toolsets are lazy
+so that a bundle still loads when a server is down. It is reported the first
+time that specialist's toolset lists, once, at `WARN`:
+
+```
+WARN ALLOWLIST NAMES A TOOL THE SERVER DOES NOT SERVE — the specialist holds
+     fewer tools than its file says
+     specialist=scale-outage mcp_server=gke unmatched=list_datasets,query granted=1
+```
+
+Naming *fewer* tools than a server offers is the whole point of an allowlist,
+and is silent. Only naming more is the mistake. A bundle that declares no
+`tool_catalog.mcp` has not said what exists, so the startup half is skipped
+for it and only the warning applies.
+
 Every `change_executor` in a roster is logged at startup, so the answer to
 "which specialists here can change my cluster" is one log line rather than
 an intersection of three files. The shipped GKE triage bundle logs exactly

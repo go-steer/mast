@@ -16,6 +16,7 @@ package specialists
 
 import (
 	"fmt"
+	"log/slog"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -96,6 +97,12 @@ type BuildOptions struct {
 	// leaving exactly the unresolved delegation the guard exists to prevent,
 	// and it would do it at run time on the one turn nobody is watching.
 	OnStall func(spec Spec) mastagent.StallPayload
+
+	// Logger is where a built specialist reports an allowlist entry
+	// that matched nothing (#278). Nil is legal and means no report —
+	// the filtering is identical either way, so a library embed that
+	// passes no logger gets the old silence rather than a panic.
+	Logger *slog.Logger
 }
 
 // modelFor picks the model a Spec builds with: the resolved `model:`
@@ -176,16 +183,22 @@ func (o BuildOptions) stallGuard(spec Spec) ([]llmagent.AfterModelCallback, erro
 // toolset; a present-but-empty one (`mcp: []`) denies them all; a
 // non-empty one is a whitelist — unlisted servers are dropped, a listed
 // server with no tools[] passes whole, a listed server with tools[] is
-// narrowed via tool.FilterToolset + AllowedToolsPredicate (both stock
-// ADK — per-tool MCP filtering needs no mast machinery, resolving
-// specialists-design open question #3).
+// narrowed to those names.
 //
 // Corrected 2026-08-14, in W2.4: this used to treat empty as absent, so
 // the documented deny-all spelling granted the whole catalog instead.
 // Harmless while nothing read the declaration; not harmless once
 // CheckCapabilitySplit accepts `mcp: []` as proof a diagnoser holds no
 // write tools. A declaration that reads as deny must deny.
-func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
+//
+// The narrowing used to be stock ADK (tool.FilterToolset +
+// AllowedToolsPredicate), which filters correctly and reports nothing —
+// so a tools[] entry the server does not serve was dropped in silence.
+// It now goes through narrow, which filters the same way and says what
+// it did not find the first time the toolset lists (#278,
+// allowlist.go). The server half of that mistake is refused earlier and
+// cheaper, at startup, by internal/compose.CheckMCPServerNames.
+func filterToolsets(spec Spec, offered []tool.Toolset, logger *slog.Logger) []tool.Toolset {
 	if spec.Tools.InheritsAllMCP() {
 		return offered
 	}
@@ -203,7 +216,7 @@ func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
 			out = append(out, ts)
 			continue
 		}
-		out = append(out, tool.FilterToolset(ts, tool.AllowedToolsPredicate(al.Tools)))
+		out = append(out, narrow(spec, ts, al.Tools, logger))
 	}
 	return out
 }
@@ -245,7 +258,7 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 			Instruction:  spec.Instruction,
 			Model:        llm,
 			Tools:        opts.Tools,
-			Toolsets:     filterToolsets(spec, opts.Toolsets),
+			Toolsets:     filterToolsets(spec, opts.Toolsets, opts.Logger),
 			OutputSchema: spec.OutputSchema,
 			// A specialist reports through finish_task and never by handing
 			// the question back. Peers are already unreachable — ADK's

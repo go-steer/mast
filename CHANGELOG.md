@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+**A specialist's `tools.mcp` allowlist is now checked for existence.** It is
+applied by dropping what does not match, so a name that matches nothing was
+never an error — it was a capability quietly missing from a specialist whose
+own file said it had one, and the first symptom was a model behaving oddly
+mid-incident. The two halves are answered where each honestly can be. A
+**server** the workload's `tool_catalog.mcp` does not declare now fails the
+roster at startup, naming the specialist, the name, and the servers that do
+exist — the catalog is already loaded and already validated, so the check
+reaches no network. A **tool** the server does not serve needs a
+`tools/list`, and mast's toolsets are lazy so a bundle still loads when a
+server is down; that one is reported once, at WARN, the first time the
+specialist's toolset lists. Naming fewer tools than a server offers is the
+point of an allowlist and stays silent; only naming more is the mistake.
+Found by porting a pair of deployed Python agents whose allowlists carried
+eleven names no endpoint served — `list_datasets` for `list_dataset_ids`,
+`query` for `execute_sql_readonly`, and five networking tools on a server
+with no networking tools at all
+([#278](https://github.com/go-steer/mast/issues/278)).
+
 **A `{placeholder}` in a specialist's prompt body is a session-state lookup,
 and now says so at load rather than at 3am.** ADK resolves every `{...}` in
 an instruction before the prompt is sent: a bare identifier is a state key,
