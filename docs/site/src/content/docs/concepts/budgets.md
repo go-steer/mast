@@ -295,6 +295,70 @@ because a watchdog trip is a latch an operator has to clear rather than a
 cumulative total that stopping the sub-run already settles. See
 [it watches inside a planner dispatch too](/concepts/interop/#it-watches-inside-a-planner-dispatch-too).
 
+## Sizing one
+
+A ceiling is a number an operator has to choose, and the honest way to
+choose it is to measure rather than to estimate. Two things make estimating
+worse than it sounds.
+
+**The same workload does not cost the same thing twice.** Five runs of one
+GKE triage bundle against a live cluster — identical incident text,
+identical roster, identical model, nothing changed between them:
+
+| Run | Model calls | Cost |
+| --- | --- | --- |
+| 1 | 11 | $0.140 |
+| 2 | 10 | $0.152 |
+| 3 | 14 | $0.201 |
+| 4 | 13 | $0.198 |
+| 5 | 18 | $0.267 |
+
+That is a 90% spread on an unchanged envelope, and it is not noise to be
+averaged away — it is the model choosing how many things to look at. Run 4
+died on a turn cap that run 1 cleared with one turn to spare. A cap sized
+on the median is a coin flip, and the side it lands on is *the incident got
+no answer*, having paid for most of one.
+
+So size on the **worst run you have observed, plus headroom**, and treat
+the median as information about the bill rather than about the cap.
+
+**What actually drives the spread is tool output, not model verbosity.**
+The same three reads, projected and unprojected, from that workload:
+
+| Read | Unprojected | Projected |
+| --- | --- | --- |
+| one Deployment | 19,080 B | 600 B |
+| every pod in a namespace | 138,609 B | 588 B |
+| `list_k8s_events`, unbounded | 19,976 B | 3,736 B |
+
+A single unprojected namespace listing is larger than every other message
+in a short investigation put together, it is charged again on every
+subsequent turn of that agent's loop, and it buys nothing a projection
+would not have. Before raising a ceiling, check whether the workload is
+paying to re-read the same 138 kB — narrowing what a tool returns is the
+cheaper fix, and the only one that also makes the run *faster*. See [tools
+and MCP](/concepts/tools-and-mcp/) for what a server will let you narrow.
+
+Two consequences for which knob to reach for:
+
+- **Prefer `max_cost_usd` to `max_turns` as the outer bound.** Cost is what
+  you actually care about bounding, and it degrades honestly: a run that is
+  more expensive than usual because it read something large trips on the
+  thing that made it expensive. A turn cap trips on the count instead, so
+  the run that read three cheap things and the run that read one enormous
+  one are treated identically.
+- **Keep `max_turns` as the runaway stop, not the budget.** Set it above
+  the worst observed turn count with room, and let it catch a loop rather
+  than a thorough investigation. The [watchdog](/concepts/interop/) is the
+  better instrument for the loop case anyway; it can tell the difference.
+
+None of this can be inferred from the bundle, which is why mast declines to
+pick numbers for you. It will, however, tell you what the last run cost:
+`Result.Usage`, the `session_cost_usd` log field, the `mast.cost.usd` span
+attribute and `mast_cost_usd_total` all report it. Five runs of a new
+workload behind a generous ceiling is a cheaper way to find the right
+ceiling than one run behind a guessed one.
+
 ## Getting unstuck after a trip
 
 A trip is not a one-time event. Enforcement is re-derived from the
