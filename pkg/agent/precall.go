@@ -85,6 +85,16 @@
 // that can express "not done" in its own schema should say so by
 // supplying a RefusalPayload; UnreportableRefusal is what it gets if it
 // does not.
+//
+// # Unless the agent had already found something
+//
+// The paragraph above rests on "nothing was looked at", and that
+// premise fails for an agent stopped mid-investigation rather than at
+// its first call (#271). A gate that implements FinalReportGate can
+// grant such an agent one more model call with every tool but
+// finish_task withdrawn, so the report is written by the model out of
+// what it actually saw. Nothing above is relaxed: mast still fabricates
+// no content. See finalreport.go.
 
 package agent
 
@@ -269,6 +279,18 @@ func RefuseOnGate(payload RefusalPayload) llmagent.BeforeModelCallback {
 		// into an unknown-tool error, which is the broken-tool shape
 		// this whole design exists to avoid.
 		_, hasFinish := req.Tools[FinishTaskToolName]
+
+		// Before synthesizing anything: a gate that grants a final report
+		// would rather have the model write one. The request becomes
+		// report-only and the call proceeds — see finalreport.go for why
+		// that is not the fabrication the paragraph above forbids.
+		if reportTools := finalReportTools(req); hasFinish && len(reportTools) > 0 {
+			if g, ok := gate.(FinalReportGate); ok && g.AllowFinalReport(name) {
+				applyFinalReport(req, reportTools, err.Error())
+				return nil, nil
+			}
+		}
+
 		args := map[string]any(nil)
 		if hasFinish {
 			args = payload(name, err.Error())

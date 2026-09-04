@@ -281,6 +281,56 @@ curl -X POST $MAST/sessions/incident-abc/guardrails/reset \
   -d '{"scope": "OOMKilled", "additional_budget_usd": 0.50}'
 ```
 
+### Letting a stopped specialist file what it found
+
+A refusal ends the specialist with nothing attached, and for a specialist
+refused on its first call that is the honest answer: nothing was looked at,
+and mast will not invent a finding to fill the gap.
+
+It is the wrong answer for the other case. A diagnoser stopped on its
+twelfth turn, after six log queries and a quarter of a million tokens, had
+established a great deal — and the incident got an unresolved delegation
+anyway. The tokens were spent either way.
+
+`budget.final_report` buys that specialist exactly one more model call, with
+**every tool but its report tool withdrawn**, and an instruction to report
+what it can already support and to say plainly what it did not get to:
+
+```yaml
+budget:
+  max_cost_usd: 5.00
+  final_report: true
+```
+
+mast synthesizes nothing. The report is written by the model, from the
+evidence in its own context, in its own output schema — including "I
+established nothing", if that is the truth, which is still a far more useful
+artifact than silence. Stripping the tools is what makes it a report rather
+than one more query: there is no move left but to file.
+
+Three bounds, and they are why this is safe to turn on:
+
+- **Once per specialist per session.** A grant that could be re-taken would
+  feed the invalid-report retry loop a model call at a time. The second ask
+  gets the ordinary refusal.
+- **Opt-in.** It is off by default, because it is a deliberate overshoot:
+  one call, on a specialist already at its ceiling. A cap that is a hard
+  spending limit should stay a hard spending limit.
+- **Never granted to a specialist that has spent nothing.** There is no
+  partial finding to salvage from an agent that never ran.
+
+Each grant is logged at WARN — `BUDGET CEILING — a stopped specialist bought
+its final report` — so the overshoot is announced rather than arriving
+unexplained in a total.
+
+One thing to expect: the grant does not change *which* ceiling stopped what.
+A specialist's own cap closes one path and the turn routes on, so the report
+comes back to the coordinator as an answer it can use. The workload's cap
+still ends the turn — the report is written and lands in the transcript, but
+there is no turn result left to carry it. If your only ceiling is
+session-wide, this flag buys you an artifact in the session, not a better
+answer.
+
 ### Inside a planner dispatch
 
 A specialist that reaches its cap inside a planner dispatch has always

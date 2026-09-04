@@ -215,6 +215,36 @@ for is not a favor. The worked example is
 `examples/workloads/bounded-triage`, on the same `finding.json` report
 contract the [GKE triage bundle](/quickstart/unattended-triage/) uses.
 
+## The prompt body: `{...}` is resolved, not sent
+
+Everything after the frontmatter is a template. Before the prompt is sent,
+every `{...}` in it is matched by `{+[^{}]*}+`, trimmed of its braces and
+surrounding space, and then:
+
+| Trimmed contents | Resolution |
+| --- | --- |
+| `artifact.<name>` | artifact load — **always fails**, mast runs no artifact service |
+| a valid state name | session-state lookup; a missing key ends the run with `state key does not exist` |
+| a valid state name + `?` | session-state lookup; a missing key renders as nothing |
+| anything else | returned verbatim |
+
+A **valid state name** is a bare identifier (letter or `_`, then letters,
+digits or `_`), optionally prefixed by exactly one of `app:`, `user:` or
+`temp:`. Nothing else qualifies — so `{"replicas":1}`, `{.status.phase}`,
+`{context.node}`, `{...}`, `{}` and `{app: web}` are all literal, while
+`{app:web}` is a lookup of the `app`-scoped key `web`.
+
+A `.tmpl` whose body contains a placeholder that would be resolved and can
+fail is **refused at load**, naming the file, every offending line and the
+key each one looks up. Loading is where the file and its line numbers still
+exist; the runtime error names neither.
+
+There is no escape sequence — `{{project}}` is trimmed to the same key as
+`{project}`. Write literals with another bracket (`<project>`), or, if
+session state is genuinely wanted, mark the placeholder optional
+(`{project?}`). The optional marker does not rescue `{artifact.x?}`: the
+missing artifact service is checked first.
+
 ## Per-specialist capability
 
 A specialist declares whether it may change anything:
@@ -941,6 +971,7 @@ cadence continues to the next one.
 | `budget.max_turns` | Cap on **model calls** per session. One "turn" = one model call — a Task specialist looping through five model calls before `finish_task` has spent five turns, not one. Absent/0 = unlimited. |
 | `budget.max_wallclock_seconds` | Bounds each whole turn with a context timeout. |
 | `budget.max_cost_usd` | Session-cumulative cost ceiling, derived by the budget meter from streamed usage metadata (flat per-1K-token spike pricing in v0.1). |
+| `budget.final_report` | Grants a specialist stopped by a ceiling **one** model call past it, with every tool but its report tool withdrawn, to file what it already established. Default `false`. Once per specialist per session, and never to one that has spent nothing. See [letting a stopped specialist file what it found](/concepts/budgets/#letting-a-stopped-specialist-file-what-it-found). |
 
 Crossing a ceiling cancels the run context mid-turn, aborts in-flight
 model/tool work, and increments `mast_budget_trips_total`. Budgets compose:

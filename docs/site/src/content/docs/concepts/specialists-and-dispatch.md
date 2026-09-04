@@ -79,6 +79,38 @@ Five of those lines are worth understanding as concepts rather than fields:
 Exact semantics and every field: [workload bundle
 reference](/reference/workload-bundle/).
 
+### Braces in the body are not punctuation
+
+The prompt body is a template, and `{...}` is its one piece of syntax. A
+bare identifier in braces is a **session-state lookup**, and an
+`artifact.`-prefixed one is an artifact load — both resolved before the
+prompt is sent. So a body that says "investigate `{project}`" is asking for
+a state key named `project`, and if nothing set one the run ends with
+`state key does not exist`.
+
+mast refuses those at load instead, naming the file, the line and the key,
+because a prompt full of Kubernetes and GCP examples is exactly where
+braces live and the runtime error names none of it.
+
+Almost nothing you write is affected. Only a valid state name resolves, so
+manifests and jsonpath are literal and always were:
+
+| In the body | What happens |
+| --- | --- |
+| `{"spec":{"replicas":1}}` | literal — not an identifier |
+| `{.status.phase}` | literal — not an identifier |
+| `{app: web}` | literal — the space makes it invalid |
+| `{app:web}` | **refused** — `app:` is a state scope, `web` a key |
+| `{project}` | **refused** — a state lookup |
+| `{artifact.report}` | **refused** — mast runs no artifact service |
+
+Doubling the braces is not an escape: `{{project}}` is trimmed to the same
+key. To write a literal, use another bracket — `<project>`. To genuinely
+ask for session state, mark it optional — `{project?}` renders as nothing
+when the key is unset instead of ending the run. An optional marker does
+*not* rescue an artifact placeholder, which fails for want of a service
+before the marker is consulted.
+
 ## Four dispatch shapes
 
 The same roster can be driven four ways. The shape belongs to the roster —

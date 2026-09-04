@@ -126,6 +126,14 @@ type Config struct {
 	// the model's flat spike pricing so Result.Usage.CostUSD is never
 	// silently zero-rated.
 	Budget *budget.Limits
+
+	// FinalReport grants a specialist stopped by a ceiling one model
+	// call to write its report with, with every other tool withdrawn.
+	// It is a separate knob from Budget because it is a policy and not
+	// a ceiling: a bundle that declares budget.final_report gets it
+	// whether or not the caller overrode the ceilings above. See
+	// pkg/budget/finalreport.go.
+	FinalReport bool
 }
 
 // Usage is the run's cumulative usage snapshot, taken from the
@@ -499,11 +507,21 @@ func limits(cfg Config, bundle *workload.Bundle, modelName string) budget.Limits
 // per-specialist scopes. Config.Budget overrides the workload's
 // ceilings but not a specialist's: a caller-supplied session budget
 // says what the whole run may spend, not what each specialist may.
+//
+// The final-report grant is read from both, and unlike the ceilings it
+// is an OR rather than an override: it is a policy about what a stopped
+// specialist may still say, so a caller who narrowed the ceilings has
+// not thereby retracted the bundle's declaration.
 func meterConfig(cfg Config, bundle *workload.Bundle, specs []specialists.Spec, modelName string) budget.Config {
-	return budget.Config{
-		Limits: limits(cfg, bundle, modelName),
-		Scopes: compose.MeterScopes(specs, libraryProvider, modelName),
+	c := budget.Config{
+		Limits:      limits(cfg, bundle, modelName),
+		Scopes:      compose.MeterScopes(specs, libraryProvider, modelName),
+		FinalReport: cfg.FinalReport,
 	}
+	if bundle != nil && bundle.Budget.FinalReport {
+		c.FinalReport = true
+	}
+	return c
 }
 
 // libraryWatchdogMode resolves the watchdog posture for a library run:

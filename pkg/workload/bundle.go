@@ -141,6 +141,18 @@ type Budget struct {
 	MaxTurns            int     `yaml:"max_turns,omitempty"`
 	MaxWallclockSeconds int     `yaml:"max_wallclock_seconds,omitempty"`
 	MaxCostUSD          float64 `yaml:"max_cost_usd,omitempty"`
+
+	// FinalReport lets a specialist that has already spent something buy
+	// one model call past the ceiling that stopped it, purely to write
+	// its report: every tool but the report tool is withdrawn for that
+	// call, and it is granted at most once per specialist.
+	//
+	// Off by default, because it is a deliberate overshoot. A workload
+	// whose cap is a hard spending limit should leave it off and accept
+	// that a stopped specialist returns nothing. Turn it on where the
+	// cap is a guardrail against a runaway and an unresolved delegation
+	// is the more expensive outcome. See pkg/budget/finalreport.go.
+	FinalReport bool `yaml:"final_report,omitempty"`
 }
 
 // Watchdog postures a bundle may declare, in ladder order. These are
