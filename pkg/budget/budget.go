@@ -206,6 +206,13 @@ type Config struct {
 	// re-entrant Observe would recurse). Keep it to handing the Spend
 	// somewhere durable.
 	OnSpend func(Spend)
+
+	// FinalReport lets an agent that has already spent something buy one
+	// model call past its ceiling, to write the report it was stopped
+	// before finishing. Off by default: a cap that can be overshot by one
+	// call is not what every operator declared. See finalreport.go for
+	// what the grant is and the three bounds on it.
+	FinalReport bool
 }
 
 // Meter accumulates usage for one session, and for each scoped agent
@@ -245,6 +252,11 @@ type Meter struct {
 	// onSpend is Config.OnSpend. Set at construction and never mutated,
 	// so Observe reads it without the lock.
 	onSpend func(Spend)
+
+	// finalReport is Config.FinalReport, and finalReportTaken latches
+	// which authors have spent their one grant. See finalreport.go.
+	finalReport      bool
+	finalReportTaken map[string]bool
 }
 
 // usage is one accumulator: a session's or a scope's.
@@ -262,7 +274,7 @@ func NewMeter(limits Limits) *Meter {
 
 // New constructs a Meter from a full config.
 func New(cfg Config) *Meter {
-	m := &Meter{limits: cfg.Limits, onSpend: cfg.OnSpend}
+	m := &Meter{limits: cfg.Limits, onSpend: cfg.OnSpend, finalReport: cfg.FinalReport}
 	if len(cfg.Scopes) > 0 {
 		m.scopes = make(map[string]Limits, len(cfg.Scopes))
 		m.spent = make(map[string]*usage, len(cfg.Scopes))
