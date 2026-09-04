@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+**A `{placeholder}` in a specialist's prompt body is a session-state lookup,
+and now says so at load rather than at 3am.** ADK resolves every `{...}` in
+an instruction before the prompt is sent: a bare identifier is a state key,
+an `artifact.`-prefixed one is an artifact load. A template that says
+"investigate `{project}`" was therefore asking for state nothing had set,
+and the run died with `state key does not exist` — naming neither the
+template, nor the line, nor the key. Nothing in a `.tmpl` file suggests
+braces are syntax, and a prompt full of Kubernetes and GCP examples is
+exactly where braces live.
+
+Loading a specialist now refuses those templates, naming the file, every
+offending line, and the key each one looks up. Only what ADK actually
+resolves is refused, so manifests and jsonpath keep loading:
+`{"replicas":1}`, `{.status.phase}` and `{app: web}` are all literal, while
+`{app:web}` — the same line without the space — is a lookup of the
+`app`-scoped key `web`. Doubling the braces is not an escape, `{{project}}`
+being trimmed to the same key; the error says so, and points at `<project>`
+for a literal and `{project?}` for a state lookup that cannot fail a run. An
+optional marker does not rescue `{artifact.x?}`, which fails for want of an
+artifact service mast does not run
+([#272](https://github.com/go-steer/mast/issues/272)).
+
 **A specialist stopped by a budget ceiling can now file what it already
 found.** New bundle knob, `budget.final_report` (default off). Until now a
 refused specialist returned nothing at all, which is the right answer for one

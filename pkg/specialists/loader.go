@@ -65,6 +65,13 @@ func LoadFile(path string) (Spec, error) {
 	if err != nil {
 		return Spec{}, fmt.Errorf("specialists: %q: %w", path, err)
 	}
+	// Before anything else about the body: braces in it are ADK's, not
+	// the author's. Refused here, where the file is open and the line
+	// number is known, rather than on the first run of the specialist,
+	// where the error names neither (#272, placeholders.go).
+	if err := checkPlaceholders(path, body); err != nil {
+		return Spec{}, err
+	}
 	name := fm.Name
 	if name == "" {
 		name = strings.TrimSuffix(filepath.Base(path), ".tmpl")
