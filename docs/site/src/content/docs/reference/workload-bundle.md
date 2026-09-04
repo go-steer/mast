@@ -215,6 +215,36 @@ for is not a favor. The worked example is
 `examples/workloads/bounded-triage`, on the same `finding.json` report
 contract the [GKE triage bundle](/quickstart/unattended-triage/) uses.
 
+## The prompt body: `{...}` is resolved, not sent
+
+Everything after the frontmatter is a template. Before the prompt is sent,
+every `{...}` in it is matched by `{+[^{}]*}+`, trimmed of its braces and
+surrounding space, and then:
+
+| Trimmed contents | Resolution |
+| --- | --- |
+| `artifact.<name>` | artifact load — **always fails**, mast runs no artifact service |
+| a valid state name | session-state lookup; a missing key ends the run with `state key does not exist` |
+| a valid state name + `?` | session-state lookup; a missing key renders as nothing |
+| anything else | returned verbatim |
+
+A **valid state name** is a bare identifier (letter or `_`, then letters,
+digits or `_`), optionally prefixed by exactly one of `app:`, `user:` or
+`temp:`. Nothing else qualifies — so `{"replicas":1}`, `{.status.phase}`,
+`{context.node}`, `{...}`, `{}` and `{app: web}` are all literal, while
+`{app:web}` is a lookup of the `app`-scoped key `web`.
+
+A `.tmpl` whose body contains a placeholder that would be resolved and can
+fail is **refused at load**, naming the file, every offending line and the
+key each one looks up. Loading is where the file and its line numbers still
+exist; the runtime error names neither.
+
+There is no escape sequence — `{{project}}` is trimmed to the same key as
+`{project}`. Write literals with another bracket (`<project>`), or, if
+session state is genuinely wanted, mark the placeholder optional
+(`{project?}`). The optional marker does not rescue `{artifact.x?}`: the
+missing artifact service is checked first.
+
 ## Per-specialist capability
 
 A specialist declares whether it may change anything:
