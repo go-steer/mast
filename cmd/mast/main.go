@@ -1594,6 +1594,30 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 	)
 	logger.Info("specialists loaded", "count", len(loaded))
 
+	// A declared HTTP trigger is informational — the inject server
+	// declares its routes globally and reads nothing from the bundle
+	// (pkg/workload's HTTPTrigger says so; pkg/inject's fixed route
+	// table is where it does not happen). Silence made that
+	// indistinguishable, from outside, from a field that works: the
+	// declared path answered 405, which reads as a verb mistake, and
+	// the operator went debugging their emitter. mast already logs the
+	// write gate, the watchdog posture and every mutation-class
+	// override at startup; an ignored trigger declaration belongs in
+	// that same set (#277).
+	//
+	// Warned rather than refused: the field has been inert since the
+	// spike, and failing a bundle that runs today over a declaration
+	// that never did anything would be a break with no safety behind
+	// it. The unmatched path now answers 404 naming POST /inject, which
+	// is the other half of the same fix.
+	if h := bundle.EdgeTrigger.HTTP; h != nil && h.Path != "" {
+		logger.Warn("edge_trigger.http IS NOT WIRED — the declared path serves nothing",
+			"declared_path", h.Path,
+			"declared_auth", h.Auth,
+			"endpoint", "POST /inject",
+			"note", "the inject server's routes are fixed; per-workload path prefixes are deferred")
+	}
+
 	// Refuse a roster the shape can never build BEFORE touching MCP,
 	// which reads a privilege-bearing catalog file and, for a hosted
 	// server, fetches an OAuth token. Neither is work a doomed startup

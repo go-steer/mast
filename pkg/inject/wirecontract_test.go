@@ -146,12 +146,12 @@ func TestWireContract_AssertedCallerHeaderName(t *testing.T) {
 // thing about the verb that could bite: a GET does not reach either
 // handler.
 //
-// It is not a 405. `GET /` is the health route and, under net/http's
-// pattern matching, a catch-all for every GET — so `GET /resume`
-// answers 200 "ok" from the health handler. That is worth knowing about
-// rather than fixing: it means a misdirected GET is a no-op that a relay
-// author will read as success, so the assertion below is on the
-// dispatch, not on the code. Nothing resumes and nothing is acked.
+// It used to answer 200. `GET /` was the health route and, under
+// net/http's pattern matching, a catch-all for every GET — so
+// `GET /resume` returned "ok" from the health handler while resuming
+// nothing, which a relay author reads as success. Fixed in #277: the
+// catch-all is now method-agnostic, a known path with the wrong verb
+// answers 405 naming the verb it wants, and only `/` is healthy.
 func TestWireContract_Routes(t *testing.T) {
 	var dispatched int
 	s, err := New(Config{
@@ -172,8 +172,10 @@ func TestWireContract_Routes(t *testing.T) {
 	}{
 		{"POST", "/resume", resumeBody, http.StatusAccepted, true},
 		{"POST", "/monitor-ack", ackBody, http.StatusOK, true},
-		{"GET", "/resume", "", http.StatusOK, false},
-		{"GET", "/monitor-ack", "", http.StatusOK, false},
+		{"GET", "/resume", "", http.StatusMethodNotAllowed, false},
+		{"GET", "/monitor-ack", "", http.StatusMethodNotAllowed, false},
+		{"GET", "/", "", http.StatusOK, false},
+		{"POST", "/alert", "", http.StatusNotFound, false},
 	} {
 		before := dispatched
 		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))

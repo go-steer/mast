@@ -21,6 +21,23 @@ eleven names no endpoint served — `list_datasets` for `list_dataset_ids`,
 with no networking tools at all
 ([#278](https://github.com/go-steer/mast/issues/278)).
 
+**A declared `edge_trigger.http.path` no longer answers 405.** The field is
+accepted, validated, and read by nothing — the inject server's routes are
+fixed and consult no bundle — which the field's own definition has always
+said, and which from outside was indistinguishable from a field that works.
+`POST /alert` on a workload declaring that path returned `405 Method Not
+Allowed`, because `GET /` claimed the path and rejected the verb, so the
+answer read as a client mistake and the debugging went there. Now: a bundle
+declaring a path is warned about at startup next to the write gate and
+watchdog posture, an unmatched path answers `404` listing the routes the
+daemon actually serves, and a known path with the wrong verb answers `405`
+naming the verb it wants. A misdirected `GET /resume` used to be absorbed by
+the health route and answered `200 ok`; it is now a `405`. The declaration
+is warned about rather than refused — it has been inert since the spike, and
+per-workload path prefixes stay deferred; what changed is the honesty of the
+answer, not the routing
+([#277](https://github.com/go-steer/mast/issues/277)).
+
 **A `{placeholder}` in a specialist's prompt body is a session-state lookup,
 and now says so at load rather than at 3am.** ADK resolves every `{...}` in
 an instruction before the prompt is sent: a bare identifier is a state key,
