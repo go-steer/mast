@@ -414,7 +414,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, logger: logger}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", s.handleHealth)
+	// Not `GET /`: that pattern claims every unmatched path for GET
+	// only, which turns a POST to an unknown path into 405 (#277).
+	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("POST /inject", s.handleInject)
 	mux.HandleFunc("POST /resume", s.handleResume)
 	mux.HandleFunc("POST /abort", s.handleAbort)
@@ -449,9 +451,73 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintln(w, "ok")
+// routes is what this server actually serves, in the order the 404
+// body lists them. It exists so an unmatched request can name the real
+// door rather than leaving the caller to guess (#277).
+type route struct{ method, path string }
+
+var routes = []route{
+	{"GET", "/"},
+	{"POST", "/inject"},
+	{"POST", "/resume"},
+	{"POST", "/abort"},
+	{"POST", "/ack-effects"},
+	{"POST", "/monitor-ack"},
+	{"POST", "/pause"},
+	{"POST", "/extend-token"},
+	{"POST", "/stop"},
+}
+
+// routeList is routes plus /metrics when the server was given a
+// metrics handler, so the 404 body describes this server rather than a
+// default one.
+func (s *Server) routeList() []route {
+	if s.cfg.Metrics == nil {
+		return routes
+	}
+	return append(append([]route{}, routes...), route{"GET", "/metrics"})
+}
+
+// handleRoot is the health check and the catch-all, in that order.
+//
+// It is one handler because Go 1.22's mux makes them one question. The
+// old registration was `GET /`, which matches every path no other
+// pattern claims — so `POST /alert` found a pattern for the path and
+// none for the method, and the mux answered 405 Method Not Allowed. A
+// workload that declares `edge_trigger.http.path: /alert` (accepted,
+// validated, and never wired — see the field's own comment in
+// pkg/workload) therefore got a reply that reads as "wrong verb", and
+// the operator went looking at their client. It cost real time on a
+// real port.
+//
+// So: an unknown path is a 404 that names the routes, and a known path
+// with the wrong method keeps its 405 — but names the method it wants.
+// Neither is a new capability. Both are the difference between an
+// answer that points at the bundle and one that points anywhere else.
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "mast inject server: / is the health check; use GET", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, "ok")
+		return
+	}
+	for _, rt := range s.routeList() {
+		if rt.path == r.URL.Path {
+			w.Header().Set("Allow", rt.method)
+			http.Error(w, fmt.Sprintf("mast inject server: %s takes %s, not %s", rt.path, rt.method, r.Method), http.StatusMethodNotAllowed)
+			return
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "mast inject server: no route %s %s\n\nThis server's routes are fixed; a workload's edge_trigger.http.path does not add one.\nTo hand this workload an event, POST an inject envelope to /inject.\n\nRoutes:\n", r.Method, r.URL.Path)
+	for _, rt := range s.routeList() {
+		fmt.Fprintf(&b, "  %-5s %s\n", rt.method, rt.path)
+	}
+	http.Error(w, b.String(), http.StatusNotFound)
 }
 
 func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
