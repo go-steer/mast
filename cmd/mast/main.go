@@ -1879,11 +1879,19 @@ func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, provider, m
 		// budget.Limits.MaxTurns for the vocabulary).
 		limits.MaxTurns = bundle.Budget.MaxTurns
 	}
+	// Not a ceiling but a policy about what a specialist stopped by one
+	// may still say: one model call, report tool only (pkg/budget's
+	// finalreport.go). Off unless the bundle asks.
+	finalReport := bundle != nil && bundle.Budget.FinalReport
 	// Per-specialist ceilings compose under the workload's; a
 	// specialist that declares a tighter cap spends it on its own and
 	// closes that one path — the turn routes on (pkg/budget, "Scopes",
 	// and budget.Scope for who a ceiling belonged to).
-	cfg := budget.Config{Limits: limits, Scopes: compose.MeterScopes(specs, provider, modelName)}
+	cfg := budget.Config{
+		Limits:      limits,
+		Scopes:      compose.MeterScopes(specs, provider, modelName),
+		FinalReport: finalReport,
+	}
 	return &meterPool{
 		cfg:           cfg,
 		byID:          map[string]*budget.Meter{},
@@ -2798,12 +2806,23 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// meter's session-cumulative cost is authoritative (pricing lives
 	// in pkg/budget); the counter only ever sees per-turn deltas.
 	_, costBefore, _ := meter.Snapshot()
+	// And the overshoot, on the same "whichever way the turn ends"
+	// footing. budget.final_report buys a stopped specialist one model
+	// call past its ceiling, and a cap that was exceeded on purpose has
+	// to say so out loud rather than arrive as a number that does not
+	// add up (pkg/budget/finalreport.go).
+	grantsBefore := meter.FinalReportsTaken()
 	defer func() {
 		_, costAfter, _ := meter.Snapshot()
 		obs.AddCost(workloadName, costAfter-costBefore)
 		// Same delta onto the span. Registered after the span's own
 		// defer, so it runs first and the span is still open.
 		ts.cost(costAfter - costBefore)
+		if granted := meter.FinalReportsTaken() - grantsBefore; granted > 0 {
+			logger.Warn("BUDGET CEILING — a stopped specialist bought its final report",
+				"turn", label, "session", sessionID, "grants", granted,
+				"note", "budget.final_report: one model call past the ceiling, report tool only")
+		}
 	}()
 
 	// Feedback mode (--watchdog=feedback and up): whatever the session's

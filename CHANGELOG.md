@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+**A specialist stopped by a budget ceiling can now file what it already
+found.** New bundle knob, `budget.final_report` (default off). Until now a
+refused specialist returned nothing at all, which is the right answer for one
+refused on its first call — nothing was looked at, and mast will not invent a
+finding — and the wrong one for a diagnoser stopped on its twelfth turn after
+six log queries and a quarter of a million tokens. The tokens were spent
+either way and the incident got an unresolved delegation. With the flag on,
+such a specialist gets exactly one more model call with every tool but its
+report tool withdrawn, and an instruction to report what it can support and
+say what it did not reach. mast synthesizes nothing: the model writes the
+report, in its own output schema. Bounded three ways — once per specialist per
+session, opt-in, and never granted to a specialist that has spent nothing —
+and each grant is logged at WARN so the one-call overshoot is announced
+([#271](https://github.com/go-steer/mast/issues/271)).
+
 **`retrieve_raw` no longer parks a read at the write gate.** It is mast's
 own builtin, registered whenever the MCP digest wrap is on, and it appears
 in no server's `tools/list` — so an enumerated `tool_catalog` had no reason
