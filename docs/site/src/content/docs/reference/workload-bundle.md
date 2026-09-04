@@ -941,6 +941,7 @@ cadence continues to the next one.
 | `budget.max_turns` | Cap on **model calls** per session. One "turn" = one model call — a Task specialist looping through five model calls before `finish_task` has spent five turns, not one. Absent/0 = unlimited. |
 | `budget.max_wallclock_seconds` | Bounds each whole turn with a context timeout. |
 | `budget.max_cost_usd` | Session-cumulative cost ceiling, derived by the budget meter from streamed usage metadata (flat per-1K-token spike pricing in v0.1). |
+| `budget.final_report` | Grants a specialist stopped by a ceiling **one** model call past it, with every tool but its report tool withdrawn, to file what it already established. Default `false`. Once per specialist per session, and never to one that has spent nothing. See [letting a stopped specialist file what it found](/concepts/budgets/#letting-a-stopped-specialist-file-what-it-found). |
 
 Crossing a ceiling cancels the run context mid-turn, aborts in-flight
 model/tool work, and increments `mast_budget_trips_total`. Budgets compose:
