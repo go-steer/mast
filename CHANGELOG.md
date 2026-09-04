@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+**`retrieve_raw` no longer parks a read at the write gate.** It is mast's
+own builtin, registered whenever the MCP digest wrap is on, and it appears
+in no server's `tools/list` — so an enumerated `tool_catalog` had no reason
+to classify it and default-deny-unknown made it mutating. With
+`on_mutation: require_approval` that meant the first digested response sent
+the model to `retrieve_raw` and the write gate stopped a read, mid-diagnosis,
+under an approval question naming a tool the operator had never declared. On
+a real cluster one Deployment read is around 19 kB against an 8000-byte
+threshold, so it fired on the first incident, on every shipped example.
+mast's builtins now carry their own class: `retrieve_raw` reads mast's
+scratch store, reaches no server, and classifies read-only. A
+`tool_catalog.tools` override still outranks it, so a workload that wants it
+gated can gate it ([#270](https://github.com/go-steer/mast/issues/270)).
+
 **A change executor under `dispatch: graph` can now actually make the write
 an operator approved.** With `hitl.require_approval` and
 `hitl.on_mutation: require_approval` both on, one turn raised two parks: the

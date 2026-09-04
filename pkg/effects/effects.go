@@ -98,14 +98,27 @@ var controlCalls = map[string]bool{
 
 // builtinClasses classifies mast's own registered tools. Names are
 // string literals to keep this package dependency-light; a test
-// cross-checks them against the pkg/planner and pkg/federation
-// constants so drift fails CI.
+// cross-checks them against the pkg/planner, pkg/mcp and
+// pkg/federation constants so drift fails CI.
+//
+// Default-deny-unknown is the right stance for a tool that arrived
+// from somewhere mast cannot inspect. It is the wrong stance for a
+// tool mast itself registered, whose implementation is in this repo:
+// there is nothing to be uncertain about, and an operator asked to
+// approve one is being asked about a name they have no way to
+// recognise (#270).
 var builtinClasses = map[string]Class{
 	"invoke_specialist":        ClassSpawning,
 	"run_shape_llm_router":     ClassSpawning,
 	"run_shape_fan_out_fan_in": ClassSpawning,
 	"invoke_remote_agent":      ClassMutating, // remote effects are invisible to this process
 	"request_operator_input":   ClassReadOnly, // escalation/pause control surface
+	// retrieve_raw hands back the raw payload of a response mast
+	// already digested, out of mast's own scratch store. It reaches
+	// no server and takes no argument but a key mast minted, so it
+	// cannot change anything anywhere — including in the case that
+	// matters, where the digested response came from a mutating call.
+	"retrieve_raw": ClassReadOnly,
 }
 
 // Predicate classifies a tool by name. See NewPredicate.
