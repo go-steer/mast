@@ -100,7 +100,7 @@ agui:
 | `hitl.change_set_ttl` | duration | How long an approval given with `scope: change_set` authorizes the set's remaining calls for. Default `10m` — far longer than an approve-then-execute round trip, far shorter than the span over which an operator forgets what they approved. It is the backstop, not the check: what an approval is really bounded by is the [`precondition:`](#precondition--what-makes-an-approval-stale) the tool declares. |
 | `safety.watchdog` | string | The runaway-loop posture this workload ships with: `warn` (log only), `feedback` (**mast's default when nothing declares one** — tell the model on its next turn), or `enforce` (also cancel the turn in flight and refuse every later turn until an operator resets). Unset is not `warn`: it means *leave it to the host*, which is what keeps `--watchdog` able to override a bundle in both directions. Precedence is `--watchdog` > `safety.watchdog` > the default, and the daemon logs which won at startup. Declare `enforce` on a workload whose tool loop is bounded by construction; see [where the posture comes from](/concepts/interop/#where-the-posture-comes-from). |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
-| `edge_trigger.http.path`, `.auth` | strings | Informational in v0.1 — the inject server declares its routes globally; per-workload path prefixes come later. |
+| `edge_trigger.http.path`, `.auth` | strings | **Informational, and not wired** — the inject server declares its routes globally and reads nothing from the bundle; per-workload path prefixes come later. Declaring a path does not create one: POST your envelope to `/inject`. A bundle that declares one is warned about at startup, and the declared path answers `404` naming the real route. See [a declared path is not a route](#a-declared-path-is-not-a-route). |
 | `edge_trigger.scheduled.interval` | duration | Required in the block. How often the workload wakes itself, with nothing calling in — `15m`, `1h`, `24h`. Minimum `1s`. A malformed or missing value is a load error naming the file, because a cadence that fails to parse at runtime is a workload you believe is running and that never wakes up. See [`scheduled:`](#scheduled--a-workload-that-wakes-itself) below. |
 | `edge_trigger.scheduled.jitter` | duration | Optional random offset added to each fire, drawn afresh every time. Defaults to a tenth of the interval, capped at `30s`; `0s` is honored as a declaration. Must be shorter than the interval. It is not decoration: N replicas started by one rollout otherwise wake on the same second. |
 | `edge_trigger.scheduled.prompt` | string | What the workload is being woken up to do. Delivered as prose after the wake-up envelope, so it reaches the roster as you wrote it. A schedule with no prompt runs the roster against the envelope alone, which is a workload guessing at its own job. |
@@ -580,6 +580,49 @@ alone, and the parked question says so in those words. If mast cannot
 evaluate a declared precondition at all, the set is not grantable: the
 question says the calls must be approved one at a time, and `scope:
 change_set` is refused rather than granted on a check that is not running.
+
+## A declared path is not a route
+
+`edge_trigger.http` is accepted, validated as a bundle field, and then read
+by nothing. The inject server's route table is fixed at construction; no
+part of it consults the workload. This has been true since the spike, and
+the field's own definition says so — but from outside, a field documented as
+informational used to be indistinguishable from one that works:
+
+```yaml
+edge_trigger:
+  http:
+    path: /alert
+    auth: bearer
+```
+
+```
+$ curl -X POST http://127.0.0.1:7777/alert
+405 Method Not Allowed
+```
+
+`405` reads as a verb mistake, so the time goes into the emitter rather than
+the bundle. Two things changed, neither of them a new capability:
+
+- **Startup says it.** A bundle declaring a path is warned about next to the
+  write gate and watchdog posture:
+
+  ```
+  WARN edge_trigger.http IS NOT WIRED — the declared path serves nothing
+       declared_path=/alert declared_auth=bearer endpoint="POST /inject"
+  ```
+
+- **The unmatched path says it.** An unknown path now answers `404` and
+  lists the routes this daemon actually serves; a known path with the wrong
+  verb answers `405` naming the verb it wants (`GET /inject` → "takes POST,
+  not GET"). Previously every unmatched `GET` was absorbed by the health
+  route and answered `200 ok`, which a relay reads as success.
+
+The declaration is warned about rather than refused: it has always been
+inert, and failing a bundle that runs today over a field that never did
+anything would be a break with no safety behind it. Per-workload path
+prefixes remain deferred — the fix is to the honesty of the answer, not to
+the routing.
 
 ## `scheduled:` — a workload that wakes itself
 
