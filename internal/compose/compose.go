@@ -310,6 +310,14 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		return nil, nil, err
 	}
 
+	// And the check the split assumes but never made: that the servers
+	// those allowlists name are servers this workload has. An allowlist
+	// is applied by dropping what does not match, so a mistyped server
+	// name subtracts a capability in silence (#278).
+	if err := CheckMCPServerNames(cfg.Bundle, cfg.Specs); err != nil {
+		return nil, nil, err
+	}
+
 	// And the one place the split is not enough on its own: a change
 	// executor reached through a planner dispatch runs where the write
 	// gate cannot see it (#235). Declared write surface is fine; a
@@ -350,7 +358,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 	var analysts []graph.Analyst
 	var classifier adkagent.Agent
 	for _, spec := range cfg.Specs {
-		opts := specialists.BuildOptions{Model: cfg.Model, Resolve: resolve, ResolveTier: resolveTier}
+		opts := specialists.BuildOptions{Model: cfg.Model, Resolve: resolve, ResolveTier: resolveTier, Logger: cfg.Logger}
 		// Task-mode specialists get the toolsets; SingleTurn
 		// classifiers don't (they run in one shot with no tool loop).
 		// An empty Mode is Task — the same default specialists.Build

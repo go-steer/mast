@@ -240,6 +240,13 @@ error naming the file rather than an incident that behaves oddly:
 - a `read_only` specialist that can reach a mutating tool → refused
 - a fan-out roster with a mutating analyst, or an analyst with no tool
   allowlist, or no `_synthesis` → refused
+- a `tools.mcp` entry naming a server the workload's `tool_catalog.mcp` does
+  not declare → refused, naming the specialist and the servers that do
+  exist. An allowlist is applied by dropping what does not match, so a
+  mistyped server name grants nothing and used to say nothing; the *tool*
+  half of the same mistake needs a `tools/list` and is warned about on first
+  use instead. See [a name that matches
+  nothing](/reference/workload-bundle/#a-name-that-matches-nothing)
 - a `model:` override whose credentials do not resolve, or a `tier:` the
   running provider cannot answer → refused
 - a spec declaring both `model:` and `tier:` → refused, with the file named
