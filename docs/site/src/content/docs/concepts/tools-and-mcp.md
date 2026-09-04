@@ -110,6 +110,18 @@ server is being digested, and it exchanges a digested response's
 above on purpose — it returns bytes the specialist has already been
 given, so there is no reach for an allowlist to withhold.
 
+It is also classified **read-only**, and you do not have to declare it to
+get that. Default-deny-unknown is the right stance for a tool that arrived
+from somewhere mast cannot inspect; it is the wrong stance for a tool mast
+itself registered, whose implementation is in this repo. `retrieve_raw`
+reaches no server and takes no argument but a key mast minted, so there is
+nothing to be uncertain about — and before this was fixed, an operator with
+an enumerated catalog met an approval question naming a tool they had never
+declared, mid-diagnosis, on the first response big enough to digest. A
+workload that wants it gated anyway can still say so: a `tool_catalog.tools`
+override outranks the builtin class, the way it outranks every other
+default.
+
 ## Reference
 
 - [`mcp.json`](/reference/mcp-servers/) — schema, transports, credentials,

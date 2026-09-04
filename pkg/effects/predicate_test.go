@@ -17,6 +17,7 @@ package effects
 import (
 	"testing"
 
+	mastmcp "github.com/go-steer/mast/pkg/mcp"
 	"github.com/go-steer/mast/pkg/planner"
 )
 
@@ -105,6 +106,40 @@ func TestBuiltinNamesMatchRegistrations(t *testing.T) {
 	// mode is benign; the entry documents intent.
 	if builtinClasses["invoke_remote_agent"] != ClassMutating {
 		t.Error("invoke_remote_agent must classify mutating (remote effects are invisible to this process)")
+	}
+	// retrieve_raw is registered by pkg/mcp whenever the digest wrap is
+	// on. Unlike the federation entry, drift here is NOT benign: falling
+	// to the default class parks a read at the write gate (#270).
+	if _, ok := builtinClasses[mastmcp.RetrieveRawToolName]; !ok {
+		t.Errorf("builtinClasses is missing an entry for %q", mastmcp.RetrieveRawToolName)
+	}
+	if builtinClasses[mastmcp.RetrieveRawToolName] != ClassReadOnly {
+		t.Errorf("%s must classify read-only; it reads mast's own digest store and reaches no server", mastmcp.RetrieveRawToolName)
+	}
+}
+
+// TestRetrieveRawIsNotGatedByDefaultDenyUnknown is #270 stated as the
+// operator sees it: a workload with an enumerated tool catalog that
+// does not mention retrieve_raw — which is every shipped example, since
+// it is not a tool anyone declares — must not send a read to the write
+// gate.
+func TestRetrieveRawIsNotGatedByDefaultDenyUnknown(t *testing.T) {
+	// An enumerated catalog, exactly as a bundle declares one. It
+	// classifies the MCP surface and says nothing about retrieve_raw,
+	// because retrieve_raw appears in no tools/list to be classified.
+	pred := NewPredicate(map[string]bool{
+		"get_k8s_resource":   false,
+		"patch_k8s_resource": true,
+	})
+	if got := pred(mastmcp.RetrieveRawToolName); got != ClassReadOnly {
+		t.Errorf("pred(%q) = %v, want ClassReadOnly — an un-declared mast builtin is not an unknown tool", mastmcp.RetrieveRawToolName, got)
+	}
+	// The override still outranks the builtin table, so a workload that
+	// wants to gate it can. Builtin classification is a default, not a
+	// carve-out from the operator's own policy.
+	gated := NewPredicate(map[string]bool{mastmcp.RetrieveRawToolName: true})
+	if got := gated(mastmcp.RetrieveRawToolName); got != ClassMutating {
+		t.Errorf("override mutating:true on %s → %v, want ClassMutating (override outranks builtin)", mastmcp.RetrieveRawToolName, got)
 	}
 }
 
