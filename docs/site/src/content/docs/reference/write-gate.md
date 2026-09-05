@@ -300,6 +300,56 @@ outcome: `awaiting_approval`, `denied_by_policy`, `denied_by_operator`,
 `change_set_refused` (a proposed change the specialist's own report failed
 validation on).
 
+## What the change overwrote
+
+The records above answer *what did mast do*. They do not answer the question
+an operator asks next when the change made things worse: *what was there
+before, and how do I put it back*.
+
+When the workload's tool catalog declares a
+[`capture:`](/reference/workload-bundle/#capture--what-a-change-overwrote-and-how-to-put-it-back)
+block, the gate reads the target's prior state **before** the call fires and
+records it beside the call:
+
+```
+Prior state captured:
+  Changed by: scale_deployment(deployment=api, replicas=10)
+  Captured:   2026-09-05T09:00:00Z by get_deployment(name=api)
+    spec.replicas = 3
+  Undo:       scale_deployment(deployment=api, replicas=3)
+              (proposal, not a button: it goes through the write gate like any other change)
+              scale_deployment {"deployment":"api","replicas":3}
+```
+
+Four properties are worth stating plainly.
+
+**mast never fires the undo.** It is a proposal. Running it sends it back
+through this gate, with a person answering. An automatic rollback would be a
+mutating call nobody approved, decided by the component whose job is to stop
+exactly that.
+
+**It covers every path to the tool, not just the gated one.** A call that
+ran under `on_mutation: apply`, one an operator approved, one an operator
+**edited** — captured against the arguments that actually ran, for the same
+reason the edit record exists — and one covered by a change-set grant. The
+grant case captures before the grant is marked spent, so a refusal does not
+burn it.
+
+**A capture that cannot be taken refuses the call.** Everything in this path
+happens before the tool runs, so refusing costs nothing that has already
+happened. Acting first and discovering afterwards that no record was taken
+is the one outcome worth avoiding: it leaves you believing there is a way
+back when there is not.
+
+**The record is durable on the same terms as everything else here** — the
+session's own state, written with the event for the call it describes. If
+one cannot be read back, `sessions show` prints a stub naming the call
+rather than omitting the row, because a missing row reads as "nothing was
+captured" and sends you away from an undo you had.
+
+Bundles that declare no capture are unaffected: nothing is read, nothing is
+recorded, and the view is unchanged.
+
 ## Exporting what was decided
 
 An adjudication is worth more than a log line. *"A human looked at

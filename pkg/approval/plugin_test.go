@@ -76,6 +76,8 @@ type gateProbeConfig struct {
 	seed func(t *testing.T, svc adksession.Service)
 	// extraPluginsFirst are registered ahead of the write gate.
 	extraPluginsFirst func(t *testing.T) []*plugin.Plugin
+	// captures declares prior-state capture; nil is #296-off.
+	captures *CaptureRules
 	// restartBeforeVerdict builds a completely fresh runner, plugin,
 	// gate and session-service handle for the operator's turn, keeping
 	// only the on-disk event log. It stands in for the process dying
@@ -133,6 +135,7 @@ func runGateProbe(t *testing.T, cfg gateProbeConfig) *gateProbe {
 			Policy:   cfg.policy,
 			Mutating: mutating,
 			Gate:     probe.gate,
+			Captures: cfg.captures,
 		})
 		if err != nil {
 			t.Fatalf("approval.New: %v", err)

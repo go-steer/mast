@@ -94,6 +94,21 @@ type ToolPolicy struct {
 	// cluster, and mast says so in the approval question rather than
 	// implying a check it is not making.
 	Precondition *Precondition `yaml:"precondition,omitempty"`
+
+	// Capture declares what to record before a call to this tool
+	// changes anything, so an operator asking "how do I undo this" has
+	// an answer in the transcript rather than in their memory (#296).
+	//
+	// Same reason the precondition is the workload's job: mast cannot
+	// derive which tool reads the object a write call is about. And the
+	// same reason again for the revert inside it — putting a captured
+	// value back is a call, and which call it is depends on the tool.
+	//
+	// A tool with no capture behaves exactly as it did before v0.7. A
+	// tool with one does not run unless the capture can be taken: see
+	// pkg/approval/capture.go on why fail-closed is the honest reading
+	// of declaring one at all.
+	Capture *Capture `yaml:"capture,omitempty"`
 }
 
 // Precondition is the bundle spelling of a change-set freshness check
@@ -129,6 +144,81 @@ type Precondition struct {
 	// narrow read and the wrong one for a chatty read — narrow the
 	// read rather than filtering it here.
 	Fields []string `yaml:"fields,omitempty"`
+}
+
+// Capture is the bundle spelling of a prior-state capture
+// (approval.Capture, converted by internal/compose for the same reason
+// Precondition is: pkg/approval does not import pkg/workload).
+//
+//	tools:
+//	  - name: patch_k8s_resource
+//	    mutating: true
+//	    capture:
+//	      read: get_k8s_resource
+//	      args_from: {kind: kind, name: name, namespace: namespace}
+//	      fields: [spec.template.spec.containers]
+//	      revert:
+//	        call: patch_k8s_resource
+//	        args_from_change: {kind: kind, name: name, namespace: namespace}
+//	        args_from_capture: {patch: spec.template.spec.containers}
+//
+// It looks like a precondition and is not one. A precondition asks "is
+// the world still what it was when this was approved", so it wants the
+// narrowest read that settles the question and keeps only a digest. A
+// capture asks "what was here before I overwrote it", so it keeps the
+// values — they are what goes back into the revert call.
+type Capture struct {
+	// Read names the read-only tool that records the prior state. It
+	// must be classified read-only, and mast refuses to start rather
+	// than run a recording that changes what it records.
+	Read string `yaml:"read"`
+
+	// Args are literal arguments for the read.
+	Args map[string]any `yaml:"args,omitempty"`
+
+	// ArgsFrom maps a read argument name to the argument of the change
+	// being captured that supplies it.
+	ArgsFrom map[string]string `yaml:"args_from,omitempty"`
+
+	// Fields are dot-separated paths into the read's result to record.
+	// Empty records the whole result — the opposite default from a
+	// precondition, and deliberately: a capture that kept too little is
+	// a capture that cannot restore, and the cost of keeping too much is
+	// a larger row.
+	Fields []string `yaml:"fields,omitempty"`
+
+	// Revert declares the call that puts the captured state back, or is
+	// omitted when this workload has no inverse to offer. Omitting it is
+	// honest and still useful: the record carries the old value even
+	// when mast cannot name the call that restores it.
+	Revert *Revert `yaml:"revert,omitempty"`
+}
+
+// Revert is the bundle spelling of the call that undoes a change
+// (approval.Revert).
+//
+// mast never fires it. It is computed before the forward call runs,
+// checked against the revert tool's declared input schema, and written
+// into the durable record as a proposed change — which means undoing
+// something goes back through the write gate like any other change,
+// with a person answering. See pkg/approval/capture.go.
+type Revert struct {
+	// Call names the tool that performs the undo. Often the same tool
+	// as the change; written out rather than defaulted so the record
+	// reads correctly on its own.
+	Call string `yaml:"call"`
+
+	// Args are literal arguments for the revert call.
+	Args map[string]any `yaml:"args,omitempty"`
+
+	// ArgsFromChange maps a revert argument name to the change's
+	// argument that supplies it — how the undo addresses the same object
+	// the change addressed.
+	ArgsFromChange map[string]string `yaml:"args_from_change,omitempty"`
+
+	// ArgsFromCapture maps a revert argument name to a dot-separated
+	// path into the captured read result: the old value, going back.
+	ArgsFromCapture map[string]string `yaml:"args_from_capture,omitempty"`
 }
 
 // Budget is the workload-level runtime budget ceiling. Composes over

@@ -268,6 +268,38 @@ precondition watching the field the set itself rewrites invalidates its own
 set): [`precondition:` in the workload
 bundle](/reference/workload-bundle/#precondition--what-makes-an-approval-stale).
 
+## What was there before
+
+Everything above is about whether a change happens. This is about what is
+true after it has.
+
+An operator who approves a change is making a bet, and a fair bet needs a
+way to fold. Without one the position is the worst of the three available:
+you can approve a change, watch the incident get worse, and have no path
+back except reconstructing the old state by hand while the pager is going.
+
+So when the workload declares it, the gate reads the target's prior state
+before the call fires and records it — the old values, and the call that
+restores them. `mast sessions show` prints both.
+
+**The undo is a proposal, not a button.** mast will not fire it. Running it
+sends it back through this same gate with a person answering, because a
+rollback mast decided on by itself is a mutating call nobody approved.
+
+Two limits are worth knowing up front, because both are decisions rather
+than gaps. mast **cannot work out the read or the inverse on its own** —
+which tool reads the object a write is about is domain knowledge, and
+`scale_deployment` inverts by re-scaling while `delete_pod` does not invert
+at all — so the workload declares them, and a workload that declares no
+inverse gets a record of the old value with the undo marked undeclared.
+That is honest and still useful. And a capture proves a **record** exists,
+not that the revert would work; nothing executes one to check.
+
+How to declare it:
+[`capture:`](/reference/workload-bundle/#capture--what-a-change-overwrote-and-how-to-put-it-back).
+What it looks like in the transcript: [what the change
+overwrote](/reference/write-gate/#what-the-change-overwrote).
+
 ## What the operator decided, after the incident is over
 
 A verdict is expensive. Somebody stopped what they were doing, read a call,

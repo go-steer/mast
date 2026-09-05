@@ -130,6 +130,8 @@ type csConfig struct {
 	preconditions map[string]*Precondition
 	// preconditionErr, when set, is what the declaration lookup returns.
 	preconditionErr error
+	// captures declares prior-state capture; nil is #296-off.
+	captures *CaptureRules
 
 	gateOptions permissions.Options
 	// scripts is the model script per process.
@@ -210,6 +212,7 @@ func runChangeSetProbe(t *testing.T, cfg csConfig) *csProbe {
 			Mutating: alwaysMutating,
 			Gate:     gate,
 			Grants:   grants,
+			Captures: cfg.captures,
 		})
 		if err != nil {
 			t.Fatalf("approval.New: %v", err)

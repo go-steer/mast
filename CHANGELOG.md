@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+**A change mast makes now carries a route back.** Through v0.6 the sequence
+was propose → approve → act → record that it acted, which leaves an operator
+who approves a change and watches it make things worse with no path back
+except rebuilding the old state by hand under time pressure. A tool in the
+workload's catalog can now declare a `capture:` block — a read-only tool
+that records the target's prior state, the fields to keep, and optionally
+the call that puts them back. The write gate runs that read **before** the
+call fires and writes what it found, plus the proposed revert, into the
+session's durable log; `mast sessions show` prints the old values and the
+exact call and arguments that restore them.
+
+Three things it deliberately does not do. mast does not **derive the read**
+— which tool reads the object a write is about is domain knowledge, and the
+same neutrality that keeps a Kubernetes schema out of mast keeps one out of
+this. It does not **derive the inverse**: `scale_deployment` inverts by
+re-scaling, `delete_pod` does not invert at all, and a patch inverts only
+over the fields it touched, so a workload declares `revert:` or declares
+nothing and gets a record whose undo is marked undeclared. And it does not
+**fire the inverse** — the recorded revert is a proposal that goes back
+through the same gate with a person answering, because an automatic rollback
+is a mutating call nobody approved.
+
+The capture covers all four paths a mutating call can take (`apply`, an
+approved verdict, an edited verdict — recorded against the arguments the
+operator actually ran — and a change-set grant being spent, captured before
+the grant is marked consumed). It is **fail-closed**: everything happens
+before the forward call, so a read that fails or a declaration that cannot
+be honored refuses the call while nothing has happened yet. Six declaration
+mistakes are refused before run time, including a capture whose read is the
+changing tool itself, a **mutating** capture read (it would write to the
+cluster before every gated call, unapproved and unrecorded, in the name of
+reversibility), a **read-only** revert (offered as a way back, does nothing),
+and a revert whose arguments all come from the change — that one re-applies
+the change instead of undoing it, and is shaped closely enough like an undo
+to be believed during an incident. A deployment that declares captures but
+cannot run reads still starts and warns, since silence there teaches a
+bundle author that their changes became reversible.
+
+Restore stays out by decision, not by sequencing: mast can render the call
+but cannot decide that firing it an hour later is still right
+([#296](https://github.com/go-steer/mast/issues/296)).
+
 **A specialist's `tools.mcp` allowlist is now checked for existence.** It is
 applied by dropping what does not match, so a name that matches nothing was
 never an error — it was a capability quietly missing from a specialist whose

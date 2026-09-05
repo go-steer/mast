@@ -126,12 +126,17 @@ func WriteGate(cfg WriteGateConfig) (*plugin.Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
+	captures, err := priorStateCaptures(cfg, pred)
+	if err != nil {
+		return nil, err
+	}
 	p, err := approval.New(approval.Config{
 		Policy:    policy,
 		Mutating:  func(name string) bool { return pred(name) == effects.ClassMutating },
 		Gate:      gate,
 		ChangeSet: changeSetChecker(cfg),
 		Grants:    grants,
+		Captures:  captures,
 		Workload:  cfg.Bundle.Name,
 		Logger:    cfg.Logger,
 	})
@@ -200,6 +205,92 @@ func changeSetGrants(cfg WriteGateConfig, pred effects.Predicate) (*approval.Fre
 				return nil, nil
 			}
 			return &pre, nil
+		},
+	}, nil
+}
+
+// priorStateCaptures builds the prior-state capture rules for a
+// workload (#296): for each mutating tool that declares one, the read
+// that records what the call is about to overwrite and the call that
+// puts it back.
+//
+// Two things are refused here rather than logged, and both are the same
+// kind of refusal the precondition read gets: a declaration that cannot
+// mean what it says, found at startup instead of during an incident.
+//
+// Returns non-nil whenever there is a bundle, even with no declarations
+// in it. An empty rule set costs a nil map lookup per mutating call and
+// keeps one code path instead of two.
+func priorStateCaptures(cfg WriteGateConfig, pred effects.Predicate) (*approval.CaptureRules, error) {
+	declared := map[string]approval.Capture{}
+	reverts := 0
+	for _, p := range cfg.Bundle.ToolCatalog.Tools {
+		if p.Capture == nil {
+			continue
+		}
+		// A capture read that mutates would write to the cluster before
+		// every gated call, unapproved and unrecorded, in the name of
+		// making the change reversible. Same refusal, same wording, same
+		// reason as the freshness read above.
+		if pred(p.Capture.Read) == effects.ClassMutating {
+			return nil, fmt.Errorf("compose: tool_catalog.tools[%q].capture reads %q, which this workload classifies as mutating; a recording must not change what it records — name a read-only tool, or mark %q mutating: false if that is what it is",
+				p.Name, p.Capture.Read, p.Capture.Read)
+		}
+		c := approval.Capture{
+			Read:     p.Capture.Read,
+			Args:     p.Capture.Args,
+			ArgsFrom: p.Capture.ArgsFrom,
+			Fields:   p.Capture.Fields,
+		}
+		if r := p.Capture.Revert; r != nil {
+			// The mirror image: a revert classified read-only cannot put
+			// anything back. It is a likelier mistake than it sounds,
+			// because the natural way to write one is to copy the capture
+			// block and change the tool name.
+			if pred(r.Call) != effects.ClassMutating {
+				return nil, fmt.Errorf("compose: tool_catalog.tools[%q].capture.revert calls %q, which this workload does not classify as mutating; a call that changes nothing cannot undo a change — name the tool that writes, or mark %q mutating: true if that is what it is",
+					p.Name, r.Call, r.Call)
+			}
+			c.Revert = &approval.Revert{
+				Call:            r.Call,
+				Args:            r.Args,
+				ArgsFromChange:  r.ArgsFromChange,
+				ArgsFromCapture: r.ArgsFromCapture,
+			}
+			reverts++
+		}
+		declared[p.Name] = c
+	}
+	if cfg.Logger != nil && len(declared) > 0 {
+		names := make(map[string]bool, len(declared))
+		for k := range declared {
+			names[k] = true
+		}
+		cfg.Logger.Info("prior-state capture active",
+			"tools", sortedKeys(names), "with_revert", reverts,
+			"can_read", cfg.ToolRead != nil, "can_check_revert", cfg.ToolSchemas != nil)
+		// Not a refusal, because it is a property of the deployment
+		// rather than of the bundle, and the gate itself will refuse each
+		// call with the specific reason. But an operator should read it at
+		// startup rather than infer it from the first refused remediation.
+		if cfg.ToolRead == nil {
+			cfg.Logger.Warn("tools declare a prior-state capture but this deployment cannot run a read on its own behalf; their calls will be refused rather than run uncaptured",
+				"tools", sortedKeys(names))
+		}
+		if reverts > 0 && cfg.ToolSchemas == nil {
+			cfg.Logger.Warn("tools declare a revert but this deployment cannot look up a tool's arguments, so mast cannot tell whether a revert it builds is callable; their calls will be refused",
+				"tools", sortedKeys(names))
+		}
+	}
+	return &approval.CaptureRules{
+		Read:   cfg.ToolRead,
+		Schema: cfg.ToolSchemas,
+		For: func(name string) (*approval.Capture, error) {
+			c, ok := declared[name]
+			if !ok {
+				return nil, nil
+			}
+			return &c, nil
 		},
 	}, nil
 }

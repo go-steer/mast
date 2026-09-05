@@ -91,6 +91,16 @@ agui:
 | `tool_catalog.tools[].precondition.args` | map | Fixed arguments for the read, e.g. `{namespace: prod}`. |
 | `tool_catalog.tools[].precondition.args_from` | map | Arguments taken from the change itself: `{name: deployment}` reads *the read's* `name` from *this call's* `deployment`. This is what lets each call in a set be checked against its own object. |
 | `tool_catalog.tools[].precondition.fields` | list of strings | Dotted paths into the read's result that must not have moved. Omitted means the whole result is digested. For an MCP tool every path starts `output.` — that is how a structured MCP result arrives. |
+| `tool_catalog.tools[].capture` | block | Optional. What to record before a call to this tool changes anything, so that "how do I undo this" has an answer in the transcript — see [`capture:`](#capture--what-a-change-overwrote-and-how-to-put-it-back) below. Consulted on every path a mutating call can take to the tool, not only the gated ones. |
+| `tool_catalog.tools[].capture.read` | string | Required in the block. The read-only tool that records the prior state. Same rule as a precondition read, for a sharper reason: mast refuses to start rather than run a recording that changes what it records. It also may not be the changing tool itself — by the time that has run there is no prior state left to read. |
+| `tool_catalog.tools[].capture.args` | map | Fixed arguments for the read. |
+| `tool_catalog.tools[].capture.args_from` | map | Arguments taken from the change: `{name: deployment}` reads *the read's* `name` from *this call's* `deployment`. |
+| `tool_catalog.tools[].capture.fields` | list of strings | Dotted paths into the read's result to record. Omitting them records the **whole result** — the opposite of a precondition's default, and deliberately so: a capture that kept too little cannot restore, and the cost of keeping too much is a bigger row. |
+| `tool_catalog.tools[].capture.revert` | block | Optional. The call that puts the captured state back. Omitting it is honest rather than incomplete — the record still carries the old value, and `mast sessions show` says in as many words that this workload declares no way back. |
+| `tool_catalog.tools[].capture.revert.call` | string | Required in the block. The tool that performs the undo — often the changing tool itself. It must be classified **mutating**: a call that changes nothing cannot undo a change, and offering one as a way back during an incident is worse than offering none. |
+| `tool_catalog.tools[].capture.revert.args` | map | Fixed arguments for the revert call. |
+| `tool_catalog.tools[].capture.revert.args_from_change` | map | Revert arguments taken from the change — how the undo addresses the same object the change addressed. |
+| `tool_catalog.tools[].capture.revert.args_from_capture` | map | Revert arguments taken from the *recorded* state, by dotted path: the old values, going back. A revert that names none of these is refused at load, because it re-applies the change rather than undoing it. |
 | `specialists[]` | list of strings | Specialist names; resolve against the config root's `specialists/*.tmpl`. A roster with a SingleTurn classifier plus a `_fallback` Task specialist enables graph dispatch. |
 | `dispatch` | string | The root shape this roster is built for: `coordinator`, `graph`, `fanout`, `bounded`, or `auto`. Empty leaves the choice to the caller. `auto` never picks `bounded` — a cost ceiling is declared, never inferred. A shape is a property of the roster, not of how the daemon happened to be launched, so the bundle is where it belongs — `--dispatch` overrides it only when an operator actually typed the flag. |
 | `fanout.max_concurrency` | int | Under `dispatch: fanout`, how many analyst branches run at once. `0` (omitted) means the default, **4**; a negative value means unbounded. Ignored under any other dispatch. |
@@ -580,6 +590,82 @@ alone, and the parked question says so in those words. If mast cannot
 evaluate a declared precondition at all, the set is not grantable: the
 question says the calls must be approved one at a time, and `scope:
 change_set` is refused rather than granted on a check that is not running.
+
+## `capture:` — what a change overwrote, and how to put it back
+
+mast can park a mutating call, run it, and record that it ran. Until it
+also records what was *there before*, an operator who approves a change and
+watches it make things worse has no way back except reconstructing the old
+state by hand, under time pressure, at 3am.
+
+So the write gate takes a snapshot before the call fires — and, when the
+bundle can name one, the call that restores it:
+
+```yaml
+tool_catalog:
+  tools:
+    - name: get_deployment
+      mutating: false            # required: a recording must not change what it records
+    - name: scale_deployment
+      mutating: true
+      capture:
+        read: get_deployment
+        args_from: {name: deployment}   # the read's "name" <- this call's "deployment"
+        fields: [spec.replicas]         # what to keep
+        revert:
+          call: scale_deployment
+          args_from_change:  {deployment: deployment}   # same object…
+          args_from_capture: {replicas: spec.replicas}  # …old value
+```
+
+`mast sessions show` then prints, beside the transcript:
+
+```
+Prior state captured:
+  Changed by: scale_deployment(deployment=api, replicas=10)
+  Captured:   2026-09-05T09:00:00Z by get_deployment(name=api)
+    spec.replicas = 3
+  Undo:       scale_deployment(deployment=api, replicas=3)
+              (proposal, not a button: it goes through the write gate like any other change)
+              scale_deployment {"deployment":"api","replicas":3}
+```
+
+**mast does not fire the undo.** The recorded revert is a proposal. Running
+it sends it back through this same gate, with a person answering, because an
+automatic rollback is a mutating call nobody approved — decided by the
+component whose entire job is to not let that happen.
+
+Five things to know before writing one:
+
+- **It looks like a [`precondition:`](#precondition--what-makes-an-approval-stale)
+  and it is not one.** A precondition asks *is the world still what it was
+  when this was approved*, so it wants the narrowest read that settles the
+  question and keeps only a digest. A capture asks *what was here before I
+  overwrote it*, so it keeps the values — they are what goes back into the
+  revert. The defaults for `fields:` are opposite for exactly that reason.
+- **The capture happens before the call, so a failure costs nothing.** If
+  the read fails, or the declaration cannot be honored, the call is
+  **refused** and the cluster is untouched. That is the whole reason the
+  work happens up front: the alternative is acting first and then finding
+  out no record was taken, which leaves an operator believing in an undo
+  that does not exist.
+- **A revert whose arguments all come from the change is refused at load.**
+  It re-applies the change rather than undoing it, and it is shaped closely
+  enough like an undo to be believed by whoever reads the record during an
+  incident. At least one argument has to come from `args_from_capture`.
+- **Omitting `revert:` is a complete declaration.** Plenty of changes have
+  no inverse a workload can name — `delete_pod` does not invert, and a patch
+  inverts only over the fields it touched. The record still carries the old
+  value, and the view says the undo is undeclared and names the tool, rather
+  than going quiet in a way that reads as "an undo exists somewhere".
+- **A capture proves the record exists, not that the revert works.** Nothing
+  here executes a revert to check. A workload that wants that assurance has
+  to exercise it.
+
+A deployment that declares captures but has no seam to run reads still
+starts, and says so at startup — the declaring tools' calls are then refused
+one at a time, with the reason. The failure that warning closes is a bundle
+author seeing a clean start and believing their changes became reversible.
 
 ## A declared path is not a route
 

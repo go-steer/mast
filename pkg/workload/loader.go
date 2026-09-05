@@ -132,6 +132,9 @@ func (b *Bundle) validate() error {
 		if err := validatePrecondition(p); err != nil {
 			return err
 		}
+		if err := validateCapture(p); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -278,6 +281,76 @@ func validatePrecondition(p ToolPolicy) error {
 	for readArg, changeArg := range pre.ArgsFrom {
 		if strings.TrimSpace(readArg) == "" || strings.TrimSpace(changeArg) == "" {
 			return fmt.Errorf("tool_catalog.tools[%q].precondition.args_from maps %q to %q; both sides name an argument", p.Name, readArg, changeArg)
+		}
+	}
+	return nil
+}
+
+// validateCapture checks what the bundle alone can check about a
+// prior-state capture (#296). The same split validatePrecondition makes:
+// read-only classification is composition's job because that is where
+// the mutation predicate is, and whether a tool is wired at all is
+// checked at the moment it is used.
+//
+// Everything here is a declaration that cannot mean what it says, and
+// every one of them is refused at parse rather than discovered when a
+// remediation is halfway through. A capture that silently records
+// nothing is worse than no capture: it is a promise of an undo that
+// turns out, at the moment it is needed, to be empty.
+func validateCapture(p ToolPolicy) error {
+	decl := p.Capture
+	if decl == nil {
+		return nil
+	}
+	if strings.TrimSpace(decl.Read) == "" {
+		return fmt.Errorf("tool_catalog.tools[%q].capture names no read tool", p.Name)
+	}
+	if decl.Read == p.Name {
+		return fmt.Errorf("tool_catalog.tools[%q].capture reads %q, which is the tool being captured; a change cannot record its own prior state", p.Name, decl.Read)
+	}
+	for _, f := range decl.Fields {
+		if strings.TrimSpace(f) == "" {
+			return fmt.Errorf("tool_catalog.tools[%q].capture.fields contains an empty path", p.Name)
+		}
+	}
+	for readArg, changeArg := range decl.ArgsFrom {
+		if strings.TrimSpace(readArg) == "" || strings.TrimSpace(changeArg) == "" {
+			return fmt.Errorf("tool_catalog.tools[%q].capture.args_from maps %q to %q; both sides name an argument", p.Name, readArg, changeArg)
+		}
+	}
+	rev := decl.Revert
+	if rev == nil {
+		return nil
+	}
+	if strings.TrimSpace(rev.Call) == "" {
+		return fmt.Errorf("tool_catalog.tools[%q].capture.revert names no call", p.Name)
+	}
+	for revArg, changeArg := range rev.ArgsFromChange {
+		if strings.TrimSpace(revArg) == "" || strings.TrimSpace(changeArg) == "" {
+			return fmt.Errorf("tool_catalog.tools[%q].capture.revert.args_from_change maps %q to %q; both sides name an argument", p.Name, revArg, changeArg)
+		}
+	}
+	if len(rev.ArgsFromCapture) == 0 && len(rev.Args) == 0 {
+		// A revert built only from the change's own arguments puts back
+		// whatever the change put in. It is not an undo, and the shape is
+		// close enough to a correct one that it would be believed.
+		return fmt.Errorf("tool_catalog.tools[%q].capture.revert takes nothing from the capture and names no literal arguments, so it would re-apply the change rather than undo it; map at least one argument through args_from_capture", p.Name)
+	}
+	// Non-empty fields narrow what the record keeps. A revert argument
+	// drawn from outside that narrowing resolves at capture time and is
+	// then absent from the record, so a reader looking at the row cannot
+	// see where the value came from — and re-deriving it later is
+	// impossible. Refuse the disagreement rather than record half of it.
+	kept := make(map[string]bool, len(decl.Fields))
+	for _, f := range decl.Fields {
+		kept[f] = true
+	}
+	for revArg, path := range rev.ArgsFromCapture {
+		if strings.TrimSpace(revArg) == "" || strings.TrimSpace(path) == "" {
+			return fmt.Errorf("tool_catalog.tools[%q].capture.revert.args_from_capture maps %q to %q; the left side names an argument and the right side a path into the capture", p.Name, revArg, path)
+		}
+		if len(kept) > 0 && !kept[path] {
+			return fmt.Errorf("tool_catalog.tools[%q].capture.revert takes %s from the captured %q, which capture.fields does not record; add it to fields, or drop fields and record the whole read", p.Name, revArg, path)
 		}
 	}
 	return nil
