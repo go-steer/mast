@@ -456,6 +456,95 @@ assertion — `kind: poddisruptionbudget`, no name — is deliberately exempt fr
 so `Snapshot` walks those matched sets too. Without that, every object in such a set reads as newly
 appeared, and a ceiling of `0` fails on a cluster nothing touched.
 
+### 5.4 The tool surface and the runner
+
+`internal/evals/outcome/{surface,runner}.go`, driven by `internal/evals/cmd/outcome`. This is the
+half that spends money, so most of what it decides is a budget decision wearing an engineering hat.
+
+**The selection is the intent table, not a list.** §4 settled *which* server; it left *which tools*
+open. lookout's `--profile=all` is 34 tools and 160 KB of JSON schema on every model call, most of it
+for tools the corpus cannot score. A hand-picked list is the second-list-that-drifts the provisioner
+already refuses for images. So the surface is exactly `intents.yaml`'s own `lookout_tools` keys —
+eleven tools, 54 KB — which makes the property structural rather than maintained: **every tool the
+model can call is a tool the grader can read**, so no run-time vacuity red (§5.3, row 2) can be
+caused by an off-table tool. Narrowing further would be worse than expensive: reducing the surface to
+the one tool the admitted roster needs turns `intent_satisfied` into a tautology. Eleven leaves a
+real choice.
+
+**The server config is built in Go rather than committed as an `mcp.json`.** The kubeconfig path is
+per-run, so a committed file would have to reach it through a `${MAST_OUTCOME_KUBECONFIG}` in the
+*runner's own* environment — where every other child it launches could also read it. Building the
+config instead hands the server one literal path and an otherwise empty environment, and still goes
+through the shipped `mcp.NewToolset`, so the stdio launch and env scoping under test are the daemon's
+code paths and not a copy of them.
+
+**The child gets `PATH` and nothing else — in particular no `HOME`.** lookout resolves a cluster
+through clientcmd, which falls back to `~/.kube/config` when `KUBECONFIG` is unset. A child with
+`HOME` whose `KUBECONFIG` failed to apply would read the operator's real cluster and grade a whole
+board against it. Without `HOME` there is no fallback to find. That is §5.2's `envWithoutKubeconfig`
+rule from the other side, and it is why handing lookout a kubeconfig with no `--context` flag is safe
+at all: `verifyKubeconfig` has already proven the file describes exactly one context, that it is
+ours, and that `current-context` names it.
+
+**A pinned lookout.** `outcome.PinnedLookout` is a Go constant so the pre-flight's refusal can name
+it, and CI reads it back out (`--print-lookout-pin`) rather than repeating it in YAML. A gate whose
+tool surface floats reds for reasons no PR author can act on, and a gate people have learned to
+ignore is worse than no gate. Bumping the pin is a reviewable diff whose board delta is the argument
+for or against it.
+
+**A deadline, not a job timeout.** The pass carries `DefaultCeiling = 20m` as a `context` deadline it
+checks between cases. A job timeout reports *"cancelled"*; a deadline reports which cases ran, which
+is rung 4's input — and rung 4 exists precisely so a short board reds instead of passing. The
+workflow's own `timeout-minutes: 35` is deliberately slack against it: if the outer timeout is what
+stops the job, the board is lost.
+
+**One agent, not the roster.** Every run is a single `sre` agent. A planner dispatch would hide the
+specialist's tool calls behind the delegating turn the trace carries, and every intent check in the
+corpus reads that trace. This is the same boundary `DESIGN.md` draws for the write gate, arriving in
+a measurement context.
+
+**Concurrency 3, mutating last and alone.** Read-only cases run in a worker pool against one shared
+cluster; §8's mutating sequencing is implemented now, with nothing in the admitted roster reaching
+it, so admitting the first mutating case is a corpus change rather than a runner change. `restore`
+deletes the fixture namespace and re-provisions from the manifest rather than re-applying it: a
+re-apply is not a restore, because the case may have deleted an object.
+
+**Unreachable intents are refused at construction**, against the surface the model will actually be
+shown — the run-time half of §7's *never ship a rung that cannot fire*. §5.1's loader checks the same
+rule against the table; this checks it against the live selection, which is the one that can differ
+when a pinned binary drops a tool.
+
+**The gate measures the mid tier, not mast's frontier default.** The tier gates a *substrate* claim —
+that the read path, tool surface, trace adapter and cluster safeguards hold end to end with a model
+that chooses — not a frontier-capability claim. All three admitted cases are one OOM diagnosis from a
+named namespace, so the headroom a frontier model buys is headroom this corpus does not spend, at
+roughly five times the bill on every pull request. `--model` asks a capability question of anything
+else without changing what gates.
+
+**Three exit codes, and they only survive a compiled binary.** 0 green, 1 the board is red, 2 the
+tier could not run — the distinction the gate's job summary branches on, because one of them is a
+finding about mast and the other is a finding about the machine. `scripts/outcome.sh` therefore
+**builds and executes** rather than using `go run`, which does not propagate a non-zero child status:
+it prints `exit status 2` to stderr and exits 1 itself. The first CI run of the workflow found this
+by reporting a red board for a missing container image. `scripts/evals.sh` had the same defect
+latently — it documented a code 2 it could not deliver — and is fixed the same way.
+
+**The fixture images are pulled by asking, not by a second list.** The cluster is never allowed to
+reach a registry, so the images have to be on the host before a pass; `--print-images` reads them out
+of the manifests through the same staging provisioner the pass builds, and CI pipes that into
+`docker pull`. Same single-source-of-truth argument as the lookout pin, and the same one §5.2 makes
+for collecting the side-load list from the manifests in the first place.
+
+**One session database per run, under `${TMPDIR}` and never `$HOME`.** They survive the pass on
+purpose: the cluster is gone by the time anyone reads a red cell, and the session is the only
+remaining record of what the agent actually called. ~900 KB for a full pass. `--keep` additionally
+leaves the cluster up, which is the by-hand path for authoring a case.
+
+**An errored run reaches the board as a failed repetition, and its checks are still graded** (§5.3),
+so `runCase` returns a `Run` on every agent-failure path rather than an error. A provider 429 is the
+provider asking us to wait: the model is wrapped in `judge.Retrying` (#239) before it ever reaches
+the runner, so a quota blip does not present as a red merge gate.
+
 ---
 
 ## 6. Vacuity: required, diagnostic, and why the existing machinery does not transfer
@@ -524,7 +613,22 @@ committed diff, never a runtime flag.
 a sibling project that ran this experiment admitted 13 cases, went merge-blocking the next day,
 demoted two and deleted one within 72 hours — 23% of the roster, and the two demoted were the ones
 exercising the headline capabilities — while its ceiling went 85 → 150 → 240 → 360 minutes in nine
-days. Decide the number first and let it constrain the roster. #297 states the ceiling.
+days. Decide the number first and let it constrain the roster.
+
+**The ceiling is 20 minutes** (`outcome.DefaultCeiling`), for a pass of 3 cases × 5 repetitions. It
+is a `context` deadline the runner checks between cases, not a job timeout — see §5.4 — so a pass
+that runs out of budget produces a short board that reds under rung 4 rather than a cancelled job
+with no board at all.
+
+**Measured, on the first two full live passes** (`claude-sonnet-5`, lookout v0.23.0, 3 concurrent
+workers): **15 runs in 2m47s** on local kind and **2m48s** on a GitHub-hosted runner — 19–36s per
+run, plus ~90s outside the deadline for cluster create, image side-load and fixture readiness. The CI
+job is 5m39s wall clock end to end, against its own `timeout-minutes: 35`. So the ceiling is ~7× the
+measured pass on the machine that actually gates. That is
+deliberate and it is the *only* number this design defends: it is large enough that a slow provider
+day is not a red, and small enough that admitting a fourth case has to argue for raising it in a
+reviewable diff — which is the mechanism the sibling project's 85 → 360 did not have. It is not sized
+to the roster §8 wants.
 
 **Every verifier needs a discriminating fact.** A substring match on `"behind"` or
 `"PodDisruptionBudget"` is satisfiable by a model that never touched a cluster. `required_phrases` is
@@ -547,6 +651,25 @@ The admitted set is **the crashloop triple** — `crashloop-rca`,
 `crashloop-misleading-symptom`, `crashloop-evidence-chain`. They share the single
 `crashloop-workload` fixture, so the whole admitted set costs one provisioned namespace, and
 `crashloop-rca`'s own header says it: *"build all three or the fixture is underused."*
+
+**First two live boards, recorded rather than acted on** (`claude-sonnet-5`, 2026-09-05):
+
+| Pass | `crashloop-rca` | `crashloop-evidence-chain` | `crashloop-misleading-symptom` |
+|---|---|---|---|
+| local kind | 5/5 | 5/5 | **3/5** |
+| CI, first gated run | 5/5 | 5/5 | 5/5 |
+
+Both green — a case reds only if *all* its repetitions fail (§7). The two losses were both
+`the-agent-addressed-the-hypotheses-it-was-given`, which that case's own header already names as
+*"the check most likely to false-red"*, so the case stands at **8/10 across two passes**: intermittent
+rather than systematically failing, which is the distinction demotion exists to be decided on.
+
+The measurement is left standing and the phrase list is not touched. Widening `any_of_phrases` until
+it goes 5/5 is teaching to the test: the check exists to assert the agent said the reporter's
+hypotheses were *wrong* rather than quietly answering a different question, and a list grown to fit
+the runs that failed no longer asserts that. §7 offers two dispositions — **demotion** (a committed
+diff carrying the date and the measurement) or leaving it required and watching the rate. Two passes
+is still not enough to choose; these are the numbers the next ones get compared against.
 
 Order of admission after that: `rbac-overgrant-probe` (stronger than `crashloop-rca` — two of its
 three planted nouns are absent from the prompt; held back only because its fixture is the second
@@ -580,9 +703,22 @@ anchor bundle. Either the table grows GKE MCP rows, or its header states that it
 consolidated read path and the GKE MCP surface is out of its scope. Leaning to the second; not
 settled. Affects nothing in the admitted roster.
 
-**OQ2 — Does the O tier run per-PR or per-merge?** Per-PR is what "can red the build" means, and it
-is also a metered real-model run on every push. A merge-queue-only gate is the obvious compromise and
-weakens the claim. #297 decides it alongside the wall-clock ceiling.
+**OQ2 — Does the O tier run per-PR or per-merge? — RESOLVED 2026-09-05: per-PR.** The compromise
+turned out not to be needed. What made per-PR look expensive was *a metered pass per push*, and
+`concurrency: cancel-in-progress` on the workflow's ref reduces an eight-push branch to about one
+pass. A pass is 15 runs of a mid-tier model against a local kind cluster inside a 20-minute ceiling.
+So the gate runs where a gate belongs: on the pull request, before the merge, with the author able to
+see the red and act on it. Two costs are stated rather than discovered:
+
+- **A pull request from a fork cannot run it.** GitHub withholds secrets from fork workflows. The
+  unconfigured case therefore **fails rather than skips** — the judge nightly skips because a nightly
+  that reds on a rotated secret trains its readers to ignore it, but green-because-it-could-not-run
+  is §7's rung that cannot fire, which is the exact failure this design is written against.
+  `dev/ci/outcome-gate.sh` exits with the reason and the remedy in the job summary, and a maintainer
+  runs the tier on a branch in this repo before merging such a PR. There is no version of a
+  credentialed metered gate that is also fork-safe.
+- **Making `outcome` a *required* status check is a branch-protection change**, separate from landing
+  the workflow. Until it is required, the job reds visibly but does not block.
 
 **OQ3 — How does a case distinguish "the gate asked and the harness said yes" from "the harness
 answered a question nobody asked"?** The harness must auto-approve or nothing mutating completes, so
@@ -634,6 +770,13 @@ built (§3.3).
 | Rung 4 (**a case that ran fewer than its repetitions**) reds and suppresses rung 3. "0 of 5 ran" and "5 of 5 failed" are different findings, and reporting the second for the first sends a reader looking at the model | 2026-09-05 |
 | An **errored run** counts as a failed repetition and does not red on its own — a provider timeout is not a regression in mast — but its checks are still evaluated, because a cluster read is valid whatever the agent did | 2026-09-05 |
 | `Snapshot` covers the matched set of every set-assertion `changed_count_eq`, not only probe subjects. A set assertion is exempt from the probe corollary by design, and without this its whole set reads as newly appeared | 2026-09-05 |
+| **The tool surface is the intent table's own `lookout_tools` keys** (11 tools, 54 KB), not `--profile=all` (34, 160 KB) and not a hand-picked list. Structural rather than maintained: every tool the model can call is one the grader can read, so no run-time vacuity red can be caused by an off-table tool — while eleven still leaves a real choice, which one would not | 2026-09-05 |
+| The MCP server config is **built in Go, not committed as an `mcp.json`**. A committed file would need the per-run kubeconfig path in the runner's own environment, where every other child could read it. The child's environment is `PATH` only — **no `HOME`**, because clientcmd falls back to `~/.kube/config` and a failed `KUBECONFIG` would otherwise grade the operator's real cluster | 2026-09-05 |
+| `k8s-lookout` is **pinned** (`outcome.PinnedLookout`), in Go so the refusal can name it and read back by CI so the two cannot drift. A gate whose tool surface floats reds for reasons no author can act on | 2026-09-05 |
+| The wall-clock ceiling is **20 minutes**, expressed as a `context` deadline checked between cases rather than a job timeout: a deadline reports which cases ran, which is rung 4's input, and a timeout reports "cancelled" | 2026-09-05 |
+| **OQ2 resolved: per-PR**, made affordable by `cancel-in-progress` rather than by a merge queue. The unconfigured case **fails rather than skips** — the opposite of the judge nightly, because green-because-it-could-not-run is §7's rung that cannot fire. Cost: a fork PR cannot run it | 2026-09-05 |
+| Every run is **one `sre` agent, not the roster**. A planner dispatch hides the specialist's tool calls behind the delegating turn the trace carries, and every intent check reads that trace | 2026-09-05 |
+| The gate measures the **mid tier**, not mast's frontier default: it gates a substrate claim, not a frontier-capability one, and the admitted roster does not spend the headroom that costs ~5× per pull request | 2026-09-05 |
 
 ---
 
