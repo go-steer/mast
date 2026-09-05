@@ -117,6 +117,15 @@ jobs:
         with:
           install_only: true
 
+      # The cluster is deliberately never allowed to reach a registry —
+      # the provisioner side-loads with `kind load docker-image` — so the
+      # fixture images have to be on the runner first. Asked for rather
+      # than written here: the list is collected from the manifests, and
+      # a copy in YAML is a copy that can disagree with what the fixtures
+      # actually run.
+      - name: Pull the fixture images
+        run: go run ./internal/evals/cmd/outcome --print-images | xargs -rn1 docker pull
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:

@@ -55,8 +55,19 @@
 # Exit codes: 0 green; 1 a scenario missed its declared outcome, a metric
 # scores nothing, or the judge board is short a row; 2 the harness could
 # not run.
+#
+# BUILT AND EXECUTED, NOT `go run`, and those exit codes are the reason.
+# `go run` does not propagate a non-zero child status: it prints
+# "exit status 2" to stderr and exits 1 itself, which collapsed the third
+# code above into the second — this script documented a contract it could
+# not deliver. Found while wiring the O tier, whose gate branches on the
+# distinction (dev/ci/outcome-gate.sh); here it was latent, since no
+# caller told 1 from 2 yet.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-exec go run ./internal/evals/cmd/evals "$@"
+bin="$(mktemp -d "${TMPDIR:-/tmp}/mast-evals-bin.XXXXXX")"
+trap 'rm -rf "${bin}"' EXIT
+go build -o "${bin}/evals" ./internal/evals/cmd/evals
+"${bin}/evals" "$@"

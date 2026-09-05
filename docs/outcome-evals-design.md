@@ -521,6 +521,20 @@ named namespace, so the headroom a frontier model buys is headroom this corpus d
 roughly five times the bill on every pull request. `--model` asks a capability question of anything
 else without changing what gates.
 
+**Three exit codes, and they only survive a compiled binary.** 0 green, 1 the board is red, 2 the
+tier could not run — the distinction the gate's job summary branches on, because one of them is a
+finding about mast and the other is a finding about the machine. `scripts/outcome.sh` therefore
+**builds and executes** rather than using `go run`, which does not propagate a non-zero child status:
+it prints `exit status 2` to stderr and exits 1 itself. The first CI run of the workflow found this
+by reporting a red board for a missing container image. `scripts/evals.sh` had the same defect
+latently — it documented a code 2 it could not deliver — and is fixed the same way.
+
+**The fixture images are pulled by asking, not by a second list.** The cluster is never allowed to
+reach a registry, so the images have to be on the host before a pass; `--print-images` reads them out
+of the manifests through the same staging provisioner the pass builds, and CI pipes that into
+`docker pull`. Same single-source-of-truth argument as the lookout pin, and the same one §5.2 makes
+for collecting the side-load list from the manifests in the first place.
+
 **One session database per run, under `${TMPDIR}` and never `$HOME`.** They survive the pass on
 purpose: the cluster is gone by the time anyone reads a red cell, and the session is the only
 remaining record of what the agent actually called. ~900 KB for a full pass. `--keep` additionally

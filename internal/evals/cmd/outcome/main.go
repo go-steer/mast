@@ -81,6 +81,7 @@ func main() {
 		ceiling  = flag.Duration("ceiling", outcome.DefaultCeiling, "wall clock the whole pass is allowed")
 		keep     = flag.Bool("keep", false, "leave the cluster up afterwards, for reading a red cell by hand")
 		printPin = flag.Bool("print-lookout-pin", false, "print the pinned k8s-lookout version and exit")
+		printImg = flag.Bool("print-images", false, "print the fixture images that must be pulled locally, and exit")
 	)
 	flag.Parse()
 
@@ -90,6 +91,23 @@ func main() {
 	// duplicated into YAML, which is where it would drift.
 	if *printPin {
 		fmt.Println(outcome.PinnedLookout)
+		return
+	}
+
+	// Same single-source-of-truth argument as the pin. The cluster is
+	// never allowed to reach a registry, so the fixture images have to be
+	// on the host before a pass starts — and the list is collected from
+	// the manifests, so a caller that needs it should ask rather than
+	// keep a second copy that can disagree with what the fixtures run.
+	if *printImg {
+		imgs, err := images(*root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "outcome: %v\n", err)
+			os.Exit(2)
+		}
+		for _, img := range imgs {
+			fmt.Println(img)
+		}
 		return
 	}
 
@@ -124,14 +142,45 @@ type options struct {
 	keep                           bool
 }
 
-func run(ctx context.Context, opt options) error {
-	if opt.root == "" {
+// loadCorpus resolves the root if it was not given and loads the intent
+// table and the corpus from it. Both entry points go through here: the
+// image list is only correct if it comes from the same manifests the
+// pass will side-load.
+func loadCorpus(root string) (string, string, evals.IntentTable, outcome.Corpus, error) {
+	if root == "" {
 		r, err := findRoot()
 		if err != nil {
-			return err
+			return "", "", evals.IntentTable{}, outcome.Corpus{}, err
 		}
-		opt.root = r
+		root = r
 	}
+	dir := filepath.Join(root, "testdata", "outcome")
+	tbl, err := evals.LoadIntentTable(filepath.Join(root, "testdata", "evals", "intents.yaml"))
+	if err != nil {
+		return "", "", evals.IntentTable{}, outcome.Corpus{}, err
+	}
+	corpus, err := outcome.Load(dir, tbl)
+	if err != nil {
+		return "", "", evals.IntentTable{}, outcome.Corpus{}, err
+	}
+	return root, dir, tbl, corpus, nil
+}
+
+// images is the fixture image list, read out of the manifests through
+// the same staging provisioner the pass builds.
+func images(root string) ([]string, error) {
+	_, dir, _, corpus, err := loadCorpus(root)
+	if err != nil {
+		return nil, err
+	}
+	staging, err := outcome.NewProvisioner(corpus, &outcome.Cluster{}, dir)
+	if err != nil {
+		return nil, err
+	}
+	return staging.Images(), nil
+}
+
+func run(ctx context.Context, opt options) error {
 	note := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 	}
@@ -139,15 +188,11 @@ func run(ctx context.Context, opt options) error {
 	// Load and validate before anything is created or spent. A corpus
 	// that does not load is not worth a cluster, and a cluster is not
 	// worth a model.
-	corpusDir := filepath.Join(opt.root, "testdata", "outcome")
-	tbl, err := evals.LoadIntentTable(filepath.Join(opt.root, "testdata", "evals", "intents.yaml"))
+	root, corpusDir, tbl, corpus, err := loadCorpus(opt.root)
 	if err != nil {
 		return err
 	}
-	corpus, err := outcome.Load(corpusDir, tbl)
-	if err != nil {
-		return err
-	}
+	opt.root = root
 	note("[corpus] %d case(s), %d run(s), ceiling %s", len(corpus.Cases), corpus.Runs(), opt.ceiling)
 
 	// The model next, because "no credentials" is the most common reason

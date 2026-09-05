@@ -32,7 +32,10 @@
 #     (the pin is outcome.PinnedLookout; the runner refuses a build whose
 #     surface does not advertise every tool the intent table names)
 #   provider credentials for the model under test
-#   docker pull busybox:1.36, once — the fixture image is side-loaded
+#   the fixture images pulled, once — the cluster is deliberately never
+#     allowed to reach a registry, so they are side-loaded from the host.
+#     The list comes from the manifests, so ask rather than hardcode:
+#       scripts/outcome.sh --print-images | xargs -rn1 docker pull
 #
 # Usage:
 #   scripts/outcome.sh
@@ -44,8 +47,18 @@
 #
 # Exit codes: 0 the board is green; 1 the board is red; 2 the tier could
 # not run. The middle one is the only one that is a finding about mast.
+#
+# BUILT AND EXECUTED, NOT `go run`, and the exit codes are the reason.
+# `go run` does not propagate a non-zero child status: it prints
+# "exit status 2" to stderr and exits 1 itself, which collapses "the tier
+# could not run" into "the board is red" — the exact distinction the gate
+# is built on. Caught by the first CI run of .github/workflows/outcome.yml,
+# which reported a red board for a missing container image.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-exec go run ./internal/evals/cmd/outcome "$@"
+bin="$(mktemp -d "${TMPDIR:-/tmp}/mast-outcome-bin.XXXXXX")"
+trap 'rm -rf "${bin}"' EXIT
+go build -o "${bin}/outcome" ./internal/evals/cmd/outcome
+"${bin}/outcome" "$@"

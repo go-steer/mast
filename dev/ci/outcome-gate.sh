@@ -74,12 +74,30 @@ fi
 # status survives the pipe: pipefail is on and tee is last, so the only
 # way tee could mask the status is by failing itself. See PR #196 and
 # dev/tools/shell-lint for the flake this shape was written after.
+#
+# 2>&1 because the two halves of what a reader needs are on different
+# streams: the board is stdout, and the per-run progress lines and any
+# refusal are stderr. A summary carrying only stdout shows an empty block
+# for every exit-2, which is the case where the reason is the whole
+# message.
 status=0
-scripts/outcome.sh "${args[@]}" | tee "${report}" || status=$?
+scripts/outcome.sh "${args[@]}" 2>&1 | tee "${report}" || status=$?
 
+# Both 1 and 2 fail the job — that is what "unconfigured is red" means —
+# but they send a reader to different places, so the summary says which.
+# A 2 is a finding about the machine and its stdout is a refusal, not a
+# board; printing it under a board heading is how a missing container
+# image gets read as a failing case.
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
-    echo "## mast outcome evals — the O tier"
+    if [[ "${status}" -eq 2 ]]; then
+      echo "## outcome tier: could not run"
+      echo ""
+      echo "Not a finding about mast — the tier refused to start. The reason is"
+      echo "below, and it is about this machine's configuration."
+    else
+      echo "## mast outcome evals — the O tier"
+    fi
     echo ""
     echo '```'
     cat "${report}"
