@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -34,6 +35,10 @@ const (
 	CatalogFile = "fixtures.yaml"
 	CasesDir    = "cases"
 )
+
+// demotionDate is the layout a demotion's date takes. Date only: the
+// hour a case was demoted is not a thing anyone reads.
+const demotionDate = "2006-01-02"
 
 // kebab is the shape an id and a check name take. Enforced because a
 // check name reads as a claim in a report, and mixed conventions in one
@@ -322,6 +327,17 @@ func (c *Corpus) validateCase(
 	}
 	if len(cs.VerificationSpec) == 0 {
 		return fmt.Errorf("has no verification_spec: expected_output is prose, so this case grades nothing")
+	}
+	if d := cs.Demoted; d != nil {
+		// Both fields required. A demotion with no date cannot be aged
+		// out, and one with no measurement is indistinguishable six
+		// months on from a case nobody ever looked at again.
+		if _, err := time.Parse(demotionDate, d.Date); err != nil {
+			return fmt.Errorf("demoted.date %q is not %s", d.Date, demotionDate)
+		}
+		if strings.TrimSpace(d.Measurement) == "" {
+			return fmt.Errorf("demoted.measurement is empty: record which repetitions failed and how, or this row cannot be promoted or deleted later on any evidence")
+		}
 	}
 
 	seenCheck := make(map[string]bool, len(cs.VerificationSpec))

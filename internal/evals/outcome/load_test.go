@@ -526,3 +526,89 @@ func TestRejectsAMutatingCaseWithNoRestoreObligation(t *testing.T) {
 		t.Errorf("Mutating() = %v, want [demo-remediate]", got)
 	}
 }
+
+// A demotion is a committed diff, so the loader is where its shape is
+// enforced. Both fields are load-bearing: a demotion with no date cannot
+// be aged out, and one with no measurement is indistinguishable six
+// months on from a case nobody looked at again.
+func TestDemotionLoads(t *testing.T) {
+	body := baseCase + `demoted:
+  date: 2026-09-05
+  measurement: 3 of 5 repetitions missed the any_of phrase; the other 2 passed
+`
+	c, err := loadOne(t, baseCatalog, body)
+	if err != nil {
+		t.Fatalf("a well-formed demotion does not load: %v", err)
+	}
+	d := c.Cases[0].Demoted
+	if d == nil || d.Date != "2026-09-05" {
+		t.Fatalf("demotion = %+v", d)
+	}
+}
+
+func TestUndemotedCasesCarryNoDemotion(t *testing.T) {
+	c, err := loadOne(t, baseCatalog, baseCase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cases[0].Demoted != nil {
+		t.Fatalf("an undemoted case carries %+v", c.Cases[0].Demoted)
+	}
+}
+
+func TestRejectsAMalformedDemotion(t *testing.T) {
+	tests := []struct {
+		name, block, want string
+	}{
+		{
+			name: "no date",
+			block: `demoted:
+  measurement: flaky
+`,
+			want: "demoted.date",
+		},
+		{
+			name: "a date nothing can age out",
+			block: `demoted:
+  date: last Tuesday
+  measurement: flaky
+`,
+			want: "demoted.date",
+		},
+		{
+			name: "no measurement",
+			block: `demoted:
+  date: 2026-09-05
+`,
+			want: "demoted.measurement",
+		},
+		{
+			name: "a measurement that is only whitespace",
+			block: `demoted:
+  date: 2026-09-05
+  measurement: "   "
+`,
+			want: "demoted.measurement",
+		},
+		{
+			name: "a reason field the schema does not describe",
+			block: `demoted:
+  date: 2026-09-05
+  measurement: flaky
+  reason: we will look at it later
+`,
+			want: "reason",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadOne(t, baseCatalog, baseCase+tc.block)
+			if err == nil {
+				t.Fatal("loaded a malformed demotion")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v\nwant it to name %q", err, tc.want)
+			}
+		})
+	}
+}
