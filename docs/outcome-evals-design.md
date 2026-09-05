@@ -1,6 +1,11 @@
 # Outcome evals: design
 
-**Status: settled schema, unbuilt tier.** This document is the argued-with result of an external
+**Status: schema settled and loaded; the runner is unbuilt.** The corpus and its loader landed
+2026-09-05 (`internal/evals/outcome`, `testdata/outcome/`) — §5.1 records what the loader refuses and
+the two further corrections building it found. The fixture provisioner and the runner are the next
+two units of #297.
+
+This document is the argued-with result of an external
 specification ([`assess/eval-gates/`](https://github.com/go-steer/mast/issues/299), 2026-09-04) that
 arrived as a role catalog plus seven cases. It settles what mast adopts, what it corrects, and what
 substrate the tier runs on, **before** any Go is written — which is the sequencing
@@ -304,6 +309,41 @@ carry the most weight: omitting `resource_name` turns it into a **set assertion 
 (`kind: poddisruptionbudget`, `op: absent`, no name = *no PDB of any name appeared here*), and
 `fixture_role` addresses the cluster so a case never carries a literal location.
 
+### 5.1 What the loader refuses
+
+`internal/evals/outcome` is the schema above as composition-time refusal. Every rule below names a
+way a case can look like a measurement and not be one; none is tidiness.
+
+| Refused | Because |
+|---|---|
+| a key the schema does not describe, **including inside a `check:` body** | a typo is a silently dropped assertion, and the case still runs and still reports green |
+| a check on a subject no probe confirmed | its later absence cannot be told from an environment that was never provisioned |
+| a probe no check asserts on | fixture nobody reads; the reverse half of the corollary |
+| a role no case declares | provisioning time bought for nothing |
+| `report_contains` with no phrases; a phrase in two lists | passes on every report ever written; or is a contradiction no report can pass |
+| `intent_satisfied` naming an intent no reachable tool satisfies | a rung that cannot fire |
+| `intent_satisfied` `mode: all` over a set **one lookout tool satisfies whole**, unless `diagnostic` | §3.4, mechanically: it cannot tell two reads from one |
+| `tool_called` with `role: safeguard` | §3.1 — the trace is the agent's account of itself, and a planner-dispatched specialist's calls need not be in it |
+| a `safeguard` marked `diagnostic` | a safeguard that does not gate is one in name only |
+| `mode: converge` on anything reading the transcript | the transcript is immutable once the run ends; polling waits out the timeout |
+| `approval_requested`, `effect_recorded`, `manifest_dry_run` | named in this document, not built — refused with the issue number rather than accepted and ignored |
+
+Two further corrections, found while building it and not present in §3:
+
+**A check may not carry both `fixture_role` and `namespace`.** The source's schema block reads
+`fixture_role: crashloop-workload  # addresses the cluster; never a literal name` and then lists
+`namespace: seeded-debug` four lines below it — and every one of the seven cases writes both. Two
+addresses for one object can disagree, and the one that loses is the role, which is the one the
+provisioner actually used. The role's namespace is the namespace.
+
+**The restore obligation is enforced in the reverse direction.** §8 states `restore_required_after`
+as loader-enforced, and the obvious reading — a name there requires a restore path — is the weaker
+half: a name is easy to omit. So the loader also refuses a **`mutating: true` case that its own roles
+do not name**. Admitting `crashloop-remediate-and-verify` cannot happen without the same commit
+stating that the fixture gets put back. The forward direction is kept too, but as an anti-typo rule:
+a name that resolves to nothing is an obligation nothing enforces, so mast's catalog carries
+`restore_required_after: []` rather than a forward declaration.
+
 ---
 
 ## 6. Vacuity: required, diagnostic, and why the existing machinery does not transfer
@@ -473,6 +513,7 @@ built (§3.3).
 | Vacuity is classified **per check**, `required` by default: required ↔ `Dead` (gates), diagnostic ↔ `DeadDiagnostics` (reports). A check vacuous *by construction* is diagnostic, never deleted — `evidence-chain`'s intent check is the first one | 2026-09-05 |
 | Five repetitions; a case reds only if all fail; the catastrophic safeguard rung reds on one and is never demotable; demotion is a committed diff carrying the date and the measurement | 2026-09-05 |
 | Three admitted cases (the crashloop triple), not seven. `mutating: true` is a runner obligation honoured from day one, before any case sets it | 2026-09-05 |
+| The schema is enforced as **composition-time refusal** (§5.1), not documented and trusted. Two corrections beyond §3: a check may not carry both `fixture_role` and a literal `namespace` (the source's own schema block does), and the restore obligation is enforced from the **case** side — a `mutating: true` case its roles do not name fails to load | 2026-09-05 |
 
 ---
 
