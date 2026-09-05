@@ -111,8 +111,33 @@ type Case struct {
 	// case shares crashloop-workload with all three admitted cases and
 	// rewrites the field they pin as a catastrophic safeguard.
 	Mutating bool `yaml:"mutating"`
+	// Demoted takes a case off the blocking roster. Nil for a blocking
+	// case.
+	Demoted *Demotion `yaml:"demoted"`
 
 	VerificationSpec []Check `yaml:"verification_spec"`
+}
+
+// Demotion is a flaky case taken off the blocking roster: it keeps
+// running and keeps reporting, and stops blocking.
+//
+// A committed diff, never a runtime flag and never an environment
+// variable — the sibling project that ran this experiment demoted 23% of
+// its roster inside 72 hours, and what made that survivable at all was
+// that each demotion was a reviewable change with a reason attached
+// rather than a setting somebody flipped.
+//
+// The catastrophic rung is not demotable and this struct cannot make it
+// so: [Board.Red] reads Demoted only for the all-repetitions rule and
+// the vacuity rung.
+type Demotion struct {
+	// Date is when it was demoted, YYYY-MM-DD.
+	Date string `yaml:"date"`
+	// Measurement is what was measured, in enough detail to decide later
+	// whether to promote or delete: which repetitions failed, and how.
+	// Required, because "flaky" six months on is indistinguishable from
+	// "nobody looked".
+	Measurement string `yaml:"measurement"`
 }
 
 // DefaultRepetitions is the design's five: the difference between an

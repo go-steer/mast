@@ -88,9 +88,19 @@ func TestCommandDropsKubeconfigFromTheEnvironment(t *testing.T) {
 // one, so a helper added later cannot quietly shell out without both
 // flags and without the environment filtered.
 func TestOneExecPath(t *testing.T) {
+	// Every non-test file in the package, discovered rather than listed:
+	// a hard-coded list is a guard that stops covering the package the
+	// first time somebody adds a file to it.
+	sources, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var offenders []string
 	total := 0
-	for _, name := range []string{"cluster.go", "provision.go"} {
+	for _, name := range sources {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
 		src, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)

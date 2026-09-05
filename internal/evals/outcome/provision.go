@@ -293,7 +293,15 @@ type Snapshot struct {
 	Ungenerated []string
 }
 
-// Snapshot reads the current generation of every probe subject.
+// Snapshot reads the current generation of everything a check can end up
+// counting: every probe subject, plus the matched set of every
+// changed_count_eq check that addresses a kind rather than a name.
+//
+// The second half is not redundant. A named or selector-addressed check
+// must be probed, so its subjects are already here; a set assertion —
+// `kind: poddisruptionbudget`, no name — is deliberately exempt from the
+// probe corollary, and without this pass its "before" would be empty and
+// every object in it would count as newly appeared.
 func (p *Provisioner) Snapshot(ctx context.Context) (Snapshot, error) {
 	snap := Snapshot{Generations: map[string]int64{}}
 	for _, name := range sortedKeys(p.corpus.Catalog.Roles) {
@@ -303,48 +311,106 @@ func (p *Provisioner) Snapshot(ctx context.Context) (Snapshot, error) {
 			if err != nil {
 				return Snapshot{}, fmt.Errorf("outcome: snapshot role %q: %w", name, err)
 			}
-			for _, obj := range objects {
-				key := fmt.Sprintf("%s/%s/%s", name, probe.Kind, obj)
-				raw, found, err := p.cluster.JSONPath(ctx, role.Namespace, probe.Kind, obj, "{.metadata.generation}")
-				if err != nil {
-					return Snapshot{}, fmt.Errorf("outcome: snapshot %s: %w", key, err)
-				}
-				if !found {
-					return Snapshot{}, fmt.Errorf("outcome: snapshot %s: object disappeared between the probe and the snapshot", key)
-				}
-				if strings.TrimSpace(raw) == "" {
-					snap.Ungenerated = append(snap.Ungenerated, key)
-					continue
-				}
-				gen, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-				if err != nil {
-					return Snapshot{}, fmt.Errorf("outcome: snapshot %s: metadata.generation %q: %w", key, raw, err)
-				}
-				snap.Generations[key] = gen
+			if err := p.record(ctx, &snap, role, name, probe.Kind, objects); err != nil {
+				return Snapshot{}, err
 			}
 		}
 	}
+	for _, s := range p.countedSets() {
+		role := p.corpus.Catalog.Roles[s.role]
+		objects, err := p.subjects(ctx, role, Probe{Kind: s.kind})
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("outcome: snapshot role %q: %w", s.role, err)
+		}
+		if err := p.record(ctx, &snap, role, s.role, s.kind, objects); err != nil {
+			return Snapshot{}, err
+		}
+	}
 	sort.Strings(snap.Ungenerated)
+	snap.Ungenerated = uniq(snap.Ungenerated)
 	return snap, nil
 }
 
-// subjects resolves a probe to the object names it currently matches.
+// countedSet is a (role, kind) a changed_count_eq check counts over
+// without naming any object within it.
+type countedSet struct{ role, kind string }
+
+// countedSets is the extra snapshot scope, deduplicated and ordered so
+// two runs read the cluster in the same sequence.
+func (p *Provisioner) countedSets() []countedSet {
+	seen := make(map[countedSet]bool)
+	var out []countedSet
+	for _, cs := range p.corpus.Cases {
+		for _, ck := range cs.VerificationSpec {
+			spec := ck.Spec.ClusterResourceProperty
+			if spec == nil || spec.ChangedCountEq == nil {
+				continue
+			}
+			if spec.ResourceName != "" || spec.Selector != "" {
+				continue // already covered by the probe it had to declare
+			}
+			s := countedSet{role: spec.FixtureRole, kind: strings.ToLower(spec.Kind)}
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].role != out[j].role {
+			return out[i].role < out[j].role
+		}
+		return out[i].kind < out[j].kind
+	})
+	return out
+}
+
+// record reads metadata.generation for each named object into the
+// snapshot. Re-reading a key already present is a no-op with the same
+// answer, so the two passes may overlap.
+func (p *Provisioner) record(ctx context.Context, snap *Snapshot, role Role, roleName, kind string, objects []string) error {
+	for _, obj := range objects {
+		key := fmt.Sprintf("%s/%s/%s", roleName, kind, obj)
+		if _, done := snap.Generations[key]; done {
+			continue
+		}
+		raw, found, err := p.cluster.JSONPath(ctx, role.Namespace, kind, obj, "{.metadata.generation}")
+		if err != nil {
+			return fmt.Errorf("outcome: snapshot %s: %w", key, err)
+		}
+		if !found {
+			return fmt.Errorf("outcome: snapshot %s: object disappeared while the snapshot was being taken", key)
+		}
+		if strings.TrimSpace(raw) == "" {
+			snap.Ungenerated = append(snap.Ungenerated, key)
+			continue
+		}
+		gen, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			return fmt.Errorf("outcome: snapshot %s: metadata.generation %q: %w", key, raw, err)
+		}
+		snap.Generations[key] = gen
+	}
+	return nil
+}
+
+// subjects resolves a probe to the object names it currently matches. A
+// probe with neither a name nor a selector is every object of its kind
+// in the role's namespace, which is what a set assertion addresses.
 func (p *Provisioner) subjects(ctx context.Context, role Role, probe Probe) ([]string, error) {
-	if probe.Selector == "" {
+	if probe.Name != "" {
 		return []string{probe.Name}, nil
 	}
-	out, err := p.cluster.Kubectl(ctx, role.Namespace, "get", probe.Kind,
-		"-l", probe.Selector, "-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
+	args := []string{"get", probe.Kind}
+	if probe.Selector != "" {
+		args = append(args, "-l", probe.Selector)
+	}
+	args = append(args, "-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`)
+	out, err := p.cluster.Kubectl(ctx, role.Namespace, args...)
 	if err != nil {
 		return nil, err
 	}
-	var names []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			names = append(names, s)
-		}
-	}
-	return names, nil
+	return lines(out), nil
 }
 
 // Changed names the subjects whose generation moved between two

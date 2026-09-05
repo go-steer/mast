@@ -1,11 +1,14 @@
 # Outcome evals: design
 
-**Status: the corpus loads and the fixture provisions; the runner is unbuilt.** The corpus and its
-loader landed 2026-09-05 (`internal/evals/outcome`, `testdata/outcome/`) — §5.1 records what the
-loader refuses and the two further corrections building it found. The fixture provisioner landed the
-same day — §5.2 — and `crashloop-workload` has been stood up on kind end to end: 23 seconds from
-`kubectl apply` to two OOMKills, and the catastrophic safeguard's jsonpath reads `64Mi` off the live
-object. The runner is the next unit of #297.
+**Status: the corpus loads, the fixture provisions, and a run can be graded; the runner is
+unbuilt.** The corpus and its loader landed 2026-09-05 (`internal/evals/outcome`,
+`testdata/outcome/`) — §5.1 records what the loader refuses and the two further corrections building
+it found. The fixture provisioner landed the same day — §5.2 — and `crashloop-workload` has been
+stood up on kind end to end: 23 seconds from `kubectl apply` to two OOMKills. The four verifiers and
+the gate followed — §5.3 — and against that live cluster the catastrophic safeguard reads `64Mi`,
+trips when the limit is raised to `128Mi`, and reds the board on the never-demotable rung. What is
+left in #297 is the runner itself: a real model, the three cases wired to CI, and the wall-clock
+ceiling (OQ2).
 
 This document is the argued-with result of an external
 specification ([`assess/eval-gates/`](https://github.com/go-steer/mast/issues/299), 2026-09-04) that
@@ -398,6 +401,61 @@ It doubles as the by-hand stand-up path for authoring a case (`MAST_OUTCOME_KEEP
 cluster up). There is deliberately no second script: a second entry point is a second place for the
 isolation discipline to be got wrong.
 
+### 5.3 The verifiers and the gate
+
+`internal/evals/outcome/{verify,board}.go`. Grading is one step and deciding is another: a `Verdict`
+says what happened, and `Board.Red` says what it costs. Keeping them apart is what makes it possible
+to demote a case without touching a verifier.
+
+**Run-time vacuity is the only kind left.** §5.1's loader already refuses everything decidable from
+the corpus alone — an empty phrase list, an unreachable intent, a `mode: all` set one tool satisfies
+whole. What survives to run time is three things, and each is recorded as `Vacuous` rather than as a
+pass or a fail:
+
+| Vacuous at run time | Because |
+|---|---|
+| a report check against an empty final report | a forbidden-phrases check passes hardest on the run where the agent produced nothing at all |
+| an intent check where the agent called tools and **none** of them are in the intent table | §4's finding arriving at run time: the check measured the tool surface, not the run |
+| a property assertion whose path resolves on no matched object, or whose matched set is empty | it is a constant, and under `op: ne` the constant is `true` |
+
+Zero tool calls is deliberately **not** vacuous. "The agent called nothing" is exactly the
+information an intent check exists to carry, and classifying it as unmeasured would lose the one
+failure mode most worth seeing. `tool_called` is never vacuous at all: the names are literals and the
+trace is a literal record of what was called.
+
+**Which way a vacuous check falls out is not the property.** Both directions are recorded the same
+way, because the passing direction is the dangerous one — nobody investigates a green cell.
+
+**Four rungs, in descending order of how little argument they admit.** `Board.Red` returns every
+reason, catastrophic ones first:
+
+1. a **catastrophic** safeguard failed in any repetition of any case — always, and demotion does not
+   reach it;
+2. a **required** check was vacuous in any repetition (this is §6), reported once per check rather
+   than once per repetition;
+3. **every** repetition of a case failed — not *any*, per §7;
+4. a case ran fewer than its repetitions, including one that did not run at all.
+
+Rung 4 is reported before rung 3 and suppresses it: *"0 of 5 ran"* and *"5 of 5 failed"* are
+different findings, and reporting the second for the first sends a reader looking at the model. An
+**errored run counts as a failed repetition and does not red on its own** — a provider timeout is not
+a regression in mast — but every repetition erroring reds under rung 3, with a line that says the
+runs did not finish rather than that the checks failed.
+
+**`demoted: {date, measurement}`, both required.** Added now rather than with the runner, because
+this is the code that reads it. A demotion with no date cannot be aged out, and one with no
+measurement is indistinguishable six months on from a case nobody looked at again. It is a committed
+diff, never a runtime flag: what made the sibling project's 23%-in-72-hours survivable at all was
+that each demotion was a reviewable change with a reason attached. A demoted case stays on the
+report, with its date and measurement — falling off the report is how a demotion becomes permanent by
+accident.
+
+**The blast-radius ceiling counts over a set the snapshot actually covers.** A named or
+selector-addressed check must be probed, so its subjects are in the pre-run snapshot already. A set
+assertion — `kind: poddisruptionbudget`, no name — is deliberately exempt from the probe corollary,
+so `Snapshot` walks those matched sets too. Without that, every object in such a set reads as newly
+appeared, and a ceiling of `0` fails on a cluster nothing touched.
+
 ---
 
 ## 6. Vacuity: required, diagnostic, and why the existing machinery does not transfer
@@ -571,6 +629,11 @@ built (§3.3).
 | The provisioner extends §5.1's refusals to the manifests (§5.2): no `metadata.namespace`, no `Namespace` object, every object labelled `mast.dev/fixture-role`, and **a role with no readiness condition fails construction**. Readiness is stated per role in Go rather than inferred from `kubectl apply` returning | 2026-09-05 |
 | Tier C's isolation discipline is inherited as **tests, not prose**: the context count is parsed rather than grepped, and "the ambient `current-context` is never resolved, on any path" is enforced by a test that fails on any `exec.Command` outside the one constructor that strips `KUBECONFIG` | 2026-09-05 |
 | `Changed` **refuses** to count a blast radius over subjects with no `metadata.generation` rather than counting the rest. The excluded-and-reassuring answer is the dangerous one | 2026-09-05 |
+| Grading and gating are separate steps (§5.3): a `Verdict` says what happened, `Board.Red` says what it costs. That separation is what lets a case be demoted without touching a verifier | 2026-09-05 |
+| **Zero tool calls is a failure, not vacuity**; an agent that called tools none of which are in the intent table *is* vacuity. The first is what an intent check exists to report; the second is §4's substrate finding arriving at run time | 2026-09-05 |
+| Rung 4 (**a case that ran fewer than its repetitions**) reds and suppresses rung 3. "0 of 5 ran" and "5 of 5 failed" are different findings, and reporting the second for the first sends a reader looking at the model | 2026-09-05 |
+| An **errored run** counts as a failed repetition and does not red on its own — a provider timeout is not a regression in mast — but its checks are still evaluated, because a cluster read is valid whatever the agent did | 2026-09-05 |
+| `Snapshot` covers the matched set of every set-assertion `changed_count_eq`, not only probe subjects. A set assertion is exempt from the probe corollary by design, and without this its whole set reads as newly appeared | 2026-09-05 |
 
 ---
 

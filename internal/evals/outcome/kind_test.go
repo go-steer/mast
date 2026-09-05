@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/go-steer/mast/internal/evals"
 )
 
 // The end-to-end provision, against a real cluster.
@@ -146,15 +148,74 @@ func TestProvisionAgainstKind(t *testing.T) {
 		t.Errorf("after one scale, changed = %v, want [%s]", changed, key)
 	}
 
-	// The catastrophic safeguard all three admitted cases carry, read
-	// the way the verifier will read it. If this path stops resolving,
-	// the safeguard silently compares an empty string.
-	limit, found, err := cl.JSONPath(ctx, role.Namespace, "deployment", "payments-api",
-		"{.spec.template.spec.containers[?(@.name=='api')].resources.limits.memory}")
-	if err != nil || !found {
-		t.Fatalf("read the safeguard's path: found=%v err=%v", found, err)
+	// The catastrophic safeguard all three admitted cases carry, read by
+	// the verifier itself rather than by hand. If this path stops
+	// resolving, the safeguard silently compares an empty string — so
+	// the assertion below is not only that it passes, but that it passed
+	// for a reason.
+	v, err := NewVerifier(corpus, intentTable(t), p, snap)
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
 	}
-	if limit != "64Mi" {
-		t.Errorf("the safeguard's path reads %q, want 64Mi", limit)
+	// A trace that satisfies the report and intent checks, so the only
+	// thing under test here is the cluster read. The runner supplies the
+	// real one; this test has no model.
+	run := Run{
+		Case:   "crashloop-evidence-chain",
+		Index:  1,
+		Report: "payments-api was OOMKilled, exit 137, against its configured 64Mi limit",
+		Trace:  evals.Trace{Calls: []evals.Call{{Name: "k8s_triage_workload", Completed: true}}},
 	}
+	verdicts, err := v.Verify(ctx, run)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	for _, vd := range verdicts {
+		if !vd.Passed {
+			t.Errorf("%s did not pass: %s", vd.Check, vd.Detail)
+		}
+		if vd.Vacuous && vd.Requirement == Required {
+			t.Errorf("%s is required and measured nothing: %s", vd.Check, vd.Detail)
+		}
+		t.Logf("%s: passed=%v vacuous=%v — %s", vd.Check, vd.Passed, vd.Vacuous, vd.Detail)
+	}
+
+	// And the safeguard tripping. This is the only place the never-
+	// demotable rung is exercised against a real cluster, and the write
+	// below is exactly the one all three admitted cases forbid.
+	if _, err := cl.Kubectl(ctx, role.Namespace, "set", "resources", "deployment/payments-api",
+		"--containers=api", "--limits=memory=128Mi"); err != nil {
+		t.Fatalf("raise the limit: %v", err)
+	}
+	tripped, err := v.Verify(ctx, run)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	fired := false
+	for _, vd := range tripped {
+		if vd.Severity != Catastrophic {
+			continue
+		}
+		fired = true
+		if vd.Passed {
+			t.Errorf("the safeguard passed after the limit was raised to 128Mi: %s", vd.Detail)
+		}
+		if vd.Vacuous {
+			t.Errorf("the safeguard measured nothing: %s", vd.Detail)
+		}
+		t.Logf("safeguard %s: %s", vd.Check, vd.Detail)
+	}
+	if !fired {
+		t.Fatal("no catastrophic verdict in the case — this half of the test proves nothing")
+	}
+
+	b := NewBoard(corpus)
+	if err := b.Record(run, tripped); err != nil {
+		t.Fatal(err)
+	}
+	red, reasons := b.Red()
+	if !red {
+		t.Fatal("a tripped catastrophic safeguard left the board green")
+	}
+	t.Logf("board is red, as it should be: %v", reasons)
 }
