@@ -620,9 +620,11 @@ is a `context` deadline the runner checks between cases, not a job timeout — s
 that runs out of budget produces a short board that reds under rung 4 rather than a cancelled job
 with no board at all.
 
-**Measured, on the first full live pass** (`claude-sonnet-5`, lookout v0.23.0, local kind, 3
-concurrent workers): **15 runs in 2m47s**, 19–30s each, plus ~90s outside the deadline for cluster
-create, image side-load and fixture readiness. So the ceiling is ~7× the measured pass. That is
+**Measured, on the first two full live passes** (`claude-sonnet-5`, lookout v0.23.0, 3 concurrent
+workers): **15 runs in 2m47s** on local kind and **2m48s** on a GitHub-hosted runner — 19–36s per
+run, plus ~90s outside the deadline for cluster create, image side-load and fixture readiness. The CI
+job is 5m39s wall clock end to end, against its own `timeout-minutes: 35`. So the ceiling is ~7× the
+measured pass on the machine that actually gates. That is
 deliberate and it is the *only* number this design defends: it is large enough that a slow provider
 day is not a red, and small enough that admitting a fourth case has to argue for raising it in a
 reviewable diff — which is the mechanism the sibling project's 85 → 360 did not have. It is not sized
@@ -650,18 +652,24 @@ The admitted set is **the crashloop triple** — `crashloop-rca`,
 `crashloop-workload` fixture, so the whole admitted set costs one provisioned namespace, and
 `crashloop-rca`'s own header says it: *"build all three or the fixture is underused."*
 
-**First live board, recorded rather than acted on** (`claude-sonnet-5`, 2026-09-05):
-`crashloop-rca` 5/5, `crashloop-evidence-chain` 5/5, **`crashloop-misleading-symptom` 3/5**. The
-board is green — a case reds only if *all* its repetitions fail (§7) — and the single failing check
-in both losing runs was `the-agent-addressed-the-hypotheses-it-was-given`, which that case's own
-header already names as *"the check most likely to false-red"*.
+**First two live boards, recorded rather than acted on** (`claude-sonnet-5`, 2026-09-05):
 
-The measurement is left standing. Widening its `any_of_phrases` until it goes 5/5 is teaching to the
-test: the check exists to assert the agent said the reporter's hypotheses were *wrong* rather than
-quietly answering a different question, and a phrase list grown to fit the runs that failed no longer
-asserts that. The two dispositions §7 actually offers are **demotion** (a committed diff carrying
-this date and this measurement) and leaving it required and watching the rate; one pass of five is
-not enough to choose between them, and this is the number the second pass gets compared against.
+| Pass | `crashloop-rca` | `crashloop-evidence-chain` | `crashloop-misleading-symptom` |
+|---|---|---|---|
+| local kind | 5/5 | 5/5 | **3/5** |
+| CI, first gated run | 5/5 | 5/5 | 5/5 |
+
+Both green — a case reds only if *all* its repetitions fail (§7). The two losses were both
+`the-agent-addressed-the-hypotheses-it-was-given`, which that case's own header already names as
+*"the check most likely to false-red"*, so the case stands at **8/10 across two passes**: intermittent
+rather than systematically failing, which is the distinction demotion exists to be decided on.
+
+The measurement is left standing and the phrase list is not touched. Widening `any_of_phrases` until
+it goes 5/5 is teaching to the test: the check exists to assert the agent said the reporter's
+hypotheses were *wrong* rather than quietly answering a different question, and a list grown to fit
+the runs that failed no longer asserts that. §7 offers two dispositions — **demotion** (a committed
+diff carrying the date and the measurement) or leaving it required and watching the rate. Two passes
+is still not enough to choose; these are the numbers the next ones get compared against.
 
 Order of admission after that: `rbac-overgrant-probe` (stronger than `crashloop-rca` — two of its
 three planted nouns are absent from the prompt; held back only because its fixture is the second
