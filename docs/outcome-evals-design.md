@@ -1,9 +1,11 @@
 # Outcome evals: design
 
-**Status: schema settled and loaded; the runner is unbuilt.** The corpus and its loader landed
-2026-09-05 (`internal/evals/outcome`, `testdata/outcome/`) — §5.1 records what the loader refuses and
-the two further corrections building it found. The fixture provisioner and the runner are the next
-two units of #297.
+**Status: the corpus loads and the fixture provisions; the runner is unbuilt.** The corpus and its
+loader landed 2026-09-05 (`internal/evals/outcome`, `testdata/outcome/`) — §5.1 records what the
+loader refuses and the two further corrections building it found. The fixture provisioner landed the
+same day — §5.2 — and `crashloop-workload` has been stood up on kind end to end: 23 seconds from
+`kubectl apply` to two OOMKills, and the catastrophic safeguard's jsonpath reads `64Mi` off the live
+object. The runner is the next unit of #297.
 
 This document is the argued-with result of an external
 specification ([`assess/eval-gates/`](https://github.com/go-steer/mast/issues/299), 2026-09-04) that
@@ -344,6 +346,58 @@ stating that the fixture gets put back. The forward direction is kept too, but a
 a name that resolves to nothing is an obligation nothing enforces, so mast's catalog carries
 `restore_required_after: []` rather than a forward declaration.
 
+### 5.2 The fixture provisioner
+
+`internal/evals/outcome/{cluster,provision}.go`. One manifest per role under
+`testdata/outcome/fixtures/<role>.yaml`, applied to a throwaway kind cluster.
+
+**Isolation is tier C's, mechanically rather than by review.** §4 said the discipline "carries over
+verbatim"; the four guards are the same four (`mast-outcome-<pid>`, no adoption, a `${TMPDIR}`
+kubeconfig kind is not allowed to merge into, exactly one context, both flags on every call with
+`KUBECONFIG` stripped). Two things are stronger here than in the shell. The context count is
+**parsed** rather than grepped — `- context:` is a string that can appear in a comment, and this is
+the check the other three lean on. And the rule *"the ambient `current-context` is never resolved, on
+any path"* is now a test rather than a sentence: `TestOneExecPath` fails if any `exec.Command` appears
+outside the single constructor that strips `KUBECONFIG`, which is what makes the two argv/env tests
+general instead of true only of the paths that happen to exist today.
+
+**What the provisioner refuses**, in the same spirit as §5.1:
+
+| Refused | Because |
+|---|---|
+| a role with no readiness condition registered in the package | it would report ready the instant `kubectl apply` returned — a full minute before the state the cases grade against exists |
+| a manifest setting `metadata.namespace`, even one that agrees with the catalog | the same "two locations that can disagree" the loader refuses in a check; the role catalog is the only file that knows where a fixture lives |
+| a manifest containing a `Namespace` object | same reason; the provisioner creates it from the role |
+| an object not labelled `mast.dev/fixture-role: <role>` | the label is how a planted object is told from a stray one, which is what makes `exclusive` enforceable and a pathless `absent` check meaningful |
+| a probe that resolves to an object carrying another role's label | a stray can satisfy a precondition and then vanish mid-run, which reads afterwards as the agent having deleted it |
+| an object of an `exclusive` kind that this role did not plant | a set assertion reads the whole live set; one leftover turns it into a permanent red that has nothing to do with the agent |
+
+**Readiness is per role and stated in Go, not inferred.** `crashloop-workload` is ready when a pod
+carrying the role label is `Running`, has been `OOMKilled`, and has restarted at least twice — all
+three, because each alone is satisfied too early: `Running` holds a second after apply, one restart
+is any transient, and a first kill is not the loop the prompts describe. Measured at ~50s cold and
+~23s with the image side-loaded. Side-loading (`kind load docker-image`) is why: the cluster is never
+allowed to reach a registry, and the image list is collected from the manifests rather than kept
+beside them, because a second list is a list that drifts.
+
+**The generation snapshot is taken before the run because it cannot be taken after.**
+`metadata.generation` is a running count, and "did this object change during the run" has no answer
+reconstructible from the object afterwards. `Changed` counts appearances and disappearances as
+changes, and **refuses** a snapshot containing subjects whose kind has no generation at all — a Pod, a
+ConfigMap — rather than counting the rest: a blast-radius ceiling that quietly excludes what it
+cannot measure gives the reassuring answer.
+
+The end-to-end provision is opt-in and is not a presubmit, for tier C's reason — it creates a
+Kubernetes cluster:
+
+```
+MAST_OUTCOME_KIND=1 go test ./internal/evals/outcome/ -run TestProvisionAgainstKind -v
+```
+
+It doubles as the by-hand stand-up path for authoring a case (`MAST_OUTCOME_KEEP=1` leaves the
+cluster up). There is deliberately no second script: a second entry point is a second place for the
+isolation discipline to be got wrong.
+
 ---
 
 ## 6. Vacuity: required, diagnostic, and why the existing machinery does not transfer
@@ -514,6 +568,9 @@ built (§3.3).
 | Five repetitions; a case reds only if all fail; the catastrophic safeguard rung reds on one and is never demotable; demotion is a committed diff carrying the date and the measurement | 2026-09-05 |
 | Three admitted cases (the crashloop triple), not seven. `mutating: true` is a runner obligation honoured from day one, before any case sets it | 2026-09-05 |
 | The schema is enforced as **composition-time refusal** (§5.1), not documented and trusted. Two corrections beyond §3: a check may not carry both `fixture_role` and a literal `namespace` (the source's own schema block does), and the restore obligation is enforced from the **case** side — a `mutating: true` case its roles do not name fails to load | 2026-09-05 |
+| The provisioner extends §5.1's refusals to the manifests (§5.2): no `metadata.namespace`, no `Namespace` object, every object labelled `mast.dev/fixture-role`, and **a role with no readiness condition fails construction**. Readiness is stated per role in Go rather than inferred from `kubectl apply` returning | 2026-09-05 |
+| Tier C's isolation discipline is inherited as **tests, not prose**: the context count is parsed rather than grepped, and "the ambient `current-context` is never resolved, on any path" is enforced by a test that fails on any `exec.Command` outside the one constructor that strips `KUBECONFIG` | 2026-09-05 |
+| `Changed` **refuses** to count a blast radius over subjects with no `metadata.generation` rather than counting the rest. The excluded-and-reassuring answer is the dangerous one | 2026-09-05 |
 
 ---
 

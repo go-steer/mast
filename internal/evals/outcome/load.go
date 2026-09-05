@@ -198,6 +198,9 @@ func (c *Corpus) validate(tbl evals.IntentTable) error {
 	if err != nil {
 		return err
 	}
+	// Kept, so the provisioner reads the same parse the validation did
+	// rather than a second one that could disagree with it.
+	c.probes = probes
 
 	// asserted accumulates every (role, subject) a check addresses, for
 	// the reverse half of the probe corollary.

@@ -342,6 +342,12 @@ type Corpus struct {
 	// Cases are sorted by id, so a report's row order does not depend on
 	// directory iteration.
 	Cases []Case
+
+	// probes is every role's probe list, parsed once during validation
+	// and reused. Unexported: a Corpus that did not come from Load has
+	// not been validated, and this is the field that would make it look
+	// as though it had.
+	probes map[string][]Probe
 }
 
 // Runs is the total number of agent runs a full pass costs. The wall
@@ -354,6 +360,14 @@ func (c Corpus) Runs() int {
 	}
 	return n
 }
+
+// ProbesFor returns a role's parsed probes, in the order the catalog
+// wrote them. Unknown role names return nil.
+//
+// These are the subjects confirmed present before the agent starts, and
+// they are the only ones a check is allowed to address — which is what
+// makes them the right set for the pre-run generation snapshot too.
+func (c Corpus) ProbesFor(name string) []Probe { return c.probes[name] }
 
 // RoleFor resolves a role name, reporting whether the catalog has it.
 func (c Corpus) RoleFor(name string) (Role, bool) {
