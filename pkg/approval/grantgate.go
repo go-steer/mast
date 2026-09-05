@@ -107,6 +107,14 @@ func (g *writeGate) spendGrant(ctx agent.Context, t tool.Tool, key string, args 
 			"detail": "This call carried an operator approval that mast could not honor: " + err.Error() + " The call was NOT made. Report this and stop.",
 		}, nil
 	}
+	// Before the grant is marked spent, so a capture failure leaves the
+	// approval intact: the operator authorized this call and nothing has
+	// happened yet, and burning their answer on a read that failed would
+	// make them approve the set again to get back to where they were.
+	if refusal := g.permit(ctx, t, key, args); refusal != nil {
+		return refusal, nil
+	}
+
 	spent := *grant
 	spent.ConsumedBy = ctx.FunctionCallID()
 	g.writeGrant(ctx, spent)

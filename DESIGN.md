@@ -108,7 +108,7 @@ the version named in the library API design's import-surface table.
 | `pkg/eventlog` | Seq-overlay + `Since`/`Watch` stream + audit metadata sidecar layered **on** ADK `session/database` (ADK owns the tables), plus two mast-owned append-only logs folded forward across restarts: `GuardrailStore` (trips and resets, so an `enforce` halt outlives the process that observed it) and `SpendStore` (one row per priced model call, so a cost ceiling does too). Ported from core-agent. |
 | `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. Metering stays in memory and database-free; durability is a two-part seam — `Config.OnSpend` writes each priced call out, `Meter.Restore` folds a previous process's spend back in — which `cmd/mast` wires to `eventlog.SpendStore`. |
 | `pkg/effects` | The recorded-effect outbox: the session event log **is** the outbox (durable `FunctionCall` = intent, paired `FunctionResponse` = completion), read once per turn in an ADK runner plugin's `BeforeRun`. A dangling mutating intent puts the turn in fail-closed ambiguous-effect mode until an operator acks. |
-| `pkg/approval` | The write gate: the runner-plugin seam where a mutating call parks for an operator, the three-valued verdict (`approve`/`reject`/`edit`), the typed change-set producer, and exact-`(tool, arguments)`-signature grants with their freshness re-read. Policy stays in `pkg/permissions`; the durable pause is ADK's tool-confirmation flow. |
+| `pkg/approval` | The write gate: the runner-plugin seam where a mutating call parks for an operator, the three-valued verdict (`approve`/`reject`/`edit`), the typed change-set producer, and exact-`(tool, arguments)`-signature grants with their freshness re-read. Policy stays in `pkg/permissions`; the durable pause is ADK's tool-confirmation flow. Since [#296](https://github.com/go-steer/mast/issues/296) it also records what a change overwrote: `capture.go` takes a declared prior-state read before the call runs, on all four paths to execution, and writes the old values plus a proposed revert onto the event log. mast never fires the revert. |
 | `pkg/permissions` | Permission gate + prompt contract (ported). Runtime-wired since v0.3 through `pkg/approval`'s plugin — it decides policy (proceed / ask / refuse) and stays ADK-independent. |
 | `pkg/auth` | Caller identity, session ACL types, bearer/mTLS config (ported). Approvals and edits are recorded against the authenticated approver it resolves. |
 | `pkg/watchdog` | Loop signals (repeated call, alternating cycle, tool-failure streak) + session-event bridge + the `warn`/`feedback`/`enforce` posture ladder; alerts are logged, projected onto the guardrail surface, and — from `feedback` up — routed into the model's own next prompt. The posture resolves `--watchdog` > the bundle's `safety.watchdog` > `watchdog.DefaultMode` (`feedback`), and every turn-driving surface taps it, the library embed included. Under `--attach-listen` a halt is persisted through `eventlog.GuardrailStore` and adopted on the next turn after a restart — configuration still wins, so a posture dialed back below `enforce` inherits nothing. |
@@ -232,7 +232,10 @@ when somebody reads their chat.
   monitoring cycle's `monitor.collect` leg, and the `monitor.ack`
   forward. The read is fenced by *classification* — compose refuses to
   start if the declared read is mutating, so that exception can only
-  widen towards safer calls. The collection leg inverts that (it
+  widen towards safer calls. Prior-state capture has two consumers on
+  that one caller rather than a fourth caller of its own, because it
+  wants the same thing under the same fence: a non-mutating read of the
+  target, run by mast, at the gate, before the call. The collection leg inverts that (it
   permits a mutating call precisely because it is mast's own and would
   otherwise park every fire), so it is fenced by *reachability*:
   `compose.CheckMonitorCollectSurface` refuses to start if a tool mast

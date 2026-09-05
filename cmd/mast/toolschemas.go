@@ -126,17 +126,26 @@ func (ts *toolSchemas) resolve(name string) (tool.Tool, error) {
 // mast's whole surface for calling a tool outside the model's dispatch
 // path, and each caller is a named exception with its own fence:
 //
-//   - read (v0.4 W7): a change-set freshness precondition. Fenced by
-//     CLASSIFICATION — the write gate only ever passes a tool the
-//     bundle declared as a precondition read, and internal/compose
-//     refuses to start if that tool is classified mutating. The
-//     exception can only widen towards safer calls.
+//   - read (v0.4 W7, and #296): a change-set freshness precondition,
+//     and the prior-state capture taken before a mutating call fires.
+//     Fenced by CLASSIFICATION — the write gate only ever passes a tool
+//     the bundle declared as a precondition or capture read, and
+//     internal/compose refuses to start if either is classified
+//     mutating. The exception can only widen towards safer calls.
+//
+//     Two consumers, one caller, deliberately. They differ in what they
+//     keep — a precondition digests the result and a capture stores it —
+//     and in nothing else: same seam, same read-only fence, same
+//     invisibility to the model. A second call site would be a second
+//     place to get the fence wrong.
+//
 //   - collect (v0.5 W4.2): a monitoring cycle's collection and
 //     state-advance legs. Fenced by REACHABILITY, because
 //     classification cannot fence it — the whole reason the call is
 //     mast's is that it is mutating and would otherwise park the cycle
 //     for a human on every fire. compose.CheckMonitorCollectSurface
 //     refuses to start if a collect tool is reachable from any roster.
+//
 //   - ack (v0.5 W4.6): an operator's acknowledgement, forwarded to
 //     whoever owns the finding state. Fenced by REACHABILITY through the
 //     same check, and additionally by ARRIVAL: the only thing that calls
@@ -162,12 +171,15 @@ func (ts *toolSchemas) resolve(name string) (tool.Tool, error) {
 // monitoring.
 //
 // The handle is unwrapped first. The wired toolsets carry pkg/mcp's
-// digesting wrap, which exists to shrink what a *model* reads. Neither
-// caller is a model: the precondition read goes into a digest and a
-// field comparison, and the collection result goes into a transition
-// classification. A digest envelope on either is pure loss — it drops
-// the very fields the comparison is made of and stamps a fresh call id
-// on every call, which reads as "the cluster moved" forever after.
+// digesting wrap, which exists to shrink what a *model* reads. None of
+// these callers is a model: the precondition read goes into a digest and
+// a field comparison, the prior-state capture goes into a durable record
+// somebody restores from, and the collection result goes into a
+// transition classification. A digest envelope on any of them is pure
+// loss — it drops the very fields the comparison is made of, replaces
+// the values the capture exists to keep with a pointer to a cache the
+// next process does not have, and stamps a fresh call id on every call,
+// which reads as "the cluster moved" forever after.
 func (ts *toolSchemas) runOwnBehalf(ctx adkagent.Context, name string, args map[string]any, unrunnable string) (map[string]any, error) {
 	t, err := ts.resolve(name)
 	if err != nil {
@@ -187,11 +199,12 @@ func (ts *toolSchemas) runOwnBehalf(ctx adkagent.Context, name string, args map[
 }
 
 // read runs a read-only tool on mast's own behalf, for change-set
-// freshness preconditions (v0.4 W7).
+// freshness preconditions (v0.4 W7) and prior-state captures (#296).
 //
 // The result never reaches the transcript — the model is not told what
-// mast checked, because the check is about the operator's approval and
-// not about the agent's reasoning. See runOwnBehalf for the fence.
+// mast checked or recorded, because neither is about the agent's
+// reasoning: one is about the operator's approval, the other about
+// their route back. See runOwnBehalf for the fence.
 func (ts *toolSchemas) read(ctx adkagent.Context, name string, args map[string]any) (map[string]any, error) {
 	result, err := ts.runOwnBehalf(ctx, name, args, "serve as a precondition read")
 	if err != nil {

@@ -506,6 +506,7 @@ func (c *sessionsCmd) runShow(ctx context.Context, out io.Writer) error {
 			fmt.Fprintf(out, "  Note:     %s\n", e.Note)
 		}
 	}
+	printCaptures(out, d.Captures)
 	// Token records for interrupt pauses, keyed by interrupt ID, so the
 	// pending blocks below can print the token-keyed resume command.
 	intrTokens := map[string]*transcript.PauseRecord{}
@@ -656,6 +657,64 @@ func printChangeSet(out io.Writer, payload any) {
 	} else {
 		fmt.Fprintf(out, "    One at a time: %s\n", set.Ungrantable)
 	}
+}
+
+// printCaptures renders what this session overwrote and how to put it
+// back (#296).
+//
+// It prints the revert as a literal tool name and argument object rather
+// than as a description, because the gap this closes is not that the
+// operator did not know what changed — the transcript above shows that.
+// It is that knowing the old value and being able to restore it are
+// different things at 3am, and the second one used to mean composing a
+// call by hand against a cluster that is already unhappy. mast has no
+// subcommand that fires a bare tool call, so this is the argument to
+// hand to whatever drives the workload, not a command to paste.
+//
+// The undo is a proposal, not a button: running it sends it back through
+// the same write gate the forward call went through, so it is approved
+// like anything else. mast never fires one on its own — see
+// pkg/approval/capture.go.
+func printCaptures(out io.Writer, captures []approval.CaptureRecord) {
+	for _, r := range captures {
+		fmt.Fprintf(out, "\nPrior state captured:\n")
+		fmt.Fprintf(out, "  Changed by: %s\n", r.Key)
+		fmt.Fprintf(out, "  Captured:   %s by %s\n",
+			r.CapturedAt.UTC().Format(time.RFC3339), approval.CallKey(r.Read, r.ReadArgs))
+		if len(r.PriorFields) > 0 {
+			for _, path := range r.PriorFields {
+				fmt.Fprintf(out, "    %s = %s\n", path, renderPrior(r.Prior[path]))
+			}
+		} else {
+			fmt.Fprintf(out, "    (whole result of the read, digest %s)\n", r.Digest)
+		}
+		if r.Revert == nil {
+			fmt.Fprintf(out, "  Undo:       none — this workload declares no call that puts %s back\n", r.Tool)
+			continue
+		}
+		fmt.Fprintf(out, "  Undo:       %s\n", approval.CallKey(r.Revert.Tool, r.Revert.Arguments))
+		args, err := json.Marshal(r.Revert.Arguments)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(out, "              (proposal, not a button: it goes through the write gate like any other change)\n")
+		fmt.Fprintf(out, "              %s %s\n", r.Revert.Tool, args)
+	}
+}
+
+// renderPrior shows a captured value on one line, elided at the same
+// width CallKey uses so a manifest-sized value does not take the view
+// over. The whole value is in the JSON projection.
+func renderPrior(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "(unrenderable)"
+	}
+	const max = 160
+	if len(raw) > max {
+		return string(raw[:max]) + "…"
+	}
+	return string(raw)
 }
 
 func sortedMapKeys(m map[string]string) []string {

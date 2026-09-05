@@ -135,6 +135,20 @@ Note what the check asks for and what it does not: it asserts the revert path wa
 demonstrated the property. That is a good test, and it needs only #296's *capture* half. The
 *restore* half is the product feature and can follow.
 
+**Update (2026-09-05): the capture half shipped, and it moves this check from blocked to
+buildable-with-one-caveat.** The write gate now records a `CaptureRecord` per mutating call —
+prior state, and the `ProposedChange` that restores it — under `mast_effect_capture_<fcID>` on the
+event log, projected by `pkg/transcript` and printed by `mast sessions show`. See
+[`./orchestration-design.md`](./orchestration-design.md) § "Prior-state capture" for the scope
+decision. Two consequences for this check. First, it becomes a **transcript assertion rather than a
+report assertion**: the record is structured and durable, so the verifier reads the journal instead
+of grepping prose for the word "rollback", which is what made the check look unwritable. Second,
+`reverts_to_captured_state: true` can now honestly mean *a record exists and carries a revert* —
+and cannot mean *the revert would work*, because mast never fires one. A case that wants the
+stronger claim has to execute the revert itself and re-read the cluster, which is a different case
+with a different cost, not a flag on this one. The restore half remains out of scope by decision,
+not by sequencing.
+
 ### 3.3 `manifest_dry_run` is deferred, and is the first thing to add
 
 Flagged by the source itself as proposed-not-specified. Agreed on both halves: it is the
@@ -246,7 +260,10 @@ Consequences, stated rather than discovered later:
 - **The mutating case is unaffected by this choice and blocked on other things.** lookout's MCP
   server is read-only by design, so when `crashloop-remediate-and-verify` is admitted it needs a
   write tool from somewhere — the `change-executor` roster's, not lookout's. That is a #295/#296
-  question, not a substrate one, and it is out of scope here.
+  question, not a substrate one, and it is out of scope here. #296 adds one requirement to it that
+  is easy to miss: whatever write tool that bundle wires must also declare a `capture` block naming
+  a read and a revert, or `reverts_to_captured_state` is vacuous by construction rather than failing
+  — the gate records nothing for a tool that declares nothing.
 
 **Named as an open question rather than resolved** (§9 OQ1): whether `intents.yaml` should grow GKE
 MCP rows, or whether the intent layer is lookout-scoped by design and should say so in its header.
@@ -306,7 +323,7 @@ only waits out the timeout. **Anything reading the transcript is `assert`.** Clu
 | `tool_called` | the trace | adopted, **never as a mutation safeguard** |
 | `cluster_resource_property` | the cluster | adopted, incl. `stable_for` / `changed_count_eq` |
 | `approval_requested` | the durable session event log | **new**, replaces §3.1 — #295 |
-| `effect_recorded` | the durable effect journal | **blocked** on #296's capture half |
+| `effect_recorded` | the durable effect journal | **unblocked** 2026-09-05 — #296's capture half shipped; the verifier itself is still unbuilt, §3.2 |
 | `manifest_dry_run` | the report + a server-side dry run | **deferred**, §3.3 |
 
 `cluster_resource_property` keeps the source's shape verbatim, including the two properties that
@@ -743,7 +760,7 @@ built (§3.3).
 - **Cluster-level fixtures.** Every role is namespace-scoped or cluster-scoped-but-additive, so one
   cluster carries all of them. A control-plane-level fixture would grow `fixtures.yaml` slots; no
   case needs one.
-- **The mutating case.** Blocked on #295 and #296, admitted last, and not v0.7's gate.
+- **The mutating case.** Was blocked on #295 and #296; #296's capture half shipped 2026-09-05, so #295's park record is the one remaining prerequisite. Still admitted last, and still not v0.7's gate.
 
 ---
 
@@ -756,6 +773,7 @@ built (§3.3).
 | `changed_count_eq` (a blast-radius ceiling — mast gates on verb and nothing gates on scope) and `stable_for` are adopted | 2026-09-05 |
 | `request_approval` is refused as a tool: a gate the model can decline to invoke is not a gate. The park record in the durable log is the boundary; the trace is not. Replaced by `approval_requested` (#295) | 2026-09-05 |
 | `effect_recorded: reverts_to_captured_state` needs a product feature, not a verifier (#296). Its *capture* half unblocks the eval; *restore* can follow | 2026-09-05 |
+| #296's scope resolved to **capture only**: the gate records prior state and the call that restores it, and never fires that call. `reverts_to_captured_state` therefore reads the event log rather than the report, and can assert a revert was *recorded* but not that it *works* — see §3.2's update and [`./orchestration-design.md`](./orchestration-design.md) § "Prior-state capture" | 2026-09-05 |
 | `intent_satisfied` cannot express "two distinct objects were read", and that is a **boundary of the intent layer**, not a gap in `intents.yaml`. Splitting an intent to fix it would reintroduce name-level matching through the side door | 2026-09-05 |
 | **The O tier runs against kind, through `k8s-lookout`'s read-only MCP server** — not against GKE through the hosted GKE MCP server. Not a cost trade-off: `intents.yaml` carries no GKE MCP rows, so on that substrate every `intent_satisfied` check is vacuous. The fixture provisioner extends tier C's isolation discipline verbatim | 2026-09-05 |
 | Vacuity is classified **per check**, `required` by default: required ↔ `Dead` (gates), diagnostic ↔ `DeadDiagnostics` (reports). A check vacuous *by construction* is diagnostic, never deleted — `evidence-chain`'s intent check is the first one | 2026-09-05 |

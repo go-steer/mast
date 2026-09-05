@@ -111,6 +111,16 @@ type Config struct {
 	// `once` — see grant.go.
 	Grants *Freshness
 
+	// Captures, when non-nil, records what a mutating call is about to
+	// overwrite before it fires, and the call that puts it back (#296).
+	//
+	// Nil, and a non-nil value under which no tool declares a capture,
+	// are the same thing: nothing is read and nothing is recorded. Only
+	// a tool whose declaration names a read pays anything — and pays it
+	// fail-closed, so a declared capture that cannot be taken stops the
+	// call. See capture.go.
+	Captures *CaptureRules
+
 	// Workload names the workload whose bundle composed this gate, and
 	// is stamped onto every Decision record so an exported adjudication
 	// is legible without the session it came from (v0.4 W8). Optional:
@@ -194,6 +204,9 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 
 	switch g.cfg.Policy {
 	case OnMutationApply:
+		if refusal := g.permit(ctx, t, key, args); refusal != nil {
+			return refusal, nil
+		}
 		g.audit(ctx, t, key, "apply", "policy is apply; executing without operator approval")
 		return nil, nil
 
@@ -389,6 +402,20 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 		g.commitGrants(ctx, t, effKey, v, pending)
 	}
 
+	// The capture runs against the arguments that will actually run, so
+	// an edited verdict is captured after the edit lands rather than
+	// before it — hence this sits below the edit block and not above it.
+	// Its refusal path is why the edit is applied to a copy first: a
+	// capture that fails must not leave the operator's arguments in the
+	// live map of a call that did not run.
+	running := args
+	if edited != nil {
+		running = edited
+	}
+	if refusal := g.permit(ctx, t, effKey, running); refusal != nil {
+		return refusal, nil
+	}
+
 	if edited != nil {
 		// Last, and only once the verdict has survived every check: the
 		// live map ADK is about to hand the tool becomes the operator's.
@@ -411,6 +438,101 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 		"session", ctx.SessionID(), "invocation", ctx.InvocationID(),
 		"function_call_id", ctx.FunctionCallID())
 	return nil, nil
+}
+
+// permit is the last thing that happens before a mutating call is
+// allowed to run, on every path that allows one: policy-is-apply, an
+// operator's approval, an operator's edit, and a change-set grant. A
+// non-nil return is a refusal to hand the model; nil means proceed.
+//
+// One function rather than a line at each of the four, for the reason
+// runOwnBehalf gives about its own three callers: the count is the
+// point. "Everything mast overwrote was recorded first" is a claim about
+// *every* path, and a fifth path that forgets to call this is the only
+// way the claim becomes false — so the paths are here, together, where
+// the next one added is visibly next to them.
+//
+// It does nothing at all unless a tool declares a capture. When one
+// does, it is fail-closed: see capture.go for why refusing is the
+// honest reading of the declaration.
+func (g *writeGate) permit(ctx agent.Context, t tool.Tool, key string, args map[string]any) map[string]any {
+	decl, err := g.cfg.Captures.declared(t.Name())
+	if err != nil {
+		g.audit(ctx, t, key, "capture_undeclarable", err.Error())
+		return map[string]any{
+			"error": "capture_failed",
+			"detail": "This workload's declaration of what to record before changing " + t.Name() + " could not be read (" + err.Error() + "), " +
+				"so mast did not make the change. Nothing happened. Report this and stop.",
+		}
+	}
+	if decl == nil {
+		return nil
+	}
+	rec, err := g.cfg.Captures.take(ctx, t.Name(), key, args, decl)
+	if err != nil {
+		g.audit(ctx, t, key, "capture_failed", err.Error())
+		g.cfg.Logger.Warn("write gate: refusing an authorized mutating call because its prior state could not be captured",
+			"tool", t.Name(), "call", key, "error", err.Error(),
+			"session", ctx.SessionID(), "invocation", ctx.InvocationID(),
+			"function_call_id", ctx.FunctionCallID())
+		return map[string]any{
+			"error": "capture_failed",
+			"detail": "This call was authorized, but mast could not first record what it would overwrite: " + err.Error() + ". " +
+				"The call was NOT made and nothing changed. This workload declares that " + t.Name() + " must not run without a prior-state record, " +
+				"so this is a refusal and not a retryable error. Report it and stop.",
+		}
+	}
+	g.recordCapture(ctx, t, rec)
+	return nil
+}
+
+// recordCapture persists the prior-state record on the state delta of
+// the event ADK is already appending for this call — one writer, the
+// same discipline writeDecision, recordEdit and writeGrant follow (mast
+// #45/#46).
+//
+// Unlike those three, a failure here refuses the call. They are audit
+// records written after an adjudication that has already happened, so
+// dropping one costs a dataset a row; this one is the thing the call was
+// permitted on the strength of, and a call that runs after its capture
+// failed to persist is exactly the un-undoable effect the record exists
+// to prevent. The window that cannot be closed is the same one the
+// effects outbox names: the delta lands with the event, so a crash
+// between the tool firing and the event persisting loses the capture
+// along with the record that the call happened at all.
+func (g *writeGate) recordCapture(ctx agent.Context, t tool.Tool, rec *CaptureRecord) {
+	if rec == nil || ctx == nil {
+		return
+	}
+	rec.Workload = g.cfg.Workload
+	raw, err := EncodeCapture(*rec)
+	if err != nil {
+		g.cfg.Logger.Error("write gate: captured prior state but could not encode its record",
+			"tool", t.Name(), "call", rec.Key, "error", err.Error())
+		return
+	}
+	a := ctx.Actions()
+	if a == nil {
+		g.cfg.Logger.Error("write gate: no event actions to record captured prior state on",
+			"tool", t.Name(), "call", rec.Key)
+		return
+	}
+	if a.StateDelta == nil {
+		a.StateDelta = map[string]any{}
+	}
+	a.StateDelta[CaptureStateKey(ctx.FunctionCallID())] = raw
+	g.cfg.Logger.Info("write gate: prior state captured before a mutating call",
+		"tool", t.Name(), "call", rec.Key, "read", CallKey(rec.Read, rec.ReadArgs),
+		"digest", rec.Digest, "undoable", rec.Undoable(), "revert", revertKey(rec),
+		"session", ctx.SessionID(), "invocation", ctx.InvocationID(),
+		"function_call_id", ctx.FunctionCallID())
+}
+
+func revertKey(rec *CaptureRecord) string {
+	if rec == nil || rec.Revert == nil {
+		return ""
+	}
+	return CallKey(rec.Revert.Tool, rec.Revert.Arguments)
 }
 
 // prepareEdit validates an edited verdict and re-adjudicates the deny

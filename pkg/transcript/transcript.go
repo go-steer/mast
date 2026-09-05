@@ -230,6 +230,13 @@ type Detail struct {
 	// beside it is the result of running the *operator's*
 	// (pkg/approval.AppliedEdit).
 	AppliedEdits []approval.AppliedEdit `json:"applied_edits,omitempty"`
+	// Captures are the prior-state records the write gate took before
+	// each mutating call it let through, oldest first (#296). They are
+	// the answer to "what did this change, and how do I put it back" —
+	// a question the transcript on its own cannot answer at all, because
+	// a FunctionCall records what was sent and its FunctionResponse what
+	// came back, and neither records what was there before.
+	Captures []approval.CaptureRecord `json:"captures,omitempty"`
 }
 
 // Store wraps an ADK session.Service with the operator-facing
@@ -732,6 +739,7 @@ func project(sess adksession.Session, ops map[string]string, gate *PauseRecord) 
 		EventCount:   sess.Events().Len(),
 		Pending:      scanPending(sess.Events()),
 		AppliedEdits: scanAppliedEdits(sess.Events()),
+		Captures:     scanCaptures(sess.Events()),
 	}
 
 	markerValue := func(key string) string {
@@ -916,4 +924,45 @@ func scanAppliedEdits(events adksession.Events) []approval.AppliedEdit {
 		}
 	}
 	return edits
+}
+
+// scanCaptures walks the event log in order and returns the write
+// gate's prior-state records, oldest first (#296).
+//
+// Read from the events' state deltas rather than the collapsed state
+// for the reason scanAppliedEdits gives — the order is the order the
+// calls ran in — and with one difference in how a bad row is handled.
+// An undecodable edit is skipped silently there because the operator
+// loses one audit row. Here the row is somebody's route back from a
+// change that has already happened, so a skip is recorded as a stub
+// naming the key: an operator who is missing an undo needs to know they
+// are missing it, and an empty list says the opposite.
+func scanCaptures(events adksession.Events) []approval.CaptureRecord {
+	var out []approval.CaptureRecord
+	for ev := range events.All() {
+		delta := ev.Actions.StateDelta
+		if len(delta) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(delta))
+		for k := range delta {
+			if strings.HasPrefix(k, approval.CaptureStateKeyPrefix) {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			r, err := approval.DecodeCapture(delta[k])
+			if err != nil {
+				out = append(out, approval.CaptureRecord{
+					FunctionCallID: strings.TrimPrefix(k, approval.CaptureStateKeyPrefix),
+					Key:            "(unreadable prior-state record: " + err.Error() + ")",
+					CapturedAt:     ev.Timestamp,
+				})
+				continue
+			}
+			out = append(out, r)
+		}
+	}
+	return out
 }
