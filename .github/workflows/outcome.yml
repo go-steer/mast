@@ -1,0 +1,133 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The O tier: outcome evals (#297, docs/outcome-evals-design.md).
+#
+# THIS ONE GATES. Every other metered eval in this repo reports — the
+# judge nightly explicitly does not fail on a low score. This job fails
+# the pull request when the board is red, which is what the tier is for:
+# a real model, a real cluster, and a red that blocks a merge.
+#
+# ## OQ2, decided here: per-PR
+#
+# The design named the compromise and its cost — "a merge-queue-only gate
+# is the obvious compromise and weakens the claim". It is not needed. The
+# thing that made per-PR look expensive was a pass per push; the
+# concurrency block below cancels the previous run on every push, so a
+# branch pushed eight times costs about one pass, not eight. A pass is
+# fifteen metered runs of a mid-tier model against a local kind, measured
+# at roughly four minutes and a couple of dollars.
+#
+# So the gate runs where a gate belongs: on the pull request, before the
+# merge, with the author able to see the red and act on it.
+#
+# ## What it needs configured
+#
+# Same keyless Vertex path as the judge nightly (OIDC → workload identity
+# federation; no long-lived key in a repo secret):
+#
+#   vars.MAST_EVALS_VERTEX_PROJECT      GCP project serving Claude on Vertex
+#   secrets.MAST_EVALS_WIF_PROVIDER     workload identity provider resource
+#   secrets.MAST_EVALS_SERVICE_ACCOUNT  service account to impersonate
+#   vars.MAST_EVALS_VERTEX_REGION       optional; defaults to us-east5
+#   vars.MAST_OUTCOME_MODEL             optional; defaults to the tier's own
+#                                       mid-tier default, not mast's frontier
+#                                       one — see cmd/outcome's defaultModel
+#
+# ## Unconfigured is RED, not skipped
+#
+# The judge nightly skips cleanly when a repo has not set this up,
+# because a nightly that reds on a rotated secret trains its readers to
+# ignore it. A gate is the opposite case: green-because-it-could-not-run
+# is exactly §7's rung that cannot fire, and the design is written
+# against that failure. dev/ci/outcome-gate.sh fails with the reason and
+# the remedy in the job summary.
+#
+# The consequence is stated rather than discovered: **a pull request from
+# a fork cannot run this**, because GitHub withholds secrets from fork
+# workflows. A maintainer runs the tier on a branch in this repo before
+# merging such a PR. That is a real cost of gating on a metered tier and
+# there is no version of it that is both credentialed and fork-safe.
+
+name: outcome
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model under test (overrides vars.MAST_OUTCOME_MODEL)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  # Minting the OIDC token the Vertex auth exchanges.
+  id-token: write
+
+# One pass per ref, and a new push cancels the one in flight. This is
+# what makes per-PR affordable: without it the gate costs a metered pass
+# per push, which is the number that made a merge queue look necessary.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  outcome:
+    runs-on: ubuntu-latest
+    # 20 for the pass's own ceiling (outcome.DefaultCeiling), the rest
+    # for cluster create, the lookout install and teardown. If this
+    # timeout is what stops the job, the board is lost — the tier's own
+    # deadline is the one that produces a readable short board, and it
+    # has to expire first.
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Pinned, not @latest. A gate whose tool surface floats reds for
+      # reasons no PR author can act on, and a gate people have learned
+      # to ignore is worse than no gate. The pin lives in Go
+      # (outcome.PinnedLookout) so the refusal message can name it, and
+      # is read back out here so the two cannot drift.
+      - name: Install the pinned lookout
+        run: |
+          pin="$(go run ./internal/evals/cmd/outcome --print-lookout-pin)"
+          echo "installing k8s-lookout ${pin}"
+          go install "github.com/go-steer/k8s-lookout/cmd/lookout@${pin}"
+          echo "${HOME}/go/bin" >>"${GITHUB_PATH}"
+
+      - uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.MAST_EVALS_WIF_PROVIDER }}
+          service_account: ${{ secrets.MAST_EVALS_SERVICE_ACCOUNT }}
+        continue-on-error: true
+
+      - name: Outcome tier
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
+          CLOUD_ML_REGION: ${{ vars.MAST_EVALS_VERTEX_REGION || 'us-east5' }}
+          MAST_OUTCOME_MODEL: ${{ inputs.model || vars.MAST_OUTCOME_MODEL }}
+          MAST_OUTCOME_PROVIDER: ${{ vars.MAST_OUTCOME_PROVIDER }}
+        run: dev/ci/outcome-gate.sh
