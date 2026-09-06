@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**A release now refuses a commit the outcome tier has not passed.** The O
+tier reds a pull request but does not block it — making it a required status
+check is a repository setting, not a code change — so the claim that a real
+model's behaviour can stop bad code had a gap at the end of it: a tag. The
+release workflow's first step now reads the `outcome` check run for the SHA
+the tag points at and refuses on anything except success, *including on its
+absence*, which is what a rung that cannot fire looks like at the one moment
+it matters most. This is a stronger promise than the branch-protection
+setting rather than a substitute for it: it survives an admin merge, it costs
+a pull request from a fork nothing, and it is a statement about the artifact
+being published rather than about the process that produced it — the same
+reasoning as the published-notes assertion beside it, which exists because
+six releases composed correct notes and published empty bodies. The dry run
+is gated too, so `gh workflow run release.yml -f dry_run=true` is a full
+rehearsal.
+
 **The cluster read/write split now bounds the path mast actually uses, and
 the narrowed IAM binding is the default.** `WRITE_SCOPE=namespaced` shipped
 opt-in for four releases because nobody had run it against a live GKE
