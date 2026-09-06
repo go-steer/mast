@@ -4,6 +4,30 @@
 # Binds the cluster-wide READ role to the daemon's service account.
 # The matching write grant is not here and is not cluster-scoped —
 # see deploy/remediation-target/.
+#
+# TWO subjects, because mast reaches a cluster by two paths and they do
+# not share a username:
+#
+#   - `kind: ServiceAccount` covers the in-cluster path — anything that
+#     presents the pod's projected KSA token to the API server directly.
+#     The API server sees system:serviceaccount:mast-triage/mast-daemon.
+#
+#   - `kind: User` covers the GKE MCP path, which is the one the agent's
+#     tools actually take. mast never presents the KSA token there; it
+#     calls container.googleapis.com/mcp with a Google credential derived
+#     from the KSA, and the API server sees the Workload Identity
+#     Federation principal, whose RBAC username is
+#     serviceAccount:PROJECT.svc.id.goog[NAMESPACE/KSA] — a User, not a
+#     ServiceAccount. Measured against a live GKE cluster on 2026-09-06
+#     (#290): with only the ServiceAccount subject bound, every MCP-path
+#     write is Forbidden even in a namespace deploy/remediation-target
+#     was applied to.
+#
+# Replace REPLACE_ME_PROJECT with your project ID, the same value as
+# GOOGLE_CLOUD_PROJECT in deploy/overlays/example/kustomization.yaml. An
+# unreplaced subject binds nothing; it also leaves the MCP path with no
+# read grant of its own, so `kubectl auth can-i --as` the User name below
+# is the check that it took (scripts/rbac-matrix.sh does it for you).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -16,3 +40,6 @@ subjects:
   - kind: ServiceAccount
     name: mast-daemon
     namespace: mast-triage
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: serviceAccount:REPLACE_ME_PROJECT.svc.id.goog[mast-triage/mast-daemon]

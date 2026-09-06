@@ -6,6 +6,18 @@
 # the grant: the subject is fixed, the namespace this lands in is the
 # operator's choice, and a namespace nobody instantiated this
 # kustomization for is one mast cannot change.
+#
+# The User subject is what makes that true of the path mast's tools take.
+# The GKE MCP server reaches the cluster as the KSA's Workload Identity
+# Federation principal, not as the KSA, and the API server names that
+# principal serviceAccount:PROJECT.svc.id.goog[NAMESPACE/KSA] — a User.
+# Bind only the ServiceAccount and, under WRITE_SCOPE=namespaced, mast is
+# read-only everywhere: measured on a live GKE cluster 2026-09-06 (#290),
+# a patch in this very namespace came back "User
+# \"serviceAccount:...svc.id.goog[mast-triage/mast-daemon]\" cannot patch
+# resource \"deployments\"". See deploy/base/15-clusterrolebinding-daemon-read.yaml.
+#
+# Replace REPLACE_ME_PROJECT alongside REPLACE_ME_TARGET_NAMESPACE.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -18,3 +30,6 @@ subjects:
   - kind: ServiceAccount
     name: mast-daemon
     namespace: mast-triage
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: serviceAccount:REPLACE_ME_PROJECT.svc.id.goog[mast-triage/mast-daemon]

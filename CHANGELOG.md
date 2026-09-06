@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+**The cluster read/write split now bounds the path mast actually uses, and
+the narrowed IAM binding is the default.** `WRITE_SCOPE=namespaced` shipped
+opt-in for four releases because nobody had run it against a live GKE
+cluster. Running it produced the expected answer and an unexpected reason it
+had been out of reach: GKE does not resolve the Workload Identity Federation
+principal to the KSA's RBAC ServiceAccount subject. The API server sees an
+RBAC **`User`** named `serviceAccount:<project>.svc.id.goog[<ns>/<ksa>]`, so
+the shipped bindings granted the GKE MCP path — the one the agent's tools take
+— nothing at all. Under the old `roles/container.admin` default that was
+invisible, because IAM allowed every write anyway and the RBAC files read as
+if they were the boundary; under the narrowing it would have made the daemon
+read-only everywhere.
+
+Both bindings now name both subjects, `setup-wif.sh` defaults to
+`roles/container.viewer`, and `scripts/rbac-matrix.sh` runs its 20 cells once
+per username and refuses to report green without `PROJECT_ID` — measuring only
+the in-cluster path is worse than measuring nothing, since it goes green on a
+cluster where mast cannot write. Measured 41/41 against the rendered shipped
+manifests on live GKE: patch allowed in the remediable namespace, refused one
+namespace over, Deployment delete refused, cluster-wide secret list refused
+([#290](https://github.com/go-steer/mast/issues/290)).
+
+*Upgrading:* substitute your project ID for `REPLACE_ME_PROJECT` and re-apply
+`deploy/base` and `deploy/remediation-target`, or the MCP path stays unbound.
+Re-running `setup-wif.sh` adds bindings and never removes one, so an existing
+`roles/container.admin` needs an explicit `gcloud projects
+remove-iam-policy-binding`; the matrix fails a cell until it is gone.
+
 **The daemon now says which configuration it is running, and says when the
 files on disk stop matching it.** mast reads its bundle once, at startup, and
 reloads nothing — but in Kubernetes the ConfigMap is mounted as a whole

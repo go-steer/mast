@@ -6,6 +6,13 @@
 #
 # Example overlay. Copy to a new overlay directory and fill in the
 # REPLACE_ME values for your project + cluster.
+#
+# One REPLACE_ME lives outside this file and is easy to miss:
+# deploy/base/15-clusterrolebinding-daemon-read.yaml carries
+# REPLACE_ME_PROJECT in the RBAC subject for the GKE MCP path. Kustomize
+# has no substitution for a subject name, so it is an edit or a sed on
+# the rendered output — and until it is made, mast reads nothing over the
+# path its tools use.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

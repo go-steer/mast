@@ -33,21 +33,41 @@
 #   2. Binds four IAM roles to the KSA principal:
 #        - roles/aiplatform.user
 #        - roles/mcp.toolUser
-#        - roles/container.admin      (WRITE_SCOPE=cluster-admin, default)
-#          or roles/container.viewer  (WRITE_SCOPE=namespaced)
+#        - roles/container.viewer     (WRITE_SCOPE=namespaced, default)
+#          or roles/container.admin   (WRITE_SCOPE=cluster-admin)
 #        - roles/iam.serviceAccountUser (on the NODE service account)
 #
 # WRITE_SCOPE decides whether mast's Kubernetes RBAC split is real.
-# GKE allows an API call if EITHER IAM or RBAC allows it, and the
-# daemon reaches the cluster through the GKE MCP server as this
-# principal — so under the default `cluster-admin` the namespaced write
-# Role in deploy/remediation-target/ subtracts nothing from that path.
+# GKE allows an API call if EITHER IAM or RBAC allows it, and the daemon
+# reaches the cluster through the GKE MCP server as this principal — so
+# under `cluster-admin` the namespaced write Role in
+# deploy/remediation-target/ subtracts nothing from that path.
 # `namespaced` binds read-only IAM and leaves the writes to RBAC, which
-# is the boundary v0.3 W2.6 describes. It is NOT the default because it
-# has not been verified against a live cluster: it depends on GKE
-# resolving the WIF principal to the KSA's RBAC subject. Try it on a
-# non-production project first, run scripts/rbac-matrix.sh, and fall
-# back with WRITE_SCOPE=cluster-admin if a remediation gets Forbidden.
+# is the boundary v0.3 W2.6 describes.
+#
+# `namespaced` is the default as of 2026-09-06 (#290), when it was run
+# against a live GKE cluster for the first time. Two results:
+#
+#   - It works. roles/container.viewer + the namespaced RBAC write
+#     authorizes a patch in the remediable namespace over the MCP path
+#     and refuses the same patch one namespace over, refuses a Deployment
+#     delete, and refuses a cluster-wide secret list.
+#
+#   - It only works because the manifests now bind the right subject.
+#     GKE does NOT resolve the WIF principal to the KSA's RBAC subject:
+#     the API server sees an RBAC *User* named
+#     serviceAccount:PROJECT.svc.id.goog[NAMESPACE/KSA]. A RoleBinding
+#     naming only `kind: ServiceAccount` matches nothing on that path, so
+#     before the fix `namespaced` did not narrow mast, it made it
+#     read-only. Both subjects are bound now; if you are upgrading an
+#     existing deployment, re-apply deploy/base and
+#     deploy/remediation-target before re-running this.
+#
+# Verify either mode with `PROJECT_ID=... scripts/rbac-matrix.sh`, which
+# runs the matrix against both usernames. Fall back with
+# WRITE_SCOPE=cluster-admin if a remediation gets Forbidden — but read
+# the matrix first, because a missing per-namespace RoleBinding looks
+# exactly the same from the agent's side.
 #
 # All bindings use WIF-for-GKE direct binding — no Google Service Account
 # impersonation for the KSA itself. See:
@@ -61,10 +81,19 @@
 #   NAMESPACE      — K8s namespace. Default: mast-triage.
 #   KSA_NAME       — Kubernetes ServiceAccount name. Default: mast-daemon.
 #   NODE_SA        — Node service account (default: Compute Engine default).
-#   WRITE_SCOPE    — "cluster-admin" (default) or "namespaced". See above.
+#   WRITE_SCOPE    — "namespaced" (default) or "cluster-admin". See above.
 #   DRY_RUN        — "true" to print gcloud commands without executing.
 #
-# Idempotent: re-runs are safe. Existing bindings are left in place.
+# Idempotent: re-runs are safe. Existing bindings are left in place —
+# which means re-running this with the new default does NOT take away a
+# roles/container.admin bound by an earlier run. Narrowing an existing
+# deployment needs an explicit removal:
+#
+#   gcloud projects remove-iam-policy-binding PROJECT_ID \
+#     --role=roles/container.admin --member=<the principal printed below> \
+#     --condition=None
+#
+# scripts/rbac-matrix.sh fails a cell while that binding stands.
 #
 # Prereqs on the operator: roles/container.admin + roles/iam.serviceAccountAdmin
 # on the project.
@@ -105,11 +134,11 @@ fi
 NAMESPACE="${NAMESPACE:-mast-triage}"
 KSA_NAME="${KSA_NAME:-mast-daemon}"
 DRY_RUN="${DRY_RUN:-false}"
-WRITE_SCOPE="${WRITE_SCOPE:-cluster-admin}"
+WRITE_SCOPE="${WRITE_SCOPE:-namespaced}"
 
 case "${WRITE_SCOPE}" in
+    namespaced) CONTAINER_ROLE="roles/container.viewer" ;;
     cluster-admin) CONTAINER_ROLE="roles/container.admin" ;;
-    namespaced)    CONTAINER_ROLE="roles/container.viewer" ;;
     *)
         log_error "WRITE_SCOPE must be 'cluster-admin' or 'namespaced', got '${WRITE_SCOPE}'."
         exit 1
@@ -210,6 +239,14 @@ if [[ "${WRITE_SCOPE}" == "cluster-admin" ]]; then
     log_warn "Role in deploy/remediation-target/ does not bound the MCP path while"
     log_warn "this binding stands. Re-run with WRITE_SCOPE=namespaced to narrow it."
     echo
+else
+    log_info "Writes now come from Kubernetes RBAC, not IAM. mast can change a"
+    log_info "namespace only where deploy/remediation-target/ has been applied,"
+    log_info "and that RoleBinding has to name the MCP path's subject:"
+    log_info "  serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${KSA_NAME}]"
+    log_info "The shipped manifests do; a deployment predating #290 does not, and"
+    log_info "will be read-only until it is re-applied."
+    echo
 fi
 
 if [[ "${DRY_RUN}" == "true" ]]; then
@@ -234,10 +271,16 @@ else
     echo "     kubectl -n ${NAMESPACE} create secret generic mast-inject-token --from-literal=token=\"\$TOKEN\""
     echo "     kubectl -n ${NAMESPACE} create secret generic k8s-event-watcher-token --from-literal=token=\"\$TOKEN\""
     echo "  2. Edit deploy/overlays/example/kustomization.yaml (REPLACE_ME → project id, image tag)."
+    echo "     Replace REPLACE_ME_PROJECT with ${PROJECT_ID} in the RBAC subjects too:"
+    echo "       deploy/base/15-clusterrolebinding-daemon-read.yaml"
+    echo "       deploy/remediation-target/21-rolebinding-daemon-write.yaml"
+    echo "     That is the username the GKE MCP path arrives as; leave it unreplaced"
+    echo "     and mast reads and writes nothing."
     echo "  3. kubectl apply -k deploy/overlays/example"
     echo "  4. Grant writes in each namespace mast may remediate — edit"
     echo "     deploy/remediation-target/kustomization.yaml's namespace and apply it,"
-    echo "     once per namespace. Verify with scripts/rbac-matrix.sh."
+    echo "     once per namespace. Verify with:"
+    echo "       PROJECT_ID=${PROJECT_ID} TARGET_NS=<ns> scripts/rbac-matrix.sh"
     echo
     echo "Bindings applied:"
     echo "  - roles/aiplatform.user        on projects/${PROJECT_ID}"
