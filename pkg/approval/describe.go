@@ -32,6 +32,18 @@ import (
 type Parked struct {
 	// Hint is the one-line question the gate wrote.
 	Hint string
+	// CallID is the function-call ID of the call this question gates —
+	// the ID the approved call re-fires under, and the ID every other
+	// durable record of the same call is keyed by (DecisionStateKey,
+	// EditStateKey, CaptureStateKey). It is therefore the join: a reader
+	// holding a park and a decision has no other way to know they are
+	// about the same call.
+	//
+	// pkg/effects reads the same field for its own purpose and does not
+	// route through this type, because pkg/effects does not import this
+	// package and widening it for one accessor is the wrong trade. Both
+	// readers are pinned against a real flow by adkseam_test.go.
+	CallID string
 	// Tool is the parked call's tool name, "" if it could not be read.
 	Tool string
 	// Args are the arguments the agent proposed.
@@ -60,11 +72,12 @@ func DescribeConfirmation(args map[string]any) Parked {
 	switch fc := args["originalFunctionCall"].(type) {
 	case *genai.FunctionCall:
 		if fc != nil {
-			p.Tool, p.Args = fc.Name, fc.Args
+			p.CallID, p.Tool, p.Args = fc.ID, fc.Name, fc.Args
 		}
 	case genai.FunctionCall:
-		p.Tool, p.Args = fc.Name, fc.Args
+		p.CallID, p.Tool, p.Args = fc.ID, fc.Name, fc.Args
 	case map[string]any:
+		p.CallID, _ = fc["id"].(string)
 		p.Tool, _ = fc["name"].(string)
 		p.Args, _ = fc["args"].(map[string]any)
 	}

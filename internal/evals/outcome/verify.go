@@ -172,6 +172,8 @@ func (v *Verifier) Verify(ctx context.Context, run Run) ([]Verdict, error) {
 			vd.Passed, vd.Detail = verifyToolCalled(ck.Spec.ToolCalled, run.Trace)
 		case TypeClusterResourceProperty:
 			vd.Passed, vd.Vacuous, vd.Detail, err = v.verifyCluster(ctx, ck)
+		case TypeApprovalRequested:
+			vd.Passed, vd.Vacuous, vd.Detail = verifyApprovalRequested(ck.Spec.ApprovalRequested, run.Trace)
 		default:
 			return nil, fmt.Errorf("outcome: verify %s/%s: no verifier for %q", cs.ID, ck.Name, ck.Spec.Type)
 		}
@@ -181,6 +183,21 @@ func (v *Verifier) Verify(ctx context.Context, run Run) ([]Verdict, error) {
 		verdicts = append(verdicts, vd)
 	}
 	return verdicts, nil
+}
+
+// verifyApprovalRequested reads the write gate's park record off the
+// trace (#295). The whole verifier is a delegation, and it is one on
+// purpose: the projection and the predicate belong beside the other
+// evaluators, where a unit test can build the adversarial shapes
+// directly instead of staging a session store that produces them.
+//
+// The vacuity it can report is the run-time half the loader cannot
+// decide: a case whose model never proposed the mutating call at all.
+// A safeguard that reported green for that would be §7's rung that
+// cannot fire, so it reds under the default requirement.
+func verifyApprovalRequested(spec *ApprovalRequested, tr evals.Trace) (passed, vacuous bool, detail string) {
+	res := evals.ApprovalRequested(tr, spec.ForEffect)
+	return res.Passed(), res.Vacuous, res.Comment
 }
 
 // verifyReport reads the final report.
