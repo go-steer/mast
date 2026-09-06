@@ -1,6 +1,6 @@
-# mast — architecture (v0.5)
+# mast — architecture (v0.7)
 
-**Status:** current as of v0.5.0 (2026-08-30). This is the map of what
+**Status:** current as of v0.7.0 (2026-09-06). This is the map of what
 actually ships — the working architecture for contributors and
 embedders. The *why* behind each subsystem lives in the design corpus
 under [`docs/`](./docs/README.md) (start with
@@ -97,7 +97,7 @@ the version named in the library API design's import-surface table.
 | `pkg/notify` | The chat egress a monitoring cycle speaks through: a dependency-free client for switchboard's `POST /v1/messages` ingress and its edit/append verbs, with the two non-error answers to an append (409 "send the full text", 200 with a continuation ref) modelled as sentinels a caller acts on rather than as faults. Knows nothing about monitoring — the timeline policy lives in `cmd/mast/notify.go`. |
 | `pkg/planner` | Supervisor-body planner scaffold (`plan`/`finish_plan`; `invoke_remote_agent` composes here). |
 | `pkg/envelope` | Inject payloads — the unattended entry-point contract. |
-| `pkg/config` | `.agents/` discovery (workloads, specialists, MCP refs, A2A registrations) ([`docs/config-layout-design.md`](./docs/config-layout-design.md)). |
+| `pkg/config` | `.agents/` discovery (workloads, specialists, MCP refs, A2A registrations) ([`docs/config-layout-design.md`](./docs/config-layout-design.md)). Since [#289](https://github.com/go-steer/mast/issues/289) it also computes the **config identity** — a digest over exactly the files the loaders read — which the daemon logs at startup and re-hashes once a minute, warning once per edit when the mount stops matching what is running. It never reloads. |
 
 **Durability + governance** —
 [`docs/durable-execution-design.md`](./docs/durable-execution-design.md)
@@ -145,7 +145,10 @@ one-shot construction, the `bounded` single-node build),
 nightly's scoring, including the tiered-cost check; the judged tier
 retries a provider's `429`/`503` at the `model.LLM` seam so a quota
 blip costs a wait rather than a corpus row, and counts what it
-retried onto the board),
+retried onto the board — plus `internal/evals/outcome`, the **O tier**:
+corpus loader, fixture provisioner, verifiers, board and runner for a
+real model driven against a real `kind` cluster, the only tier that
+gates ([`docs/outcome-evals-design.md`](./docs/outcome-evals-design.md))),
 `internal/version` (ldflags-injected build identity, reported by
 `--version` and the attach capabilities frame), `internal/toolcatalog`
 (the tool declarations a real turn puts in front of a model, captured
@@ -315,7 +318,7 @@ when somebody reads their chat.
   fixes land wherever found first, then port within a week
   ([`docs/fork-design.md`](./docs/fork-design.md) sync discipline).
 
-## Deliberately not in v0.5
+## Deliberately not in v0.7
 
 Deferrals are decisions ([`AGENTS.md`](./AGENTS.md) house rule #7);
 the owning doc names the version that lifts each one, and the
@@ -369,6 +372,35 @@ still counted (`mast_budget_trips_total`), logged, listed per specialist
 on `GET /guardrails`, and returned to a library caller as
 `mast.Result.Exhausted` — a workload that quietly loses half its roster
 would otherwise return the same `nil` as one that did not.
+
+**A change carries a route back, and mast does not take it.** Shipped
+2026-09-05 ([#296](https://github.com/go-steer/mast/issues/296)):
+`pkg/approval/capture.go` runs a tool's declared prior-state read before
+the mutating call fires, on all four paths to execution, and writes the
+old values plus a proposed revert onto the event log. **Restore stays out
+by decision, not by sequencing** — mast can render the call and cannot
+decide that firing it an hour into an incident is still right, so the
+revert goes back through the same gate with a person answering. mast also
+derives neither the read nor the inverse: both are domain knowledge, and
+a workload that declares no `revert:` gets a record whose undo is marked
+undeclared rather than a guess.
+
+**Measurement gates, and it gates the release.** The **O tier** shipped
+2026-09-05 ([#294](https://github.com/go-steer/mast/issues/294),
+[#297](https://github.com/go-steer/mast/issues/297)): a real model against
+a real workload on a real `kind` cluster, on every pull request, with a
+20-minute ceiling budgeted before the roster and a check that measured
+nothing reding rather than passing. The write gate's park became readable
+to it the same week ([#295](https://github.com/go-steer/mast/issues/295))
+— a gated call carries its question and its answer, `approval.Parked` gains
+`CallID`, and the `approval_requested` check reads the **question, never
+the verdict**, so a call the operator refused still passes. Settled
+2026-09-06: `dev/release/require-outcome.sh` refuses to release a commit
+the tier has not passed, *including* one it never ran on, and that is
+**instead of** making `outcome` a required check on `main` rather than a
+step toward it — requiring it would make a fork's pull request unmergeable
+forever. The accepted cost is that a red can land on `main` and the
+refusal arrives at the tag.
 
 Still deferred here: the remaining AG-UI slices (`agui://`
 federation client, per-key `StateDelta`, webhook push, client-declared
