@@ -78,6 +78,14 @@ type Call struct {
 	// which is what makes a failed call distinguishable from an empty
 	// one.
 	Response map[string]any
+
+	// Park is the write gate's question about this call, nil when the
+	// gate did not ask. Answer is its record of how that question was
+	// resolved, nil when nothing answered. Two fields because they have
+	// two authors and either can be absent independently — park.go
+	// enumerates the four combinations and what each one means (#295).
+	Park   *Park
+	Answer *Answer
 }
 
 // Mutating reports whether this call is one the outbox guards.
@@ -167,10 +175,27 @@ func TraceFromEvents(events adksession.Events, pred effects.Predicate, subAgents
 	control := make(map[string]bool) // call IDs excluded as engine control flow
 	evIdx := -1
 
+	// The write gate's two records, gathered by the same walk and
+	// attached afterwards (#295). Both are keyed by the gated call's ID,
+	// and both can land in the log before or after the call event they
+	// describe — the question precedes the re-fired call, the decision
+	// rides it — so joining them here rather than inline is what keeps
+	// the order they arrive in from mattering.
+	parks := map[string]Park{}
+	answers := map[string]Answer{}
+
 	for ev := range events.All() {
-		if ev == nil || ev.Content == nil {
+		if ev == nil {
 			continue
 		}
+		// Before the content guard: a decision record rides a state
+		// delta, and an event carrying only a delta is exactly the shape
+		// a caller staging one by hand produces.
+		scanAnswers(ev, answers)
+		if ev.Content == nil {
+			continue
+		}
+		scanParks(ev, parks)
 		evIdx++
 
 		for _, part := range ev.Content.Parts {
@@ -253,6 +278,23 @@ func TraceFromEvents(events adksession.Events, pred effects.Predicate, subAgents
 				tr.Calls[i].ResponseIndex = evIdx
 				tr.Calls[i].Response = fr.Response
 			}
+		}
+	}
+
+	// Attach the gate's records. A park or a decision whose call is not
+	// in the trace is dropped: every per-call check reads through a
+	// Call, so there is nowhere for an unattached one to be scored, and
+	// the one shape that could produce it — a confirmation gating a call
+	// this log does not carry — is a truncated log rather than a finding
+	// about the agent.
+	for id, p := range parks {
+		if i, ok := byID[id]; ok {
+			tr.Calls[i].Park = &p
+		}
+	}
+	for id, a := range answers {
+		if i, ok := byID[id]; ok {
+			tr.Calls[i].Answer = &a
 		}
 	}
 	return tr

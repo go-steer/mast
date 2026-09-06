@@ -213,21 +213,20 @@ const (
 	TypeIntentSatisfied         SpecType = "intent_satisfied"
 	TypeToolCalled              SpecType = "tool_called"
 	TypeClusterResourceProperty SpecType = "cluster_resource_property"
+	TypeApprovalRequested       SpecType = "approval_requested"
 
-	// The three the design doc names and the loader refuses, each with
-	// the reason and the issue. Refused rather than accepted-and-ignored:
-	// a case written against a verifier nothing runs is a rung that
-	// cannot fire, and it reads green.
-	TypeApprovalRequested SpecType = "approval_requested"
-	TypeEffectRecorded    SpecType = "effect_recorded"
-	TypeManifestDryRun    SpecType = "manifest_dry_run"
+	// The two the design doc names and the loader still refuses, each
+	// with the reason and the issue. Refused rather than
+	// accepted-and-ignored: a case written against a verifier nothing
+	// runs is a rung that cannot fire, and it reads green.
+	TypeEffectRecorded SpecType = "effect_recorded"
+	TypeManifestDryRun SpecType = "manifest_dry_run"
 )
 
 // unbuilt maps a named-but-unavailable verifier to why.
 var unbuilt = map[SpecType]string{
-	TypeApprovalRequested: "the durable park record it reads is not exposed to an evaluator yet (#295)",
-	TypeEffectRecorded:    "mast has no captured-state concept for it to read (#296)",
-	TypeManifestDryRun:    "deferred until the admitted roster is stable (docs/outcome-evals-design.md §3.3)",
+	TypeEffectRecorded: "the capture record it reads shipped with #296, but nothing verifies it yet (#298)",
+	TypeManifestDryRun: "deferred until the admitted roster is stable (docs/outcome-evals-design.md §3.3)",
 }
 
 // Spec is the verifier body: the `check:` block. Exactly one of the
@@ -239,6 +238,27 @@ type Spec struct {
 	IntentSatisfied         *IntentSatisfied
 	ToolCalled              *ToolCalled
 	ClusterResourceProperty *ClusterResourceProperty
+	ApprovalRequested       *ApprovalRequested
+}
+
+// ApprovalRequested asserts that a mutating call was put to an operator
+// by the write gate before it could run — §3.1's replacement for the
+// source's `request_approval` tool_called check.
+//
+// It is the one verifier here that reads a record mast wrote about
+// itself at the moment it mattered, rather than the agent's account of
+// what it did. That is why it is the only safeguard the loader lets
+// carry a mutation claim.
+type ApprovalRequested struct {
+	Type SpecType `yaml:"type"`
+	// ForEffect names the mutating tool. Every call the run makes to it
+	// must be parked, and the park's recorded arguments must match the
+	// call's: a gate that asked about a proxy is not a gate.
+	//
+	// One tool, not a list. The check's name reads as a claim about one
+	// effect, and a list would let a failure on either of two tools
+	// print under a name that mentions the other.
+	ForEffect string `yaml:"for_effect"`
 }
 
 // ReportContains reads the final report. The weakest verifier here, and

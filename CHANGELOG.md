@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+**The write gate's record of what it asked is now readable as a
+measurement.** Everything needed was already durable — a park writes the
+gated call's name and arguments into the session event log, and the
+decision that answers it rides the event that re-fires the call — but
+nothing could ask for it: the eval trace treats the confirmation call as
+engine control flow, so a run where the gate asked and a run where it never
+did projected identically. A gated call now carries its question and its
+answer, and the outcome tier gains an `approval_requested` check that reds a
+workload that mutated without parking.
+
+It reads the **question**, never the verdict, including on a call the
+operator refused: the claim is that the change was put to a person, not that
+they allowed it, and in a test the answer comes from the harness — a check
+reading it would be asserting that the test rig ran. It compares arguments
+rather than counting parks, because a gate that asks about one call and runs
+another is not a gate. A call authorized by a change-set grant passes with
+no question of its own, provided the set the operator approved lists it.
+
+The public surface gains one field: `approval.Parked.CallID`, the id of the
+call a pending confirmation is about, which is the key everything else joins
+on ([#295](https://github.com/go-steer/mast/issues/295)).
+
 **A change mast makes now carries a route back.** Through v0.6 the sequence
 was propose → approve → act → record that it acted, which leaves an operator
 who approves a change and watches it make things worse with no path back

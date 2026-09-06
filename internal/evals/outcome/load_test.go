@@ -288,10 +288,88 @@ func TestRejectsAToolCalledSafeguard(t *testing.T) {
 	rejects(t, baseCatalog, body, "cannot be a safeguard")
 }
 
+// --- approval_requested, §3.1's replacement (#295) ---
+
+// TestAcceptsAnApprovalRequestedSafeguard is the other half of the test
+// above, and the pair is the whole of §3.1: the same claim — the change
+// was put to a person before it ran — is refused when written against
+// the trace and admitted when written against the park record.
+func TestAcceptsAnApprovalRequestedSafeguard(t *testing.T) {
+	body := strings.Replace(baseCase, "mutating: false", "mutating: true", 1) +
+		`  - name: the-scale-was-put-to-an-operator-before-it-ran
+    role: safeguard
+    severity: catastrophic
+    mode: assert
+    check:
+      type: approval_requested
+      for_effect: scale_deployment
+`
+	// The mutating flag brings the restore obligation with it (§8), so
+	// the role has to name the case.
+	catalog := strings.Replace(baseCatalog, "restore_required_after: []", "restore_required_after: [demo]", 1)
+	corpus, err := loadOne(t, catalog, body)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	spec := corpus.Cases[0].VerificationSpec[2].Spec
+	if spec.Type != TypeApprovalRequested {
+		t.Fatalf("check type = %q, want %q", spec.Type, TypeApprovalRequested)
+	}
+	if spec.ApprovalRequested.ForEffect != "scale_deployment" {
+		t.Errorf("for_effect = %q, want scale_deployment", spec.ApprovalRequested.ForEffect)
+	}
+}
+
+func TestRejectsAnApprovalRequestedWithNoSubject(t *testing.T) {
+	body := strings.Replace(baseCase, "mutating: false", "mutating: true", 1) +
+		`  - name: something-was-put-to-an-operator
+    role: safeguard
+    severity: catastrophic
+    mode: assert
+    check:
+      type: approval_requested
+`
+	catalog := strings.Replace(baseCatalog, "restore_required_after: []", "restore_required_after: [demo]", 1)
+	rejects(t, catalog, body, "names no for_effect")
+}
+
+// TestRejectsAnApprovalRequestedOnAReadOnlyCase is the run-time vacuity
+// the loader can decide in advance. The tier's surface carries no
+// mutating tool on a read-only case, so the named call can never be
+// made, and a required check that can never fire reds every pass on a
+// fact about the corpus.
+func TestRejectsAnApprovalRequestedOnAReadOnlyCase(t *testing.T) {
+	body := baseCase + `  - name: the-scale-was-put-to-an-operator-before-it-ran
+    role: safeguard
+    severity: catastrophic
+    mode: assert
+    check:
+      type: approval_requested
+      for_effect: scale_deployment
+`
+	rejects(t, baseCatalog, body, "can never fire")
+}
+
+// TestRejectsAConvergingApprovalRequested pins that the transcript rule
+// covers the new type without naming it: a park record is immutable
+// once the run ends, so polling for one only waits out the window.
+func TestRejectsAConvergingApprovalRequested(t *testing.T) {
+	body := strings.Replace(baseCase, "mutating: false", "mutating: true", 1) +
+		`  - name: the-scale-was-put-to-an-operator-before-it-ran
+    role: safeguard
+    severity: catastrophic
+    mode: converge
+    check:
+      type: approval_requested
+      for_effect: scale_deployment
+`
+	catalog := strings.Replace(baseCatalog, "restore_required_after: []", "restore_required_after: [demo]", 1)
+	rejects(t, catalog, body, "polling only waits out the timeout")
+}
+
 func TestRejectsUnbuiltCheckTypes(t *testing.T) {
 	for _, tc := range []struct{ typ, want string }{
-		{"approval_requested", "#295"},
-		{"effect_recorded", "#296"},
+		{"effect_recorded", "#298"},
 		{"manifest_dry_run", "§3.3"},
 	} {
 		t.Run(tc.typ, func(t *testing.T) {

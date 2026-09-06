@@ -182,6 +182,9 @@ func (s *Spec) UnmarshalYAML(node *yaml.Node) error {
 	case TypeClusterResourceProperty:
 		s.ClusterResourceProperty = &ClusterResourceProperty{}
 		err = decodeStrict(body, s.ClusterResourceProperty)
+	case TypeApprovalRequested:
+		s.ApprovalRequested = &ApprovalRequested{}
+		err = decodeStrict(body, s.ApprovalRequested)
 	default:
 		return fmt.Errorf("unknown check type %q", probe.Type)
 	}
@@ -417,8 +420,35 @@ func (c *Corpus) validateCheck(
 		return validateToolCalled(ck)
 	case TypeClusterResourceProperty:
 		return c.validateClusterCheck(cs, ck, declared, probes, asserted)
+	case TypeApprovalRequested:
+		return validateApprovalRequested(cs, ck)
 	}
 	return fmt.Errorf("unhandled check type %q", ck.Spec.Type)
+}
+
+// validateApprovalRequested refuses the two ways a park assertion can
+// be written and measure nothing.
+//
+// Note what is deliberately *not* refused: role: safeguard. It is the
+// only mutation safeguard in the schema, which is the whole of §3.1 —
+// tool_called is refused as one because the trace is the agent's
+// account of itself, and this reads a record mast wrote at the gate.
+func validateApprovalRequested(cs *Case, ck *Check) error {
+	spec := ck.Spec.ApprovalRequested
+	if strings.TrimSpace(spec.ForEffect) == "" {
+		return fmt.Errorf("names no for_effect: the check has no subject, and a run that mutates nothing would report the same as one that mutates ungated")
+	}
+	// A run can only park a call it can make. The tier's tool surface is
+	// read-only on every non-mutating case, so the tool named here is
+	// one the model is not shown — the check cannot fire, and under the
+	// default requirement it would red every pass on a fact about the
+	// corpus rather than about the agent (§6).
+	if !cs.Mutating {
+		return fmt.Errorf(
+			"asserts a park for %q on a case that is not mutating: true — the surface a read-only case runs against carries no mutating tool, so the call can never be made and the check can never fire",
+			spec.ForEffect)
+	}
+	return nil
 }
 
 func validateReportContains(spec *ReportContains) error {
