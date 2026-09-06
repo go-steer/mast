@@ -2,12 +2,153 @@
 
 ## Unreleased
 
+## v0.7.0 (2026-09-06)
+
+*A change mast makes carries a route back, the write gate's question is a
+measurement, and a real model's behaviour can red the build.*
+
+v0.6 closed the distance between what a bundle promised an operator and what
+the runtime enforced. v0.7 is about the two things still taken on trust after
+that: that a change could be walked back, and that any of it holds up with a
+real model driving.
+
+An external assessment triaged on 2026-09-04 had a headline finding that was
+already stale by a day. The finding underneath it was not: mast could act and
+could not undo. A mutating call now records what it overwrote, and the call
+that puts it back, *before* it fires — and deliberately never fires that call,
+because an automatic rollback is a mutating call nobody approved.
+
+The other half is measurement. Every eval tier mast had measured mast: recorded
+fixtures, or a judged nightly that scores a real model and gates nothing. The
+new O tier puts a real model on a real cluster on every pull request and reds
+it, a release now refuses a commit that tier has not passed, and the write
+gate's park became readable to a grader along the way — a run where the gate
+asked and a run where it never did used to project identically.
+
+The parity scoreboard is unchanged at **17 of 19**, and both rows still red are
+switchboard's to write.
+
+**A change mast makes now carries a route back.** Through v0.6 the sequence
+was propose → approve → act → record that it acted, which leaves an operator
+who approves a change and watches it make things worse with no path back
+except rebuilding the old state by hand under time pressure. A tool in the
+workload's catalog can now declare a `capture:` block — a read-only tool
+that records the target's prior state, the fields to keep, and optionally
+the call that puts them back. The write gate runs that read **before** the
+call fires and writes what it found, plus the proposed revert, into the
+session's durable log; `mast sessions show` prints the old values and the
+exact call and arguments that restore them.
+
+Three things it deliberately does not do. mast does not **derive the read**
+— which tool reads the object a write is about is domain knowledge, and the
+same neutrality that keeps a Kubernetes schema out of mast keeps one out of
+this. It does not **derive the inverse**: `scale_deployment` inverts by
+re-scaling, `delete_pod` does not invert at all, and a patch inverts only
+over the fields it touched, so a workload declares `revert:` or declares
+nothing and gets a record whose undo is marked undeclared. And it does not
+**fire the inverse** — the recorded revert is a proposal that goes back
+through the same gate with a person answering, because an automatic rollback
+is a mutating call nobody approved.
+
+The capture covers all four paths a mutating call can take (`apply`, an
+approved verdict, an edited verdict — recorded against the arguments the
+operator actually ran — and a change-set grant being spent, captured before
+the grant is marked consumed). It is **fail-closed**: everything happens
+before the forward call, so a read that fails or a declaration that cannot
+be honored refuses the call while nothing has happened yet. Six declaration
+mistakes are refused before run time, including a capture whose read is the
+changing tool itself, a **mutating** capture read (it would write to the
+cluster before every gated call, unapproved and unrecorded, in the name of
+reversibility), a **read-only** revert (offered as a way back, does nothing),
+and a revert whose arguments all come from the change — that one re-applies
+the change instead of undoing it, and is shaped closely enough like an undo
+to be believed during an incident. A deployment that declares captures but
+cannot run reads still starts and warns, since silence there teaches a
+bundle author that their changes became reversible.
+
+Restore stays out by decision, not by sequencing: mast can render the call
+but cannot decide that firing it an hour later is still right
+([#296](https://github.com/go-steer/mast/issues/296)).
+
+**The write gate's record of what it asked is now readable as a
+measurement.** Everything needed was already durable — a park writes the
+gated call's name and arguments into the session event log, and the
+decision that answers it rides the event that re-fires the call — but
+nothing could ask for it: the eval trace treats the confirmation call as
+engine control flow, so a run where the gate asked and a run where it never
+did projected identically. A gated call now carries its question and its
+answer, and the outcome tier gains an `approval_requested` check that reds a
+workload that mutated without parking.
+
+It reads the **question**, never the verdict, including on a call the
+operator refused: the claim is that the change was put to a person, not that
+they allowed it, and in a test the answer comes from the harness — a check
+reading it would be asserting that the test rig ran. It compares arguments
+rather than counting parks, because a gate that asks about one call and runs
+another is not a gate. A call authorized by a change-set grant passes with
+no question of its own, provided the set the operator approved lists it.
+
+The public surface gains one field: `approval.Parked.CallID`, the id of the
+call a pending confirmation is about, which is the key everything else joins
+on ([#295](https://github.com/go-steer/mast/issues/295)).
+
+**A real model's behaviour can now red the build.** Every eval tier mast had
+measured mast: the deterministic E tier asserts against recorded fixtures, and
+the judged J tier scores a real model but reports and gates nothing, on
+purpose. So nothing in CI ever asked whether an agent built on mast solves the
+incident it is pointed at, and every claim about agent behaviour rested on
+someone running a workload by hand and being convinced.
+
+The new **O — outcome** tier runs a real model against a real workload on a
+real `kind` cluster, on every pull request, and reds it. Three crash-loop
+cases from the triage corpus — an evidence chain, a misleading symptom, and a
+root-cause analysis — five repetitions each, graded by verifiers that read the
+run's tool calls, its final report, and the cluster's own state before and
+after. Five repetitions because the distinction between an agent that
+diagnoses an OOM three times in five and one that does it five in five is the
+whole product, and a single-shot suite cannot see it.
+
+Four rungs, in descending order of how little argument they admit: a
+catastrophic safeguard violated in any single repetition, which demotion never
+reaches; a required check that turned out **vacuous**; every repetition of a
+case failing; and a case that ran fewer times than it should have — reported
+ahead of the failure rung and suppressing it, because *0 of 5 ran* and *5 of 5
+failed* send a reader to different places. An errored run counts as a failed
+repetition and does not red on its own, since a provider timeout is not a
+regression in mast.
+
+A check that measured nothing is a red, not a pass. A forbidden-phrases check
+passes hardest against the run that produced no report at all, and an intent
+check where none of the tools called are in the intent table graded the tool
+surface rather than the run. Both directions of a vacuous check are recorded
+the same way, because the passing direction is the one nobody investigates.
+
+The wall clock was budgeted before the roster rather than after — a sibling
+project that admitted thirteen cases demoted two and deleted one within 72
+hours while its ceiling went 85 → 360 minutes in nine days. The ceiling here
+is **20 minutes** for the whole pass, expressed as a deadline the runner checks
+between cases rather than as a job timeout: a deadline yields a short board
+that reds under rung 4, a timeout yields a cancelled job and no board. A pass
+measures 2m47s on local kind and 2m48s on a GitHub-hosted runner, so the
+ceiling is roughly 7× the measurement on the machine that actually gates, and
+admitting a fourth case has to argue for raising it in a reviewable diff. A
+flaky case is demoted off the blocking roster by committed diff carrying the
+date and the measurement — never deleted, never by runtime flag, and it keeps
+running and reporting.
+
+Two costs stated rather than left to be discovered. An unconfigured run
+**fails** rather than skips, the opposite of the judged nightly, because for a
+gate *green because it could not run* is exactly the rung that cannot fire; the
+consequence is that a pull request from a fork cannot run the tier, so a
+maintainer runs it on a branch here before merging one
+([#294](https://github.com/go-steer/mast/issues/294),
+[#297](https://github.com/go-steer/mast/issues/297)).
+
 **A release now refuses a commit the outcome tier has not passed.** The O
 tier reds a pull request but does not block it, and deliberately stays that
-way: requiring it on `main` would make a pull request from a fork unmergeable
-forever, since GitHub withholds from fork workflows the credentials a metered
-tier needs. So the claim that a real model's behaviour can stop bad code had
-a gap at the end of it: a tag.
+way — a fork cannot run it, so requiring it on `main` would make a fork's pull
+request unmergeable forever. So the claim that a real model's behaviour can
+stop bad code had a gap at the end of it: a tag.
 
 The release workflow's first step now reads the `outcome` check run for the
 SHA the tag points at and refuses on anything except success, *including on
@@ -20,6 +161,47 @@ it, which exists because six releases composed correct notes and published
 empty bodies. The accepted cost is that a red can land on `main` and the
 refusal arrives at the tag instead. The dry run is gated too, so `gh workflow
 run release.yml -f dry_run=true` is a full rehearsal.
+
+**A metered cost is now the price of the call that was made.** Two defects, in
+opposite directions, both in the number a `max_cost_usd` ceiling is compared
+against — and v0.6's pre-call check is what made them matter, because a price
+mast merely *reports* can be approximately right and a price a refusal is
+computed from cannot.
+
+`budget.Limits.Catalog` has been the exact-pricing path since it landed and
+nothing had ever assigned it. All three construction sites built a `Limits`
+with a flat blended rate and no catalog, so every session in the product
+metered at the rate the catalog exists to replace. Installing it alone would
+not have been enough, for a reason invisible from the calling side: the lookup
+keyed off `session.Event.ModelVersion`, and ADK's streaming aggregator rebuilds
+the final response — the only one carrying usage — without that field. A
+catalog reached from the event alone would have missed on every Gemini call,
+fallen back to the flat rate, and climbed `Unpriced` while looking configured.
+That is the third place this field has turned out not to be there. The resolved
+model name is now carried on `Limits` beside the catalog it is a key for, with
+the backend next to it, resolved by the same function the client is built from
+— so the price and the call cannot disagree about who is billing. The event is
+still asked first, because a server echo names what was actually billed.
+Measured against a live GKE triage workload on `gemini-3.7-flash`: the same
+session priced **$1.13 flat against $0.19 exact**.
+
+**Thinking tokens are output, and are billed as output.** Gemini reports
+thoughts in their own counter, additive to the candidates rather than inside
+them, and Google bills that bucket at the output rate; mast passed only the
+candidate count, so on a reasoning model most of the output was free. A live
+GKE triage run spent 6,449 thinking tokens against 1,180 candidate tokens — 85%
+of billable output and about a third of the session's true cost, undercounted
+in the direction a ceiling cannot afford, since a `max_cost_usd` set from a
+figure that wrong lets a session run past the number the operator wrote down.
+Anthropic's `output_tokens` already includes thinking and mast's Anthropic
+provider never sets the field, so the sum is correct for both rather than
+double-counting one.
+
+The two move the meter in opposite directions and do not cancel: one removes a
+5.9× overcharge, the other adds back the ~36% that overcharge was masking. Both
+had to land before the number meant anything
+([#266](https://github.com/go-steer/mast/issues/266),
+[#267](https://github.com/go-steer/mast/issues/267)).
 
 **The cluster read/write split now bounds the path mast actually uses, and
 the narrowed IAM binding is the default.** `WRITE_SCOPE=namespaced` shipped
@@ -63,70 +245,6 @@ picks it up. It never reloads: what a mid-flight turn, a parked approval or an
 armed cadence should do when the bundle changes underneath them is a design
 question, and this is a diagnosis
 ([#289](https://github.com/go-steer/mast/issues/289)).
-
-**The write gate's record of what it asked is now readable as a
-measurement.** Everything needed was already durable — a park writes the
-gated call's name and arguments into the session event log, and the
-decision that answers it rides the event that re-fires the call — but
-nothing could ask for it: the eval trace treats the confirmation call as
-engine control flow, so a run where the gate asked and a run where it never
-did projected identically. A gated call now carries its question and its
-answer, and the outcome tier gains an `approval_requested` check that reds a
-workload that mutated without parking.
-
-It reads the **question**, never the verdict, including on a call the
-operator refused: the claim is that the change was put to a person, not that
-they allowed it, and in a test the answer comes from the harness — a check
-reading it would be asserting that the test rig ran. It compares arguments
-rather than counting parks, because a gate that asks about one call and runs
-another is not a gate. A call authorized by a change-set grant passes with
-no question of its own, provided the set the operator approved lists it.
-
-The public surface gains one field: `approval.Parked.CallID`, the id of the
-call a pending confirmation is about, which is the key everything else joins
-on ([#295](https://github.com/go-steer/mast/issues/295)).
-
-**A change mast makes now carries a route back.** Through v0.6 the sequence
-was propose → approve → act → record that it acted, which leaves an operator
-who approves a change and watches it make things worse with no path back
-except rebuilding the old state by hand under time pressure. A tool in the
-workload's catalog can now declare a `capture:` block — a read-only tool
-that records the target's prior state, the fields to keep, and optionally
-the call that puts them back. The write gate runs that read **before** the
-call fires and writes what it found, plus the proposed revert, into the
-session's durable log; `mast sessions show` prints the old values and the
-exact call and arguments that restore them.
-
-Three things it deliberately does not do. mast does not **derive the read**
-— which tool reads the object a write is about is domain knowledge, and the
-same neutrality that keeps a Kubernetes schema out of mast keeps one out of
-this. It does not **derive the inverse**: `scale_deployment` inverts by
-re-scaling, `delete_pod` does not invert at all, and a patch inverts only
-over the fields it touched, so a workload declares `revert:` or declares
-nothing and gets a record whose undo is marked undeclared. And it does not
-**fire the inverse** — the recorded revert is a proposal that goes back
-through the same gate with a person answering, because an automatic rollback
-is a mutating call nobody approved.
-
-The capture covers all four paths a mutating call can take (`apply`, an
-approved verdict, an edited verdict — recorded against the arguments the
-operator actually ran — and a change-set grant being spent, captured before
-the grant is marked consumed). It is **fail-closed**: everything happens
-before the forward call, so a read that fails or a declaration that cannot
-be honored refuses the call while nothing has happened yet. Six declaration
-mistakes are refused before run time, including a capture whose read is the
-changing tool itself, a **mutating** capture read (it would write to the
-cluster before every gated call, unapproved and unrecorded, in the name of
-reversibility), a **read-only** revert (offered as a way back, does nothing),
-and a revert whose arguments all come from the change — that one re-applies
-the change instead of undoing it, and is shaped closely enough like an undo
-to be believed during an incident. A deployment that declares captures but
-cannot run reads still starts and warns, since silence there teaches a
-bundle author that their changes became reversible.
-
-Restore stays out by decision, not by sequencing: mast can render the call
-but cannot decide that firing it an hour later is still right
-([#296](https://github.com/go-steer/mast/issues/296)).
 
 **A specialist's `tools.mcp` allowlist is now checked for existence.** It is
 applied by dropping what does not match, so a name that matches nothing was

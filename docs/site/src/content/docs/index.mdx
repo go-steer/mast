@@ -5,7 +5,7 @@ template: doc
 tableOfContents: false
 banner:
   content: |
-    v0.6.0 — no mutating call goes unrecorded, no call is paid for before it is checked, and where enforcement cannot reach, mast refuses rather than pretends. A cost ceiling now stops the call that would cross it instead of the call after, and a spent specialist closes its own path rather than the session. On the v0.5 monitoring cycle, the v0.4 change set, the v0.3 write gate and the v0.2 durable-execution spine. A planner roster holding a change executor is refused while <code>hitl.on_mutation</code> asks for the write to be gated, and that refusal is the design; APIs are experimental except the five stable-from-v0.1 packages. See the <a href="/mast/roadmap/">roadmap</a>.
+    v0.7.0 — a change mast makes carries a route back, the write gate's question is a measurement, and a real model's behaviour can red the build. A mutating call records what it overwrote and the call that undoes it before it fires, and never fires that call itself; the outcome tier runs a real model against a real cluster on every pull request, and a release refuses a commit it has not passed. On the v0.6 enforcement pass, the v0.5 monitoring cycle, the v0.4 change set, the v0.3 write gate and the v0.2 durable-execution spine. Restore stays out by decision — mast renders the call and will not decide that firing it an hour later is still right; APIs are experimental except the five stable-from-v0.1 packages. See the <a href="/mast/roadmap/">roadmap</a>.
 hero:
   title: mast
   tagline: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads — built for platform and SRE teams.

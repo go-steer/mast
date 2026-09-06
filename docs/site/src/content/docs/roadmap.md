@@ -1,13 +1,14 @@
 ---
 title: Roadmap
-description: What v0.6 ships, and what lands after it — honestly.
+description: What v0.7 ships, and what lands after it — honestly.
 ---
 
-mast is at **v0.6.0** — no mutating call goes unrecorded, no call is paid for
-before it is checked, and where enforcement cannot reach, mast refuses rather
-than pretends. On the v0.5.0 monitoring cycle, the v0.4.0 change set, the
-v0.3.0 write gate and the v0.2.0 durable-execution spine. See [Shipped in
-v0.6.0](#shipped-in-v060--a-ceiling-that-stops-a-call-and-a-refusal-that-is-the-design)
+mast is at **v0.7.0** — a change mast makes carries a route back, the write
+gate's question is a measurement, and a real model's behaviour can red the
+build. On the v0.6.0 enforcement pass, the v0.5.0 monitoring cycle, the v0.4.0
+change set, the v0.3.0 write gate and the v0.2.0 durable-execution spine. See
+[Shipped in
+v0.7.0](#shipped-in-v070--a-route-back-from-a-change-and-a-gate-a-real-model-can-red)
 below.
 
 **All eleven v0.1 exit criteria from the fork design are green.** The
@@ -550,6 +551,112 @@ shown it either way — a fix worth having moves `intent_coverage` by a fraction
 of one row's mean. The competing hypothesis is that the models reason past the
 tool rather than fail to find it, and the same experiment separates the two.
 
+## Shipped in v0.7.0 — a route back from a change, and a gate a real model can red
+
+v0.6 closed the distance between what a bundle promised and what the runtime
+enforced. This release is about the two things still taken on trust after that:
+**a change mast makes carries a route back, the write gate's question is a
+measurement, and a real model's behaviour can red the build.** The scoreboard
+is unchanged at 17 of 19 — both rows still red are switchboard's to write.
+
+- **A change carries a record of what it overwrote.** A tool in the workload's
+  catalog can declare a `capture:` block — a read-only tool that records the
+  target's prior state, the fields to keep, and optionally the call that puts
+  them back. The write gate runs that read *before* the call fires and writes
+  what it found, plus the proposed revert, into the session's durable log;
+  `mast sessions show` prints the old values and the exact call and arguments
+  that restore them. It covers all four paths a mutating call can take, and it
+  is fail-closed: everything happens before the forward call, so a read that
+  fails refuses the call while nothing has happened yet.
+
+  Three things it deliberately does not do. mast does not **derive the read** —
+  which tool reads the object a write is about is domain knowledge, and the
+  neutrality that keeps a Kubernetes schema out of mast keeps one out of this.
+  It does not **derive the inverse**: a scale inverts by re-scaling, a delete
+  does not invert at all, and a patch inverts only over the fields it touched.
+  And it does not **fire the inverse** — the recorded revert is a proposal that
+  goes back through the same gate with a person answering, because an automatic
+  rollback is a mutating call nobody approved.
+
+- **The write gate's record is readable as a measurement.** Everything needed
+  was already durable, and nothing could ask for it: the eval trace treated the
+  confirmation call as engine control flow, so a run where the gate asked and a
+  run where it never did projected identically. A gated call now carries its
+  question and its answer, and the outcome tier gains an `approval_requested`
+  check that reds a workload which mutated without parking. It reads the
+  **question**, never the verdict, including on a call the operator refused —
+  the claim is that the change was put to a person, not that they allowed it,
+  and in a test the answer comes from the harness, so a check reading it would
+  be asserting that the test rig ran. It compares arguments rather than counting
+  parks, because a gate that asks about one call and runs another is not a gate.
+
+- **A real model's behaviour reds the build.** The new **O — outcome** tier runs
+  a real model against a real workload on a real `kind` cluster, on every pull
+  request. Three crash-loop cases, five repetitions each, graded on the run's
+  tool calls, its final report and the cluster's own state before and after —
+  five because the difference between diagnosing an OOM three times in five and
+  five in five is the whole product. Four rungs: a catastrophic safeguard
+  violated in any single repetition, which demotion never reaches; a required
+  check that turned out **vacuous**; every repetition of a case failing; and a
+  case that ran fewer times than it should have. A check that measured nothing
+  is a red, not a pass, in both directions — the passing direction is the one
+  nobody investigates.
+
+  The ceiling is 20 minutes for the whole pass, a deadline the runner checks
+  between cases rather than a job timeout, so a pass that runs out of budget
+  produces a short board that reds instead of a cancelled job with no board. A
+  pass measures 2m47s locally and 2m48s on a hosted runner, so admitting a
+  fourth case has to argue for raising the ceiling in a reviewable diff. An
+  unconfigured run fails rather than skips — for a gate, *green because it could
+  not run* is exactly the rung that cannot fire — and the cost of that is that a
+  fork's pull request cannot run the tier.
+
+- **A release refuses a commit the tier has not passed.** The release workflow
+  reads the `outcome` check run for the SHA the tag points at and refuses on
+  anything but success, *including on its absence*. `outcome` is deliberately
+  **not** a required check on `main`: requiring it would make a fork's pull
+  request unmergeable forever, and would buy stopping a red from landing rather
+  than from shipping. The accepted cost is that a red can land on `main` and the
+  refusal arrives at the tag.
+
+- **A metered cost is the price of the call that was made.** The exact-pricing
+  catalog had never been assigned at any of its three construction sites, so
+  every session metered at the flat blended rate the catalog exists to replace;
+  and thinking tokens, which Gemini reports in their own counter and Google
+  bills at the output rate, were not counted at all. Measured on a live GKE
+  triage workload: $1.13 flat against $0.19 exact, and 6,449 thinking tokens
+  against 1,180 candidate tokens. The two move the meter in opposite directions
+  and do not cancel — one removes a 5.9× overcharge, the other adds back the
+  ~36% it was masking — and both had to land before v0.6's pre-call ceiling was
+  computing from a number that meant anything.
+
+- **A change executor under `dispatch: graph` can make the write an operator
+  approved.** One turn used to raise two parks — the write gate held the
+  mutating call and the executor's own node raised a result-approval interrupt
+  over a result that did not exist yet — and answering either stranded the
+  other. A node now parks behind its child's question rather than adding one of
+  its own, and finding verdicts are durable in session state, so an answer given
+  one turn is not asked again the next.
+
+- **The cluster read/write split bounds the path mast actually uses.**
+  `WRITE_SCOPE=namespaced` shipped opt-in for four releases and is now the
+  default, because running it against live GKE turned up why it had been out of
+  reach: GKE does not resolve the Workload Identity Federation principal to the
+  KSA's RBAC ServiceAccount subject, so the shipped bindings granted the MCP
+  path — the one the agent's tools take — nothing at all. Both bindings now name
+  both subjects, and the matrix refuses to report green without a project id,
+  since measuring only the in-cluster path goes green on a cluster where mast
+  cannot write. Measured 41/41 against the rendered shipped manifests.
+
+- **The daemon says which configuration it is running**, and says when the files
+  on disk stop matching it. mast reads its bundle once and reloads nothing,
+  while Kubernetes rewrites a mounted ConfigMap under the running pod — so an
+  edit could land on disk and change nothing, with no line an operator could
+  grep. Startup logs a digest over exactly the files the loaders read, and the
+  daemon warns once per edit when they diverge. It still never reloads: what a
+  mid-flight turn or a parked approval should do when the bundle changes
+  underneath them is a design question, and this is a diagnosis.
+
 ## Shipped in v0.6.0 — a ceiling that stops a call, and a refusal that is the design
 
 The first release the parity scoreboard did not choose. It reads 17 of 19 and
@@ -628,7 +735,16 @@ believed it did.
   scheduled monitoring ships. It remains available to any caller that
   builds its own signal set and knows its workload does not poll.
 
-## What v0.6.0 will not let you do
+## What v0.7.0 will not let you do
+
+**Restore.** A change now carries a recorded route back — the prior state and
+the exact call that undoes it — and mast will not fire that call. Rendering the
+undo is a question about the past, which the capture answers; deciding that
+firing it an hour into an incident is still the right thing is a question about
+the present, which nothing in a recording can answer. So the revert goes back
+through the same gate with a person answering it, and a workload that declares
+no `revert:` gets a record whose undo is marked undeclared rather than a guess.
+That is scope, not sequencing.
 
 A monitoring workload that also **remediates** — a planner roster holding a
 `change_executor` — is refused at startup whenever `hitl.on_mutation` asks for
