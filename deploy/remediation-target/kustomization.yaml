@@ -6,7 +6,13 @@
 #
 #   kubectl apply -k deploy/remediation-target                    # after editing below
 #   kustomize build deploy/remediation-target | \
-#     sed 's/REPLACE_ME_TARGET_NAMESPACE/team-a/' | kubectl apply -f -
+#     sed -e 's/REPLACE_ME_TARGET_NAMESPACE/team-a/' \
+#         -e 's/REPLACE_ME_PROJECT/my-project/' | kubectl apply -f -
+#
+# TWO placeholders. The namespace is which cluster objects mast may
+# change; REPLACE_ME_PROJECT names the RBAC *User* the GKE MCP path
+# arrives as, and leaving it unreplaced grants that path nothing — see
+# 21-rolebinding-daemon-write.yaml.
 #
 # It is deliberately NOT part of deploy/base. The base pins
 # `namespace: mast-triage` on everything it renders, so a write Role
@@ -20,7 +26,9 @@
 # mast-triage (deploy/base/10-serviceaccount-daemon.yaml) and the
 # RoleBinding refers to it across namespaces.
 #
-# Verify what this granted with scripts/rbac-matrix.sh.
+# Verify what this granted with
+#   PROJECT_ID=my-project TARGET_NS=team-a scripts/rbac-matrix.sh
+# which runs the matrix against both usernames mast arrives under.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

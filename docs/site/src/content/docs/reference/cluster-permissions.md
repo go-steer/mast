@@ -1,6 +1,6 @@
 ---
 title: Cluster permissions
-description: The RBAC mirror for a mast deployment on Kubernetes — cluster-wide read, namespace-scoped write, and the IAM binding that decides whether the split is real.
+description: The RBAC mirror for a mast deployment on Kubernetes — cluster-wide read, namespace-scoped write, the two usernames mast arrives as, and the IAM binding that decides whether the split is real.
 sidebar:
   order: 7
 ---
@@ -40,6 +40,35 @@ across namespaces to it. So "which namespaces may mast change" is a list of
 applies you can enumerate with `kubectl get rolebinding -A -l
 app.kubernetes.io/name=mast`, not a field somebody can widen in one edit.
 
+### Two subjects, because mast arrives under two usernames
+
+Both bindings name two subjects, and both are load-bearing:
+
+| Path | Subject | Username the API server sees |
+|---|---|---|
+| In-cluster | `kind: ServiceAccount` | `system:serviceaccount:mast-triage:mast-daemon` |
+| GKE MCP | `kind: User` | `serviceAccount:PROJECT.svc.id.goog[mast-triage/mast-daemon]` |
+
+The second is the one the agent's tools take. mast never presents the pod's
+ServiceAccount token to a GKE API server: it calls
+`container.googleapis.com/mcp` with a Google credential derived from the KSA,
+and the API server sees the Workload Identity Federation principal — an RBAC
+**User**, not a ServiceAccount. GKE does not resolve one to the other.
+
+So **replace `REPLACE_ME_PROJECT` with your project ID** in
+`deploy/base/15-clusterrolebinding-daemon-read.yaml` and
+`deploy/remediation-target/21-rolebinding-daemon-write.yaml`, alongside the
+namespace. Leave it and mast reads and writes nothing over the path it uses:
+a patch in the namespace you granted comes back
+
+```
+deployments.apps "checkout" is forbidden: User
+"serviceAccount:my-project.svc.id.goog[mast-triage/mast-daemon]" cannot patch
+resource "deployments" in the namespace "team-a"
+```
+
+which names a `User` nothing has bound.
+
 ### What the write grant deliberately does not include
 
 - **No secrets.** Not readable cluster-wide, not writable in the target
@@ -61,47 +90,71 @@ run, not a table to read:
 TARGET_NS=team-a PROJECT_ID=my-project ./scripts/rbac-matrix.sh
 ```
 
-It checks 20 cells and exits non-zero on any surprise. Nine of them must
-answer **no** — patching `kube-system`, deleting a Deployment, reading a
-secret, creating a ClusterRoleBinding — because those are the answers that
-change silently when a Role is widened.
+It runs its 20 cells **once per username** — 40 in all, plus the IAM cell —
+and exits non-zero on any surprise. Nine cells per path must answer **no**:
+patching `kube-system`, deleting a Deployment, reading a secret, creating a
+ClusterRoleBinding. Those are the answers that change silently when a Role is
+widened.
+
+`PROJECT_ID` is what names the MCP path's subject, so without it the run is
+half a measurement and the script says so and fails. Set `IN_CLUSTER_ONLY=true`
+on a cluster that has no MCP path at all (kind, minikube) — and then the run
+is not evidence about a GKE deployment.
 
 You need cluster access and permission to impersonate (`--as=` is a
-SubjectAccessReview). It changes nothing.
+SubjectAccessReview). It changes nothing. Its `--as=` answers for the MCP
+subject were checked against the real thing: all nine matched what the GKE MCP
+server returned for the same calls on the same cluster.
 
 ## The GKE caveat
 
 **On GKE, Kubernetes RBAC is not on its own the boundary.** GKE authorizes an
 API call if **either** IAM or RBAC allows it, and a mast deployment reaches
 the cluster through the GKE MCP server as its Workload Identity Federation
-principal — not through the pod's ServiceAccount token. `scripts/setup-wif.sh`
-binds `roles/container.admin` to that principal by default, which permits
-every mutating call in every namespace regardless of the Role above.
+principal — not through the pod's ServiceAccount token. Bind
+`roles/container.admin` to that principal and every mutating call in every
+namespace is permitted regardless of the Role above.
 
-To make the split load-bearing on that path, narrow the IAM binding and let
-RBAC carry the writes:
+So `scripts/setup-wif.sh` binds `roles/container.viewer` by default and leaves
+the writes to RBAC. That role carries no write verb and no `container.secrets.*`,
+which is what makes the split load-bearing on the path mast uses:
 
 ```sh
-WRITE_SCOPE=namespaced ./scripts/setup-wif.sh my-project
+./scripts/setup-wif.sh my-project                     # namespaced, the default
+WRITE_SCOPE=cluster-admin ./scripts/setup-wif.sh ...  # the escape hatch
 ```
 
-That binds `roles/container.viewer` instead. It is not the default because it
-depends on GKE resolving the WIF principal to the RBAC subject the RoleBinding
-names, which has not been verified against a live cluster — try it on a
-non-production project, run the matrix, and fall back with
-`WRITE_SCOPE=cluster-admin` if a remediation comes back `Forbidden`.
+The narrowed mode was run against a live GKE cluster on 2026-09-06. Over the
+MCP path it authorized a patch in the remediable namespace, refused the same
+patch one namespace over, refused deleting a Deployment, and refused listing
+secrets cluster-wide — but only once the bindings named the `User` subject
+above. With the `ServiceAccount` subject alone it made mast read-only
+everywhere, which is why the two changes ship together.
 
-Passing `PROJECT_ID` to `rbac-matrix.sh` makes this a checked cell rather than
-a caveat you have to remember: it fails the run if the principal still holds
+Upgrading an existing deployment takes both halves, and neither happens by
+itself:
+
+- re-apply `deploy/base` and `deploy/remediation-target` with your project ID
+  substituted, or the MCP path stays unbound;
+- **remove the old `roles/container.admin`** — re-running `setup-wif.sh` adds
+  bindings and never takes one away.
+
+```sh
+gcloud projects remove-iam-policy-binding my-project \
+  --role=roles/container.admin --condition=None \
+  --member=principal://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/my-project.svc.id.goog/subject/ns/mast-triage/sa/mast-daemon
+```
+
+`rbac-matrix.sh` fails a cell while that binding stands — for
 `roles/container.admin`, `container.developer`, `container.clusterAdmin`,
 `editor` or `owner`.
 
 ## What keeps the manifests honest
 
 `deploy/rbac_test.go` runs on every PR. It walks from the *subject* rather
-than the filename — every `ClusterRoleBinding` that names the daemon's
-ServiceAccount — because the way this boundary erodes is a cluster-scoped
-grant added for one tool, not an edit to the file called "read". It fails if:
+than the filename — every binding that names the daemon under **either**
+username — because the way this boundary erodes is a cluster-scoped grant
+added for one tool, not an edit to the file called "read". It fails if:
 
 - a ClusterRole bound to the daemon gains a write verb, a wildcard, or secrets;
 - the write grant stops being a namespaced `Role`, or becomes reachable from
@@ -109,5 +162,11 @@ grant added for one tool, not an edit to the file called "read". It fails if:
   pin it to `mast-triage`);
 - a manifest exists in a directory but is missing from its kustomization, so
   it reviews as shipped and deploys as absent;
-- the IAM role `setup-wif.sh` binds by default stops matching what
-  `10-serviceaccount-daemon.yaml` tells operators it binds.
+- a binding names the daemon's ServiceAccount and not its WIF `User`, so it
+  grants the in-cluster path only — the failure that made the narrowed IAM
+  mode look broken for four releases;
+- that `User` subject loses its `REPLACE_ME_PROJECT` placeholder and gets
+  pinned to one project;
+- the IAM role `setup-wif.sh` binds **by default** stops matching what
+  `10-serviceaccount-daemon.yaml` tells operators it binds. Which arm is the
+  default is read from the script, not assumed — it has changed once already.
