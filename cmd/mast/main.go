@@ -568,6 +568,13 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		"sub_agents", len(root.SubAgents()),
 	)
 
+	// A ConfigMap edit rewrites the mounted files under a running pod
+	// and changes nothing about the daemon, which keeps serving what it
+	// parsed at boot. Nothing reloads that; this says so out loud
+	// instead of leaving the operator with a change that had no effect
+	// and no line to grep for (#289).
+	go watchConfig(turnCtx, logger, built.config, configWatchInterval)
+
 	// Refused as early as the bundle is readable (v0.5 W4.5): a
 	// workload whose entire output is a chat message, started against a
 	// daemon with nowhere to send it, is a monitor an operator believes
@@ -1594,6 +1601,14 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 	)
 	logger.Info("specialists loaded", "count", len(loaded))
 
+	// Which configuration this is, as something an operator can compare
+	// from outside (#289). Computed here rather than in serve because
+	// this is where the paths are still known — the loaders return
+	// values, and only the bundle keeps its filename.
+	cfgID := identifyConfig(cfgDir, bundle.Filename,
+		configPaths(&bundle, loaded, filepath.Join(cfgDir, mastmcp.CatalogFileName)))
+	cfgID.log(logger)
+
 	// A declared HTTP trigger is informational — the inject server
 	// declares its routes globally and reads nothing from the bundle
 	// (pkg/workload's HTTPTrigger says so; pkg/inject's fixed route
@@ -1663,6 +1678,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		// value is not this function's to extend.
 		builtin:  append(append([]tool.Tool(nil), builtin...), extraTools...),
 		dispatch: resolved,
+		config:   cfgID,
 	}, nil
 }
 
@@ -1684,6 +1700,11 @@ type rootBuild struct {
 	// only place the list still exists.
 	builtin  []tool.Tool
 	dispatch string
+
+	// config is what was loaded, hashed — the startup line is written
+	// from it, and serve hands it to the drift watcher. Zero value
+	// under --workload="" (no bundle, nothing to watch).
+	config configIdentity
 }
 
 // catalog builds the operator tool catalog for this build.

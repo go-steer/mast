@@ -1193,3 +1193,57 @@ set-but-unparseable is a fatal load error):
 budget.max_cost_usd          → MAST_BUDGET_MAX_COST_USD
 budget.max_wallclock_seconds → MAST_BUDGET_MAX_WALLCLOCK_SECONDS
 ```
+
+## Changing a bundle under a running daemon
+
+**mast reads the bundle once, at startup, and never reloads it.** Editing
+`workload.yaml`, a specialist template or `mcp.json` while the daemon is
+running changes nothing until the daemon restarts.
+
+That is easy to trip over in Kubernetes, because the deployment mounts
+the bundle from a ConfigMap and the kubelet *does* rewrite the mounted
+files under a running pod. The base kustomization also sets
+`disableNameSuffixHash: true`, so `kubectl apply` does not roll the pod
+either. Both are deliberate — see below — and together they mean an
+applied edit can look like it took effect when it has not.
+
+So mast says which configuration it is running. At startup:
+
+```
+level=INFO msg="workload config identity" root=/workspace/workload
+  bundle=/workspace/workload/workload.yaml digest=sha256:1f0c2a93b7d4e615
+  files=17 bytes=41328 newest_mtime=2026-09-06T10:14:22Z
+```
+
+The digest covers every file the loaders actually read — the bundle,
+each specialist template, each `output_schema:` they resolve, and the
+MCP catalog — keyed by path *relative to the root*, so the digest you
+compute from a checkout is the digest the pod prints. It does not
+include modification times, because a ConfigMap remount rewrites those
+whether or not a byte changed.
+
+Once a minute the daemon re-hashes the same files. When they stop
+matching what it loaded, it says so once:
+
+```
+level=WARN msg="WORKLOAD CONFIG ON DISK NO LONGER MATCHES THE RUNNING CONFIG
+  — the edit has not taken effect" running_digest=sha256:1f0c2a93b7d4e615
+  on_disk_digest=sha256:9b31c07ae5f2d488
+  changed=specialists/CrashLoopBackOff.tmpl
+  remedy="mast does not reload configuration; restart the daemon
+  (kubectl rollout restart) to pick this up"
+```
+
+Once per edit, not once per minute; reverting the file logs that the two
+agree again.
+
+**Why not roll the pod on apply, and why not hot reload.** A hashed
+ConfigMap name would restart the daemon on every `kubectl apply`, which
+is a heavier action here than it looks: an unattended daemon holds
+in-flight turns that are spending money, parked approvals waiting on a
+human, and an armed cadence. Making the restart something an operator
+asks for is the safer default, and `kubectl rollout restart
+statefulset/mast` is the whole of it. Hot reload is a larger question
+than a file watcher — what a mid-flight turn, a parked approval or a
+running monitoring cycle should do when the bundle changes underneath
+them — and it is not answered by noticing that a file moved.
