@@ -831,10 +831,21 @@ see the red and act on it. Two costs are stated rather than discovered:
   runs the tier on a branch in this repo before merging such a PR. There is no version of a
   credentialed metered gate that is also fork-safe.
 - **Making `outcome` a *required* status check is a branch-protection change**, separate from landing
-  the workflow. Until it is required, the job reds visibly on a pull request but does not block the
-  merge. **Partly answered 2026-09-06 at the other end: a release now refuses to ship a commit the
-  tier has not passed** (`dev/release/require-outcome.sh`, §7). That is a different and stronger
-  promise than the setting — see the resolved-decision row — and the two remain independent.
+  the workflow. **Settled 2026-09-06: it is not required, and the release is gated instead**
+  (`dev/release/require-outcome.sh`, §7). So on a pull request the job reds visibly and does not
+  block the merge, deliberately. Three reasons, in order of weight. The fork cost above is
+  *permanent* and requiring the check converts it from "a maintainer runs the tier on a branch" into
+  "a fork PR can never merge". The release gate already carries the claim that matters — nothing
+  ships unmeasured — and carries it against the artifact rather than the merge process, so requiring
+  the check would buy stopping a red from *landing* rather than from *shipping*. And a required
+  metered check makes the tier's own intermittency a merge blocker with only §7's demotion as the
+  escape, which is pressure in the direction of teaching to the test, against a case
+  (`crashloop-misleading-symptom`, 8/10 across two passes) whose header already names it.
+
+  The cost is stated rather than left to be discovered: **a red `outcome` can land on `main`, and the
+  refusal then arrives at the tag instead.** That is the trade accepted — the red is equally visible
+  on the pull request either way, the author is the person who can act on it either way, and the
+  remedy is the same one, which is to fix it and tag the commit that does.
 
 **OQ3 — How does a case distinguish "the gate asked and the harness said yes" from "the harness
 answered a question nobody asked"? — RESOLVED 2026-09-06: it reads the question and never the
@@ -906,7 +917,7 @@ built (§3.3).
 | #295 is an **exposure** problem, not a recording one: all three records were already durable and `internal/evals` had no typed way to ask for them. The fix is a projection onto `Trace.Call` (`Park`, `Answer`), and the confirmation call **stays excluded** from the call list — counting it there would break `exactly_once` | 2026-09-06 |
 | `approval_requested` accepts `role: safeguard` where `tool_called` is refused it, because it reads records mast wrote about the agent rather than the agent's account of itself. It is the only check type in the corpus a mutation boundary may rest on | 2026-09-06 |
 | A **change-set grant** passes with no park of its own, provided its origin resolves to a park this log carries and that park's set lists the call. A per-call question would red a fleet doing exactly what the feature designed; dropping the check would let an operator be shown one change and charged for another | 2026-09-06 |
-| **The tier gates the release, and that is not the branch-protection setting.** `release.yml` refuses a tag whose own commit has no `success` `outcome` check run — a claim about the artifact rather than about the merge process, unbypassable by an admin merge, and costing a fork PR nothing. Absent counts as refused. Both ends stay available: requiring the check on `main` is still a separate, unmade choice | 2026-09-06 |
+| **The tier gates the release, and that is instead of the branch-protection setting, not alongside it.** `release.yml` refuses a tag whose own commit has no `success` `outcome` check run — a claim about the artifact rather than about the merge process, unbypassable by an admin merge, and costing a fork PR nothing. Absent counts as refused. `outcome` is deliberately **not** a required check on `main`: requiring it would make a fork PR unmergeable forever, would buy only stopping a red from *landing* rather than from *shipping*, and would turn the tier's own intermittency into a merge blocker whose only escape is demotion. Accepted cost: a red can land on `main` and the refusal arrives at the tag | 2026-09-06 |
 | `approval_requested` on a case that is not `mutating: true` **fails to load**: the read-only surface carries no mutating tool, so the check can never fire, and a required one would red every green run over a fact about the corpus | 2026-09-06 |
 
 ---

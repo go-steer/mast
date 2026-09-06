@@ -35,9 +35,13 @@
 # some ancestor proves nothing about this tag; only the tag's own check
 # run does.
 #
-# The two are not exclusive. If branch protection is turned on later,
-# this stays: it is what makes the release *say* the tier passed, and
-# what catches the tag that was cut somewhere protection does not reach.
+# Settled 2026-09-06: this is instead of the setting, not a step toward
+# it. `outcome` is deliberately not required on `main` — requiring it
+# would make a fork PR unmergeable forever, would buy stopping a red
+# from *landing* rather than from *shipping*, and would make the tier's
+# own intermittency a merge blocker whose only escape is demotion. The
+# accepted cost is that a red can land on `main` and the refusal arrives
+# here instead. See docs/outcome-evals-design.md §9 OQ2.
 #
 # ## Why it can fire
 #
