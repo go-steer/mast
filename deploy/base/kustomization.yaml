@@ -67,4 +67,11 @@ generatorOptions:
   # Overlays reference these ConfigMaps by stable name; disabling the
   # hash suffix means operators must `kubectl rollout restart` after
   # ConfigMap edits.
+  #
+  # Kept deliberately (#289): a hashed name would roll the daemon on
+  # every apply, and this daemon holds in-flight turns that are spending
+  # money, parked approvals waiting on a human, and armed cadences. The
+  # cost is that an edit can land on disk and change nothing, so the
+  # daemon logs a `workload config identity` line at startup and warns
+  # when the mounted files stop matching it.
   disableNameSuffixHash: true

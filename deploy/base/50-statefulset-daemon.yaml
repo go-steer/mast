@@ -140,7 +140,13 @@ spec:
         # specialist exists — a silent downgrade, not an error. The
         # schemas/ dir has the same property: `output_schema:` resolves
         # relative to the .tmpl, so a specialist projected without its
-        # schema fails to load.
+        # schema fails to load. The startup `workload config identity`
+        # line reports how many files were loaded, which is the cheapest
+        # way to catch an items: list that lost an entry.
+        #
+        # This is a whole-volume mount, not subPath, which is the case
+        # where the kubelet rewrites the files under a running pod. mast
+        # does not reload them; it notices and warns (#289).
         - name: workload
           configMap:
             name: mast-workload

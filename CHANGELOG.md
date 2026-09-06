@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+**The daemon now says which configuration it is running, and says when the
+files on disk stop matching it.** mast reads its bundle once, at startup, and
+reloads nothing — but in Kubernetes the ConfigMap is mounted as a whole
+volume, so the kubelet rewrites those files under the running pod, and the
+deployment deliberately keeps a stable ConfigMap name so an apply does not
+roll the daemon. An edit could therefore land on disk and change nothing, with
+no log line an operator could grep to find out. Startup now logs a
+`workload config identity` line — the root, the bundle, and a digest over
+exactly the files the loaders read — and once a minute the daemon re-hashes
+them and warns, once per edit, naming what changed and that a restart is what
+picks it up. It never reloads: what a mid-flight turn, a parked approval or an
+armed cadence should do when the bundle changes underneath them is a design
+question, and this is a diagnosis
+([#289](https://github.com/go-steer/mast/issues/289)).
+
 **The write gate's record of what it asked is now readable as a
 measurement.** Everything needed was already durable — a park writes the
 gated call's name and arguments into the session event log, and the

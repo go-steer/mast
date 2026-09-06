@@ -164,6 +164,23 @@ Hot-reload semantics per file class:
 
 **Programmatic hot-reload for library consumers** via `specialist.Source.Watch(ctx)` and `workload.Source.Watch(ctx)` (per [`./library-api-design.md`](./library-api-design.md)). Consumers implementing custom sources (Kubernetes ConfigMaps, external CMS) get watch semantics via their source implementation.
 
+### Amended 2026-09-06 ([#289](https://github.com/go-steer/mast/issues/289)): the daemon says what it loaded, and says when that stopped matching disk
+
+The v0.2 `SIGHUP` row above never shipped, and as of v0.7 it is **not what the daemon does**: `cmd/mast` reads its configuration once, at startup, and reloads nothing. What shipped instead is the diagnosis.
+
+The failure this addresses needs three ingredients and had all three. `deploy/base/kustomization.yaml` sets `disableNameSuffixHash: true`, so editing the workload ConfigMap does not change its name and `kubectl apply` does not roll the pod. Nothing reloads. And nothing said which configuration was in effect — no path, no hash, no mtime — so an operator who applied an edit and saw no change had nothing to grep for. Any one of the three is survivable; together they make *"my change had no effect"* undiagnosable from the logs.
+
+It is worse in this deployment than in the general case, because `50-statefulset-daemon.yaml` mounts the ConfigMap as a **whole volume rather than through `subPath`** — the case where the kubelet *does* rewrite the files under a running pod. So the bytes on disk change, the parse in memory does not, and the two disagree silently for as long as the pod lives.
+
+Two records, answering different halves:
+
+- **The identity**, one `INFO workload config identity` line at startup, carrying the root, the bundle path, a digest, the file count, the total bytes and the newest mtime. The digest covers exactly the files the loaders **read** — the bundle, each specialist template, each `output_schema:` one of them resolved, and the MCP catalog — not a directory walk, since a file nothing read cannot change what the daemon is doing and a schema resolved from outside the root has to be covered anyway. Files are keyed by their path **relative to the root**, so the digest is a function of the configuration rather than of where it is mounted and an operator can compute the same value from a checkout. Modification times are deliberately **not** hashed: a ConfigMap remount rewrites every mtime whether or not a byte changed, and a digest that moved for that reason would cry wolf on the one signal this exists to make trustworthy. An unreadable file moves the digest rather than being skipped — a projection that lost a key is precisely the silent downgrade being watched for.
+- **The drift check**, re-hashing the same paths once a minute and logging a `WARN` naming the changed files and the remedy when they stop matching. Edge-triggered on the on-disk digest, so one edit produces one warning rather than one a minute, and reverting the file logs that the two agree again — a stale warning about a fixed condition is worse than none, because the next reader takes it as current.
+
+Detecting drift is not reloading it, and that is the decision, not an implementation gap. A hashed ConfigMap name would restart the daemon on **every** `kubectl apply`, which is heavier here than it looks: an unattended daemon holds in-flight turns that are spending money, parked approvals waiting on a human, and armed cadences. Making the restart something an operator asks for (`kubectl rollout restart`) is the safer default. Hot reload is a larger question than a file watcher — what a mid-flight turn, a parked approval or a running monitoring cycle should do when the bundle changes underneath them — and noticing that a file moved does not answer it. The check never reloads and never refuses a turn; the daemon keeps serving the coherent configuration it parsed, while the file on disk may be half-written.
+
+No metric accompanies it. `pkg/observability`'s registry holds only counters, and a counter misrepresents a persistent level — "config has drifted" is a state, not an event — so the honest instrument would be a gauge the registry does not have, and adding one drags in the metrics-reference drift gate ([#228](https://github.com/go-steer/mast/issues/228)) for a signal the log line already carries.
+
 ## Validation
 
 Config validation happens at load time — not at session start.
@@ -231,6 +248,7 @@ Container images built via `examples/deploy/*/Dockerfile` bake in sensible defau
 | **v0.1** | Discovery order (env / project / user / system) established. Load-time validation. Env-var override convention. No hot-reload; restart-required for all changes. |
 | **v0.2** | `SIGHUP` hot-reload for specialists + workloads. `specialist.Source.Watch()` + `workload.Source.Watch()` library API. |
 | **v0.3+** | MCP config hot-reload. Runtime config hot-reload for the safe subset (log levels, observability endpoints). Full-runtime-config hot-reload remains out-of-scope. |
+| **v0.7** | *(amends the two rows above)* No hot-reload of any class, and none planned: the daemon logs the identity of what it loaded at startup and warns when the files on disk stop matching it. See the 2026-09-06 amendment under [Hot-reload](#hot-reload). |
 
 ## Open questions
 

@@ -40,7 +40,10 @@ ignored, so you can keep e.g. `workloads/archive/`:
 A missing subdirectory yields zero entries — not an error. Two files
 defining the same name in the same directory is a **fatal** load-time
 error, as is any validation failure: mast refuses to start on invalid
-config. There is no hot-reload in v0.1; config changes require a restart.
+config. There is **no hot-reload**; config changes require a restart, and
+the daemon says which configuration it is running so you can tell whether
+one took effect — see [Changing a bundle under a running
+daemon](/reference/workload-bundle/#changing-a-bundle-under-a-running-daemon).
 
 ## Name mode vs. path mode
 
