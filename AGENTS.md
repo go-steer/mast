@@ -10,7 +10,7 @@ This file is mirrored verbatim to [`CLAUDE.md`](./CLAUDE.md) so tools that look 
 
 **`mast`** is the agent-infrastructure substrate for unattended, library-embedded, multi-provider workloads — the platform-agent product built as a lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent).
 
-**This repo holds the code.** The fork executed 2026-07-26 (Phase 1, under the revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)), the adapter ports from core-agent landed 2026-07-29, and four releases have shipped — **v0.4.0** (2026-08-17) is current. The design corpus under [`docs/`](./docs/) stays live alongside the code; [`DESIGN.md`](./DESIGN.md) is the architecture map of what actually ships.
+**This repo holds the code.** The fork executed 2026-07-26 (Phase 1, under the revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)), the adapter ports from core-agent landed 2026-07-29, and seven releases have shipped — **v0.7.0** (2026-09-06) is current. The design corpus under [`docs/`](./docs/) stays live alongside the code; [`DESIGN.md`](./DESIGN.md) is the architecture map of what actually ships.
 
 See [`docs/fork-design.md`](./docs/fork-design.md) for the rebuild-lean-core mechanics, naming, sync discipline, and resolved decisions.
 
@@ -24,7 +24,7 @@ See [`docs/fork-design.md`](./docs/fork-design.md) for the rebuild-lean-core mec
 **What still doesn't happen here:**
 
 - **Runtime changes that belong in core-agent go to [`core-agent`](https://github.com/go-steer/core-agent) first**, then port. Shared-infrastructure fixes land wherever found first and port within a week; the ledger of what's absorbed, owed, or n/a is [`docs/sibling-sync.md`](./docs/sibling-sync.md), and `dev/upstream-drift` measures the gap weekly. Read that ledger before porting anything.
-- **Features a design doc defers** — see house rule #7. `DESIGN.md`'s "Deliberately not in v0.4" is the short list.
+- **Features a design doc defers** — see house rule #7. `DESIGN.md`'s "Deliberately not in …" section is the short list.
 
 ---
 
@@ -155,7 +155,7 @@ Typical design-doc PR shapes:
 
 ## How to contribute post-fork (active as of 2026-07-26)
 
-Phase 1 is complete and the repo is on its regular release cadence — v0.1.0 through v0.4.0 have shipped. Current shape (per [`docs/fork-design.md`](./docs/fork-design.md)):
+Phase 1 is complete and the repo is on its regular release cadence — v0.1.0 through v0.7.0 have shipped. Current shape (per [`docs/fork-design.md`](./docs/fork-design.md)):
 
 - `cmd/mast/` — the binary
 - `pkg/agent/`, `pkg/providers/`, `pkg/attach/`, etc. — runtime
