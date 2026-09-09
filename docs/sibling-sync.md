@@ -918,6 +918,160 @@ Two of the nine are permanent residents: `64b1ceb` and `9ccbcee` are upstream co
 mast does not have, so they will report every Monday until the packages they touch are re-ported or
 mast grows the subsystem. That is the 13-commit n/a floor from 2026-08-17 becoming 15.
 
+## Triage of 2026-09-09
+
+The report reads **76 commits / 85 of 200 ported files** against core-agent `10fa0cc` (2026-09-06).
+**Twenty SHAs are new** since the 2026-08-21 baseline of `68ad89a` — the largest batch this ledger
+has taken, because the v0.6 and v0.7 releases came in between and nobody triaged during them. All
+twenty are verdicted below.
+
+Two things are worth reading off the batch before the rows.
+
+**Nine of the twenty are `pkg/attach`, and they are one story.** Upstream spent this window making
+the attach surface *report what happened* rather than what was asked for: a terminal frame that
+cannot precede the answer it terminates (`5b41cc1`), a subagent stop that reports its outcome rather
+than the request (`4a770bf`), a mid-turn park that reads as running rather than idle (`819d429`), a
+transient 400 that stops blaming the operator's config (`b303da4`), a health check that can actually
+go red (`32ceb5a`). Every one of those is a case where the surface was *honest about the call* and
+*wrong about the world*. mast carries a copy of that surface, and mast's consumers are machines —
+mast-web, switchboard, a watcher's per-incident session — so there is no human on the other end to
+notice that the frame arrived early or that "idle" was implausible. **The class is worth more here
+than it was upstream, and mast has two of the five.**
+
+**And the batch's severest finding is not in that class at all.** `cbcb624` gates the provider's
+server-side built-in tools, and mast has the defect wide open on the subsystem it spent all of v0.7
+hardening. It leads the table.
+
+### Confirmed analogues — checked against mast's code, filed
+
+Every row is a finding read out of mast's source, not a guess from upstream's commit message.
+
+| SHA | Upstream | The mast finding |
+|---|---|---|
+| `cbcb624` | `model.builtin_tools` gates the provider's server-side tools (#876) | **The read/write split has a hole the write gate cannot see** — [#324](https://github.com/go-steer/mast/issues/324). `internal/compose/compose.go:536-539` wraps *every* Gemini model mast constructs with `geminiprov.DefaultBuiltinTools()` — `GoogleSearch: true, URLContext: true` (`pkg/providers/gemini/builtins.go:70-73`). That is the only non-test assignment of `BuiltinTools` in the tree, and there is no `builtin_tools` config key, no flag, and nothing on the specialist axis that reaches it: `ToolAllowlist.Builtin` is documented in its own field comment as "**not** a grant". So a specialist declared `read_only`, whose declaration `CheckCapabilitySplit` verifies and whose mutating calls #295 turned into a measurement, **can still search the public web and fetch arbitrary URLs** — server-side, never surfacing as a tool call, therefore invisible to the permissions gate, the write gate and the effect outbox alike. Upstream's asymmetry argument lands harder here too: mast's Anthropic `DefaultBuiltinTools()` is empty (`pkg/providers/anthropic/builtins.go:52-53`), so switching `--provider` on one image changes an unattended agent's internet reachability, and multi-provider is mast's stated premise |
+| `679df60` | recognise an expired cache as an eviction (#902) | **Both halves present verbatim, and mast is the long-lived daemon** — [#325](https://github.com/go-steer/mast/issues/325). `isCachedContentNotFound` (`pkg/providers/gemini/builtins.go:436-443`) requires `NOT_FOUND` *and* the substring `cached content`; an elapsed TTL arrives as `400 INVALID_ARGUMENT` naming `cache content` (no `d`) as `expired`, so the predicate cannot see it. And `vertexcache.doRefresh` (`pkg/providers/vertexcache/manager.go:343-362`) discards a failed `Caches.Update` on the two premises upstream's incident refuted, its comment stating them outright: "the cache is still valid until it expires" and "degradation is automatic on the next cache-not-found response". Consequence: past the TTL, every turn answers with a `config_error` naming the wrong cause, across sessions, until restart |
+| `5b41cc1` (the #864 half) | one terminal frame per turn, and never before the answer (#892) | **Same dual-source race, no hold** — [#327](https://github.com/go-steer/mast/issues/327). `pkg/attachadapter/adapter.go:299` publishes `turn-complete` directly to subscribers the moment `RunTurn` returns, while the turn's final text travels eventlog → pump → fan-out; mast's broadcaster already documents the two sources racing (`pkg/attach/broadcaster.go:181-188`, `lastSent` exists precisely to dedupe them). Nothing holds the terminal frame for the log, so a client that finalizes its render there drops the answer. The `#818` half of the commit does not apply — mast has no in-turn guardrail arm emitting its own `turn-error` before the cancel |
+| `1423bb1` | accept a group-readable users.json owned by our own group (#985) | **Pre-fix code, and mast's own manifest arms the trigger** — [#328](https://github.com/go-steer/mast/issues/328). `pkg/auth/users.go:74` rejects any group or other bit (`mode&0o077 != 0`); Kubernetes `fsGroup` unconditionally sets group-read on a projected Secret volume; `deploy/base/50-statefulset-daemon.yaml:74` sets `fsGroup: 65532`. mast's *shipped* recipe does not mount a users file (line 15 records the single-bearer choice), so this is not live today — but multi-user auth plus that pod is a boot failure, and the recipe is the obvious starting point for anyone adding it |
+| `32ceb5a` | an unauthenticated `/healthz` that can actually go red (#987) | **mast skipped the 401 problem and landed in the worse half of it** — [#326](https://github.com/go-steer/mast/issues/326). mast's daemon probes `GET /` on the inject port, which `pkg/inject/server.go:497-505` answers with an unconditional `200 ok` — no state consulted. Upstream's argument against `tcpSocket` applies with one addition: a static 200 from a route named "the health check" *looks* like a readiness signal, so a daemon whose session DB was deleted, whose volume went read-only or whose database is locked stays 1/1 Ready and keeps taking injects. mast has `pkg/eventlog` and can do the real bounded read upstream does |
+| `164365c` | attach mode implies a durable session db (#984) | **Same flag that exists only to be mandatory** — [#329](https://github.com/go-steer/mast/issues/329). `cmd/mast/main.go:515-518` hard-errors `errAttachNeedsSessionDB` when `--attach-listen` is set without `--session-db`. Lower cost than upstream's — mast's check is early in `serve`, not after provider detection and loader discovery — but the shape is identical, and mast is the product where *every* shape is a daemon |
+| `cfe5d98` | pick up gemini-3.8-flash, hold the frontier default at 3.7 (#937) | **A mechanical regen mast has not run** — [#330](https://github.com/go-steer/mast/issues/330). `pkg/pricing/builtin.go` carries 3.5 / 3.6 / 3.7-flash rows across all three spellings and no 3.8-flash. mast has the same fail-open companion-table guard (`TestBuiltinModelsKnownToCompanionTables`), so the regen will need the same hand-written `modeltier` frontier case. **Upstream's deferral argument transfers unchanged and should be taken:** mast's zero-config default is `gemini-3.7-flash` and identical price and window mean a promotion buys nothing that a UAT has not already paid for |
+
+### Latent, not reachable, and worth pinning — `dd2007f`, filed as [#331](https://github.com/go-steer/mast/issues/331)
+
+`fix(watchdog): count a streamed tool call once, on the event ADK runs it from (#925)` is a real trap
+in mast's `pkg/watchdog/bridge.go`, which has no `ev.Partial` check anywhere in the file. It is
+unreachable **only** because mast runs `StreamingModeNone` at every runner site — `cmd/mast/main.go:2920`,
+`cmd/mast/oneshot.go:231`, and `pkg/planner/dispatch.go:310`'s zero-value `RunConfig{}`. That is
+three coincidences rather than a decision, and `cmd/mast/a2a.go:206` names `StreamingModeSSE` as the
+planned follow-on, so the trap has a scheduled trigger. Verified against ADK v2.2.0 rather than
+assumed: `base_flow.go:799` derives `useStream` from the run config, partial events *are* yielded to
+the stream before `if resp.Partial { continue }` guards `handleFunctionCalls`, and the streaming
+aggregator's non-streaming-args path appends the *same part pointer* it already yielded. **The fix
+is one line; the value is the test that pins it** — [#331](https://github.com/go-steer/mast/issues/331), because the day someone turns SSE on, a
+single tool call becomes N repeats and the watchdog halts a turn that did nothing wrong.
+
+### Port candidates on packages mast has — 3 commits
+
+| SHA | Upstream | Why it is a candidate and not a finding |
+|---|---|---|
+| `fe5c13f` | say who sent each message, and stop rewording a done-marker (#857) | mast has no `pkg/watchdog/toolname.go`, so the name-keyed detector upstream tunes here is simply absent. Whether mast wants it is the same open governance call as `NewDominantToolCallSignal` |
+| `9b97575` | repeated-tool-name warns at 15 instead of halting at 20 (#858) | Same package, same absence — but its `TestNewDefaultWatchdog_OnlyProvableLoopsHalt` is a **governance artifact**, not a detector: it is upstream's answer to the question mast left open at 2026-08-21 ("whether it joins the default set is still the open watchdog-governance call for a human"). Worth reading before that call is made |
+| `0ab7577` (the `no_op` half) | trip on tools that report their own no-op (#907) | The bridge half is **n/a** — verified, not assumed: ADK v2.2.0 stamps an adk-prefixed UUID on every ID-less call (`PopulateClientFunctionCallID`, `base_flow.go:820` and `:980`) and copies it to the response (`base_flow.go:1197`), so mast's ID-keyed dedup never falls back to its name+args key and is sound. The signal half is a detector mast does not have |
+
+### Convergent, same day — `e385fb0`
+
+`fix(usage): bill the thinking tokens, and carry the 1h cache-write rate to the daemon` landed
+upstream 2026-09-03. mast fixed the same thing on **2026-09-03** (`1578c97`, #266/#267/#268),
+independently and with the same measurement in the comment — 6,449 thinking tokens against 1,180
+candidate tokens in a triage run, 85% of billable output omitted. Two forks reaching an identical
+conclusion from their own telemetry on the same day is worth recording as such; neither owes the
+other a port.
+
+The daylight runs the *other* way from what a first read suggests, and it is a genuine port
+candidate. **Upstream floors the buckets and mast does not.** `Pricing.CostUSDForTurn` calls
+`u.Clamped()`, which floors the three top-line counts at zero, and upstream's comment argues the
+placement rather than just doing it: the floor belongs on the usage type instead of inside the
+pricing call, because "pricing was never the only reader of these numbers, and a thoughts term
+guarded locally would have kept the negative out of the invoice while leaving it in Totals and in
+the monotonic OTel counter." mast has no `Clamped` at all. `pkg/budget/budget.go:399-424` clamps
+exactly one direction — `cached` against `prompt`, so an over-reported cache read cannot bill as a
+credit — and floors nothing, so a negative `CandidatesTokenCount` or `ThoughtsTokenCount` reaches
+the ledger, `/usage` and the OTel counter alike. mast's own comment on the clamp it *does* have says
+"core-agent's usage tracker guards the same quirk the same way," which is true of that quirk and no
+longer true of the neighbouring one. Filed as
+[#332](https://github.com/go-steer/mast/issues/332).
+
+The 1h cache-write half remains what 2026-08-21 recorded under `181327c`: a rate mast would carry
+unused until it ships a prompt-cache TTL knob. Unchanged.
+
+### Not applicable to the lean scope — 5 commits
+
+| SHA | Upstream | Why |
+|---|---|---|
+| `a8be5a3` | core-tui v0.24.0 (#863) | core-tui stays paired with core-agent, not mast — the sibling table in [`../AGENTS.md`](../AGENTS.md) is explicit. mast has no `internal/coretuiremote` |
+| `fcdd597` | allocate a plan sequence per plan, not per `record_plan` call (#912) | mast has no `pkg/tools` and no plan-first subsystem. The `pkg/permissions/gate.go` slice of the diff hangs off `record_plan`'s existence |
+| `a0b282d` | name, retry, and surface an empty summarizer response (#908) | mast has no compactor, no summarizer and no checkpointer in `pkg/agent`; context reduction is not in the lean scope |
+| `4a770bf` | report what a subagent stop actually did (#941) | mast exposes no `POST /sessions/{sid}/agents/{name}/stop` and has no `pkg/agent/background` manager. mast's delegation is planner dispatch and graph fan-out, neither of which hands an operator a stop door |
+| `b265a03` | an inject queues; only a resume opens the gate (#879) | mast has no `releaseHold` and no `Agent.Resume()` — nothing in mast conflates an inject with a hold release, because mast has no operator hold to release. Worth noting that mast reached the same rule from the other direction and wrote it down first: v0.5's **"an ack is not an approval"** is the same principle on the acknowledgement door |
+
+`8dfa240` (`/btw`) is **n/a on its headline and a watch on its tail**: mast has no `/btw` slash
+command, but the commit also touches `pkg/models/gemini/builtins.go` and adds empty-response handling
+in `pkg/models/errors.go`, and mast has both of those files under `pkg/providers/`. Whether mast
+surfaces an empty provider response as an error or as a blank turn has not been checked and is not
+checked here — it is a question for the next pass, not a verdict.
+
+### The answer to a question [#313](https://github.com/go-steer/mast/issues/313) asked this ledger
+
+#313's "Done when" includes a standing instruction: *"Check core-agent's emitter when this is picked
+up and record the result in `docs/sibling-sync.md` — if core-agent emits this and mast never has, it
+is drift rather than an omission, and the ledger should say which."* `819d429` is the commit that
+made picking it up worthwhile, so here is the answer.
+
+**It is an omission, not drift, and it is a shared one.** core-agent declares
+`TurnStateAwaitingPermission` and `TurnStateAwaitingElicit` at `pkg/attach/events.go:431-432` and
+**produces neither**, exactly as mast does. `819d429` is upstream doing the *neighbouring* half of the
+same job — it gave `running` a producer and added `turn_in_flight` — and its closing line says the
+rest out loud: "deferred and current_tool stay declared and unproduced; the doc comments now say so."
+So mast is not behind here; both forks shipped the same four-state vocabulary with two states nothing
+can reach.
+
+Two corrections to #313's body follow from that, and they matter because the issue uses them to
+explain a decision:
+
+- #313 says "core-agent emits `awaiting_permission` and mast does not, so there is nothing here to
+  attach a card to." The first clause is false. Whatever switchboard built against, it was not that
+  frame.
+- #313 implies mast lacks core-agent's `/perms` broker. mast has it — `PermsInfo` at
+  `pkg/attach/state.go:640` and the handler at `pkg/attach/handlers_operator.go:168-169`. The
+  mechanism switchboard#40 used is present on both sides.
+
+What survives intact is #313's actual defect and its framing, which is the part worth keeping: a
+write-gate park makes `RunTurn` return, so `pkg/attachadapter/adapter.go:299-311` emits
+`turn-complete` and then `TurnStateIdle` over a session that is in fact waiting for a human. A
+declared state nothing can produce is a claim on the wire that is not true — and note that this is
+the *same three lines of code* the `5b41cc1` analogue lands on. Whoever fixes either should look at
+both.
+
+One thing this pass did **not** find, having gone looking: `deploy/base/51-deployment-watcher.yaml`
+probes `/healthz`, mast serves no such route, and that is not a bug. The watcher container is
+`ghcr.io/go-steer/k8s-event-watcher:2.6.0` — a different binary, probed on its own `--metrics-addr`.
+Recorded because the contradiction between mast's two manifests looks exactly like a defect from a
+grep and cost this triage twenty minutes.
+
+### Baseline after this triage
+
+The count went **57 → 76** across three weeks and two releases, and **nothing in this section will
+move it**. Every filed fix lands in `pkg/providers/gemini`, `pkg/providers/vertexcache`,
+`pkg/attachadapter`, `pkg/auth`, `internal/compose`, `cmd/mast` or `deploy/` as mast-side work; as
+the three prior passes all record, a fix that does not *re-port* a file does not bump that file's
+derivation trailer. Read the count as a delta, not a level.
+
+The n/a floor moves **15 → 20**: `a8be5a3`, `fcdd597`, `a0b282d`, `4a770bf` and `b265a03` are
+upstream commits on subsystems mast does not have, so they will report every Monday until mast grows
+one of them. That floor is now a quarter of the reported count, which is itself a signal — the next
+pass should consider whether the report should render it separately rather than making each triage
+re-derive it.
+
 ## Next triage
 
 The weekly report regenerates [#153](https://github.com/go-steer/mast/issues/153) in place. Triage
@@ -1030,13 +1184,67 @@ Carried forward from 2026-08-21, in the order they are worth doing:
    a tool body — its only `planner` is the name of a sub-agent in a test — so the seam this
    defect lives on does not exist there.
 
-Two open questions that are not ports and need an owner: whether mast follows upstream's
-park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it collides with what
-[#206](https://github.com/go-steer/mast/issues/206) just documented), and whether ADK-installed
-dispatch tools should meet the permissions gate (raised by `32aed49`, answerable only from mast's
-own allowlist story).
+Carried forward from 2026-09-09, in the order they are worth doing:
+
+1. **[#324](https://github.com/go-steer/mast/issues/324) (`cbcb624`) — a `read_only` specialist can
+   still reach the public internet.** Do this one first.
+   It is the only finding in the batch that falsifies a claim mast makes out loud, it lands on the
+   subsystem v0.7 spent four PRs hardening, and the containment mast does have (`CheckCapabilitySplit`,
+   the write gate, the effect outbox) is structurally incapable of seeing it — a server-side tool
+   never becomes a tool call. The fix is not just the config key: it is deciding whether mast's
+   Gemini default should stay `GoogleSearch: true, URLContext: true` at all, given that mast's
+   Anthropic default is empty and mast's premise is one image across providers. **Note this is
+   *not* the planner-dispatch boundary settled at 2026-08-31** — it is a layer below, in the
+   provider wrap, and it applies to the ordinary single-agent path too.
+2. **[#325](https://github.com/go-steer/mast/issues/325) (`679df60`) — an expired Vertex cache reads
+   as a config error, forever.** The most operationally
+   expensive row: it takes a healthy daemon to a hard-down that no restartless intervention clears,
+   and the misclassification points the operator at the wrong thing while it does so. mast is
+   strictly more exposed than core-agent because mast *is* the long-uptime unattended process.
+   `b303da4` is the companion read — a bare `400 INVALID_ARGUMENT` is the most overloaded answer
+   Vertex gives, and it is exactly what this arrives as.
+3. **[#326](https://github.com/go-steer/mast/issues/326) (`32ceb5a`) — a health check that can go
+   red.** mast has `pkg/eventlog` and can do the real
+   bounded read. Take upstream's refusals with the feature: no outbound provider call, no `auth`
+   field, no session IDs or counts in an unauthenticated body, and log one line per health
+   *transition* rather than per probe.
+4. **[#327](https://github.com/go-steer/mast/issues/327) (`5b41cc1`) +
+   [#313](https://github.com/go-steer/mast/issues/313) — one seam, two defects.**
+   `pkg/attachadapter/adapter.go:299-311` publishes the terminal frame ahead of the answer *and*
+   reports a parked session as idle. Whoever opens that file should fix both; doing one and leaving
+   the other means touching the same eleven lines twice.
+5. **[#328](https://github.com/go-steer/mast/issues/328) (`1423bb1`) — a group-readable users
+   file.** Not live in mast's shipped recipe, which is why it
+   is fifth rather than second. File it anyway: the failure lands at boot on whoever adds multi-user
+   auth to the manifest mast ships, and the accepting condition upstream worked out (own-group
+   ownership is fine; other bits are not) is the whole content of the fix.
+6. **[#330](https://github.com/go-steer/mast/issues/330) (`cfe5d98`) — regen the pricing table for
+   `gemini-3.8-flash`, hold the default at 3.7.**
+   Mechanical, and the deferral argument comes with it. `dd2007f`'s pin belongs in the same
+   neighbourhood of the tree but not the same PR ([#331](https://github.com/go-steer/mast/issues/331)).
+7. **[#332](https://github.com/go-steer/mast/issues/332) (`e385fb0`'s clamp) — floor the token
+   buckets, and floor them on the usage type.** The smallest
+   row here and the one most likely to be done wrong: guarding the thoughts term inside `priceOf`
+   would keep a negative out of the invoice and leave it in every other reader. Take upstream's
+   placement argument, not just its outcome.
+
+Three open questions that are not ports and need an owner. The first two are carried from 2026-08-20
+and unchanged; the third is new:
+
+- Whether mast follows upstream's park-on-interrupt semantics (`6c2c5c8` / `0a6a056`, and it
+  collides with what [#206](https://github.com/go-steer/mast/issues/206) documented).
+- Whether ADK-installed dispatch tools should meet the permissions gate (raised by `32aed49`,
+  answerable only from mast's own allowlist story).
+- **Whether `awaiting_permission` and `awaiting_elicit` should be emitted or removed.** This ledger
+  can now say the choice is mast's alone to make — core-agent declares both and produces neither, so
+  there is no upstream behavior to stay compatible with and no drift to close. See the #313
+  subsection above.
 
 And one row that is neither a port nor a question, but a **precondition to write down**: `181327c`
 becomes portable the moment mast offers a prompt-cache TTL knob, and until then it is a rate mast
 would carry unused. Whoever ships the knob ships the rate in the same PR. Nothing needs to happen
 before then.
+
+Nothing new is owed **upstream** this pass. The carry-forwards there are unchanged: the peer-lease
+clamp, the `ef9b9b5` port, and the content-level sync check of core-agent's #542 / #545 / #546 /
+#547 / #549.
