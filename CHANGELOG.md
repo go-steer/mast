@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **`gemini-3.8-flash` is priced and classified; the frontier default stays at
+  `gemini-3.7-flash`.** The weekly regen picked up `gemini-3.8-flash` (and
+  `claude-mythos-5-1`) from LiteLLM. 3.8-flash costs exactly what 3.7-flash
+  costs — $0.75 / $3.75 per MTok, cached input $0.075 — on the same
+  1,048,576-token window, so promoting it to the gemini/vertex `frontier`
+  default would move no cost ceiling and no compaction trigger. That is the
+  whole reason it was not promoted: with nothing measurable to weigh, the only
+  argument left is that the id is newer, and next door that argument shipped an
+  un-run frontier default (core-agent#579) that was reverted the following day
+  when the parent agent stopped mid-plan. The bar is the one 3.7-flash cleared —
+  the 31-scenario judged corpus over live Vertex, within noise of the current
+  board, no mid-plan stall — and `--model gemini-3.8-flash` is how it gets run.
+  Zero-config workloads are unaffected.
+
+  `modeltier.Classify` learns the model now rather than at promotion, because
+  the companion tables fail *open*: an operator who pins an id no table knows
+  gets the universal 0.85 compaction threshold instead of their tier's, with
+  nothing said. The deferral itself is recorded as data naming one successor, so
+  a `gemini-3.9-flash` reds the build rather than inheriting an argument nobody
+  made for it.
+
+  One rate that is not what it looks like: 3.8-flash *arrived* at a promotional
+  price rather than moving onto one, so no diff anywhere shows a change, and it
+  **doubles to $1.50 / $7.50 on 2027-01-01** along with 3.6- and 3.7-flash. That
+  is now in `introductoryRates`, verified against Google's dated pricing page.
+  Size any 2027 ceiling against the later number.
+
 ## v0.7.0 (2026-09-06)
 
 *A change mast makes carries a route back, the write gate's question is a

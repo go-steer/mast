@@ -151,7 +151,16 @@ func Classify(modelID string) string {
 	// about it, and the compaction threshold reverts to the universal
 	// 0.85). Classify must know a model BEFORE ModelForTier picks it,
 	// so a successor lands here first and gets promoted separately.
-	case containsAny(m, "gemini-3.7-flash", "gemini-3.6-flash"):
+	//
+	// gemini-3.8-flash is exactly that case: priced by the 2026-09-09
+	// regen, classified here, and deliberately NOT the frontier
+	// default — nothing has run it live (see deferredPromotions in
+	// pkg/taskclass). It is reachable today with --model, and that
+	// path is what needs a tier: without this case an operator who
+	// pins it gets the universal 0.85 compaction threshold instead of
+	// frontier's, which is the same number by coincidence and would
+	// stop being so the moment the frontier row moves.
+	case containsAny(m, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"):
 		return TierFrontier
 	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro"):
 		return TierFrontier

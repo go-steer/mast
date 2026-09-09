@@ -1218,9 +1218,17 @@ Carried forward from 2026-09-09, in the order they are worth doing:
    is fifth rather than second. File it anyway: the failure lands at boot on whoever adds multi-user
    auth to the manifest mast ships, and the accepting condition upstream worked out (own-group
    ownership is fine; other bits are not) is the whole content of the fix.
-6. **[#330](https://github.com/go-steer/mast/issues/330) (`cfe5d98`) — regen the pricing table for
-   `gemini-3.8-flash`, hold the default at 3.7.**
-   Mechanical, and the deferral argument comes with it. `dd2007f`'s pin belongs in the same
+6. ~~**[#330](https://github.com/go-steer/mast/issues/330) (`cfe5d98`) — regen the pricing table for
+   `gemini-3.8-flash`, hold the default at 3.7.**~~ **Shipped 2026-09-09.** The regen also picked up
+   `claude-mythos-5-1`, which needed nothing — `modeltier`'s `claude-mythos` substring case already
+   covers it and no tier default sits on that line. The deferral argument transferred as predicted
+   and is recorded as data (`deferredPromotions`, naming `gemini-3.8-flash` and nothing after it).
+   **One thing upstream's commit did not carry:** 3.8-flash arrives *at* the introductory
+   $0.75/$3.75 rather than moving onto it, so nothing in the diff looks like a price change, and it
+   doubles on 2027-01-01 like the two rows beside it — it went into `introductoryRates` in the same
+   PR, verified against Google's dated pricing page rather than inferred from the rate matching
+   3.7's. No trailer bumps: this is mast's own regen and mast's own call, not a re-port.
+   `dd2007f`'s pin belongs in the same
    neighbourhood of the tree but not the same PR ([#331](https://github.com/go-steer/mast/issues/331)).
 7. **[#332](https://github.com/go-steer/mast/issues/332) (`e385fb0`'s clamp) — floor the token
    buckets, and floor them on the usage type.** The smallest

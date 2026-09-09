@@ -53,6 +53,8 @@ func TestClassify(t *testing.T) {
 		// 3.x flashes remain small-tier — no evidence they're
 		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
+		{"gemini-3.8-flash", modeltier.TierFrontier},         // priced, classified, NOT yet the default
+		{"gemini-3.8-flash-09-2026", modeltier.TierFrontier}, // dated snapshot
 		{"gemini-3.7-flash", modeltier.TierFrontier},         // taskclass frontier default
 		{"gemini-3.7-flash-08-2026", modeltier.TierFrontier}, // dated snapshot
 		{"gemini-3.6-flash", modeltier.TierFrontier},         // previous frontier default
@@ -69,6 +71,7 @@ func TestClassify(t *testing.T) {
 		{"gemini-3.1-flash-lite", modeltier.TierSmall},
 		{"gemini-3.6-flash-lite", modeltier.TierSmall}, // lite of a frontier-tier base
 		{"gemini-3.7-flash-lite", modeltier.TierSmall}, // ditto for the current default
+		{"gemini-3.8-flash-lite", modeltier.TierSmall}, // and for the successor that is not the default yet
 
 		// Gemini 2.x.
 		{"gemini-2.5-pro", modeltier.TierMid},

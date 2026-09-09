@@ -164,6 +164,14 @@ same and costs the right thing on either backend:
 | `mid` | `gemini-3.5-flash` | `claude-sonnet-5` |
 | `frontier` | `gemini-3.7-flash` | `claude-opus-5` |
 
+A tier default names the latest model in its line, and it moves only
+after that model has been run — not when the newer id appears in the
+pricing catalog. `gemini-3.8-flash` is priced and classified as of
+2026-09-09 and is deliberately not the `frontier` default: it costs the
+same as `gemini-3.7-flash` on the same context window, so promoting it
+would change nothing an operator could measure except which model
+answers. Pin it with `model: gemini-3.8-flash` if you want it today.
+
 Both behaviours above carry over unchanged: an unresolvable tier fails
 startup, and the offline fakes collapse tiers back to the fake. Startup
 logs each tier next to the id it became, so what a roster is spending is
