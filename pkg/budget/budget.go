@@ -90,8 +90,7 @@ import (
 	"sync"
 
 	"google.golang.org/adk/v2/session"
-
-	"github.com/go-steer/mast/pkg/pricing"
+	"google.golang.org/genai"
 )
 
 // ErrExceeded is returned by Observe once cumulative usage crosses a
@@ -115,7 +114,7 @@ type Limits struct {
 	// calls before finish_task has spent five turns, not one.
 	MaxTurns int
 
-	// Catalog prices each model call exactly, against the per-model
+	// Pricer prices each model call exactly, against the per-model
 	// input / cache-read / output rates rather than one blended number.
 	//
 	// Optional, and strictly better than RatePer1K where a caller can
@@ -131,22 +130,22 @@ type Limits struct {
 	// flat-rate figure, and a cost ceiling that wrong is a ceiling that
 	// fires on the wrong sessions.
 	//
-	// Unknown models fall through to RatePer1K, so a catalog miss never
+	// Unknown models fall through to RatePer1K, so a pricing miss never
 	// silently drops a session's cost to zero. Unpriced counts them.
 	//
-	// On a scope, nil means "inherit the session's catalog", matching
+	// On a scope, nil means "inherit the session's pricer", matching
 	// Backend, Model and RatePer1K below.
-	Catalog *pricing.Catalog
+	Pricer Pricer
 
-	// Backend and Model are the (backend, model) pair the catalog is
-	// keyed by, resolved by the caller. Ignored unless Catalog is set.
+	// Backend and Model are the (backend, model) pair the pricer is
+	// keyed by, resolved by the caller. Ignored unless Pricer is set.
 	//
 	// This is what the field above used to say it owed, paid. A rate is
-	// a property of the pair and not of the model — the bare table's
-	// Claude rows are first-party and its Gemini rows are Vertex's — so
-	// pricing goes through pricing.LookupFor, whose backend half is
-	// internal/compose.Backend and is not on the event. An empty Backend
-	// is exactly the bare lookup, which is right for an offline fake or
+	// a property of the pair and not of the model — mast's bare table has
+	// Claude rows that are first-party and Gemini rows that are Vertex's
+	// — so the pricer is asked for the pair, whose backend half comes
+	// from internal/compose.Backend and is not on the event. An empty
+	// Backend asks for the bare id, which is right for an offline fake or
 	// a backend that could not be resolved.
 	//
 	// Model is what that comment expected to read off ModelVersion, and
@@ -155,16 +154,16 @@ type Limits struct {
 	// streaming aggregator rebuilds the final response — the only one
 	// carrying UsageMetadata — without ModelVersion
 	// (internal/llminternal/stream_aggregator.go, adk/v2 v2.2.0), so on
-	// a streaming Gemini run every priced call reaches the catalog with
+	// a streaming Gemini run every priced call reaches the pricer with
 	// an empty key. Its database session service has no column for the
 	// field either, which is one of the reasons durable.go keeps a spend
 	// ledger rather than replaying events.
 	//
 	// The event is still asked first, because a server echo names the
 	// model that was actually billed and can be more specific than the
-	// id the run was started with; an echo the catalog cannot resolve
+	// id the run was started with; an echo the pricer cannot resolve
 	// falls through to Model rather than ending the search. Without this
-	// pair a configured Catalog would miss on every Gemini call and
+	// pair a configured Pricer would miss on every Gemini call and
 	// quietly serve the flat rate it was configured to replace.
 	//
 	// Model is the name internal/compose already resolved —
@@ -173,13 +172,77 @@ type Limits struct {
 	Model   string
 
 	// RatePer1K is the flat USD price per 1K total tokens (spike
-	// pricing model), and the fallback for a call Catalog cannot price.
+	// pricing model), and the fallback for a call Pricer cannot price.
 	//
 	// On a scope, zero means "inherit the session's rate" — the right
 	// default for a specialist that declares no model of its own, and
 	// the reason an un-tiered roster prices exactly as it did before
 	// scopes existed.
 	RatePer1K float64
+}
+
+// IsZero reports whether l declares nothing at all — no ceiling and no
+// price. Scope composition uses it to drop a specialist that asked for
+// neither.
+//
+// It exists because Limits stopped being safely comparable when Pricer
+// became an interface: == on two Limits that both carry a pricer whose
+// dynamic type is uncomparable — a func, a map-backed table, a mock with
+// a recorded call log — panics at runtime. The two call sites this
+// replaced compared against the zero Limits, which is the one shape that
+// cannot panic (the dynamic types differ, so the comparison
+// short-circuits), so nothing was broken. But the operator being usable
+// only against one specific operand is not a property anyone should have
+// to know, and "declares nothing" is what those call sites were asking
+// anyway.
+func (l Limits) IsZero() bool {
+	return l.MaxCostUSD == 0 &&
+		l.MaxTokens == 0 &&
+		l.MaxTurns == 0 &&
+		l.Pricer == nil &&
+		l.Backend == "" &&
+		l.Model == "" &&
+		l.RatePer1K == 0
+}
+
+// Pricer prices one model call. ok is false when the call cannot be
+// priced — an unknown (backend, model) pair, or a known one whose rates
+// are all zero — and the meter then falls back to Limits.RatePer1K and
+// counts the call in Unpriced.
+//
+// This is deliberately narrower than the rate table behind it. A pricer
+// is asked for a number, never for rates: mast's own implementation
+// wraps pkg/pricing, but that package owes a re-key from the backend
+// name to the more general notion of a provider profile
+// (docs/model-support-design.md M2), and a third backend must not be a
+// breaking change to the meter. Naming the catalog here would have
+// frozen the table's shape through pkg/budget, which is one of the six
+// paths v1.0 covers.
+type Pricer interface {
+	PriceCall(backend, modelID string, c Call) (usd float64, ok bool)
+}
+
+// Call is one model call's billable token counts, already normalized
+// out of the provider's usage record.
+//
+// A struct rather than three int parameters because the buckets are the
+// part expected to grow: reasoning tokens billed apart from output, and
+// cache-*write* tokens billed apart from cache reads, are both on
+// model-support-design's list, and pkg/pricing's own Rates says 1h-TTL
+// cache support "means adding a second rate here". Each of those arrives
+// as a new field, which a pricer that does not know about it ignores.
+type Call struct {
+	// UncachedInputTokens is prompt tokens billed at the full input
+	// rate — the prompt less whatever the provider served from cache.
+	UncachedInputTokens int
+
+	// CachedInputTokens is the prompt subset served from cache, billed
+	// at the cache-read rate.
+	CachedInputTokens int
+
+	// OutputTokens is everything the model generated, billed at the
+	// output rate. On a reasoning model this includes thinking tokens.
+	OutputTokens int
 }
 
 // Config is the full meter shape: the session's ceilings plus the
@@ -312,15 +375,15 @@ func (m *Meter) fold(ev *session.Event) (Spend, error) {
 
 	tokens := int64(ev.UsageMetadata.TotalTokenCount)
 	rate := m.limits.RatePer1K
-	cat := m.limits.Catalog
+	pricer := m.limits.Pricer
 	backend, model := m.limits.Backend, m.limits.Model
 	scope, scoped := m.scopes[ev.Author]
 	if scoped {
 		if scope.RatePer1K > 0 {
 			rate = scope.RatePer1K
 		}
-		if scope.Catalog != nil {
-			cat = scope.Catalog
+		if scope.Pricer != nil {
+			pricer = scope.Pricer
 		}
 		if scope.Model != "" {
 			// The backend comes with the model and not on its own: an
@@ -331,10 +394,10 @@ func (m *Meter) fold(ev *session.Event) (Spend, error) {
 		}
 	}
 	// Cost accrues per event rather than being recomputed from the
-	// running token total: with per-scope rates and per-model catalog
+	// running token total: with per-scope rates and per-model exact
 	// pricing the session total is a sum of differently-priced calls,
 	// not one multiplication.
-	spend, unpriced := m.priceOf(ev, cat, backend, model, rate)
+	spend, unpriced := m.priceOf(ev, pricer, backend, model, rate)
 	s := Spend{Author: ev.Author, Tokens: tokens, CostUSD: spend, Unpriced: unpriced}
 
 	m.total.add(tokens, spend)
@@ -387,40 +450,14 @@ func crossed(scope string, l Limits, u *usage) []Trip {
 	return out
 }
 
-// priceOf costs one model call, against cat where it can and the flat
-// rate where it cannot, and reports whether it had to fall back.
-// Caller holds m.mu.
-//
-// Cached input is billed at the catalog's cache-read rate, which is
-// typically a tenth of fresh input; on a cache-warm agent that subset is
-// the majority of the prompt, so folding it in at the input rate is the
-// single largest source of error in a flat-rate figure.
-func (m *Meter) priceOf(ev *session.Event, cat *pricing.Catalog, backend, model string, rate float64) (cost float64, unpriced bool) {
+// priceOf costs one model call, through the pricer where it can and at
+// the flat rate where it cannot, and reports whether it had to fall
+// back. Caller holds m.mu.
+func (m *Meter) priceOf(ev *session.Event, p Pricer, backend, model string, rate float64) (cost float64, unpriced bool) {
 	u := ev.UsageMetadata
-	if cat != nil {
-		if r, ok := lookupRates(cat, backend, ev.ModelVersion, model); ok {
-			// Clamped, not trusted: a provider that over-reports the
-			// cached counter would otherwise produce negative uncached
-			// tokens, and CostUSDWithCache would bill them at the input
-			// rate as a credit — a ceiling that gets *further* away the
-			// more the provider miscounts. core-agent's usage tracker
-			// guards the same quirk the same way.
-			cached := int(u.CachedContentTokenCount)
-			if prompt := int(u.PromptTokenCount); cached > prompt {
-				cached = prompt
-			}
-			// Thoughts are billed at the output rate and counted
-			// separately from the candidates: Gemini reports
-			// promptTokenCount + candidatesTokenCount + thoughtsTokenCount
-			// == totalTokenCount, so leaving them out is a straight
-			// undercount of output. On a reasoning model it is not a
-			// rounding error — a triage run measured here spent 6,449
-			// thinking tokens against 1,180 candidate tokens, so the
-			// omitted term was 85% of billable output. The field is
-			// Gemini-only; pkg/providers/anthropic never sets it, and
-			// Anthropic's own output count already includes thinking.
-			out := int(u.CandidatesTokenCount) + int(u.ThoughtsTokenCount)
-			return r.CostUSDWithCache(int(u.PromptTokenCount)-cached, cached, out), false
+	if p != nil {
+		if usd, ok := priceFirst(p, backend, callOf(u), ev.ModelVersion, model); ok {
+			return usd, false
 		}
 		m.unpriced++
 		unpriced = true
@@ -428,28 +465,63 @@ func (m *Meter) priceOf(ev *session.Event, cat *pricing.Catalog, backend, model 
 	return float64(u.TotalTokenCount) / 1000 * rate, unpriced
 }
 
-// lookupRates returns the first of ids the catalog prices on backend,
-// skipping empty ones. Order is preference: callers pass the event's own
-// ModelVersion before the configured name, because a server echo names
-// what was actually billed — but an echo the catalog cannot resolve is
-// no better than no echo, so a miss falls through rather than ending
-// the search. See Limits.Model for why the second id is needed at all.
+// priceFirst asks the pricer for each of ids in turn and returns the
+// first price it gets, skipping empty ones. Order is preference:
+// callers pass the event's own ModelVersion before the configured name,
+// because a server echo names what was actually billed — but an echo the
+// pricer cannot resolve is no better than no echo, so a miss falls
+// through rather than ending the search. See Limits.Model for why the
+// second id is needed at all.
 //
 // Every id is tried on the same backend, including the echoed one: the
 // echo names the model the backend billed for, never a different
-// backend. LookupFor already falls back from the qualified key to the
-// bare one, so an empty backend and an unqualified model both still
-// price.
-func lookupRates(cat *pricing.Catalog, backend string, ids ...string) (pricing.Rates, bool) {
+// backend.
+func priceFirst(p Pricer, backend string, c Call, ids ...string) (float64, bool) {
 	for _, id := range ids {
 		if id == "" {
 			continue
 		}
-		if r, ok := cat.LookupFor(backend, id); ok && !r.IsZero() {
-			return r, true
+		if usd, ok := p.PriceCall(backend, id, c); ok {
+			return usd, true
 		}
 	}
-	return pricing.Rates{}, false
+	return 0, false
+}
+
+// callOf normalizes an ADK usage record into the billable buckets a
+// Pricer is asked about. Reading the provider's counters is the meter's
+// job and pricing them is the pricer's, which is the seam: everything
+// below is an assertion about what the counters mean, and nothing below
+// is an assertion about what they cost.
+//
+// Cached input is separated because it bills at the cache-read rate,
+// typically a tenth of fresh input; on a cache-warm agent that subset is
+// the majority of the prompt, so folding it in at the input rate is the
+// single largest source of error in a flat-rate figure.
+func callOf(u *genai.GenerateContentResponseUsageMetadata) Call {
+	// Clamped, not trusted: a provider that over-reports the cached
+	// counter would otherwise produce negative uncached tokens, billed at
+	// the input rate as a credit — a ceiling that gets *further* away the
+	// more the provider miscounts. core-agent's usage tracker guards the
+	// same quirk the same way.
+	cached := int(u.CachedContentTokenCount)
+	if prompt := int(u.PromptTokenCount); cached > prompt {
+		cached = prompt
+	}
+	// Thoughts are billed at the output rate and counted separately from
+	// the candidates: Gemini reports promptTokenCount +
+	// candidatesTokenCount + thoughtsTokenCount == totalTokenCount, so
+	// leaving them out is a straight undercount of output. On a reasoning
+	// model it is not a rounding error — a triage run measured here spent
+	// 6,449 thinking tokens against 1,180 candidate tokens, so the omitted
+	// term was 85% of billable output. The field is Gemini-only;
+	// pkg/providers/anthropic never sets it, and Anthropic's own output
+	// count already includes thinking.
+	return Call{
+		UncachedInputTokens: int(u.PromptTokenCount) - cached,
+		CachedInputTokens:   cached,
+		OutputTokens:        int(u.CandidatesTokenCount) + int(u.ThoughtsTokenCount),
+	}
 }
 
 // Snapshot returns the session's cumulative usage so far.

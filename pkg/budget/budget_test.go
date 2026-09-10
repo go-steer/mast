@@ -23,8 +23,6 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
-
-	"github.com/go-steer/mast/pkg/pricing"
 )
 
 // usageEvent fakes one model call's worth of streamed usage — the
@@ -287,9 +285,9 @@ func TestNewCopiesTheScopeMap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// Catalog pricing: each call costed against the model it was billed to.
+// Exact pricing: each call costed against the model it was billed to.
 
-// pricedEvent fakes a call the catalog can price: the model it was billed
+// pricedEvent fakes a call the pricer can price: the model it was billed
 // against, plus the input/output split and the cache-read subset.
 func pricedEvent(modelVersion string, prompt, cached, out int32) *session.Event {
 	return &session.Event{
@@ -305,25 +303,63 @@ func pricedEvent(modelVersion string, prompt, cached, out int32) *session.Event 
 	}
 }
 
-func builtinCatalog(t *testing.T) *pricing.Catalog {
-	t.Helper()
-	c, err := pricing.NewCatalog(pricing.Options{})
-	if err != nil {
-		t.Fatalf("NewCatalog: %v", err)
+// ratePricer is a Pricer over an explicit table of USD-per-million-token
+// rates, keyed by the backend-qualified id and falling back to the bare
+// one — the lookup shape every pricer mast ships performs.
+//
+// Deliberately not a wrapper around pkg/pricing. What this package owes
+// its caller is the derivation either side of the price: which buckets a
+// provider's counters map to, which model id is asked about first, and
+// what happens when the answer is "cannot price this". None of that is a
+// claim about the shipping price list, and a test that read the real
+// catalog would restate pkg/pricing's assertions and go red every time a
+// vendor moved a rate. The rates below are stated where they are used.
+type ratePricer map[string]perMTok
+
+// perMTok is one model's rates. A zero cacheRead bills cached tokens at
+// the input rate, matching pkg/pricing — an unknown cache rate is not a
+// free one.
+type perMTok struct{ in, cacheRead, out float64 }
+
+func (p ratePricer) PriceCall(backend, modelID string, c Call) (float64, bool) {
+	r, ok := p[backend+"/"+modelID]
+	if !ok {
+		r, ok = p[modelID]
 	}
-	return c
+	if !ok {
+		return 0, false
+	}
+	read := r.cacheRead
+	if read == 0 {
+		read = r.in
+	}
+	const million = 1e6
+	return float64(c.UncachedInputTokens)/million*r.in +
+		float64(c.CachedInputTokens)/million*read +
+		float64(c.OutputTokens)/million*r.out, true
+}
+
+// tieredPricer prices the two tiers these tests meter against: sonnet at
+// $2/$10 per MTok and haiku at $1/$5, cache reads at a tenth of input.
+// The same order of magnitude the builtin catalog carries, restated here
+// so the arithmetic is checkable without it.
+func tieredPricer() ratePricer {
+	return ratePricer{
+		"claude-sonnet-5":  {in: 2, cacheRead: 0.2, out: 10},
+		"claude-haiku-4-5": {in: 1, cacheRead: 0.1, out: 5},
+	}
 }
 
 // The flat rate is the average of a model's input and output rates, so it
 // overcharges an input-heavy session — and every long-context agent is
 // input-heavy. A cost ceiling that wrong fires on the wrong sessions, which
 // is the reason the catalog path exists.
-func TestCatalogPricesAnInputHeavyCallFarBelowTheFlatRate(t *testing.T) {
+func TestExactPricingCostsAnInputHeavyCallFarBelowTheFlatRate(t *testing.T) {
 	const prompt, out = 1_000_000, 1_000
 	// (2 + 10) / 2 / 1000, the rate internal/compose derives for sonnet.
 	flatLimits := Limits{RatePer1K: (2 + 10) / 2.0 / 1000}
 	exactLimits := flatLimits
-	exactLimits.Catalog = builtinCatalog(t)
+	exactLimits.Pricer = tieredPricer()
 
 	flat := NewMeter(flatLimits)
 	exact := NewMeter(exactLimits)
@@ -349,9 +385,9 @@ func TestCatalogPricesAnInputHeavyCallFarBelowTheFlatRate(t *testing.T) {
 // Cached input is billed at a tenth of fresh input, and on a cache-warm agent
 // it is the majority of the prompt. TotalTokenCount cannot see that subset at
 // all, so the flat path charges the same for both of these calls.
-func TestCatalogBillsCacheReadsAtTheCacheRate(t *testing.T) {
-	cold := NewMeter(Limits{Catalog: builtinCatalog(t)})
-	warm := NewMeter(Limits{Catalog: builtinCatalog(t)})
+func TestCacheReadsAreBilledAtTheCacheRate(t *testing.T) {
+	cold := NewMeter(Limits{Pricer: tieredPricer()})
+	warm := NewMeter(Limits{Pricer: tieredPricer()})
 	if err := cold.Observe(pricedEvent("claude-sonnet-5", 1_000_000, 0, 0)); err != nil {
 		t.Fatalf("cold: %v", err)
 	}
@@ -370,7 +406,7 @@ func TestCatalogBillsCacheReadsAtTheCacheRate(t *testing.T) {
 // than one that meters approximately — and it has to be countable, or the
 // caller cannot tell an exact figure from a mixed one.
 func TestAnUnknownModelFallsBackToTheFlatRateAndIsCounted(t *testing.T) {
-	m := NewMeter(Limits{Catalog: builtinCatalog(t), RatePer1K: 0.05})
+	m := NewMeter(Limits{Pricer: tieredPricer(), RatePer1K: 0.05})
 	if err := m.Observe(pricedEvent("some-model-nobody-priced", 1000, 0, 0)); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
@@ -392,8 +428,8 @@ func TestAnUnknownModelFallsBackToTheFlatRateAndIsCounted(t *testing.T) {
 // more the provider miscounts the further away the ceiling gets. A ceiling
 // that loosens under bad data is not a ceiling.
 func TestAnOverReportedCacheCounterCannotCreditTheSession(t *testing.T) {
-	bogus := NewMeter(Limits{Catalog: builtinCatalog(t)})
-	honest := NewMeter(Limits{Catalog: builtinCatalog(t)})
+	bogus := NewMeter(Limits{Pricer: tieredPricer()})
+	honest := NewMeter(Limits{Pricer: tieredPricer()})
 	if err := bogus.Observe(pricedEvent("claude-sonnet-5", 1_000_000, 1_500_000, 1_000)); err != nil {
 		t.Fatalf("bogus: %v", err)
 	}
@@ -419,12 +455,12 @@ func TestAnOverReportedCacheCounterCannotCreditTheSession(t *testing.T) {
 // so a cheap tier's ceiling trips at the wrong point — which is precisely
 // the check a tiered roster exists to make.
 func TestAScopedSpecialistIsPricedAgainstItsOwnModel(t *testing.T) {
-	cat := builtinCatalog(t)
+	cat := tieredPricer()
 	m := New(Config{
-		Limits: Limits{Catalog: cat},
+		Limits: Limits{Pricer: cat},
 		Scopes: map[string]Limits{
-			"coordinator": {Catalog: cat},
-			"analyst":     {Catalog: cat},
+			"coordinator": {Pricer: cat},
+			"analyst":     {Pricer: cat},
 		},
 	})
 
@@ -475,9 +511,9 @@ func TestAScopedSpecialistIsPricedAgainstItsOwnModel(t *testing.T) {
 // way a scope with no rate inherits the session's rate. Without this an
 // un-catalogued specialist would silently fall back to the flat rate and
 // its ceiling would be the only one in the meter measured differently.
-func TestAScopeInheritsTheSessionCatalog(t *testing.T) {
+func TestAScopeInheritsTheSessionPricer(t *testing.T) {
 	m := New(Config{
-		Limits: Limits{Catalog: builtinCatalog(t)},
+		Limits: Limits{Pricer: tieredPricer()},
 		Scopes: map[string]Limits{"analyst": {MaxCostUSD: 100}},
 	})
 	ev := pricedEvent("claude-sonnet-5", 1_000_000, 0, 0)
@@ -509,8 +545,8 @@ func TestAScopeInheritsTheSessionCatalog(t *testing.T) {
 func TestAnEventWithNoModelVersionIsPricedFromLimitsModel(t *testing.T) {
 	ev := pricedEvent("", 1_000_000, 0, 100_000)
 
-	blind := NewMeter(Limits{Catalog: builtinCatalog(t), RatePer1K: 0.05})
-	named := NewMeter(Limits{Catalog: builtinCatalog(t), RatePer1K: 0.05, Model: "claude-sonnet-5"})
+	blind := NewMeter(Limits{Pricer: tieredPricer(), RatePer1K: 0.05})
+	named := NewMeter(Limits{Pricer: tieredPricer(), RatePer1K: 0.05, Model: "claude-sonnet-5"})
 	if err := blind.Observe(ev); err != nil {
 		t.Fatalf("blind: %v", err)
 	}
@@ -538,10 +574,10 @@ func TestAnEventWithNoModelVersionIsPricedFromLimitsModel(t *testing.T) {
 // the session's model and per-model cost attribution — the whole point of
 // tiering — would report the same rate for every tier.
 func TestAScopeModelPricesAnUnnamedCallAtItsOwnTier(t *testing.T) {
-	cat := builtinCatalog(t)
+	cat := tieredPricer()
 	m := New(Config{
-		Limits: Limits{Catalog: cat, Model: "claude-sonnet-5"},
-		Scopes: map[string]Limits{"analyst": {Catalog: cat, Model: "claude-haiku-4-5"}},
+		Limits: Limits{Pricer: cat, Model: "claude-sonnet-5"},
+		Scopes: map[string]Limits{"analyst": {Pricer: cat, Model: "claude-haiku-4-5"}},
 	})
 	ev := pricedEvent("", 1_000_000, 0, 100_000)
 	ev.Author = "analyst"
@@ -565,15 +601,12 @@ func TestAScopeModelPricesAnUnnamedCallAtItsOwnTier(t *testing.T) {
 // other's table.
 //
 // Every rate mast ships today happens to agree across the backends
-// serving it, so this needs a catalog where they disagree — otherwise it
+// serving it, so this needs a table where they disagree — otherwise it
 // would pass just as well against a meter that ignored Backend entirely.
 func TestTheBackendSelectsTheRateWhenTwoBackendsDisagree(t *testing.T) {
-	cat, err := pricing.NewCatalog(pricing.Options{CfgOverride: map[string]pricing.ModelRates{
-		"claude-sonnet-5":                  {InputPerMTok: 2, OutputPerMTok: 10},
-		"anthropic-vertex/claude-sonnet-5": {InputPerMTok: 20, OutputPerMTok: 100},
-	}})
-	if err != nil {
-		t.Fatalf("NewCatalog: %v", err)
+	cat := ratePricer{
+		"claude-sonnet-5":                  {in: 2, out: 10},
+		"anthropic-vertex/claude-sonnet-5": {in: 20, out: 100},
 	}
 	ev := pricedEvent("", 1_000_000, 0, 0)
 
@@ -586,7 +619,7 @@ func TestTheBackendSelectsTheRateWhenTwoBackendsDisagree(t *testing.T) {
 		{"anthropic-vertex", 20.0}, // its own row, ten times the price
 	} {
 		t.Run(tc.backend, func(t *testing.T) {
-			m := NewMeter(Limits{Catalog: cat, Backend: tc.backend, Model: "claude-sonnet-5", RatePer1K: 0.05})
+			m := NewMeter(Limits{Pricer: cat, Backend: tc.backend, Model: "claude-sonnet-5", RatePer1K: 0.05})
 			if err := m.Observe(ev); err != nil {
 				t.Fatalf("observe: %v", err)
 			}
@@ -609,7 +642,7 @@ func TestTheBackendSelectsTheRateWhenTwoBackendsDisagree(t *testing.T) {
 // would throw away an exact figure the meter already had.
 func TestAnUnresolvableModelVersionFallsThroughToLimitsModel(t *testing.T) {
 	ev := pricedEvent("projects/p/locations/l/publishers/anthropic/models/claude-sonnet-5", 1_000_000, 0, 0)
-	m := NewMeter(Limits{Catalog: builtinCatalog(t), RatePer1K: 0.05, Model: "claude-sonnet-5"})
+	m := NewMeter(Limits{Pricer: tieredPricer(), RatePer1K: 0.05, Model: "claude-sonnet-5"})
 	if err := m.Observe(ev); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
@@ -637,7 +670,7 @@ func TestThinkingTokensAreBilledAtTheOutputRate(t *testing.T) {
 	ev.UsageMetadata.ThoughtsTokenCount = thoughts
 	ev.UsageMetadata.TotalTokenCount = prompt + out + thoughts
 
-	m := NewMeter(Limits{Catalog: builtinCatalog(t), Model: "claude-sonnet-5"})
+	m := NewMeter(Limits{Pricer: tieredPricer(), Model: "claude-sonnet-5"})
 	if err := m.Observe(ev); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
@@ -659,12 +692,49 @@ func TestThinkingTokensAreBilledAtTheOutputRate(t *testing.T) {
 // its own output count already. An event that reports no thoughts must
 // therefore price exactly as it did before the field was read at all.
 func TestNoThoughtsCountedMeansNoChangeInPrice(t *testing.T) {
-	m := NewMeter(Limits{Catalog: builtinCatalog(t), Model: "claude-sonnet-5"})
+	m := NewMeter(Limits{Pricer: tieredPricer(), Model: "claude-sonnet-5"})
 	if err := m.Observe(pricedEvent("", 1_000_000, 0, 100_000)); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
 	_, cost, _ := m.Snapshot()
 	if want := 2.0 + 1.0; cost < want*0.99 || cost > want*1.01 {
 		t.Errorf("cost = $%.4f, want ~$%.4f", cost, want)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Limits comparability.
+
+// Limits carries an interface now, so == panics at runtime on two
+// operands that both hold a pricer of the same uncomparable dynamic
+// type. Measured, because the rule is narrower than it first looks:
+// against the zero Limits — which is what both replaced call sites
+// compared to — the dynamic types differ and the comparison
+// short-circuits without panicking. IsZero is what those sites were
+// asking, and it holds for every pricer.
+//
+// ratePricer is a map, so the operands below are exactly the shape ==
+// cannot be used on generally.
+func TestLimitsIsZeroHandlesAnUncomparablePricer(t *testing.T) {
+	if (Limits{Pricer: tieredPricer()}).IsZero() {
+		t.Error("a Limits carrying a pricer is not empty")
+	}
+	if !(Limits{}).IsZero() {
+		t.Error("the zero Limits is empty")
+	}
+	// Every field has to count, or a scope that declared only that one
+	// would be dropped as empty.
+	for name, l := range map[string]Limits{
+		"MaxCostUSD": {MaxCostUSD: 1},
+		"MaxTokens":  {MaxTokens: 1},
+		"MaxTurns":   {MaxTurns: 1},
+		"Pricer":     {Pricer: tieredPricer()},
+		"Backend":    {Backend: "anthropic"},
+		"Model":      {Model: "claude-sonnet-5"},
+		"RatePer1K":  {RatePer1K: 0.001},
+	} {
+		if l.IsZero() {
+			t.Errorf("Limits{%s: ...}.IsZero() = true, want false", name)
+		}
 	}
 }

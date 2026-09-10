@@ -368,6 +368,37 @@ today and "unreachable" is work.
 the tree. A marker nobody writes is not a boundary — this list is, and
 it lives in one file that a reviewer can diff.)*
 
+**The two lists are not a partition, and reconciling them is
+[#338](https://github.com/go-steer/mast/issues/338).** A covered package
+whose exported signature names a type from the unsupported 27 has
+committed that type as well, whatever this section says. Two do:
+`pkg/budget` named `pricing.Catalog`, and `pkg/transcript` returns three
+`approval` records. They get opposite remedies, because they are
+opposite kinds of leak.
+
+`Limits.Catalog` was an *input* — a consumer setting it had to build one,
+which committed `NewCatalog`, `Options`' three config-discovery fields,
+`ModelRates` and `Rates`: roughly fourteen declarations, none of them
+about budgets, and the one thing among them the meter actually used is
+the one `docs/model-support-design.md` M2 already owes a change to
+(`LookupFor` re-keyed from the backend name onto a provider profile).
+Freezing that would make the third backend a major. So the meter owns a
+one-method `budget.Pricer` instead, taking a `budget.Call` struct so the
+usage buckets §4.3 wants next arrive as fields rather than as a new
+signature; `internal/compose` holds the only adapter, and `pkg/budget`
+now imports nothing else from this module.
+
+The three `approval` records are *outputs*. There is no constructor to
+drag in, and their field set is already committed as
+`approval.DecisionSchema = "mast.decision/v1"` — so a `pkg/transcript`
+copy would be a second Go spelling of one JSON schema, which is the
+drift the v0.5 wire-literal pin exists to prevent. They will be named
+here as covered by reference, with the rest of `pkg/approval` staying
+unsupported. The rule generalizes: **freeze by reference when the type
+is an output whose shape is already committed on the wire; own a narrow
+interface when it is an input the consumer must construct, or a
+dependency already scheduled to change.**
+
 **The two ADK types in the promised surface.** `mast.Config` exposes
 `Model model.LLM` and `Sessions adksession.Service` — deliberate
 injection points, and the only ADK types in the root package's public

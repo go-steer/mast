@@ -52,6 +52,32 @@ change or remove them. If you need one of them to be stable, open an
 issue saying what you are building — a package with a named consumer is
 the kind that gets promoted.
 
+### A covered path can drag one in
+
+The list above is not quite a partition. If a covered package names a
+type from an unsupported one in an exported signature, that type is
+covered too, whatever this page says — you cannot change it without
+breaking the covered package.
+
+So the two lists are being reconciled before v1.0, one leak at a time,
+and there are two kinds:
+
+- **A type you only ever receive.** `pkg/transcript` hands back
+  `approval.Decision` records. Their shape is already public as the
+  `mast.decision/v1` JSON that `mast sessions export-decisions` emits,
+  so it is committed either way, and a Go copy of it would just be a
+  second name for one schema. These will be listed as covered rather
+  than replaced.
+- **A type you have to construct.** `budget.Limits` used to take a
+  `*pricing.Catalog`, which meant committing the catalog's constructor,
+  its config-discovery options and its rate struct — none of which is
+  about budgets, and all of which is still moving as mast adds backends.
+  The field is now a one-method `budget.Pricer` interface that the meter
+  owns, and `pkg/budget` imports nothing else from mast.
+
+The rule, if you are reading your own dependency on mast the same way:
+prefer receiving a type over constructing one.
+
 ## The ADK version is part of the contract
 
 `mast.Config` takes two types from

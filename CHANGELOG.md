@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- **`budget.Limits.Catalog` is now `budget.Limits.Pricer`, a one-method
+  interface the meter owns.** Breaking, for anyone who set the field directly;
+  the daemon and `mast.RunWorkload` are unaffected because both get their
+  pricing from `internal/compose`. Migration: implement
+  `PriceCall(backend, modelID string, c budget.Call) (float64, bool)` over
+  whatever you were pricing with, or drop the field and set `RatePer1K`.
+
+  The v1.0 promise ([#300](https://github.com/go-steer/mast/issues/300)) covers
+  `pkg/budget` and does not cover `pkg/pricing`, which is not a coherent pair
+  while `Limits` names `*pricing.Catalog` in an exported field a consumer has to
+  construct: freezing the meter would have frozen `NewCatalog`, `Options`' three
+  config-discovery fields, `ModelRates` and `Rates` along with it — around
+  fourteen declarations, none of them about budgets. Worse, the only one the
+  meter used is the one already scheduled to change: `docs/model-support-design.md`
+  M2 owes `LookupFor` a re-key from the backend name onto a provider profile, so
+  the frozen surface would have made mast's third backend
+  ([#312](https://github.com/go-steer/mast/issues/312)) a major release.
+
+  `Call` is a struct rather than three ints for the same reason — reasoning
+  tokens and cache-*write* tokens are both on the list, and each arrives as a
+  field instead of as a new signature. Nothing about the metered figure changes:
+  the meter still derives the buckets from the provider's counters, clamps an
+  over-reported cache count, and folds thinking tokens into output, and
+  `internal/compose` holds the only adapter onto the builtin catalog. What
+  changes is that `pkg/budget` now imports **nothing else in this module**, and
+  the tests split along the same seam — the meter's own tests price against an
+  explicit rate table and assert the derivation, while the adapter's assert the
+  catalog's real rates.
+
+  `Limits.IsZero` replaces two `== (budget.Limits{})` comparisons. Neither could
+  have panicked — Go short-circuits an interface comparison when the dynamic
+  types differ, and the zero value's pricer is always nil — but `==` on two
+  `Limits` that both carry an uncomparable pricer does panic, and an operator
+  that works only against one specific operand is not a property a caller should
+  have to know.
+
+  The other leak, `pkg/transcript`'s three `approval` records, gets the opposite
+  remedy and is tracked in
+  [#338](https://github.com/go-steer/mast/issues/338): they are outputs whose
+  field set is already committed as `mast.decision/v1`, so a Go copy would be a
+  second spelling of one JSON schema.
+
 - **`gemini-3.8-flash` is priced and classified; the frontier default stays at
   `gemini-3.7-flash`.** The weekly regen picked up `gemini-3.8-flash` (and
   `claude-mythos-5-1`) from LiteLLM. 3.8-flash costs exactly what 3.7-flash

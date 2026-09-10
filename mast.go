@@ -485,13 +485,13 @@ func limits(cfg Config, bundle *workload.Bundle, modelName string) budget.Limits
 		l := *cfg.Budget
 		// Each price knob is filled independently, because a caller may
 		// have set one and not the other: a Budget carrying only a flat
-		// rate is the pre-catalog shape and still wants the catalog, and
-		// one carrying only a catalog still wants a fallback rate.
+		// rate is the pre-catalog shape and still wants exact pricing,
+		// and one carrying only a pricer still wants a fallback rate.
 		if l.RatePer1K == 0 {
 			l.RatePer1K = priced.RatePer1K
 		}
-		if l.Catalog == nil {
-			l.Catalog, l.Backend, l.Model = priced.Catalog, priced.Backend, priced.Model
+		if l.Pricer == nil {
+			l.Pricer, l.Backend, l.Model = priced.Pricer, priced.Backend, priced.Model
 		}
 		return l
 	}
