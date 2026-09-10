@@ -47,7 +47,28 @@ type deferredPromotion struct {
 // the full 31-scenario judged corpus over Vertex and scored within
 // noise of the 3.6-era board (see the comment on ModelForTier's gemini
 // frontier case).
-var deferredPromotions = map[string]deferredPromotion{}
+var deferredPromotions = map[string]deferredPromotion{
+	"gemini-3.7-flash": {
+		Newer: "gemini-3.8-flash",
+		Why: "held 2026-09-09, and the reason is that the case for promoting is free. " +
+			"3.8-flash prices identically to 3.7-flash ($0.75/$3.75 per MTok, cached " +
+			"input $0.075, both introductory through 2026-12-31) on the same " +
+			"1,048,576-token window, so a promotion moves no cost ceiling and no " +
+			"compaction trigger — there is nothing on paper to weigh against the fact " +
+			"that nothing has run it. A free paper case is exactly the one that has " +
+			"been wrong before: core-agent#579 promoted a frontier default off a spec " +
+			"sheet and #580 reverted it a day later when the parent agent stopped " +
+			"mid-plan. The bar is the bar 3.7 cleared — the full 31-scenario judged " +
+			"corpus over live Vertex, scoring within noise of the current board, with " +
+			"no mid-plan stall. 3.8-flash is reachable today with --model " +
+			"gemini-3.8-flash, which is how that UAT gets run; zero-config stays on " +
+			"3.7-flash until it passes. Note the one number that did move and is not " +
+			"in mast's tables: Artificial Analysis measured ~30% more output tokens " +
+			"per task on 3.8-flash at high thinking, so at an identical output rate " +
+			"the same work bills more — the UAT should read cost per scenario, not " +
+			"cost per token.",
+	},
+}
 
 // TestModelForTier_ReturnsLatestInLine enforces the policy documented on
 // ModelForTier: a tier default names the LATEST model in its line.

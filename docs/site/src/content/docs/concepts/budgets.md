@@ -159,12 +159,13 @@ currently charging. LiteLLM's catalog carries no expiry field on any row,
 so mast records the known ones itself and fails its own build if a lapsed
 rate is still in the table.
 
-The two that matter as of 2026-08-20:
+The three that matter as of 2026-09-09:
 
 | Model | Rate now | Changes to | On |
 |---|---|---|---|
 | `gemini-3.7-flash` (the gemini/vertex frontier default) | $0.75 / $3.75 per MTok | $1.50 / $7.50 | 2027-01-01 |
 | `gemini-3.6-flash` | $0.75 / $3.75 per MTok | $1.50 / $7.50 | 2027-01-01 |
+| `gemini-3.8-flash` | $0.75 / $3.75 per MTok | $1.50 / $7.50 | 2027-01-01 |
 
 Cache reads double alongside. If you are sizing a ceiling that will still
 be in force in 2027 on either model, size it against the later number.

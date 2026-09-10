@@ -254,6 +254,18 @@ func ModelForTier(provider, tier string) string {
 			// the UAT; price parity between the two is temporary and
 			// price is not what a frontier default is chosen on.
 			//
+			// NOT gemini-3.8-flash, which the 2026-09-09 regen priced
+			// and pkg/modeltier classifies. Same rate, same window, so
+			// promoting it would move no ceiling and no compaction
+			// trigger — and a promotion whose paper case is free is the
+			// one that gets made without a UAT. The deferral is
+			// recorded, with its argument and its discharge condition,
+			// in deferredPromotions (latest_in_line_test.go); it
+			// excuses 3.8 and nothing after it, so a 3.9-flash reds the
+			// build rather than inheriting the reasoning. Run the
+			// corpus over `--model gemini-3.8-flash` before editing
+			// this line.
+			//
 			// The ported table originally said gemini-3.5-pro — a
 			// model id that never shipped (inherited from core-agent,
 			// stale there too; corrected 2026-07-29 when the first

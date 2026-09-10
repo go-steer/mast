@@ -152,6 +152,24 @@ var introductoryRates = []introductoryRate{
 			"them without the ceiling noticing",
 	},
 	{
+		model:       "gemini-3.8-flash",
+		notBefore:   time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC),
+		introInput:  0.75,
+		introOutput: 3.75,
+		standard:    "$1.50 in / $7.50 out per MTok (and CachedInputPerMTok 0.075 -> 0.15)",
+		why: "arrived in the table at the promotional number rather than moving onto it — " +
+			"the 2026-09-09 regen picked it up new, priced exactly like 3.7-flash. That is " +
+			"the case #188 was written about read from the other direction: a row whose " +
+			"rate never changes looks permanent, and nothing in LiteLLM distinguishes a " +
+			"launch price from a standard one. Not a mast default today (the frontier " +
+			"default is held at 3.7-flash pending a UAT — see deferredPromotions in " +
+			"pkg/taskclass), which is why this entry has to exist before the promotion " +
+			"rather than with it: whoever promotes it must not have to rediscover that the " +
+			"rate doubles. Verified 2026-09-08 against ai.google.dev/gemini-api/docs/pricing, " +
+			"which dates every line item — input \"$0.75 through December 31, 2026\" / " +
+			"\"$1.50 starting January 1, 2027\", output $3.75 -> $7.50, cached $0.075 -> $0.15",
+	},
+	{
 		model:       "gemini-3.6-flash",
 		notBefore:   time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC),
 		introInput:  0.75,
