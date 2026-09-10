@@ -165,11 +165,11 @@ func TestMeterScopes_OfflineFakeRootCollapsesPricing(t *testing.T) {
 	}
 }
 
-// A scope that names a model must carry the catalog too. The name alone
+// A scope that names a model must carry the pricer too. The name alone
 // is inert — budget.Limits.Model is documented as "ignored unless
-// Catalog is set" — so a scope with one and not the other prices at the
+// Pricer is set" — so a scope with one and not the other prices at the
 // flat rate while looking like it prices exactly.
-func TestMeterScopes_OverrideCarriesTheCatalogWithTheName(t *testing.T) {
+func TestMeterScopes_OverrideCarriesThePricerWithTheName(t *testing.T) {
 	const override = "claude-haiku-4-5"
 	scopes := MeterScopes([]specialists.Spec{
 		{Name: "analyst", Model: override},
@@ -178,10 +178,10 @@ func TestMeterScopes_OverrideCarriesTheCatalogWithTheName(t *testing.T) {
 	if got.Model != override {
 		t.Errorf("scope Model = %q, want the resolved override", got.Model)
 	}
-	if got.Catalog == nil {
-		t.Fatal("scope has a model name and no catalog: the name prices nothing on its own")
+	if got.Pricer == nil {
+		t.Fatal("scope has a model name and no pricer: the name prices nothing on its own")
 	}
-	// The backend travels with the name, because the catalog is keyed by
+	// The backend travels with the name, because the price is keyed by
 	// the pair. Asserted against Backend rather than a literal: which
 	// backend serves Claude depends on the environment's credentials, and
 	// the invariant under test is that the scope agrees with the resolver
@@ -190,47 +190,47 @@ func TestMeterScopes_OverrideCarriesTheCatalogWithTheName(t *testing.T) {
 	if want := Backend("", override); got.Backend != want {
 		t.Errorf("scope Backend = %q, want %q", got.Backend, want)
 	}
-	if r, ok := got.Catalog.LookupFor(got.Backend, got.Model); !ok || r.IsZero() {
+	if _, ok := got.Pricer.PriceCall(got.Backend, got.Model, probeCall); !ok {
 		t.Errorf("the scope's own (backend, model) pair (%q, %q) prices nothing", got.Backend, got.Model)
 	}
 }
 
-// The offline collapse covers the catalog for the same reason it covers
+// The offline collapse covers the pricer for the same reason it covers
 // the rate — and for one more: a fake's model ID is in no catalog, so
-// leaving the catalog installed would make every fake call a miss and
+// leaving the pricer installed would make every fake call a miss and
 // climb budget.Meter.Unpriced, telling an operator their cost figure was
 // degraded when it was never meant to be a cost figure at all.
-func TestMeterScopes_OfflineFakeInstallsNoCatalog(t *testing.T) {
+func TestMeterScopes_OfflineFakeInstallsNoPricer(t *testing.T) {
 	scopes := MeterScopes([]specialists.Spec{
 		{Name: "analyst", Model: "claude-haiku-4-5", Budget: specialists.Budget{MaxCostUSD: 2.50}},
 	}, "", "echo")
 	got := scopes["analyst"]
-	if got.Catalog != nil || got.Model != "" || got.Backend != "" {
+	if got.Pricer != nil || got.Model != "" || got.Backend != "" {
 		t.Errorf("scope = %+v, want no pricing under a fake root", got)
 	}
 }
 
 // MeterLimits is the session half, and the reason it exists is that
-// there were two hand-written copies of it. The catalog and the pair it
-// is keyed by have to come out together, or the catalog is installed
+// there were two hand-written copies of it. The pricer and the pair it
+// is keyed by have to come out together, or the pricer is installed
 // with nothing to look up.
-func TestMeterLimits_CarriesCatalogNameAndFallbackRate(t *testing.T) {
+func TestMeterLimits_CarriesPricerNameAndFallbackRate(t *testing.T) {
 	const name = "gemini-3.7-flash"
 	got := MeterLimits(ProviderGemini, name)
-	if got.Catalog == nil {
-		t.Fatal("no catalog: every call would meter at the flat rate")
+	if got.Pricer == nil {
+		t.Fatal("no pricer: every call would meter at the flat rate")
 	}
 	if got.Model != name {
-		t.Errorf("Model = %q, want %q — the catalog has no key without it", got.Model, name)
+		t.Errorf("Model = %q, want %q — the pricer has no key without it", got.Model, name)
 	}
 	if want := Backend(ProviderGemini, name); got.Backend != want {
 		t.Errorf("Backend = %q, want %q", got.Backend, want)
 	}
 	if want := RatePer1K(ProviderGemini, name); math.Abs(got.RatePer1K-want) > 1e-12 {
-		t.Errorf("RatePer1K = %v, want %v (the fallback for a call the catalog misses)", got.RatePer1K, want)
+		t.Errorf("RatePer1K = %v, want %v (the fallback for a call the pricer misses)", got.RatePer1K, want)
 	}
 	// The pair has to actually resolve, or the fields are decoration.
-	if r, ok := got.Catalog.LookupFor(got.Backend, name); !ok || r.IsZero() {
+	if _, ok := got.Pricer.PriceCall(got.Backend, name, probeCall); !ok {
 		t.Errorf("the builtin catalog does not price %q on %q", name, got.Backend)
 	}
 }
@@ -238,8 +238,8 @@ func TestMeterLimits_CarriesCatalogNameAndFallbackRate(t *testing.T) {
 func TestMeterLimits_OfflineFakeKeepsOnlyTheFakeRate(t *testing.T) {
 	for _, name := range []string{"echo", "scripted", "toolactor"} {
 		got := MeterLimits("", name)
-		if got.Catalog != nil || got.Model != "" || got.Backend != "" {
-			t.Errorf("%s: limits = %+v, want no catalog pricing", name, got)
+		if got.Pricer != nil || got.Model != "" || got.Backend != "" {
+			t.Errorf("%s: limits = %+v, want no exact pricing", name, got)
 		}
 		if got.RatePer1K != 0.05 {
 			t.Errorf("%s: RatePer1K = %v, want the inflated fake rate a smoke test trips caps with", name, got.RatePer1K)

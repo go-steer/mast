@@ -777,6 +777,38 @@ var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
 	return c
 })
 
+// catalogPricer adapts a pkg/pricing catalog to budget.Pricer, and is
+// the only place the two meet.
+//
+// The seam is one-directional on purpose: pkg/budget names no rate type,
+// so pricing may re-key its lookup (docs/model-support-design.md M2
+// re-keys the backend name onto the more general notion of a provider
+// profile) or grow a rate without that being a change to a v1.0-frozen
+// package. What crosses is a number.
+//
+// A struct rather than a closure so budget.Limits stays comparable in
+// practice — see budget.Limits.IsZero.
+type catalogPricer struct{ cat *pricing.Catalog }
+
+// PriceCall reports the catalog's exact price for the call.
+//
+// A row of all-zero rates is reported as a miss, not as a free call: a
+// cost ceiling that never advances is a ceiling that never fires, and
+// the meter's fallback to the flat rate is the right answer for an
+// unpriceable call either way. It counts both the same.
+func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float64, bool) {
+	r, ok := p.cat.LookupFor(backend, modelID)
+	if !ok || r.IsZero() {
+		return 0, false
+	}
+	return r.CostUSDWithCache(c.UncachedInputTokens, c.CachedInputTokens, c.OutputTokens), true
+}
+
+// builtinPricer prices against the compiled-in catalog. LookupFor
+// already falls back from the backend-qualified key to the bare one, so
+// an empty backend and an unqualified model both still price.
+func builtinPricer() budget.Pricer { return catalogPricer{cat: builtinCatalog()} }
+
 // RatePer1K derives pkg/budget's flat USD-per-1K-total-tokens rate for
 // a model as served under a given --provider alias
 // (budget.Limits.RatePer1K).
@@ -840,7 +872,7 @@ func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
 }
 
 // MeterLimits is the session-level price half of a budget.Limits: the
-// catalog that prices each call exactly, the (backend, model) pair it is
+// pricer that costs each call exactly, the (backend, model) pair it is
 // keyed by, and the flat rate behind all of it. Callers add the bundle's
 // ceilings.
 //
@@ -855,7 +887,7 @@ func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
 // backend is what the pair-keyed lookup needs, Backend is the one place
 // that resolves it, and no caller should be re-deriving it.
 //
-// Offline fakes get no catalog, for the same reason MeterScopes does not
+// Offline fakes get no pricer, for the same reason MeterScopes does not
 // price them: echo/scripted/toolactor produce no billable tokens, so a
 // real per-model rate would report money that provably was not spent.
 // They keep RatePer1K's inflated fake rate, which is what lets a smoke
@@ -863,7 +895,7 @@ func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
 func MeterLimits(provider, modelName string) budget.Limits {
 	l := budget.Limits{RatePer1K: RatePer1K(provider, modelName)}
 	if !IsOfflineFake(modelName) {
-		l.Backend, l.Model, l.Catalog = Backend(provider, modelName), modelName, builtinCatalog()
+		l.Backend, l.Model, l.Pricer = Backend(provider, modelName), modelName, builtinPricer()
 	}
 	return l
 }
@@ -902,15 +934,15 @@ func MeterScopes(specs []specialists.Spec, provider, rootModelName string) map[s
 			MaxCostUSD: s.Budget.MaxCostUSD,
 		}
 		if name := SpecModelName(s, provider, rootModelName); name != "" && !fake {
-			// Both price knobs, from the one resolved name. The catalog
-			// supersedes the flat rate where it can price the call and
-			// the flat rate stays as its fallback, so a specialist on a
-			// model the catalog does not know still meters at roughly
+			// Both price knobs, from the one resolved name. The exact
+			// price supersedes the flat rate where it can price the call
+			// and the flat rate stays as its fallback, so a specialist on
+			// a model the catalog does not know still meters at roughly
 			// the right order of magnitude instead of at zero.
-			l.Backend, l.Model, l.Catalog = Backend(provider, name), name, builtinCatalog()
+			l.Backend, l.Model, l.Pricer = Backend(provider, name), name, builtinPricer()
 			l.RatePer1K = RatePer1K(provider, name)
 		}
-		if l == (budget.Limits{}) {
+		if l.IsZero() {
 			continue
 		}
 		if scopes == nil {

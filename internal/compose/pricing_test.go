@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/pricing"
 )
 
@@ -322,5 +323,102 @@ func TestBuildModel_ErrorsAndMocks(t *testing.T) {
 func TestBuiltinCatalogConstructs(t *testing.T) {
 	if _, err := pricing.NewCatalog(pricing.Options{}); err != nil {
 		t.Fatalf("NewCatalog(empty): %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------
+// catalogPricer: the seam between pkg/pricing and pkg/budget.
+//
+// pkg/budget no longer names a rate type, so its own tests price against
+// an explicit table and prove the derivation either side of the number.
+// Everything below is the other half: that the adapter reads the real
+// catalog, applies the real rates, and reports an unpriceable call as a
+// miss rather than as a free one.
+
+// probeCall is a nominal call used to ask a pricer "can you price this
+// pair at all" without asserting a figure.
+var probeCall = budget.Call{UncachedInputTokens: 1_000_000}
+
+// The arithmetic, stated against the catalog's own rates rather than
+// against literals so a vendor's price change is not a test failure.
+func TestCatalogPricer_PricesEachBucketAtItsOwnRate(t *testing.T) {
+	const name = "claude-sonnet-5"
+	r, ok := builtinCatalog().Lookup(name)
+	if !ok || r.IsZero() {
+		t.Fatalf("builtin catalog lost %q; pick another catalog-known model", name)
+	}
+	if r.CachedInputPerMTok <= 0 || r.CachedInputPerMTok >= r.InputPerMTok {
+		t.Fatalf("%q has no cheaper cache-read rate (%v vs input %v); this test measures nothing",
+			name, r.CachedInputPerMTok, r.InputPerMTok)
+	}
+
+	c := budget.Call{UncachedInputTokens: 1_000_000, CachedInputTokens: 2_000_000, OutputTokens: 500_000}
+	got, ok := builtinPricer().PriceCall("", name, c)
+	if !ok {
+		t.Fatalf("the builtin catalog does not price %q", name)
+	}
+	want := r.InputPerMTok + 2*r.CachedInputPerMTok + 0.5*r.OutputPerMTok
+	if math.Abs(got-want) > 1e-9 {
+		t.Errorf("PriceCall = $%.6f, want $%.6f", got, want)
+	}
+	// And the cache read is what makes the difference: the same tokens
+	// billed as fresh input cost strictly more. Without this the test
+	// would pass against an adapter that ignored the bucket split.
+	fresh, _ := builtinPricer().PriceCall("", name, budget.Call{
+		UncachedInputTokens: 3_000_000, OutputTokens: 500_000,
+	})
+	if got >= fresh {
+		t.Errorf("cache-served $%.6f is not below all-fresh $%.6f", got, fresh)
+	}
+}
+
+// A model nobody priced is a miss, so the meter falls back to the flat
+// rate and counts the call. Returning (0, true) instead would report the
+// call as free, and a cost ceiling that never advances never fires.
+func TestCatalogPricer_UnknownModelIsAMissNotAFreeCall(t *testing.T) {
+	if usd, ok := builtinPricer().PriceCall("", "some-model-nobody-priced", probeCall); ok {
+		t.Errorf("PriceCall(unknown) = ($%v, true), want a miss", usd)
+	}
+}
+
+// A row that exists but carries no rates is the same kind of miss. The
+// catalog can hold a placeholder — a model named in the table before its
+// prices are published — and billing it at zero is the failure mode
+// above with the row present.
+func TestCatalogPricer_AZeroRatedRowIsAMiss(t *testing.T) {
+	cat := mustCatalog(t, map[string]pricing.ModelRates{
+		"placeholder-model": {},
+	})
+	if usd, ok := (catalogPricer{cat: cat}).PriceCall("", "placeholder-model", probeCall); ok {
+		t.Errorf("PriceCall(zero-rated row) = ($%v, true), want a miss", usd)
+	}
+}
+
+// The backend half of the key selects the row, falling back to the bare
+// id when the pair has none — the behaviour budget.Limits.Backend is
+// documented against, measured here because every rate mast ships today
+// agrees across the backends serving it.
+func TestCatalogPricer_BackendQualifiedRowWinsOverTheBareOne(t *testing.T) {
+	cat := mustCatalog(t, map[string]pricing.ModelRates{
+		"claude-sonnet-5":                  {InputPerMTok: 2},
+		"anthropic-vertex/claude-sonnet-5": {InputPerMTok: 20},
+	})
+	p := catalogPricer{cat: cat}
+	for _, tc := range []struct {
+		backend string
+		want    float64
+	}{
+		{"", 2.0},                  // bare row: no backend resolved
+		{"anthropic", 2.0},         // no qualified row, falls back to bare
+		{"anthropic-vertex", 20.0}, // its own row, ten times the price
+	} {
+		got, ok := p.PriceCall(tc.backend, "claude-sonnet-5", probeCall)
+		if !ok {
+			t.Errorf("backend %q: unpriced", tc.backend)
+			continue
+		}
+		if math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("backend %q: PriceCall = $%v, want $%v", tc.backend, got, tc.want)
+		}
 	}
 }

@@ -98,7 +98,7 @@ func TestOnSpendRunsOutsideTheLock(t *testing.T) {
 func TestOnSpendMarksUnpricedCalls(t *testing.T) {
 	var got Spend
 	m := New(Config{
-		Limits:  Limits{Catalog: builtinCatalog(t), RatePer1K: 0.001},
+		Limits:  Limits{Pricer: tieredPricer(), RatePer1K: 0.001},
 		OnSpend: func(s Spend) { got = s },
 	})
 	_ = m.Observe(pricedEvent("no-such-model-9000", 1_000, 0, 100))

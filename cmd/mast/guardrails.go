@@ -231,7 +231,7 @@ func (g *guardrailView) reset(sid string, req attach.GuardrailResetRequest) (att
 		MaxTokens:  req.AdditionalTokens,
 		MaxTurns:   req.AdditionalTurns,
 	}
-	granting := add != (budget.Limits{})
+	granting := !add.IsZero()
 	if granting && !wantCost {
 		// Rejected rather than dropped: an operator who thinks they
 		// bought runway and didn't will find out on the next turn,
