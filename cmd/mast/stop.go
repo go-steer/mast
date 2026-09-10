@@ -41,19 +41,28 @@ import (
 	"github.com/go-steer/mast/pkg/inject"
 )
 
+// stopFlagSet builds `mast stop`'s flag surface. Split out of runStop
+// so the CLI-surface test can enumerate it without issuing a request:
+// flag names are a frozen contract (see DESIGN.md, "The v1.0 stability
+// promise").
+func stopFlagSet() (fs *flag.FlagSet, addr, reason *string, pauseSessions *bool) {
+	fs = flag.NewFlagSet("mast stop", flag.ContinueOnError)
+	addr = fs.String("addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
+	reason = fs.String("reason", "", "reason recorded in the stop classification (appended to the interruption markers)")
+	pauseSessions = fs.Bool("pause-sessions", false, "gate-pause every session the drain marks, so boot-time auto-resume hands them back to the operator instead of continuing them")
+	return fs, addr, reason, pauseSessions
+}
+
 // runStop executes `mast stop` and returns the process exit code (of
 // this CLI invocation — the daemon's own exit code follows the drain).
 func runStop(args []string) int {
-	fs := flag.NewFlagSet("mast stop", flag.ContinueOnError)
-	addr := fs.String("addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
-	reason := fs.String("reason", "", "reason recorded in the stop classification (appended to the interruption markers)")
-	pauseSessions := fs.Bool("pause-sessions", false, "gate-pause every session the drain marks, so boot-time auto-resume hands them back to the operator instead of continuing them")
+	fs, addr, reason, pauseSessions := stopFlagSet()
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return exitUsage
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "mast stop: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return exitUsage
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -62,14 +71,14 @@ func runStop(args []string) int {
 	payload, err := json.Marshal(inject.StopRequest{Reason: *reason, PauseSessions: *pauseSessions})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mast stop: %v\n", err)
-		return 1
+		return exitFailure
 	}
 	url := strings.TrimSuffix(*addr, "/") + "/stop"
 	// #nosec G704 -- url derives from the operator's own --addr flag.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mast stop: %v\n", err)
-		return 1
+		return exitFailure
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if token := os.Getenv("MAST_INJECT_TOKEN"); token != "" {
@@ -78,13 +87,13 @@ func runStop(args []string) int {
 	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- operator-chosen --addr
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mast stop: POST %s: %v (is the daemon running?)\n", url, err)
-		return 1
+		return exitFailure
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		fmt.Fprintf(os.Stderr, "mast stop: POST %s: %s: %s\n", url, resp.Status, strings.TrimSpace(string(body)))
-		return 1
+		return exitFailure
 	}
 	var res inject.StopResult
 	if err := json.Unmarshal(body, &res); err == nil && res.DrainBound != "" {
@@ -92,5 +101,5 @@ func runStop(args []string) int {
 	} else {
 		fmt.Println("stop accepted; daemon draining")
 	}
-	return 0
+	return exitOK
 }

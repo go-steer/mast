@@ -15,6 +15,20 @@ Bucket 1's lean core defines the answer *by construction*. If we don't design th
 
 Public packages under `github.com/go-steer/mast/`:
 
+> **Superseded for stability, 2026-09-10.** The Stability column below is a
+> v0.1-era plan and is no longer the governing statement: [`DESIGN.md`](../DESIGN.md)'s
+> **The v1.0 stability promise** is, per [#300](https://github.com/go-steer/mast/issues/300).
+> Three things in this table are wrong against the tree and are corrected there rather than
+> here, because #301 is what rewrites the table itself: every path is missing its `pkg/`
+> prefix; `provider` and `tool` name packages that **do not exist** (there is no `pkg/tool`,
+> and `pkg/providers` is four backends with no interface above them — the provider extension
+> point is `mast.Config.Model`, a field typed on ADK's `model.LLM`); and `session`,
+> `specialist`, `permission`, `memory` and `skill` are either renamed or unbuilt. The
+> per-package "stable at v0.2/v0.3" phasing did not happen and is not being resumed — a
+> package is promised at v1.0 or it is not promised. The `// Experimental:` marker this note
+> proposes was never written into a single file; the promise names the unsupported packages
+> in one list instead.
+
 *(Stability column revised 2026-07-25. The earlier table marked sixteen packages "stable from v0.1" — a semver freeze on an unexercised surface at the end of a ~3-4-week rebuild, i.e. a standing deprecation-cycle tax on every design mistake. New rule: **stable-from-v0.1 is reserved for the five packages the four pillars actually stand on**; everything else ships v0.1 as `// Experimental: API may change without deprecation cycle until <version>` and stabilizes when its subsystem has real consumers.)*
 
 | Package | Purpose | Stability |

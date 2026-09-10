@@ -5,6 +5,12 @@ sidebar:
   order: 3
 ---
 
+Flag names, subcommand verbs and exit codes on this page become a
+frozen contract at v1.0 — see [stability and
+versioning](/reference/stability/#the-cli-is-covered) for what that
+covers and what it deliberately leaves out. mast is pre-1.0 today, so
+they can still move.
+
 ## `mast` (the daemon)
 
 `mast --workload=...` runs the daemon: the HTTP inject endpoint, the

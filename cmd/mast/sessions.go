@@ -51,6 +51,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -122,14 +123,35 @@ commands:
 
 run 'mast sessions <command> -h' for the command's flags`
 
-// parseSessionsArgs parses the argument vector after "sessions".
-func parseSessionsArgs(args []string) (*sessionsCmd, error) {
-	if len(args) == 0 {
-		return nil, errors.New(sessionsUsage)
-	}
-	cmd := &sessionsCmd{verb: args[0]}
-	rest := args[1:]
+// sessionsVerbs is every `mast sessions` verb, in the order the usage
+// text lists them. The set is part of the frozen CLI contract (see
+// DESIGN.md, "The v1.0 stability promise"); cli_surface_test.go walks
+// it.
+var sessionsVerbs = []string{
+	"list",
+	"show",
+	"resume",
+	"pause",
+	"extend-token",
+	"abort",
+	"export-decisions",
+	"ack-effects",
+}
 
+// sessionsFlagSet builds one verb's flag surface over a fresh
+// sessionsCmd. Split out of parseSessionsArgs so the CLI-surface test
+// can enumerate each verb's flags without going through an argument
+// vector: flag names are a frozen contract, and nothing else in the
+// tree fails if one is renamed.
+func sessionsFlagSet(verb string) (*flag.FlagSet, *sessionsCmd, error) {
+	// Gate on the declared list before the switch, so sessionsVerbs is
+	// load-bearing rather than decorative: a verb added to the switch
+	// but not to the list is refused here and its own tests go red,
+	// which is what keeps the golden honest about the verb set.
+	if !slices.Contains(sessionsVerbs, verb) {
+		return nil, nil, fmt.Errorf("unknown sessions command %q\n%s", verb, sessionsUsage)
+	}
+	cmd := &sessionsCmd{verb: verb}
 	fs := flag.NewFlagSet("mast sessions "+cmd.verb, flag.ContinueOnError)
 	switch cmd.verb {
 	case "list":
@@ -178,8 +200,21 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 		fs.StringVar(&cmd.app, "app", appName, "app name the sessions were stored under (direct --session-db path only)")
 		fs.StringVar(&cmd.reason, "reason", "operator ack", "note recorded in the acknowledgement marker")
 	default:
-		return nil, fmt.Errorf("unknown sessions command %q\n%s", cmd.verb, sessionsUsage)
+		return nil, nil, fmt.Errorf("unknown sessions command %q\n%s", cmd.verb, sessionsUsage)
 	}
+	return fs, cmd, nil
+}
+
+// parseSessionsArgs parses the argument vector after "sessions".
+func parseSessionsArgs(args []string) (*sessionsCmd, error) {
+	if len(args) == 0 {
+		return nil, errors.New(sessionsUsage)
+	}
+	fs, cmd, err := sessionsFlagSet(args[0])
+	if err != nil {
+		return nil, err
+	}
+	rest := args[1:]
 
 	// Accept the session ID either before the flags (documented shape:
 	// `mast sessions resume <id> --interrupt=...`) or after them.
@@ -290,16 +325,16 @@ func runSessions(args []string) int {
 	cmd, err := parseSessionsArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
-		return 2
+		return exitUsage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	if err := cmd.run(ctx, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "mast sessions %s: %v\n", cmd.verb, err)
-		return 1
+		return exitFailure
 	}
-	return 0
+	return exitOK
 }
 
 func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {

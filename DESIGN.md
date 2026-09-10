@@ -75,10 +75,12 @@ Two first-class shapes, same subsystems ([`docs/library-api-design.md`](./docs/l
   one turn and exits. There is no `serve` subcommand; only `sessions`
   and `stop` are subcommands (`cmd/mast/main.go`).
 
-Semver stability from v0.1 is reserved for the five packages the
-pillars stand on (the root `mast` package, `agent`, `transcript`, and the
-provider and tool interfaces); everything else is experimental until
-the version named in the library API design's import-surface table.
+Nothing here is under a semver promise yet — mast is pre-1.0, and
+dropping API stability promises is what restarting at v0.1.0 bought.
+Six import paths plus the CLI acquire one at v1.0; see
+[The v1.0 stability promise](#the-v10-stability-promise) below for the
+list, for what is deliberately outside it, and for what the number does
+not claim.
 
 ## Package map
 
@@ -317,6 +319,107 @@ when somebody reads their chat.
   `25d8531c`), one derivation header per file. Shared-infrastructure
   fixes land wherever found first, then port within a week
   ([`docs/fork-design.md`](./docs/fork-design.md) sync discipline).
+
+## The v1.0 stability promise
+
+Versioning restarted at v0.1.0 to signal "new project, not a
+continuation," and the thing it dropped was API stability promises
+([`docs/fork-design.md`](./docs/fork-design.md)). Read backwards, that
+is the definition: **v1.0 is the release where mast makes them again.**
+Written here before it is arrived at by accident
+([#300](https://github.com/go-steer/mast/issues/300)).
+
+**What the promise covers.** Six import paths follow semver from v1.0:
+
+| Path | Why it is in |
+|---|---|
+| `github.com/go-steer/mast` | The library pillar's front door: `Run`, `RunWorkload`, `ListSessions`, `ResumeSession`, `ResumeByToken`, `Pause`, `AckEffects`. |
+| `github.com/go-steer/mast/pkg/agent` | Agent-mode constructors and `Config` — what an embedding host builds a loop out of. |
+| `github.com/go-steer/mast/pkg/transcript` | The operator projection over sessions; the durable pillar's read surface. |
+| `github.com/go-steer/mast/pkg/workload` | Bundle types. The operator contract has a Go form and a YAML form; both are promised. |
+| `github.com/go-steer/mast/pkg/specialists` | Spec + registry + loader — the authoring model the slim embed imports. |
+| `github.com/go-steer/mast/pkg/budget` | Limits and the meter. An unattended workload's ceilings are part of its contract, not an implementation detail. |
+
+The set is the pillar-serving one from
+[`docs/library-api-design.md`](./docs/library-api-design.md), corrected
+against the tree: that table's five included `provider` and `tool`,
+and **neither package exists** — there has never been a `pkg/tool`, and
+`pkg/providers` is a directory of four backends with no interface above
+them. The provider extension point is real but it is a *field*, not a
+package (below). `agent`, `specialists`, `workload` and `budget` are
+what `examples/deploy/slim` actually imports, which is the only
+evidence available that a surface has been exercised by a consumer.
+
+**What it does not cover.** The other 27 packages under `pkg/`, named
+rather than left to omission: `a2a`, `agui`, `approval`, `attach`,
+`attachadapter`, `auth`, `config`, `digest`, `effects`, `envelope`,
+`eventlog`, `federation`, `graph`, `inject`, `instruction`, `mcp`,
+`modeltier`, `monitor`, `notify`, `observability`, `permissions`,
+`planner`, `pricing`, `providers`, `router`, `serverauth`, `taskclass`,
+`watchdog`. They are importable, they are not supported, and a minor
+release may break them. Shrinking that list — by demotion to
+`internal/` where nothing outside the module needs the symbol — is
+[#301](https://github.com/go-steer/mast/issues/301); the promise does
+not wait on it, because "unsupported" is a statement mast can make
+today and "unreachable" is work.
+
+*(The 2026-07-25 rule said the unpromised packages would each carry an
+`// Experimental:` marker. Seven releases later there are **zero** in
+the tree. A marker nobody writes is not a boundary — this list is, and
+it lives in one file that a reviewer can diff.)*
+
+**The two ADK types in the promised surface.** `mast.Config` exposes
+`Model model.LLM` and `Sessions adksession.Service` — deliberate
+injection points, and the only ADK types in the root package's public
+API. Under Go's semantic import versioning `adk/v3/model.LLM` is a
+different type from `adk/v2/model.LLM`, so **an ADK major bump breaks
+mast's public API and therefore ships as a mast major.** That is
+mechanical, not a policy choice; the policy part is what mast does
+about it: such a release carries *no other* breaking changes, so the
+migration is an import path and nothing else. Wrapping these behind
+mast-owned interfaces was considered and refused — `LLM.GenerateContent`
+takes `*model.LLMRequest` and returns `*model.LLMResponse`, so a
+mast-owned interface would only move the leak into its own method
+signature unless mast also owned a request/response model and
+translated both ways forever, on the hottest path in the system.
+
+**Wire contracts freeze, on their own clock.** attach, A2A, AG-UI and
+inject are consumed by repos whose compiler cannot see this one; v0.5
+pinned their literals as tests for that reason, and v1.0 makes them a
+promise. They version by their own protocol fields — the attach
+capabilities frame, the agent card — **not** by mast's major, so a
+protocol addition does not force a Go major and a Go major does not
+invalidate a client that speaks the old frame. Feature-detect, as the
+contracts section above already says.
+
+**The bundle schema versions independently.** `workload.yaml` is edited
+by operators who never import Go. Coupling it to the Go major would
+mean a new YAML key forces a mast v2. It gets its own version field in
+[#302](https://github.com/go-steer/mast/issues/302) and its own
+compatibility rules.
+
+**The CLI is part of the promise.** The binary is a first-class
+consumer shape, and its callers — shell scripts, systemd units,
+Kubernetes manifests — are exactly the ones a Go compiler cannot warn.
+Promised: flag names and their meanings, the `sessions` and `stop`
+subcommands and their verbs, and the exit codes (`0` ok, `1` the work
+failed, `2` the invocation was rejected, `3` serve mode's drain expired
+with sessions still interrupted). Not promised: log lines, stdout
+prose, `--help` wording, and metric names, which have their own gate.
+The surface is pinned in `cmd/mast/testdata/cli-surface.txt` and
+enforced by `TestCLISurface`; before that file existed, a flag rename
+passed every test in the tree.
+
+**What v1.0 is not.** It is not a claim of production readiness. It
+says the API stops moving and nothing else. The evidence mast does have
+is the outcome tier gating every release, the per-version UAT suites,
+and a measured RBAC matrix on live GKE; the evidence it does not have
+includes a threat model
+([#305](https://github.com/go-steer/mast/issues/305)), for a product
+whose thesis is that an agent acts while nobody is watching. A
+stability promise also needs a deprecation process to be worth
+anything, which is [#304](https://github.com/go-steer/mast/issues/304)
+and is a gate on the tag, not a follow-up to it.
 
 ## Deliberately not in v0.7
 

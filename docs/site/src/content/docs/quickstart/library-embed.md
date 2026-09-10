@@ -12,8 +12,9 @@ go get github.com/go-steer/mast@latest
 
 ## Path 1: the batteries-included root package
 
-`github.com/go-steer/mast` (the module root) is the 90% path and one of the
-five stable-from-v0.1 packages. The v0.1 surface is deliberately minimal:
+`github.com/go-steer/mast` (the module root) is the 90% path and the first
+of the six paths [v1.0 will freeze](/reference/stability/). The surface is
+deliberately minimal:
 `Config`, `Result`, `Run`, `RunWorkload`, `ListSessions`, `ResumeSession`.
 
 The "hello world" — one agent, one turn:

@@ -87,6 +87,23 @@ const (
 	defaultSessionID = "gke-triage-default"
 )
 
+// Exit codes. These are a frozen contract (DESIGN.md, "The v1.0
+// stability promise"): callers branch on them, and a caller cannot see
+// this package's symbols. exitDrainExpired in particular is issue #42's
+// contract and is asserted by scripts/uat-v0.2.sh's S4-exit3 leg, which
+// is the reason it is worth distinguishing at all — an exit code
+// nothing branches on is a comment (#297).
+const (
+	exitOK = 0
+	// exitFailure: the work was attempted and failed.
+	exitFailure = 1
+	// exitUsage: the invocation was rejected before any work started.
+	exitUsage = 2
+	// exitDrainExpired: serve mode's shutdown drain expired with
+	// sessions still interrupted; their work is durable but unfinished.
+	exitDrainExpired = 3
+)
+
 func main() {
 	// Subcommand dispatch happens before flag parsing so the flag-only
 	// serve invocation (`mast --workload=... --listen=...`) keeps
@@ -105,27 +122,81 @@ func main() {
 // prints the result (oneshot.go); no prompt serves the daemon —
 // exactly the pre-one-shot behavior, so scripts/demo-spike2.sh's
 // flag-only invocations pass unchanged.
+// runFlags holds the serve/one-shot flag surface. Registering it
+// through a function against a caller-supplied FlagSet — rather than
+// inline in run() — is what lets cli_surface_test.go enumerate the
+// surface without running the binary. These names are a frozen
+// contract (DESIGN.md, "The v1.0 stability promise") and nothing else
+// in the tree fails if one is renamed.
+type runFlags struct {
+	workload         *string
+	dispatch         *string
+	model            *string
+	provider         *string
+	task             *string
+	listen           *string
+	attachListen     *string
+	a2aListen        *string
+	aguiListen       *string
+	notifyURL        *string
+	sessionDB        *string
+	sessionDrv       *string
+	timeout          *time.Duration
+	logLevel         *string
+	autoResume       *bool
+	autoResumeWindow *time.Duration
+	watchdog         *string
+	mcpDigest        *bool
+	version          *bool
+}
+
+// registerRunFlags declares the serve/one-shot flags on fs.
+func registerRunFlags(fs *flag.FlagSet) *runFlags {
+	return &runFlags{
+		workload:         fs.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)"),
+		dispatch:         fs.String("dispatch", "", "dispatch shape: `coordinator` (spike-1 SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (concurrent read-only analysts + a _synthesis merge), `bounded` (one SingleTurn specialist, one model call, a report forced to a schema), or `auto` (read the shape off the roster; never picks `bounded`). Unset takes the workload's own `dispatch:`, then coordinator"),
+		model:            fs.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`"),
+		provider:         fs.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `vertex`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. The alias also picks the backend within a family: `vertex` runs gemini-* against Vertex AI (GOOGLE_CLOUD_PROJECT, ADC) without GOOGLE_GENAI_USE_VERTEXAI, and `anthropic` / `anthropic-vertex` pick first-party or Vertex for claude-*"),
+		task:             fs.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)"),
+		listen:           fs.String("listen", ":7777", "HTTP inject endpoint bind address"),
+		attachListen:     fs.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Requires --session-db (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN"),
+		a2aListen:        fs.String("a2a-listen", "", "A2A server bind address (e.g. `127.0.0.1:7780`); empty disables the surface. Publishes an agent card and a JSON-RPC endpoint for workloads that opt in via the bundle's a2a.expose. Authenticated when MAST_A2A_TOKEN is set. Non-loopback binds are refused without auth (tasks/cancel is destructive) — set MAST_A2A_TOKEN or bind loopback"),
+		aguiListen:       fs.String("agui-listen", "", "AG-UI server bind address (e.g. `127.0.0.1:7781`); empty disables the surface. Serves an HTTP+SSE run endpoint and a /agui/agents.json discovery doc for workloads that opt in via the bundle's agui.expose. Authenticated when MAST_AGUI_TOKEN is set (rate limits via MAST_AGUI_RATE/MAST_AGUI_BURST). Non-loopback binds are refused without auth (a run drives a budgeted turn) — set MAST_AGUI_TOKEN or bind loopback"),
+		notifyURL:        fs.String("notify-url", "", "serve mode: switchboard's outbound message ingress (e.g. `http://switchboard:8080`), where a monitoring cycle posts what it found. Required by any workload whose bundle declares a `monitor.notify` block; the bearer comes from MAST_NOTIFY_TOKEN, which must not be one of this daemon's own inbound tokens"),
+		sessionDB:        fs.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)"),
+		sessionDrv:       fs.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)"),
+		timeout:          fs.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets"),
+		logLevel:         fs.String("log-level", "info", "log level: debug|info|warn|error"),
+		autoResume:       fs.Bool("auto-resume", true, "serve mode: on boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (coordinator dispatch only in v0.2). --auto-resume=false disables"),
+		autoResumeWindow: fs.Duration("auto-resume-window", time.Hour, "serve mode: only auto-resume sessions interrupted within this window; older interruptions are left for an operator (0 disables the freshness gate)"),
+		watchdog:         fs.String("watchdog", "", "behavioral watchdog posture, a ladder where each rung includes the one before it: `warn` (log a detected tool loop and let the turn run), `feedback` (also tell the model, on its next turn, what it is doing), or `enforce` (also cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical in all three. Unset takes the workload's own safety.watchdog, then mast's default (feedback) — the startup line says which"),
+		mcpDigest:        fs.Bool("mcp-digest", true, "route MCP tool responses through the structural digest (pkg/digest) before they reach the model: JSON is pruned deterministically (identifier keys kept, long strings truncated, long arrays collapsed head+tail), prose is passed through bounded. Responses under 8000 bytes are untouched. Also registers `retrieve_raw` so a specialist can fetch the un-digested payload back when a digest dropped something it needs. --mcp-digest=false is the kill switch; per-server opt-out is `no_digest: true` in mcp.json"),
+		version:          fs.Bool("version", false, "print version and exit"),
+	}
+}
+
 func run() {
+	f := registerRunFlags(flag.CommandLine)
 	var (
-		workloadFlag     = flag.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)")
-		dispatchMode     = flag.String("dispatch", "", "dispatch shape: `coordinator` (spike-1 SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (concurrent read-only analysts + a _synthesis merge), `bounded` (one SingleTurn specialist, one model call, a report forced to a schema), or `auto` (read the shape off the roster; never picks `bounded`). Unset takes the workload's own `dispatch:`, then coordinator")
-		modelName        = flag.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`")
-		providerFlag     = flag.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `vertex`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. The alias also picks the backend within a family: `vertex` runs gemini-* against Vertex AI (GOOGLE_CLOUD_PROJECT, ADC) without GOOGLE_GENAI_USE_VERTEXAI, and `anthropic` / `anthropic-vertex` pick first-party or Vertex for claude-*")
-		taskFlag         = flag.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)")
-		listen           = flag.String("listen", ":7777", "HTTP inject endpoint bind address")
-		attachListen     = flag.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Requires --session-db (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN")
-		a2aListen        = flag.String("a2a-listen", "", "A2A server bind address (e.g. `127.0.0.1:7780`); empty disables the surface. Publishes an agent card and a JSON-RPC endpoint for workloads that opt in via the bundle's a2a.expose. Authenticated when MAST_A2A_TOKEN is set. Non-loopback binds are refused without auth (tasks/cancel is destructive) — set MAST_A2A_TOKEN or bind loopback")
-		aguiListen       = flag.String("agui-listen", "", "AG-UI server bind address (e.g. `127.0.0.1:7781`); empty disables the surface. Serves an HTTP+SSE run endpoint and a /agui/agents.json discovery doc for workloads that opt in via the bundle's agui.expose. Authenticated when MAST_AGUI_TOKEN is set (rate limits via MAST_AGUI_RATE/MAST_AGUI_BURST). Non-loopback binds are refused without auth (a run drives a budgeted turn) — set MAST_AGUI_TOKEN or bind loopback")
-		notifyURL        = flag.String("notify-url", "", "serve mode: switchboard's outbound message ingress (e.g. `http://switchboard:8080`), where a monitoring cycle posts what it found. Required by any workload whose bundle declares a `monitor.notify` block; the bearer comes from MAST_NOTIFY_TOKEN, which must not be one of this daemon's own inbound tokens")
-		sessionDB        = flag.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)")
-		sessionDrv       = flag.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)")
-		timeoutFlag      = flag.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets")
-		logLevel         = flag.String("log-level", "info", "log level: debug|info|warn|error")
-		autoResume       = flag.Bool("auto-resume", true, "serve mode: on boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (coordinator dispatch only in v0.2). --auto-resume=false disables")
-		autoResumeWindow = flag.Duration("auto-resume-window", time.Hour, "serve mode: only auto-resume sessions interrupted within this window; older interruptions are left for an operator (0 disables the freshness gate)")
-		watchdogFlag     = flag.String("watchdog", "", "behavioral watchdog posture, a ladder where each rung includes the one before it: `warn` (log a detected tool loop and let the turn run), `feedback` (also tell the model, on its next turn, what it is doing), or `enforce` (also cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical in all three. Unset takes the workload's own safety.watchdog, then mast's default (feedback) — the startup line says which")
-		mcpDigest        = flag.Bool("mcp-digest", true, "route MCP tool responses through the structural digest (pkg/digest) before they reach the model: JSON is pruned deterministically (identifier keys kept, long strings truncated, long arrays collapsed head+tail), prose is passed through bounded. Responses under 8000 bytes are untouched. Also registers `retrieve_raw` so a specialist can fetch the un-digested payload back when a digest dropped something it needs. --mcp-digest=false is the kill switch; per-server opt-out is `no_digest: true` in mcp.json")
-		showVersion      = flag.Bool("version", false, "print version and exit")
+		workloadFlag     = f.workload
+		dispatchMode     = f.dispatch
+		modelName        = f.model
+		providerFlag     = f.provider
+		taskFlag         = f.task
+		listen           = f.listen
+		attachListen     = f.attachListen
+		a2aListen        = f.a2aListen
+		aguiListen       = f.aguiListen
+		notifyURL        = f.notifyURL
+		sessionDB        = f.sessionDB
+		sessionDrv       = f.sessionDrv
+		timeoutFlag      = f.timeout
+		logLevel         = f.logLevel
+		autoResume       = f.autoResume
+		autoResumeWindow = f.autoResumeWindow
+		watchdogFlag     = f.watchdog
+		mcpDigest        = f.mcpDigest
+		showVersion      = f.version
 	)
 	flag.Parse()
 
@@ -148,7 +219,7 @@ func run() {
 	resolvedModel, err := resolveModelSelection(*providerFlag, *modelName, explicit["model"], *taskFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mast:", err)
-		os.Exit(2)
+		os.Exit(exitUsage)
 	}
 	*modelName = resolvedModel
 
@@ -160,7 +231,7 @@ func run() {
 	if *watchdogFlag != "" {
 		if _, err := watchdog.ParseMode(*watchdogFlag); err != nil {
 			fmt.Fprintln(os.Stderr, "mast: --watchdog:", err)
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 	}
 
@@ -181,7 +252,7 @@ func run() {
 			return flag.Lookup(name) != nil
 		}); misplaced != "" {
 			fmt.Fprintf(os.Stderr, "mast: %q looks like a flag but appears after the positional prompt — Go flag parsing stops at the first positional argument, so it would be sent to the model as prompt text. Put flags before the prompt.\n", misplaced)
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		class := *taskFlag
 		if class == "" {
@@ -190,27 +261,27 @@ func run() {
 		if _, ok := taskclass.Resolve(class); !ok {
 			fmt.Fprintf(os.Stderr, "mast: unknown --task %q (want one of: %s)\n",
 				class, strings.Join(taskclass.Classes(), ", "))
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		if *workloadFlag != "" {
 			fmt.Fprintln(os.Stderr, "mast: --workload is a serve-mode flag; one-shot mode runs a single --task-class agent")
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		if *attachListen != "" {
 			fmt.Fprintln(os.Stderr, "mast: --attach-listen is a serve-mode flag; one-shot mode has no operator surface to attach to")
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		if *a2aListen != "" {
 			fmt.Fprintln(os.Stderr, "mast: --a2a-listen is a serve-mode flag; one-shot mode exposes no A2A surface")
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		if *aguiListen != "" {
 			fmt.Fprintln(os.Stderr, "mast: --agui-listen is a serve-mode flag; one-shot mode exposes no AG-UI surface")
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		if *notifyURL != "" {
 			fmt.Fprintln(os.Stderr, "mast: --notify-url is a serve-mode flag; one-shot mode runs no monitoring cycle")
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		if explicit["dispatch"] {
 			logger.Warn("--dispatch is a serve-mode flag; ignored in one-shot mode")
@@ -225,7 +296,7 @@ func run() {
 		wdRes, err := resolveWatchdog(watchdogInputs{Flag: *watchdogFlag})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "mast:", err)
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		opts := oneShotOptions{
@@ -242,13 +313,13 @@ func run() {
 		stop()
 		if err != nil {
 			logger.Error("one-shot turn failed", "task", class, "error", err.Error())
-			os.Exit(1)
+			os.Exit(exitFailure)
 		}
 		return
 	}
 	if *taskFlag != "" {
 		fmt.Fprintln(os.Stderr, "mast: --task requires a positional prompt (one-shot mode); serve mode takes --workload")
-		os.Exit(2)
+		os.Exit(exitUsage)
 	}
 	if explicit["timeout"] {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
@@ -261,9 +332,9 @@ func run() {
 		// Exit 3 = drain expired with interrupted survivors (issue
 		// #42's contract); everything else is exit 1.
 		if errors.Is(err, errDrainExpired) {
-			os.Exit(3)
+			os.Exit(exitDrainExpired)
 		}
-		os.Exit(1)
+		os.Exit(exitFailure)
 	}
 }
 
