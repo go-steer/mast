@@ -29,6 +29,31 @@
   is now in `introductoryRates`, verified against Google's dated pricing page.
   Size any 2027 ceiling against the later number.
 
+- **A candidate model is measured on a schedule, and a baseline now has to have
+  measured the same thing.** The deferral above says the frontier default moves
+  once the judged corpus has been run against `gemini-3.8-flash` — which left
+  the condition resting on someone remembering to run it.
+  `evals-candidate-gemini.yml` runs it weekly instead: the same 31 scenarios
+  against the candidate, graded by the incumbent so the model under test is the
+  only variable moving, diffed against the nightly's own board. It reports and never
+  gates. The other half of the bar is the outcome tier on the same model, which
+  has to be started by hand — `GITHUB_TOKEN` cannot fire a `workflow_dispatch`.
+
+  That comparison exposed something the nightlies already had wrong.
+  `dev/ci/evals-nightly-baseline.sh` took the *newest successful run* of a
+  workflow as its baseline, and both nightlies accept a `model` dispatch input
+  whose board uploads under the same artifact name — so one hand-run against
+  another model became the next night's baseline. The numbers were never
+  falsified: the delta compares the model pair recorded on both boards and
+  captions a mismatch "the scores below are not comparable, they are two
+  different measurements". What it cost was the trend, which is what a nightly
+  is for. The lookup now walks back through the last few successful runs and
+  takes the first board whose recorded model *and* grader match this run's,
+  which also covers a run that skipped unconfigured and an artifact that aged
+  out while an older one survived. A deliberate cross-model baseline is
+  requested explicitly with `MAST_EVALS_BASELINE_MODEL`; the candidate workflow
+  is the one caller that wants one.
+
 ## v0.7.0 (2026-09-06)
 
 *A change mast makes carries a route back, the write gate's question is a

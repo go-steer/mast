@@ -172,6 +172,12 @@ same as `gemini-3.7-flash` on the same context window, so promoting it
 would change nothing an operator could measure except which model
 answers. Pin it with `model: gemini-3.8-flash` if you want it today.
 
+"Has been run" is a weekly job, not a judgement call: a candidate model
+runs the same 31-scenario judged corpus the incumbent default runs every
+night, graded by the incumbent so only one variable moves, and the two
+boards are diffed. Scoring within noise of the incumbent — and passing
+the outcome tier on the same model — is what promotes it.
+
 Both behaviours above carry over unchanged: an unresolvable tier fails
 startup, and the offline fakes collapse tiers back to the fake. Startup
 logs each tier next to the id it became, so what a roster is spending is
