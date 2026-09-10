@@ -42,7 +42,7 @@ import (
 func TestDaemonSubRunObserverMetersToTheOuterSession(t *testing.T) {
 	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
 	built, err := buildRoot(context.Background(), discardLogger(),
-		mastagent.NewEchoModel("echo"), "", "echo", dir, "coordinator", hostSeams{})
+		mastagent.NewEchoModel("echo"), "", "echo", dir, nil, "coordinator", hostSeams{})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestDaemonSubRunObserverRecordsDispatchedMutations(t *testing.T) {
 func TestDaemonSubRunObserverDoesNotRecordACallItStops(t *testing.T) {
 	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage")
 	built, err := buildRoot(context.Background(), discardLogger(),
-		mastagent.NewEchoModel("echo"), "", "echo", dir, "coordinator", hostSeams{})
+		mastagent.NewEchoModel("echo"), "", "echo", dir, nil, "coordinator", hostSeams{})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
 	}

@@ -420,3 +420,11 @@ approved call still has to get past the API server. See [cluster
 permissions](/reference/cluster-permissions/) for the read/write RBAC split
 that ships with the deployment manifests — and for the GKE IAM binding that
 decides whether that split bounds anything.
+
+There is a boundary in the other direction too. The gate sees tool calls, so
+it cannot see a capability that never becomes one: a provider's own
+server-side tools — web search, URL fetch, code execution — run inside the
+vendor's infrastructure and come back folded into the response. mast ships
+them all **off** on every provider for that reason; a bundle turns one on
+with [`builtin_tools:`](/reference/workload-bundle/#builtin_tools--the-providers-own-server-side-tools),
+and that key is the only gate on them.

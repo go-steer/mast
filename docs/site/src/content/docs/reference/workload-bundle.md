@@ -48,6 +48,9 @@ hitl:
 safety:
   watchdog: enforce
 
+builtin_tools:
+  web_search: true
+
 planner:
   enabled: false
 
@@ -109,6 +112,9 @@ agui:
 | `hitl.on_mutation` | string | What happens before a call that would change something: `require_approval` (**the default** — the call parks on a durable interrupt, with its arguments, and fires only once an operator approves it), `apply` (run it, unattended), or `dry_run` (never run it; report what would have happened). Because this defaults to gating, a bundle that says nothing about mutation does not get to write; unattended writes have to be asked for. The block may also be spelled `hitl_policy:`; setting both is an error. See [the write gate](/reference/write-gate/) for the verdict an operator sends back. |
 | `hitl.change_set_ttl` | duration | How long an approval given with `scope: change_set` authorizes the set's remaining calls for. Default `10m` — far longer than an approve-then-execute round trip, far shorter than the span over which an operator forgets what they approved. It is the backstop, not the check: what an approval is really bounded by is the [`precondition:`](#precondition--what-makes-an-approval-stale) the tool declares. |
 | `safety.watchdog` | string | The runaway-loop posture this workload ships with: `warn` (log only), `feedback` (**mast's default when nothing declares one** — tell the model on its next turn), or `enforce` (also cancel the turn in flight and refuse every later turn until an operator resets). Unset is not `warn`: it means *leave it to the host*, which is what keeps `--watchdog` able to override a bundle in both directions. Precedence is `--watchdog` > `safety.watchdog` > the default, and the daemon logs which won at startup. Declare `enforce` on a workload whose tool loop is bounded by construction; see [where the posture comes from](/concepts/interop/#where-the-posture-comes-from). |
+| `builtin_tools.web_search` | bool | The provider's **server-side** web search, run inside the vendor's infrastructure. Omitted means **off**, on every provider. See [`builtin_tools:`](#builtin_tools--the-providers-own-server-side-tools) below — this is reach the permissions gate cannot see, so mast makes you ask for it. |
+| `builtin_tools.url_context` | bool | The provider's server-side URL fetch-and-ground. Omitted means off. Gemini only; no Anthropic equivalent, and a bundle that asks for it on Claude gets nothing rather than an error. |
+| `builtin_tools.code_execution` | bool | Sandboxed code execution on the provider's servers. Omitted means off. Gemini only. |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
 | `edge_trigger.http.path`, `.auth` | strings | **Informational, and not wired** — the inject server declares its routes globally and reads nothing from the bundle; per-workload path prefixes come later. Declaring a path does not create one: POST your envelope to `/inject`. A bundle that declares one is warned about at startup, and the declared path answers `404` naming the real route. See [a declared path is not a route](#a-declared-path-is-not-a-route). |
 | `edge_trigger.scheduled.interval` | duration | Required in the block. How often the workload wakes itself, with nothing calling in — `15m`, `1h`, `24h`. Minimum `1s`. A malformed or missing value is a load error naming the file, because a cadence that fails to parse at runtime is a workload you believe is running and that never wakes up. See [`scheduled:`](#scheduled--a-workload-that-wakes-itself) below. |
@@ -1127,6 +1133,81 @@ because its collection broke is worse than one that reports nothing, because
 only the second is visibly broken. The fire is counted `error` on
 `mast_scheduled_fires_total`, the reason is logged against the tick, and the
 cadence continues to the next one.
+
+## `builtin_tools:` — the provider's own server-side tools
+
+Both providers ship tools that do not run where mast's tools run. Gemini's
+`google_search`, `url_context` and `code_execution`, and Anthropic's
+`web_search`, execute inside the vendor's infrastructure; their results
+arrive folded into the model's response.
+
+That last clause is the whole problem. A server-side built-in never becomes
+a tool call, so:
+
+- the **permissions gate** has no name to allow or deny,
+- the **write gate** has no call to park for an operator,
+- the **effect outbox** has nothing to record,
+- and the transcript shows a model that simply knew something.
+
+A specialist declared [`capability: read_only`](#per-specialist-capability)
+— a declaration mast verifies at startup and the write gate measures at
+runtime — could still read the public internet, and nothing downstream
+would say so. `builtin_tools:` is the only gate there is.
+
+### Silence means off
+
+```yaml
+builtin_tools:
+  web_search: true      # opt in, explicitly
+  url_context: false    # explicit off; same as omitting it
+```
+
+Omitting the block entirely, or omitting a key inside it, leaves that tool
+**off — on every provider**. mast does not inherit the vendor's default.
+Gemini's own baseline is search-and-URL-context on and Anthropic's is search
+off, so inheriting them would mean one mast image changing an unattended
+agent's reach with a `--provider` flag, and "the same bundle runs on Gemini
+or Claude" is the point of the bundle. It also means the paths with no
+bundle to read — `mast run`, a library embed that sets only a model name —
+are safe because there is nothing to forget.
+
+Writing `false` explicitly is worth doing anyway: it records that somebody
+decided, rather than that nobody wrote a key.
+
+### What each provider can actually send
+
+| Bundle key | Gemini | Anthropic |
+|---|---|---|
+| `web_search` | `google_search` | `web_search` |
+| `url_context` | `url_context` | — |
+| `code_execution` | `code_execution` | — |
+
+A key with no equivalent lands nowhere. That is fail-safe by construction —
+a tool a provider cannot be sent is a tool it cannot leave on — but it is
+also silent, so read the startup line rather than assume:
+
+```
+INFO model constructed name=gemini-3.7-flash builtin_tools=web_search,url_context
+INFO model constructed name=claude-sonnet-4-6 builtin_tools=web_search
+```
+
+The line reports what the **constructed model** will send, not what the
+bundle said. Unknown YAML keys are discarded without complaint, so
+`builtin_tols: {web_search: true}` parses fine and turns nothing on; a line
+derived from the same discarded struct would have agreed with the typo.
+`builtin_tools=none` means the provider has these tools and all of them are
+off. No line at all means the backend has no such concept — the offline
+fakes, `scripted` replay.
+
+### The gate is per bundle, not per specialist
+
+There is no per-specialist `builtin_tools:`. Under a default-off baseline
+there is nothing for a specialist to reclaim: only the bundle can turn a
+tool on, and a specialist's [`model:` override](#per-specialist-model-model-and-tier)
+resolves through the same gate the root does — a workload that turned web
+search off cannot have it handed back by an analyst that names a different
+tier. If a roster ever needs one analyst grounded and the rest not, that is
+a change to make then; until it exists, the missing axis fails closed.
 
 ## Budget fields
 

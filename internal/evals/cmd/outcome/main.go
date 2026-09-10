@@ -54,6 +54,7 @@ import (
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
 	"github.com/go-steer/mast/internal/evals/outcome"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 // defaultModel is what the gate measures unless told otherwise.
@@ -197,7 +198,7 @@ func run(ctx context.Context, opt options) error {
 
 	// The model next, because "no credentials" is the most common reason
 	// this cannot run and the cheapest one to discover.
-	raw, err := compose.BuildModel(ctx, opt.provider, opt.model)
+	raw, err := compose.BuildModel(ctx, opt.provider, opt.model, workload.BuiltinTools{})
 	if err != nil {
 		return fmt.Errorf("build model: %w", err)
 	}

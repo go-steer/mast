@@ -45,6 +45,7 @@ import (
 	"github.com/go-steer/mast/pkg/taskclass"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 // oneShotUserID owns one-shot sessions in the session store,
@@ -88,9 +89,17 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 		defer cancel()
 	}
 
-	llm, err := buildModel(ctx, opts.Provider, opts.Model)
+	// No bundle on a one-shot, so no `builtin_tools:` block to read and
+	// the provider's server-side tools stay at mast's default-off
+	// baseline (#324). That is the whole reason the baseline is off
+	// rather than the vendor's: this path has nowhere to write the key,
+	// so the safe posture has to be the one you get by saying nothing.
+	llm, err := buildModel(ctx, opts.Provider, opts.Model, workload.BuiltinTools{})
 	if err != nil {
 		return fmt.Errorf("construct model %q: %w", opts.Model, err)
+	}
+	if bt := compose.BuiltinToolsSummary(llm); bt != "" {
+		logger.Info("model constructed", "name", llm.Name(), "builtin_tools", bt)
 	}
 	sessionSvc, err := buildOneShotSessionService(opts.SessionDrv, opts.SessionDB, logger)
 	if err != nil {

@@ -301,6 +301,27 @@ when somebody reads their chat.
   default-deny: a tool nothing has classified is gated, so a bundle
   cannot get write access by omission. Un-gating is an audited
   per-tool `tool_catalog.tools[].mutating` override.
+- **A provider's server-side built-ins are gated at construction,
+  because they are the one capability that never becomes a tool
+  call.** Gemini's `google_search` / `url_context` / `code_execution`
+  and Anthropic's `web_search` run inside the vendor's infrastructure
+  and arrive folded into the response, so the permissions gate has no
+  name to allow, the write gate no call to park, and the outbox
+  nothing to record — a `read_only` specialist could read the public
+  internet with nothing downstream saying so
+  ([#324](https://github.com/go-steer/mast/issues/324)). The only gate
+  is the bundle's `builtin_tools:` block, read once when the model is
+  built, and **mast's baseline is off on every provider** rather than
+  each vendor's own: Gemini ships search on and Anthropic ships it
+  off, so inheriting them would make an unattended agent's reach a
+  function of `--provider`. The corollary is the point — the paths
+  with no bundle (`mast run`, `mast.Run`, the eval rigs) are safe by
+  construction, not by remembering a key. `pkg/providers/gemini`'s own
+  `DefaultBuiltinTools()` is still on and is a recommendation to a
+  library caller wrapping a Gemini model directly; `internal/compose`
+  does not pass it. The gate is per bundle: a specialist's `model:`
+  override resolves through it, and there is no per-specialist axis to
+  hand a tool back with.
 - **Nothing mutating runs in a parallel branch.** Fan-out branches all
   run *before* the single post-synthesis approval gate, and a branch's
   `Output` payload is its only durable record — so mutating tools (and

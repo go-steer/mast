@@ -104,7 +104,7 @@ func catalogNames(t *testing.T, b rootBuild) []string {
 func TestBuildRootPublishesRetrieveRawWhenDigestingIsOn(t *testing.T) {
 	built, err := buildRoot(context.Background(), discardLogger(),
 		mastagent.NewToolActorModel("toolactor"), "", "toolactor",
-		digestableWorkload(t), workload.DispatchCoordinator,
+		digestableWorkload(t), nil, workload.DispatchCoordinator,
 		hostSeams{digest: newDigestOptions(discardLogger(), true)})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
@@ -120,7 +120,7 @@ func TestBuildRootPublishesRetrieveRawWhenDigestingIsOn(t *testing.T) {
 func TestBuildRootOmitsRetrieveRawWhenDigestingIsOff(t *testing.T) {
 	built, err := buildRoot(context.Background(), discardLogger(),
 		mastagent.NewToolActorModel("toolactor"), "", "toolactor",
-		digestableWorkload(t), workload.DispatchCoordinator,
+		digestableWorkload(t), nil, workload.DispatchCoordinator,
 		hostSeams{digest: newDigestOptions(discardLogger(), false)})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)

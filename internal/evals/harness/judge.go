@@ -24,10 +24,13 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/adk/v2/model"
+
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
 	"github.com/go-steer/mast/pkg/providers/anthropic"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 // JudgeSummary is the metered tier's board: the 31 ported LangChain
@@ -340,7 +343,13 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 
 	build := cfg.buildModel
 	if build == nil {
-		build = compose.BuildModel
+		// No bundle on an eval run, so the provider's server-side
+		// built-ins stay at mast's default-off baseline (#324) — the
+		// same posture a shipped workload gets unless it asks
+		// otherwise, which is the posture these tiers are measuring.
+		build = func(ctx context.Context, provider, name string) (model.LLM, error) {
+			return compose.BuildModel(ctx, provider, name, workload.BuiltinTools{})
+		}
 	}
 	rawUnder, err := build(ctx, cfg.Provider, modelName)
 	if err != nil {

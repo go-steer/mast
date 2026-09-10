@@ -36,6 +36,7 @@ import (
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/differentiators"
 	"github.com/go-steer/mast/internal/evals/judge"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 const repoRoot = "../../.."
@@ -683,7 +684,7 @@ func TestRun_JudgeTierWaitsOutATransient429AndPutsItOnTheBoard(t *testing.T) {
 		Root: repoRoot, Tier: TierJudge, Scratch: t.TempDir(),
 		Model: "echo", Grader: "echo",
 		buildModel: func(ctx context.Context, provider, name string) (adkmodel.LLM, error) {
-			m, err := compose.BuildModel(ctx, provider, name)
+			m, err := compose.BuildModel(ctx, provider, name, workload.BuiltinTools{})
 			if err != nil {
 				return nil, err
 			}

@@ -194,7 +194,7 @@ type Result struct {
 // wrapping budget.ErrExceeded. bundle.Budget.MaxWallclockSeconds
 // bounds the whole turn.
 func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs []specialists.Spec, input string) (*Result, error) {
-	llm, modelName, err := resolveModel(ctx, cfg)
+	llm, modelName, err := resolveModel(ctx, cfg, bundle.BuiltinTools)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +233,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 // given system instruction, one turn on input. No workload, no
 // specialists, no dispatch — the "hello world" of embedding mast.
 func Run(ctx context.Context, cfg Config, instruction, input string) (*Result, error) {
-	llm, modelName, err := resolveModel(ctx, cfg)
+	llm, modelName, err := resolveModel(ctx, cfg, workload.BuiltinTools{})
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +288,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 			sessionID, d.PauseReason, d.PauseMessage)
 	}
 
-	llm, modelName, err := resolveModel(ctx, cfg)
+	llm, modelName, err := resolveModel(ctx, cfg, bundle.BuiltinTools)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +441,14 @@ func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 // resolveModel returns the model to run with plus the name used for
 // pricing: Config.Model verbatim when set, otherwise a built-in model
 // constructed from Config.ModelName.
-func resolveModel(ctx context.Context, cfg Config) (model.LLM, string, error) {
+//
+// bt is the workload's server-side built-in gate; Run has no bundle
+// and passes the zero value, which is mast's default-off baseline. A
+// caller-supplied Config.Model is returned untouched: the gate is
+// applied when mast constructs the model, so a caller that brought its
+// own has already chosen what that model sends, and the bundle cannot
+// take it back.
+func resolveModel(ctx context.Context, cfg Config, bt workload.BuiltinTools) (model.LLM, string, error) {
 	if cfg.Model != nil {
 		name := cfg.ModelName
 		if name == "" {
@@ -456,7 +463,7 @@ func resolveModel(ctx context.Context, cfg Config) (model.LLM, string, error) {
 	// selection is env-driven here (ANTHROPIC_API_KEY vs Vertex
 	// project). Consumers who need to force a backend construct the
 	// model via pkg/providers/anthropic and set Config.Model.
-	llm, err := compose.BuildModel(ctx, "", cfg.ModelName)
+	llm, err := compose.BuildModel(ctx, "", cfg.ModelName, bt)
 	if err != nil {
 		return nil, "", fmt.Errorf("mast: %w", err)
 	}

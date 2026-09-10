@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- **The provider's server-side built-in tools are now off by default, on every
+  provider, and a bundle turns them on with `builtin_tools:`.** Breaking, and
+  deliberately so: every Gemini model mast constructed was wrapped with
+  `GoogleSearch: true, URLContext: true` and no config key reached it, so a
+  workload that wants grounding must now ask for it
+  ([#324](https://github.com/go-steer/mast/issues/324)).
+
+  ```yaml
+  builtin_tools:
+    web_search: true      # gemini: google_search   anthropic: web_search
+    url_context: true     # gemini only
+    code_execution: false # gemini only
+  ```
+
+  What made this worth breaking is that these tools are invisible to every
+  control mast has. A built-in runs inside the vendor's infrastructure and its
+  result arrives folded into the response, so it never becomes a tool call: the
+  permissions gate has nothing to allow, the write gate nothing to park, the
+  effect outbox nothing to record, and the transcript shows a model that simply
+  knew something. A specialist declared `read_only` — a declaration
+  `CheckCapabilitySplit` verifies at startup and [#295](https://github.com/go-steer/mast/issues/295)
+  turned into a runtime measurement — could read the public internet, and the
+  four releases of hardening in front of it were all looking the other way.
+
+  **mast's baseline is off, not each vendor's baseline**, and that is the part
+  upstream did not do. Gemini ships search and URL context on; Anthropic ships
+  search off. Inheriting them would mean one mast image changing an unattended
+  agent's reach with a `--provider` flag, against the premise that the same
+  bundle runs on either. It also makes the paths with no bundle to read — `mast
+  run`, `mast.Run`, the eval rigs — safe by construction rather than by
+  remembering to write a key. `pkg/providers/gemini.DefaultBuiltinTools()` is
+  unchanged and still on: it is a recommendation to a library caller wrapping a
+  Gemini model directly, and `internal/compose` no longer passes it.
+
+  The keys are tri-state (`*bool`). Absent means mast's default; an explicit
+  `false` records that somebody decided. The gate is per bundle — a specialist's
+  `model:` override resolves through the same gate the root does, so a workload
+  that turned search off cannot have it handed back by an analyst on another
+  tier. There is deliberately no per-specialist axis; under a default-off
+  baseline there is nothing for a specialist to reclaim.
+
+  The daemon now logs what the **constructed model** will send —
+  `model constructed name=gemini-3.7-flash builtin_tools=web_search` — rather
+  than what the bundle said. YAML decoding does not reject unknown keys, so
+  `builtin_tols:` is discarded in silence and a line derived from the same
+  struct would have agreed with the typo. `builtin_tools=none` means the
+  provider has these tools and all of them are off; no field at all means the
+  backend has no such concept (the offline fakes). Ported from core-agent
+  `cbcb624`, with the default flip and the dropped per-specialist axis as
+  mast's own divergences.
+
 - **`budget.Limits.Catalog` is now `budget.Limits.Pricer`, a one-method
   interface the meter owns.** Breaking, for anyone who set the field directly;
   the daemon and `mast.RunWorkload` are unaffected because both get their
