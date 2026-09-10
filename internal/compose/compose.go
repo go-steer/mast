@@ -345,7 +345,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		}
 	}
 
-	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Logger)
+	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Bundle.BuiltinTools, cfg.Logger)
 	resolveTier := NewTierResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, resolve, cfg.Logger)
 	logTierResolution(cfg.Specs, cfg.Provider, cfg.ModelName, cfg.Logger)
 
@@ -506,13 +506,18 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //     the recording path comes from MAST_SCRIPT, and
 //     MAST_SCRIPT_STRICT=1 enables strict Contents matching.
 //   - "gemini-*": ADK's Gemini model wrapped in pkg/providers/gemini's
-//     builtin-tool layer (GoogleSearch + URLContext on — core-agent's
-//     defaults). `--provider=vertex` names the Vertex backend outright;
-//     with no alias it stays genai's env-driven selection. See
-//     geminiClientConfig.
+//     builtin-tool layer. `--provider=vertex` names the Vertex backend
+//     outright; with no alias it stays genai's env-driven selection.
+//     See geminiClientConfig.
 //   - "claude-*": pkg/providers/anthropic; see anthropicProvider for
 //     backend selection.
-func BuildModel(ctx context.Context, provider, name string) (model.LLM, error) {
+//
+// bt gates the provider's server-side built-in tools. Its zero value is
+// mast's baseline — every one of them off, whichever backend resolves —
+// so a caller with no bundle to read (a one-shot, a library embed, an
+// eval rig) gets the safe posture by construction. See builtintools.go
+// for why mast does not inherit the vendor's own default.
+func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
 	switch {
 	case name == "echo":
 		return mastagent.NewEchoModel("mast-echo"), nil
@@ -534,11 +539,11 @@ func BuildModel(ctx context.Context, provider, name string) (model.LLM, error) {
 			return nil, err
 		}
 		return geminiprov.Wrap(base, geminiprov.Options{
-			BuiltinTools:        geminiprov.DefaultBuiltinTools(),
+			BuiltinTools:        geminiBuiltins(bt),
 			TolerateEmptyChunks: geminiOnVertex(provider),
 		}), nil
 	case strings.HasPrefix(name, "claude-"):
-		p, err := anthropicProvider(ctx, provider)
+		p, err := anthropicProvider(ctx, provider, bt)
 		if err != nil {
 			return nil, err
 		}
@@ -589,7 +594,15 @@ func IsOfflineFake(name string) bool { return offlineFakes[name] }
 //
 // Resolution is memoized per model id: eight analysts on one tier share
 // one provider client.
-func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, logger *slog.Logger) specialists.ModelResolver {
+//
+// bt is the workload's server-side built-in gate, and it applies to an
+// override exactly as it applies to the root. That is the property
+// worth naming: a bundle that turned web search off cannot have it
+// handed back by a specialist that declares a different model. There is
+// no per-specialist axis to merge — see builtintools.go for why the
+// inheritance trap upstream guards against cannot occur under a
+// default-off baseline.
+func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, bt workload.BuiltinTools, logger *slog.Logger) specialists.ModelResolver {
 	var (
 		mu       sync.Mutex
 		cache    = map[string]model.LLM{}
@@ -610,7 +623,7 @@ func NewModelResolver(ctx context.Context, provider, rootName string, root model
 		if m, ok := cache[name]; ok {
 			return m, nil
 		}
-		m, err := BuildModel(ctx, provider, name)
+		m, err := BuildModel(ctx, provider, name, bt)
 		if err != nil {
 			return nil, err
 		}
@@ -683,15 +696,16 @@ func geminiClientConfig(provider string) (*genai.ClientConfig, error) {
 // Anthropic-on-Vertex — the same detection order core-agent's registry
 // used, scoped to the two Anthropic backends. CacheSystem stays off,
 // matching core-agent's default (no non-test caller ever enabled it).
-func anthropicProvider(ctx context.Context, provider string) (*anthropic.Provider, error) {
+func anthropicProvider(ctx context.Context, provider string, bt workload.BuiltinTools) (*anthropic.Provider, error) {
 	backend, err := anthropicBackend(provider)
 	if err != nil {
 		return nil, err
 	}
+	builtins := anthropicBuiltins(bt)
 	if backend == anthropic.VertexProviderName {
-		return anthropic.NewVertex(ctx, anthropic.VertexOptions{})
+		return anthropic.NewVertex(ctx, anthropic.VertexOptions{BuiltinTools: builtins})
 	}
-	return anthropic.New(anthropic.Options{})
+	return anthropic.New(anthropic.Options{BuiltinTools: builtins})
 }
 
 // anthropicBackend resolves a --provider alias plus the environment to

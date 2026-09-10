@@ -96,8 +96,14 @@ server's published tool list before you touch the prompt.
 ## Builtins
 
 Not every tool comes from MCP. Provider builtins — Gemini's Google Search
-and URL context — are wired through the provider rather than the catalog
-(see [providers](/concepts/providers/)). Engine control calls
+and URL context, Anthropic's web search — are wired through the provider
+rather than the catalog, and they are the one class of tool none of the
+three narrowings above reaches: they run on the vendor's servers and never
+come back as a tool call, so there is no name for an allowlist to match and
+no call for the gate to hold. mast therefore ships them **off** on every
+provider and takes the opt-in from the bundle's
+[`builtin_tools:`](/reference/workload-bundle/#builtin_tools--the-providers-own-server-side-tools)
+block (see [providers](/concepts/providers/)). Engine control calls
 (`finish_task`, `transfer_to_agent`, input requests) are part of the loop
 itself, are excluded from the mutation scan, and never park.
 

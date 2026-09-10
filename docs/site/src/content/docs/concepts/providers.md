@@ -183,6 +183,32 @@ A spec declares `model:` or `tier:`, never both — that is a load error,
 not a precedence rule. Pin an id when the bundle has a reason to care
 which vendor answers; declare a tier the rest of the time.
 
+## Server-side built-in tools are off unless the bundle asks
+
+Each provider ships tools that run on the vendor's own servers — Gemini's
+`google_search`, `url_context` and `code_execution`, Anthropic's
+`web_search`. They are the one capability mast cannot see: a built-in never
+comes back as a tool call, so the permissions gate, the write gate and the
+effect outbox all look right past it, and a `read_only` specialist could be
+reading the public internet with nothing in the transcript to say so.
+
+So mast starts every provider with all of them **off** and lets the bundle
+turn one on:
+
+```yaml
+builtin_tools:
+  web_search: true
+```
+
+mast's baseline rather than each vendor's is the deliberate part. Gemini
+ships search and URL context on, Anthropic ships search off; inheriting
+those would mean the same bundle reaching further on one provider than the
+other, which is exactly what this page's promise rules out. The startup
+line reports what the constructed model will send —
+`builtin_tools=web_search` — so a key that did not take is visible rather
+than assumed. See
+[`builtin_tools:`](/reference/workload-bundle/#builtin_tools--the-providers-own-server-side-tools).
+
 ## Cost
 
 Spend is computed from each provider's token accounting for the models

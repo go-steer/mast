@@ -110,6 +110,20 @@ budget:
 hitl:
   require_approval: true
 
+# The provider's own server-side tools (Gemini's google_search /
+# url_context / code_execution, Anthropic's web_search). All three are
+# off unless a bundle turns one on, on every provider, so this block is
+# spelled out only to record that the choice was made rather than
+# skipped: a triage roster reads the cluster in front of it, and reach
+# that the permissions gate, the write gate and the effect outbox
+# structurally cannot see is not reach this workload wants (#324).
+# A built-in never comes back as a tool call, so there is nothing
+# downstream to gate it with — the key is the whole gate.
+builtin_tools:
+  web_search: false
+  url_context: false
+  code_execution: false
+
 # Supervisor-body planner (docs/orchestration-design.md "The planner",
 # v0.1 scaffold). When enabled, the root agent becomes a Task-mode
 # planner whose invoke_specialist roster is the specialists list above,

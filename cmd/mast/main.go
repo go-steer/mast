@@ -561,12 +561,35 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		logger.Info("OTel trace export enabled", "endpoint_source", "OTEL_EXPORTER_OTLP_* env")
 	}
 
-	llm, err := buildModel(turnCtx, providerName, modelName)
+	// The roster is resolved here rather than inside buildRoot because
+	// the model is constructed first and the bundle's `builtin_tools:`
+	// block is what gates the provider's server-side tools (#324).
+	var roster *loadedWorkload
+	if workloadArg != "" {
+		bundle, specs, cfgDir, err := resolveWorkload(logger, workloadArg)
+		if err != nil {
+			logger.Error("failed to load workload", "workload", workloadArg, "error", err.Error())
+			return err
+		}
+		roster = &loadedWorkload{bundle: bundle, specs: specs, cfgDir: cfgDir}
+	}
+
+	llm, err := buildModel(turnCtx, providerName, modelName, roster.builtinTools())
 	if err != nil {
 		logger.Error("failed to construct model", "model", modelName, "error", err.Error())
 		return err
 	}
-	logger.Info("model constructed", "name", llm.Name())
+	// The server-side built-ins are named here or nowhere: they never
+	// become a tool call, so no permission prompt, no write-gate park
+	// and no catalog line mentions them. Read off the constructed model
+	// rather than off the bundle, which is what makes this line able to
+	// answer "did my key take" — a misspelled YAML key is discarded in
+	// silence. Absent for a backend with no such concept.
+	if bt := compose.BuiltinToolsSummary(llm); bt != "" {
+		logger.Info("model constructed", "name", llm.Name(), "builtin_tools", bt)
+	} else {
+		logger.Info("model constructed", "name", llm.Name())
+	}
 
 	// Session backend, built BEFORE the root agent: the planner's
 	// pause_session tool needs the transcript store at construction
@@ -627,7 +650,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// metric registry both need the bundle this call is about to load.
 	subObs := &daemonSubRunObserver{}
 
-	built, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, dispatchMode,
+	built, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, roster, dispatchMode,
 		hostSeams{pause: pauseRec, subRun: subObs, digest: newDigestOptions(logger, mcpDigest)})
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
@@ -1541,10 +1564,35 @@ func misplacedFlag(args []string, defined func(string) bool) string {
 }
 
 // buildModel constructs the model.LLM for the given provider alias
-// and name. Thin alias over the shared core (internal/compose) so the
-// flag surface and the library surface can't drift.
-func buildModel(ctx context.Context, provider, name string) (model.LLM, error) {
-	return compose.BuildModel(ctx, provider, name)
+// and name, with bt gating the provider's server-side built-in tools.
+// Thin alias over the shared core (internal/compose) so the flag
+// surface and the library surface can't drift.
+func buildModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+	return compose.BuildModel(ctx, provider, name, bt)
+}
+
+// loadedWorkload is a roster resolved before the root agent is built.
+//
+// It exists because of an ordering constraint the daemon did not used
+// to have: the bundle's `builtin_tools:` block gates the provider's
+// server-side tools, and those are chosen when the MODEL is
+// constructed, which happens well before buildRoot. Resolving once and
+// handing the result down keeps the bytes #289's config digest
+// identifies as the bytes that actually configured the model — a second
+// load would be cheap and would also be a second answer.
+type loadedWorkload struct {
+	bundle workload.Bundle
+	specs  []specialists.Spec
+	cfgDir string
+}
+
+// builtinTools is nil-safe: no --workload means no bundle to read, and
+// mast's baseline is every server-side tool off.
+func (w *loadedWorkload) builtinTools() workload.BuiltinTools {
+	if w == nil {
+		return workload.BuiltinTools{}
+	}
+	return w.bundle.BuiltinTools
 }
 
 // resolveWorkload turns the --workload flag value into a loaded bundle
@@ -1637,7 +1685,7 @@ type hostSeams struct {
 	digest *mastmcp.DigestOptions
 }
 
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg, dispatch string, seams hostSeams) (rootBuild, error) {
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg string, pre *loadedWorkload, dispatch string, seams hostSeams) (rootBuild, error) {
 	if err := validateDispatch(dispatch); err != nil {
 		return rootBuild{}, err
 	}
@@ -1652,10 +1700,18 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		return rootBuild{agent: a, dispatch: resolveDispatch(dispatch, nil)}, err
 	}
 
-	bundle, loaded, cfgDir, err := resolveWorkload(logger, workloadArg)
-	if err != nil {
-		return rootBuild{}, err
+	// pre is the roster serve() already resolved, so the bundle that
+	// gated the model's server-side built-ins is the bundle the root is
+	// built from. A caller that has not resolved one (a test, any path
+	// that only has the flag value) passes nil and this loads it.
+	if pre == nil {
+		bundle, specs, cfgDir, err := resolveWorkload(logger, workloadArg)
+		if err != nil {
+			return rootBuild{}, err
+		}
+		pre = &loadedWorkload{bundle: bundle, specs: specs, cfgDir: cfgDir}
 	}
+	bundle, loaded, cfgDir := pre.bundle, pre.specs, pre.cfgDir
 	resolved := resolveDispatch(dispatch, &bundle)
 	if resolved == workload.DispatchAuto {
 		// Resolve `auto` here rather than handing it downstream: the

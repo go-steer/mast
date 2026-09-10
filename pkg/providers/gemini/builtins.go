@@ -66,6 +66,13 @@ type BuiltinTools struct {
 // zero value carries NO built-ins — pass this helper explicitly:
 //
 //	llm := gemini.Wrap(base, gemini.Options{BuiltinTools: gemini.DefaultBuiltinTools()})
+//
+// This is a library recommendation for a caller wrapping a Gemini
+// model directly. It is NOT what mast's own composer passes: mast
+// starts every provider with no server-side tools and lets the bundle
+// turn one on, because an unattended workload's internet reachability
+// should not depend on which vendor it resolved to (#324). See
+// internal/compose.BuildModel.
 func DefaultBuiltinTools() BuiltinTools {
 	return BuiltinTools{
 		GoogleSearch: true,
@@ -89,6 +96,47 @@ func (b BuiltinTools) asTools() []*genai.Tool {
 	}
 	return out
 }
+
+// Names reports the enabled built-ins under the provider-neutral names
+// mast's `builtin_tools:` block uses (see pkg/workload.BuiltinTools),
+// so a report reads the same whichever provider is resolved and an
+// operator can match it against the keys they typed.
+func (b BuiltinTools) Names() []string { return builtinToolNames(b.asTools()) }
+
+// builtinToolNames maps projected genai tools back to the neutral
+// names. Derived from the tools rather than re-read off the toggles so
+// the report and the request cannot disagree about what is on — the
+// whole reason a report exists is that these tools never surface as a
+// tool call anyone can observe.
+func builtinToolNames(tools []*genai.Tool) []string {
+	var out []string
+	for _, t := range tools {
+		switch {
+		case t.GoogleSearch != nil:
+			out = append(out, "web_search")
+		case t.URLContext != nil:
+			out = append(out, "url_context")
+		case t.CodeExecution != nil:
+			out = append(out, "code_execution")
+		}
+	}
+	return out
+}
+
+// BuiltinToolNames reports the server-side built-ins this wrapper will
+// inject, under the neutral names. Recognized by duck-typing in the
+// consuming package (internal/compose's BuiltinToolsReporter) — the
+// method name is a cross-package contract; do not rename.
+//
+// Wrapper-level, so it is an upper bound rather than a per-request
+// promise: two paths drop these from an individual request afterwards
+// — a model that rejects built-ins mixed with function declarations
+// (see builtinsCompatible, which logs its own line when it skips) and
+// a caller that took the inner model via WithoutBuiltins. Both
+// subtract, never add, so a name absent here names a tool that cannot
+// be reached at all, which is the direction that matters to whoever
+// reads this to confirm a disable took.
+func (l *builtinsLLM) BuiltinToolNames() []string { return builtinToolNames(l.builtins) }
 
 // ContextCacheInitFn is called on the first GenerateContent request
 // with the fully-assembled system instruction + tools ADK is about

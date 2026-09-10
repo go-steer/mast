@@ -110,6 +110,11 @@ hitl_policy:
 safety:
   watchdog: enforce                # options: warn | feedback | enforce; unset = leave it to the host
 
+builtin_tools:                     # the provider's own server-side tools; all off unless named
+  web_search: true                 # gemini: google_search   anthropic: web_search
+  url_context: false               # gemini only
+  code_execution: false            # gemini only
+
 isolation:
   scope: per_request               # options: per_request | per_tenant | global
 ```
@@ -135,6 +140,7 @@ isolation:
 | `hitl_policy.approval_granularity` | enum | no (default `per_call`) | Only meaningful when `on_mutation: require_approval`. `per_call` parks the turn before each mutating call; `per_change_set` parks once on a typed change set and mints per-call grants from the verdict. See "Mutation approval" below — this is a granularity axis, orthogonal to the require/apply/dry_run axis. |
 | `hitl_policy.on_budget_exhaustion` | enum | no (default `escalate`) | What happens when a budget cap is hit. |
 | `safety.watchdog` | enum | no (unset = host's choice) | The runaway-loop posture this workload ships with: `warn`, `feedback`, or `enforce` (see [`./fork-design.md`](./fork-design.md) and the watchdog ladder). Unset is deliberately *not* `warn` — it means the bundle declares nothing, which is what lets `--watchdog` override in both directions. Precedence: `--watchdog` > `safety.watchdog` > mast's default (`feedback`). A **workload** carries its own backstop for the same reason it carries its own budget: the bundle is the deployment unit, and a posture that has to be re-typed at every invocation is one that gets typed wrong. |
+| `builtin_tools.web_search`, `.url_context`, `.code_execution` | bool | no (default **off**, every provider) | Gates the provider's own server-side built-in tools. These are the one capability mast cannot see: they execute inside the vendor's infrastructure and their results arrive folded into the response, so a built-in never becomes a tool call and the permissions gate, the write gate and the effect outbox all look past it. This block is therefore the only gate on them, and it is read once, when the model is constructed. **mast's baseline is off rather than each vendor's** (Gemini ships search and URL context on, Anthropic ships search off): inheriting the vendor's would make an unattended agent's internet reachability a function of `--provider`, and it would leave the paths with no bundle at all — `mast run`, a library embed, the eval rigs — depending on somebody remembering a key. `url_context` and `code_execution` have no Anthropic equivalent and land nowhere there; the startup line reports what the constructed model will send, since an unknown YAML key is discarded in silence. Per bundle, not per specialist: an override's `model:` resolves through the same gate. |
 | `isolation.scope` | enum | no (default `per_request`) | Session isolation scope. Maps to `WithIsolationScope(scopeID)` on the root run. |
 
 ### Resolution paths

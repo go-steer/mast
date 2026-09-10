@@ -65,3 +65,31 @@ func (b BuiltinTools) asAnthropicTools() []anthropic.ToolUnionParam {
 	}
 	return out
 }
+
+// Names reports the enabled built-ins under the provider-neutral names
+// mast's `builtin_tools:` block uses (see pkg/workload.BuiltinTools),
+// so a report reads the same whichever provider is resolved and an
+// operator can match it against the keys they typed.
+//
+// The block's url_context and code_execution are Gemini-side and have
+// no Anthropic equivalent, so they can never appear here. That is the
+// direction that fails safe: a tool this provider cannot send is one
+// it cannot leave on.
+func (b BuiltinTools) Names() []string {
+	var out []string
+	if b.WebSearch {
+		out = append(out, "web_search")
+	}
+	return out
+}
+
+// BuiltinToolNames reports the server-side built-ins this model will
+// send, under the neutral names. Recognized by duck-typing in the
+// consuming package (internal/compose's BuiltinToolsReporter) — the
+// method name is a cross-package contract; do not rename.
+//
+// On the model rather than the Provider because that is what mast's
+// composer hands back: BuildModel returns Provider.Model(...), and a
+// report read off anything the caller does not hold could drift from
+// the requests it is meant to describe.
+func (l *llm) BuiltinToolNames() []string { return l.builtins.Names() }

@@ -292,6 +292,74 @@ type Safety struct {
 	Watchdog string `yaml:"watchdog,omitempty"`
 }
 
+// BuiltinTools gates the PROVIDER's server-side built-in tools — the
+// ones the model invokes inside the vendor's own infrastructure, whose
+// results come back folded into the response.
+//
+// This is a different axis from everything else in this file. mast
+// never sees a tool call for these, so nothing in the tool layer can
+// reach them: not tool_catalog, not a specialist's tools allowlist
+// (ToolAllowlist.Builtin is documented in its own field comment as not
+// a grant), not the permissions gate, not the write gate, not the
+// effect outbox. A read_only specialist with web search on can read the
+// public internet and leave no tool call behind to show for it. This
+// block is the only lever, which is why it sits on the bundle: the file
+// that bounds an unattended agent should be where its reach is stated.
+//
+// mast's baseline is everything off, on every provider — not the
+// vendor's baseline. Gemini ships web search and URL context on and
+// Anthropic ships web search off, so inheriting the vendor default
+// would mean one image changing an unattended agent's internet
+// reachability with a --provider flag, and multi-provider is mast's
+// premise. Turning one on is a bundle's decision, stated here (#324,
+// resolved 2026-09-10).
+//
+// Every field is a tri-state *bool: absent takes mast's default (off),
+// and an explicit true/false says so in the file. The distinction buys
+// nothing today beyond documenting an operator's intent — it is kept
+// because a default is a thing that can move, and a bundle that wrote
+// `false` should keep meaning off if one ever does.
+//
+// The names are provider-neutral, not provider-native:
+//
+//	web_search      Gemini google_search; Anthropic web_search
+//	url_context     Gemini url_context; no Anthropic equivalent
+//	code_execution  Gemini code_execution; no Anthropic equivalent
+//
+// A field with no equivalent on the resolved provider is ignored rather
+// than refused. That only ever fails safe: "no equivalent" means the
+// provider has no such tool to leave on, so a value that lands nowhere
+// describes a state that already holds. It does mean a
+// `code_execution: true` written against a claude-* model buys nothing
+// — which is why mast logs the effective set at startup, read off the
+// constructed provider rather than off this struct.
+type BuiltinTools struct {
+	// WebSearch toggles server-side web search grounding.
+	WebSearch *bool `yaml:"web_search,omitempty"`
+
+	// URLContext toggles fetching and grounding on URLs the model
+	// decides to visit. Gemini only.
+	URLContext *bool `yaml:"url_context,omitempty"`
+
+	// CodeExecution toggles sandboxed Python execution on the
+	// provider's servers. Gemini only.
+	CodeExecution *bool `yaml:"code_execution,omitempty"`
+}
+
+// On reports whether the named field is explicitly enabled. Absent is
+// off: mast's baseline carries no server-side tool, so only a `true`
+// in the bundle turns one on.
+func on(b *bool) bool { return b != nil && *b }
+
+// WebSearchOn, URLContextOn and CodeExecutionOn resolve each tri-state
+// against mast's default-off baseline. Asked through methods rather
+// than dereferenced at each call site so the "absent means off" rule
+// lives in one place — the rule is the security property, and a nil
+// deref at a call site that forgot it is the other failure mode.
+func (b BuiltinTools) WebSearchOn() bool     { return on(b.WebSearch) }
+func (b BuiltinTools) URLContextOn() bool    { return on(b.URLContext) }
+func (b BuiltinTools) CodeExecutionOn() bool { return on(b.CodeExecution) }
+
 // OnMutation is what happens before a state-mutating tool call
 // (docs/orchestration-design.md, hitl_policy.on_mutation). Which calls
 // are mutating is the mutation predicate's answer, not this field's:
@@ -1018,6 +1086,11 @@ type Bundle struct {
 	// Safety is the workload's runaway-backstop policy; the zero value
 	// leaves every posture to the host's default.
 	Safety Safety `yaml:"safety,omitempty"`
+
+	// BuiltinTools gates the provider's server-side built-in tools
+	// (web search, URL context, code execution). The zero value is
+	// mast's baseline: all of them off, on every provider.
+	BuiltinTools BuiltinTools `yaml:"builtin_tools,omitempty"`
 
 	// HITL is the human-in-the-loop policy for this workload.
 	HITL HITL `yaml:"hitl,omitempty"`
