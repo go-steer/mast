@@ -1,0 +1,104 @@
+# mast's CLI surface: flag names, types, defaults, subcommand verbs, and
+# exit codes. This is a frozen contract as of v1.0 — see DESIGN.md, "The
+# v1.0 stability promise". The binary is a first-class consumer shape
+# alongside the library, and its callers are shell scripts, systemd
+# units and Kubernetes manifests whose compiler cannot see this repo, so
+# nothing else in the tree fails when a flag is renamed.
+#
+# A diff here is an intentional CLI change. Adding a flag or a verb is a
+# minor; renaming or removing one, or changing a type, a default, or
+# what an exit code means, is a major.
+#
+# Deliberately absent: usage strings. Help text is prose and is not part
+# of the promise; pinning it would make every wording fix a contract
+# diff and teach readers to update this file without looking.
+#
+# Regenerate: go test ./cmd/mast/ -run TestCLISurface -update
+
+exit codes
+  0  ok            the work completed
+  1  failure       the work was attempted and failed
+  2  usage         the invocation was rejected before any work started
+  3  drain-expired serve mode only: the shutdown drain expired with sessions still interrupted
+
+mast [flags] [prompt]
+  --a2a-listen           string    ""
+  --agui-listen          string    ""
+  --attach-listen        string    ""
+  --auto-resume          bool      "true"
+  --auto-resume-window   duration  "1h0m0s"
+  --dispatch             string    ""
+  --listen               string    ":7777"
+  --log-level            string    "info"
+  --mcp-digest           bool      "true"
+  --model                string    "echo"
+  --notify-url           string    ""
+  --provider             string    ""
+  --session-db           string    ""
+  --session-db-driver    string    "sqlite"
+  --task                 string    ""
+  --timeout              duration  "5m0s"
+  --version              bool      "false"
+  --watchdog             string    ""
+  --workload             string    ""
+
+mast sessions <verb>
+  verbs: abort ack-effects export-decisions extend-token list pause resume show
+
+  mast sessions abort
+    --addr                 string    "http://127.0.0.1:7777"
+    --reason               string    "operator abort"
+
+  mast sessions ack-effects
+    --addr                 string    "http://127.0.0.1:7777"
+    --app                  string    "mast"
+    --reason               string    "operator ack"
+    --session-db           string    ""
+
+  mast sessions export-decisions
+    --app                  string    "mast"
+    --include-approver     bool      "false"
+    --out                  string    ""
+    --session-db           string    ""
+    --since                string    ""
+    --until                string    ""
+    --user                 string    ""
+    --workload             string    ""
+
+  mast sessions extend-token
+    --addr                 string    "http://127.0.0.1:7777"
+    --ttl                  string    ""
+
+  mast sessions list
+    --app                  string    "mast"
+    --session-db           string    ""
+    --state                string    ""
+    --user                 string    ""
+
+  mast sessions pause
+    --addr                 string    "http://127.0.0.1:7777"
+    --interrupt            bool      "false"
+    --message              string    ""
+    --reason               string    ""
+    --resume-after         string    ""
+    --resume-at            string    ""
+    --ttl                  string    ""
+
+  mast sessions resume
+    --ack-effects          bool      "false"
+    --addr                 string    "http://127.0.0.1:7777"
+    --app                  string    "mast"
+    --interrupt            string    ""
+    --response             string    ""
+    --session-db           string    ""
+    --token                string    ""
+
+  mast sessions show
+    --app                  string    "mast"
+    --session-db           string    ""
+    --user                 string    ""
+
+mast stop
+  --addr                 string    "http://127.0.0.1:7777"
+  --pause-sessions       bool      "false"
+  --reason               string    ""

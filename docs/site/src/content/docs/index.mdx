@@ -5,7 +5,7 @@ template: doc
 tableOfContents: false
 banner:
   content: |
-    v0.7.0 — a change mast makes carries a route back, the write gate's question is a measurement, and a real model's behaviour can red the build. A mutating call records what it overwrote and the call that undoes it before it fires, and never fires that call itself; the outcome tier runs a real model against a real cluster on every pull request, and a release refuses a commit it has not passed. On the v0.6 enforcement pass, the v0.5 monitoring cycle, the v0.4 change set, the v0.3 write gate and the v0.2 durable-execution spine. Restore stays out by decision — mast renders the call and will not decide that firing it an hour later is still right; APIs are experimental except the five stable-from-v0.1 packages. See the <a href="/mast/roadmap/">roadmap</a>.
+    v0.7.0 — a change mast makes carries a route back, the write gate's question is a measurement, and a real model's behaviour can red the build. A mutating call records what it overwrote and the call that undoes it before it fires, and never fires that call itself; the outcome tier runs a real model against a real cluster on every pull request, and a release refuses a commit it has not passed. On the v0.6 enforcement pass, the v0.5 monitoring cycle, the v0.4 change set, the v0.3 write gate and the v0.2 durable-execution spine. Restore stays out by decision — mast renders the call and will not decide that firing it an hour later is still right. Every exported API can still move; what v1.0 will freeze is now written down — see <a href="/mast/reference/stability/">stability and versioning</a> and the <a href="/mast/roadmap/">roadmap</a>.
 hero:
   title: mast
   tagline: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads — built for platform and SRE teams.
@@ -51,7 +51,7 @@ import { CardGrid, LinkCard, Card } from '@astrojs/starlight/components';
 
 1. **Unattended.** Runs without a human watching: HTTP-triggered workloads, [budget ceilings](/concepts/budgets/), and [approvals](/concepts/approvals/) that wait for an operator instead of failing.
 2. **Library-embedded.** Composes as a Go library inside larger services — with a [tested slim-embed guarantee](/quickstart/library-embed/): pay for what you import.
-3. **Multi-provider.** Same config switches [models](/concepts/providers/) without code changes — Gemini (with Google Search and URL-context builtins), Claude on the first-party API or Vertex, and offline test models; the provider surface is one of the stable-from-v0.1 interfaces.
+3. **Multi-provider.** Same config switches [models](/concepts/providers/) without code changes — Gemini (with Google Search and URL-context builtins), Claude on the first-party API or Vertex, and offline test models. Your own backend goes in through `mast.Config.Model`, which is [covered by the v1.0 promise](/reference/stability/).
 4. **Durable.** Sessions live in SQLite or Postgres and [survive process death](/concepts/durability/) — a paused approval outlives `kill -9` and resumes in a fresh process.
 
 ## Nothing changes your cluster without an operator
