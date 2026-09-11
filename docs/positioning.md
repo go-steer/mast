@@ -36,6 +36,35 @@ The 2026-06-10 debug session (`.agents/sessions/2026-06-10T13-58-07Z.json`, in t
 - LSP-style symbol/AST awareness is core to the workflow.
 - The agent's home is a developer's editor rather than the user's infrastructure.
 
+## Who installs mast (answered 2026-09-11, closing [#291](https://github.com/go-steer/mast/issues/291))
+
+**Someone else installs it.** mast is a thing other platform teams deploy into their own infrastructure. It is not a daemon its authors run on behalf of users.
+
+The question was worth writing down because the position we actually held read as *this* answer carrying the *other* one's investment: a kustomize base and `scripts/setup-wif.sh` as the installation story, a StatefulSet with no HA answer, `workload.Bundle` with no isolation scope, and four sibling repositories private during early access. That is a coherent place to be deliberately and an expensive place to be by default, and from outside the two are indistinguishable. Neither answer was wrong; not having one was the cost.
+
+### What the answer buys, and what it costs
+
+An installer cannot install half a product, so four things stop being observations about a gap and become work with a place on the roadmap:
+
+1. **Packaged installation.** A kustomize base plus a shell script is the shape you ship to a team you can talk to. What an outside operator needs is one composition they can `helm install` or `terraform apply` and one page that tells them what it will create in their project. Tracked as [#342](https://github.com/go-steer/mast/issues/342).
+2. **A reconciliation story — which is not a CRD.** The **Kubernetes operator stays out of scope** ([`./deployment-design.md`](./deployment-design.md) "Out of scope"; a CRD is a second control plane to version and support, and mast's config is files an operator already has GitOps for). What an installer does owe is an answer to *"is the daemon running the manifests I applied?"* — and half of that already shipped as [#289](https://github.com/go-steer/mast/issues/289): the daemon logs the identity of exactly what it loaded and warns when the mounted files stop matching. The recorded answer there — **stable ConfigMap name, no hot reload, diagnose instead of reconcile** — *is* mast's reconciliation position, and it was decided before anyone noticed it was answering this question. What it costs is that `disableNameSuffixHash: true` becomes a supported behaviour with a documented failure mode rather than a curiosity in a comment. Tracked as [#343](https://github.com/go-steer/mast/issues/343).
+3. **Fleet multi-tenancy.** `workload.Bundle` carries no isolation scope; it is one process, one workload, one cluster. [`./deployment-design.md`](./deployment-design.md) designs `isolation.scope` as `per_request` / `per_tenant` / `global` and nothing implements it. Under this answer the per-tenant tier is a real requirement, because the second team to install mast is the one that discovers there is no boundary. Tracked as [#344](https://github.com/go-steer/mast/issues/344).
+4. **HA for scheduled workloads.** `cmd/mast/schedtrigger.go` is single-instance by the single-writer rule, and says so: two replicas of a scheduled workload each keep their own cadence and both fire. Note what does and does not exist — `pkg/eventlog/lock.go` holds a real heartbeat lease (`agent_run_lock`) that stops two processes from running *the same session*, so the primitive is there at the session grain and nothing uses it at the fleet grain. Jitter is a collision softener, not an election. An operator who reads "durable" as the fourth pillar and then runs two replicas gets each schedule fired twice, which is the kind of surprise an installed product does not get to hand out. Tracked as [#345](https://github.com/go-steer/mast/issues/345).
+
+### The uncomfortable half: this was already promised
+
+None of the four is a new ambition. [`./deployment-design.md`](./deployment-design.md)'s phasing table committed to session-ownership handoff, multi-instance GKE and **a Helm chart at v0.2**, to the claim-based scheduler and a multi-tenant deployment starter **at v0.3**, and to a Debian package **at v0.4+**. Its packaging section promises a Homebrew tap, cosign-signed artifacts, an apt repo, `examples/deploy/gke-helm/` and `examples/deploy/terraform/`. **v0.7.0 has shipped and none of it exists** — `examples/deploy/gke/` is a README, there is no chart, no module, no tap, and no signature.
+
+So the finding is not that the ambition was unwritten. It is that a schedule was written, lapsed silently across five releases, and stayed on the page reading like a plan. That is the same failure shape [#300](https://github.com/go-steer/mast/issues/300) found in the stability promise — a corpus commitment nothing enforced and nobody re-read — and it is why the four items above are issues with numbers rather than another table of versions. The phasing table has been corrected rather than quietly re-dated.
+
+### What is still out of scope under this answer
+
+Answering "someone else installs it" is not answering yes to everything. Unchanged and still deliberate: **managed hosting** (we do not sell mast-as-a-service), a **deployment orchestration UI**, **backup/DR for session stores** (the store's own ecosystem tooling owns that), **serverless outside Cloud Run**, and the **Kubernetes operator / CRD**. What changes is where those exclusions live: an evaluator reads a README and a docs site, not `schedtrigger.go`, so the scope boundaries now have to be stated somewhere a reader reaches — which was [#291](https://github.com/go-steer/mast/issues/291)'s second and easier-to-skip half.
+
+### What it means for the private siblings
+
+`mast-web` and the other siblings being private stops being an early-access footnote and becomes a **release blocker for the first version we tell outsiders to install**. The README already carries an early-access note for exactly this reason; the note is honest today and becomes false the moment the install instructions are aimed at someone who cannot read half the repos they point at.
+
 ## What stays
 
 ### Keep verbatim (user-pinned + critical infrastructure)

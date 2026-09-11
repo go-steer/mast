@@ -13,6 +13,15 @@ Thirty seconds of honesty — the long version is [Why mast](https://go-steer.gi
 - **No**, if you're after an interactive coding tool for your laptop. Different product shape: mast runs agents in your infrastructure, not in your editor — no LSP integration, no AST tooling, no syntax-aware diff UI. A scope decision, not a gap.
 - **Not the successor to core-agent**, either. Sibling products with different jobs: `mast` is the platform-agent runtime, [`core-agent`](https://github.com/go-steer/core-agent) stays the experimentation + integration substrate, and both are maintained.
 
+### What installing it looks like today
+
+mast is built to be a thing *you* install, not a service we run — that is a decision, recorded in [`docs/positioning.md`](./docs/positioning.md#who-installs-mast-answered-2026-09-11-closing-291). It is also a decision the product has not finished paying for, and the honest version before you start:
+
+- **The install is a kustomize base**, not a chart or a module: `deploy/` plus `scripts/setup-wif.sh`. There is no `helm install`, no Terraform, no Homebrew tap, and release artifacts are not signed yet ([#342](https://github.com/go-steer/mast/issues/342)).
+- **Run one replica.** Scheduled workloads are single-instance by design — two replicas each keep their own cadence and **both fire**, with nothing warning you ([#345](https://github.com/go-steer/mast/issues/345)).
+- **One mast, one tenant.** There is no isolation scope on a workload bundle ([#344](https://github.com/go-steer/mast/issues/344)).
+- **Config drift is diagnosed, not reconciled.** The ConfigMap name is stable and there is no hot reload, so an edit can land on disk and change nothing until you restart the pod. The daemon logs what it loaded and warns when the mounted files stop matching it ([#343](https://github.com/go-steer/mast/issues/343)). There is no CRD, and that one is not a gap — see the doc.
+
 ## The four pillars
 
 1. **Unattended.** Workload bundles declare specialists, tool catalogs, budgets, and HITL policy; webhooks and schedules dispatch turns; a behavioral watchdog and cost ceilings guard the loop. The operator surface is for looking in, not for babysitting.

@@ -158,6 +158,8 @@ deployment:
 
 ## Packaging
 
+> **Status, 2026-09-11 ([#291](https://github.com/go-steer/mast/issues/291)):** this section is a *target*, and most of it is unbuilt. Shipped today: the container image and the GitHub Release binaries. **Not shipped:** the Homebrew tap, cosign signatures, the Debian/apt repo, `examples/deploy/gke-helm/`, `examples/deploy/terraform/`, and the Cloud Build config — `examples/deploy/gke/` is a README. Read the paragraphs below as the shape being aimed at, not as an inventory; the work is tracked in [#342](https://github.com/go-steer/mast/issues/342) and the lapsed schedule is struck through under [Phasing](#phasing).
+
 ### Container images
 
 - **`ghcr.io/go-steer/mast:v0.X.Y`** — official binary image. Distroless base; ~30MB image. Multi-arch (linux/amd64 + linux/arm64).
@@ -174,7 +176,7 @@ deployment:
 
 `examples/deploy/gke/` — canonical GKE manifests: Deployment, Service, HPA, ConfigMap (for `.agents/*`), Secrets (for provider creds), NetworkPolicy, PodDisruptionBudget. Kustomize-friendly (base + overlays for common variations).
 
-`examples/deploy/gke-helm/` — Helm chart. v0.2.
+`examples/deploy/gke-helm/` — Helm chart. *Unbuilt; the v0.2 date lapsed. Whether the packaged install is a chart or a self-sufficient kustomization is now an open choice in [#342](https://github.com/go-steer/mast/issues/342) rather than a settled one — the RBAC split is already expressed in kustomize, which is an argument the original line did not have to weigh.*
 
 The shipped manifests live in `deploy/` (base + `overlays/example` + `remediation-target`), not `examples/deploy/` — see "Cluster permissions" below for the RBAC layout.
 
@@ -254,9 +256,15 @@ Deployment-cost knobs operators tune:
 | Version | Scope |
 |---|---|
 | **v0.1** | Standalone binary; library-embedded; Cloud Run single-instance; GKE single-instance. Session stores via ADK `session/database`: SQLite (standalone / library / GKE-with-PVC) and **Postgres (Cloud Run — required for durability there; revised 2026-07-25)**. GKE single-instance with SQLite runs as StatefulSet + PVC, not a bare Deployment (a rescheduled pod otherwise loses sessions and falsifies the durability exit criterion). *(Shipped 2026-07-30, issue #40: the `deploy/` kustomize base itself now carries this shape — StatefulSet, 1Gi claim at `/var/lib/mast`, `--session-db` on by default; in-memory is a deliberate opt-out, not a deploy default.)* Base `examples/deploy/{gke,cloud-run,standalone,library-embedded}/` starters. |
-| **v0.2** | Session-ownership handoff (advisory-lock based). Multi-instance GKE deployments (2-N replicas; Postgres store). Attach-mode redirect-based affinity. Helm chart. |
-| **v0.3** | Spanner adapter (via community contribution or Google-team direct). Timed-pause scheduler (claim-based). Multi-tenant deployment starter. Attach-mode proxy-based affinity. Custom-Kubernetes-metric HPA guide. |
-| **v0.4+** | Firestore adapter; multi-region active-active (with Spanner); explicit autonomous-loop load balancing; Debian package. |
+| ~~**v0.2**~~ | ~~Session-ownership handoff (advisory-lock based). Multi-instance GKE deployments (2-N replicas; Postgres store). Attach-mode redirect-based affinity. Helm chart.~~ **Did not ship.** |
+| ~~**v0.3**~~ | ~~Spanner adapter (via community contribution or Google-team direct). Timed-pause scheduler (claim-based). Multi-tenant deployment starter. Attach-mode proxy-based affinity. Custom-Kubernetes-metric HPA guide.~~ **Did not ship.** |
+| ~~**v0.4+**~~ | ~~Firestore adapter; multi-region active-active (with Spanner); explicit autonomous-loop load balancing; Debian package.~~ **Did not ship.** |
+
+**The v0.2–v0.4 rows lapsed, and are struck through rather than re-dated (2026-09-11, [#291](https://github.com/go-steer/mast/issues/291)).** Every version row after v0.1 above went unshipped through v0.7.0: there is no Helm chart, no session-ownership handoff, no claim-based scheduler, no multi-tenant starter, no Debian package. The packaging section's Homebrew tap, cosign signatures, apt repo, `examples/deploy/gke-helm/` and `examples/deploy/terraform/` do not exist either, and `examples/deploy/gke/` is a README.
+
+They are struck rather than moved because a schedule that slips five releases without anyone noticing is not a schedule, and re-dating it to v0.8 would produce the same artifact — a table that reads like a plan and enforces nothing. This is the failure shape [#300](https://github.com/go-steer/mast/issues/300) found in the stability promise: a corpus commitment repeated for releases, with no mechanism that could ever fail because of it.
+
+The work that survived the review is now tracked as issues, which can be closed and can go stale visibly: **[#342](https://github.com/go-steer/mast/issues/342)** packaged installation (chart, signed artifacts, an install page CI checks), **[#343](https://github.com/go-steer/mast/issues/343)** the reconciliation answer (diagnose, do not reconcile — the CRD stays out of scope), **[#344](https://github.com/go-steer/mast/issues/344)** `isolation.scope`, and **[#345](https://github.com/go-steer/mast/issues/345)** the scheduler's two-replicas problem. The designs above are unchanged and still what those issues should be built from; what changed is that nothing in this document claims a version for them any more. See [`./positioning.md`](./positioning.md) § "Who installs mast" for the decision that made them scope rather than observations.
 
 ## Open questions
 
@@ -276,7 +284,7 @@ Deployment-cost knobs operators tune:
 - **Backup and disaster recovery for session stores.** Session store's ecosystem tooling (Postgres backup + PITR, Spanner backups) handles this; mast doesn't add a layer.
 - **Cross-cloud portability guarantees.** Mast runs on any cloud with Go binary support; portability of the session state depends on operator's choice of session store adapter.
 - **Serverless anywhere-but-Cloud-Run.** Lambda + Azure Functions + Cloud Functions: possible if community contributes adapters; not shipped by us.
-- **Kubernetes operator (CRD-based mast management).** Interesting but v1.0+; operators use standard Deployment + ConfigMap patterns today.
+- **Kubernetes operator (CRD-based mast management).** *Reaffirmed 2026-09-11 ([#291](https://github.com/go-steer/mast/issues/291), [#343](https://github.com/go-steer/mast/issues/343)) and no longer dated "v1.0+".* A CRD is a second control plane to version, support and eventually freeze, aimed at config that is already files an operator has GitOps for. Deciding that mast is a thing others install does **not** reopen it — what that decision does oblige is an answer to "is the daemon running the manifests I applied", and mast's answer is **diagnose, do not reconcile** ([#289](https://github.com/go-steer/mast/issues/289): stable ConfigMap name, no hot reload, a startup identity line and a warning when the mounted files stop matching). Operators use standard Deployment + ConfigMap patterns.
 
 ## Related
 

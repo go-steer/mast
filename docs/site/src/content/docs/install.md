@@ -54,6 +54,24 @@ mast --version
 Prints the release version (plus commit and date for tarball builds;
 `mast dev` for a local `go install` build without ldflags stamping).
 
+`checksums.txt` proves the bytes you downloaded match the bytes the release
+job produced. It is not a signature, and there is no provenance attestation
+yet — [#342](https://github.com/go-steer/mast/issues/342).
+
+## Putting it in a cluster
+
+There is no chart, no Terraform module and no Homebrew tap: the supported
+path is the kustomize base in
+[`deploy/`](https://github.com/go-steer/mast/tree/main/deploy) plus
+[`scripts/setup-wif.sh`](https://github.com/go-steer/mast/blob/main/scripts/setup-wif.sh)
+for Workload Identity, applied by you. That mast is a thing *you* install
+rather than a service someone runs for you is a
+[decision](https://github.com/go-steer/mast/blob/main/docs/positioning.md#who-installs-mast-answered-2026-09-11-closing-291),
+and it comes with three things to know before the first apply — **run one
+replica**, **one mast per tenant**, and **config drift is diagnosed rather
+than reconciled**. Each is spelled out, with the issue tracking it, under
+[what installing it costs you today](/roadmap/#what-installing-it-costs-you-today).
+
 ## Next
 
 - [Quickstart: unattended triage, fully offline](/quickstart/unattended-triage/)
