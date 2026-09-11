@@ -23,13 +23,23 @@ requirement someone hit in production rather than a feature someone wanted:
    difference between a demo and something you would point at a cluster.
 2. **Library-embedded.** mast composes as a Go library inside a larger
    service, not only as a standalone binary. Both shapes are first-class
-   and get the same subsystems; only the config-injection surface differs.
-   The [slim-embed guarantee](/quickstart/library-embed/) is CI-enforced:
-   you pay for what you import.
-3. **Multi-provider.** The same config switches between Gemini and Claude
-   without code changes, [down to a single specialist](/concepts/providers/).
-   Model quality moves month to month, and being pinned to one vendor's
-   curve is a risk a platform team should not have to carry.
+   and share the governance layer — the agent loop, the dispatch shapes,
+   the write gate, the effect outbox, budget ceilings and the watchdog are
+   one implementation, and the session log is the same log. What the
+   library does not carry is the plumbing that starts a turn with nobody
+   calling: schedules, the monitoring cycle, notify, auto-resume and the
+   operator listeners are the binary's, on the assumption that a host
+   service already has its own. The
+   [slim-embed guarantee](/quickstart/library-embed/) is CI-enforced: you
+   pay for what you import.
+3. **Multi-provider.** Two vendors — Gemini and Claude, each first-party or
+   on Vertex — and the property worth buying is substitutability rather
+   than the number. The same config switches between them without code
+   changes, [down to a single specialist](/concepts/providers/); the meter
+   prices the (backend, model) pair; and a judged corpus runs nightly
+   against both, so "the same workload behaves over there" is a
+   measurement. Model quality moves month to month, and being pinned to one
+   vendor's curve is a risk a platform team should not have to carry.
 4. **Durable.** Sessions survive process restarts, pod rescheduling, and
    `kill -9`. A paused approval outlives the process that asked the
    question. *Unattended without durable is unwatched but fragile* — which
