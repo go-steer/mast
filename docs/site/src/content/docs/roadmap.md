@@ -772,6 +772,44 @@ Under `on_mutation: apply` the refusal does not fire, because there was no
 gate for a dispatch to bypass. The **record** was missing there too through
 v0.5, and that half was separable and shipped in v0.6.0 — see above.
 
+## What installing it costs you today
+
+mast is built to be a thing **you** install, not a service someone runs for
+you. That was settled on 2026-09-11 and written down in
+[`positioning.md`](https://github.com/go-steer/mast/blob/main/docs/positioning.md#who-installs-mast-answered-2026-09-11-closing-291);
+it is why the operator surface, the workload bundle and the durability
+guarantees are shaped the way they are. It is also a bill the product has not
+finished paying, and the four unpaid items are worth knowing before you
+deploy rather than after.
+
+- **The install is a kustomize base, not a package.** `deploy/` plus
+  `scripts/setup-wif.sh`, applied by you. There is no chart, no Terraform
+  module, no Homebrew tap, and release tarballs are not signed —
+  [#342](https://github.com/go-steer/mast/issues/342).
+- **Run one replica.** The scheduler is single-instance by design: two
+  replicas of a scheduled workload each keep their own cadence and **both
+  fire**, with nothing warning you. `ScheduledTrigger.Jitter` staggers those
+  duplicate fires, it does not deduplicate them, and the heartbeat lease in
+  the event log guards a *session* rather than a fleet. The first fix here is
+  making the trap loud, which needs no coordination mechanism at all —
+  [#345](https://github.com/go-steer/mast/issues/345).
+- **One mast, one tenant.** A bundle carries no `isolation.scope`. The design
+  for `per_request` / `per_tenant` / `global` exists in
+  `deployment-design.md` and none of it is built, so the second team to
+  install mast alongside the first shares a session store with them —
+  [#344](https://github.com/go-steer/mast/issues/344).
+- **Config drift is diagnosed, not reconciled.** The ConfigMap name is
+  stable and there is no hot reload, so an edit can land on disk and change
+  nothing until the pod restarts. The daemon logs a digest of what it loaded
+  and warns when the mounted files stop matching it — that is the answer,
+  chosen deliberately over reconciliation
+  ([#343](https://github.com/go-steer/mast/issues/343)). The absent CRD is
+  part of the same answer and is **not** on this list: mast is a workload you
+  schedule, not a controller you extend.
+
+The first three are gaps. The fourth is a decision that looks like a gap,
+which is why it is spelled out rather than left to inference.
+
 ## Next
 
 - **The last two parity rows** are switchboard's: in-chat Approve/Reject, and
@@ -787,8 +825,9 @@ v0.5, and that half was separable and shipped in v0.6.0 — see above.
   scaffold), plus more starters: supervisor+workers, sequential pipeline,
   map-reduce, adversarial verifier, autonomous loop.
 - **Multi-session substrate** — `mode: multi_session` bundles honored.
-- Shared memory + audit-derived memory, multi-tenant isolation scopes, MCP
-  credential resolution, full mast-native federation, bundle learning.
+- Shared memory + audit-derived memory, multi-tenant isolation scopes
+  ([#344](https://github.com/go-steer/mast/issues/344)), MCP credential
+  resolution, full mast-native federation, bundle learning.
 
 ## The design corpus
 

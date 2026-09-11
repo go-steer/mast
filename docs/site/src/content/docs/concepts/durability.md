@@ -29,6 +29,12 @@ SQLite's own documentation warns that most network-filesystem lock
 implementations can corrupt the database, and "documented caveat" is not
 acceptable cover in a product whose pillar is durability.
 
+Postgres makes more than one replica *safe for the store*; it does not make
+a **scheduled** workload safe to scale. There is no leader election, so two
+replicas each keep their own cadence and both fire — see [what installing
+mast costs you today](/roadmap/#what-installing-it-costs-you-today) and
+[#345](https://github.com/go-steer/mast/issues/345).
+
 ## A pause outlives the process that asked
 
 When a specialist hits an approval gate, the pause is a durable event, not

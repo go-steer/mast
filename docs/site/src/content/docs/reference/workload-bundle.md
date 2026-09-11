@@ -851,7 +851,9 @@ Four things to know before declaring one:
   everything else.
 - **One daemon per session store.** As everywhere else in mast, there is no
   leader election: two replicas of a scheduled workload each keep their own
-  cadence and both fire.
+  cadence and both fire. `jitter` staggers those duplicate fires; it does not
+  deduplicate them. Making that trap loud — and then closing it — is
+  [#345](https://github.com/go-steer/mast/issues/345).
 
 Fires are counted by `mast_scheduled_fires_total{workload,outcome}` —
 `ran`, `skipped` (a tick that came due during a drain), `error`, and
