@@ -79,6 +79,22 @@ Five of those lines are worth understanding as concepts rather than fields:
 Exact semantics and every field: [workload bundle
 reference](/reference/workload-bundle/).
 
+### A key mast does not recognise is refused
+
+Frontmatter is parsed strictly: misspell a key and the file fails to load,
+naming the key. The reason is `tools:`. An absent `tools:` block means the
+specialist inherits **every** MCP server the workload wires, so a
+misspelled `toosl:` does not narrow it to the three tools the file lists —
+it hands over the whole surface, and nothing downstream can tell that
+apart from an author who meant to inherit. (`capability:` is the milder
+case: absent resolves to `read_only`, so a typo there fails toward the
+safe value.)
+
+A specialist takes no `schema_version` of its own — it is only ever
+reached through a bundle that names it, so [the bundle's
+version](/reference/workload-bundle/#schema_version--and-why-an-unknown-key-is-refused)
+governs the roster.
+
 ### Braces in the body are not punctuation
 
 The prompt body is a template, and `{...}` is its one piece of syntax. A

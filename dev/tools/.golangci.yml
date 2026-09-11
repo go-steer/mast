@@ -63,6 +63,16 @@ linters:
           - errcheck
           - gosec
           - unparam
+      # These two files exist to prove that a misspelled key in a
+      # bundle or in specialist frontmatter is refused at load rather
+      # than silently dropped (#302), so their fixtures are misspelled
+      # on purpose — `modle:`, `mutatin:`, `toosl:`. misspell would
+      # flag the subject of the test, and `--fix` would quietly repair
+      # the fixtures into passing-by-vacuity. Scoped to these paths so
+      # a real typo anywhere else still fails.
+      - path: (pkg/workload/schemaversion|pkg/specialists/strictfrontmatter)_test\.go
+        linters:
+          - misspell
       # Lifted from go-steer/cogo via core-agent's pkg/permissions
       # (P1.3a port). The cogo attribution is preserved as explicit
       # provenance — same exclusion core-agent carries, same Apache-2

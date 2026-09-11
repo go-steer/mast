@@ -15,7 +15,10 @@
 package workload
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -27,14 +30,31 @@ import (
 
 // Load reads a workload bundle YAML file, parses it, validates required
 // fields, and returns the populated Bundle.
+//
+// Decoding is two passes, and the order is the point. The first pass
+// reads nothing but schema_version, leniently; the second decodes the
+// whole file strictly, refusing any key the Bundle does not declare. A
+// bundle from the future fails both — it names a version this binary
+// does not speak *and* it almost certainly carries keys this binary has
+// never heard of — and the version check has to win, because "this
+// bundle declares schema 2, this mast speaks 1" tells an operator what
+// to do and "field foo not found" does not.
 func Load(path string) (Bundle, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("workload: read %q: %w", path, err)
 	}
+	if err := checkSchemaVersion(data); err != nil {
+		return Bundle{}, fmt.Errorf("workload: %q: %w", path, err)
+	}
 	var b Bundle
-	if err := yaml.Unmarshal(data, &b); err != nil {
-		return Bundle{}, fmt.Errorf("workload: parse %q: %w", path, err)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&b); err != nil && !errors.Is(err, io.EOF) {
+		return Bundle{}, fmt.Errorf("workload: parse %q: %w", path, unknownKeyHint(err))
+	}
+	if b.SchemaVersion == 0 {
+		b.SchemaVersion = 1
 	}
 	b.Filename = path
 	if err := b.foldHITLPolicy(); err != nil {
@@ -47,6 +67,50 @@ func Load(path string) (Bundle, error) {
 		b.Mode = ModeSingleSession
 	}
 	return b, nil
+}
+
+// checkSchemaVersion reads the version key and nothing else, before the
+// strict pass gets a chance to reject the keys that came with it.
+//
+// The probe takes a *int rather than an int so that an explicit
+// `schema_version: 0` is distinguishable from an absent key. Absent is
+// the overwhelming majority case and means 1; an explicit 0 is someone
+// reaching for a version number and getting it wrong, which is worth
+// saying out loud rather than silently reading as 1.
+func checkSchemaVersion(data []byte) error {
+	var probe struct {
+		SchemaVersion *int `yaml:"schema_version"`
+	}
+	// Lenient on purpose: this pass must survive every key it does not
+	// know, including the ones a future schema added. A file that is not
+	// YAML at all is left to the strict pass, which reports it properly.
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return nil
+	}
+	if probe.SchemaVersion == nil {
+		return nil
+	}
+	switch v := *probe.SchemaVersion; {
+	case v < 1:
+		return fmt.Errorf("schema_version is %d; it must be a positive integer, and a bundle written before the key existed should simply omit it (which means schema 1)", v)
+	case v > CurrentSchemaVersion:
+		return fmt.Errorf("bundle declares schema_version %d and this mast speaks %d; upgrade mast, or point it at a bundle written for schema %d. Refusing rather than loading the keys it happens to recognise: this file declares which tools may run without an operator", v, CurrentSchemaVersion, CurrentSchemaVersion)
+	}
+	return nil
+}
+
+// unknownKeyHint adds the one sentence yaml's own message is missing.
+//
+// go-yaml reports an unknown key as "field foo not found in type
+// workload.Bundle", which names a Go type an operator writing YAML has
+// no reason to know, and gives no hint that the key may be real but from
+// a newer schema. Wrapped rather than replaced — the line number in the
+// original is the most useful part.
+func unknownKeyHint(err error) error {
+	if err == nil || !strings.Contains(err.Error(), "not found in type") {
+		return err
+	}
+	return fmt.Errorf("%w\n\nAn unrecognised key is refused rather than ignored, because a dropped key in this file is a tool that silently stops being gated. Check the spelling against the bundle reference; if the key belongs to a newer bundle schema, the bundle should declare schema_version and this mast is too old to read it", err)
 }
 
 // foldHITLPolicy collapses the documented `hitl_policy:` spelling onto

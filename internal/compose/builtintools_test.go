@@ -71,6 +71,21 @@ func hasGoogleSearch(tools []*genai.Tool) bool {
 // `builtin_tools:` block (pass "" for none at all).
 func readOnlyRoster(t *testing.T, builtinTools string) (workload.Bundle, []specialists.Spec) {
 	t.Helper()
+	bundle, err := loadRoster(t, builtinTools)
+	if err != nil {
+		t.Fatalf("load workload: %v", err)
+	}
+	specs, err := specialists.LoadDir(filepath.Join(filepath.Dir(bundle.Filename), "specialists"))
+	if err != nil {
+		t.Fatalf("load specialists: %v", err)
+	}
+	return bundle, specs
+}
+
+// loadRoster is readOnlyRoster's first half, handing back the load error
+// instead of failing on it, so a case can assert on the refusal itself.
+func loadRoster(t *testing.T, builtinTools string) (workload.Bundle, error) {
+	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "specialists"), 0o755); err != nil {
 		t.Fatal(err)
@@ -106,15 +121,7 @@ tools:
 
 Report what you were given.
 `)
-	bundle, err := workload.Load(filepath.Join(dir, "workload.yaml"))
-	if err != nil {
-		t.Fatalf("load workload: %v", err)
-	}
-	specs, err := specialists.LoadDir(filepath.Join(dir, "specialists"))
-	if err != nil {
-		t.Fatalf("load specialists: %v", err)
-	}
-	return bundle, specs
+	return workload.Load(filepath.Join(dir, "workload.yaml"))
 }
 
 // resolveAnalyst walks the composed path: the bundle's built-in block
@@ -260,23 +267,46 @@ func TestBuiltinToolsSummaryEmptyForOfflineFakes(t *testing.T) {
 	}
 }
 
-// TestUnknownBuiltinKeyIsSilent is not a wish, it is the documented
-// reason BuiltinToolsSummary reads the constructed model. YAML decoding
-// here does not reject unknown keys, so a typo is discarded without a
-// word — this pins that fact so the startup line is never "simplified"
-// into reading the bundle instead.
-func TestUnknownBuiltinKeyIsSilent(t *testing.T) {
-	offlineGeminiCreds(t)
-	bundle, specs := readOnlyRoster(t, "\nbuiltin_tools:\n  web_serch: true\n")
-	if (bundle.BuiltinTools != workload.BuiltinTools{}) {
-		t.Fatalf("a misspelled key parsed into %+v", bundle.BuiltinTools)
+// TestUnknownBuiltinKeyIsRefused replaces an assertion this file used to
+// make in the opposite direction.
+//
+// When the built-in gate shipped (#324) the loader ignored unrecognised
+// keys, so `web_serch: true` was discarded without a word and the only
+// way an operator could catch it was the startup summary — which is why
+// that summary reads the constructed model rather than the parsed
+// config. #302 made an unknown key a load error, so the typo is now
+// caught a step earlier, by name, before anything is constructed.
+//
+// Both halves are still worth pinning. The refusal must name the key, or
+// it is not better than the silence it replaced; and the summary must
+// keep reading the model, because it also covers the case no strictness
+// can — a key that is spelled correctly, parses, and is unmet by the
+// provider actually in use.
+func TestUnknownBuiltinKeyIsRefused(t *testing.T) {
+	_, err := loadRoster(t, "\nbuiltin_tools:\n  web_serch: true\n")
+	if err == nil {
+		t.Fatal("a misspelled built-in key loaded cleanly; #302 makes it a load error")
 	}
-	m := resolveAnalyst(t, bundle, specs)
-	if tools := sentTools(context.Background(), m); len(tools) != 0 {
-		t.Errorf("a misspelled key turned a built-in on: %+v", tools)
+	if !strings.Contains(err.Error(), "web_serch") {
+		t.Errorf("refusal does not name the offending key: %v", err)
+	}
+}
+
+// TestSummaryStillCoversWhatStrictnessCannot is the other half. A bundle
+// can ask for url_context on Anthropic with every key spelled correctly;
+// nothing in the loader can refuse that, because the same bundle is
+// meant to run on Gemini where the key is real. What tells the operator
+// is the startup line, read off the provider that was constructed.
+func TestSummaryStillCoversWhatStrictnessCannot(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
+	yes := true
+	bt := workload.BuiltinTools{URLContext: &yes}
+	m, err := BuildModel(t.Context(), "anthropic", "claude-haiku-4-5", bt)
+	if err != nil {
+		t.Fatalf("BuildModel(anthropic): %v", err)
 	}
 	if got := BuiltinToolsSummary(m); got != "none" {
-		t.Errorf("summary = %q, want %q — the line an operator checks the typo against", got, "none")
+		t.Errorf("summary = %q, want %q — a correctly spelled key the provider has no tool for is unmet, and the log line is the only place that shows", got, "none")
 	}
 }
 

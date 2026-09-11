@@ -16,7 +16,9 @@ package specialists
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -190,8 +192,28 @@ func splitFrontmatter(data []byte) (Frontmatter, string, error) {
 		body = body[1:]
 	}
 
+	// Strict, for the reason the bundle loader is strict (#302): a key
+	// this loader does not recognise is a key that silently does
+	// nothing, and here one of them does nothing in the unsafe
+	// direction. ToolAllowlist.InheritsAllMCP() is `MCP == nil`, so a
+	// misspelled `tools:` does not narrow the specialist to the servers
+	// its file lists — it hands over every MCP server the workload
+	// wires, and nothing downstream can distinguish that from an author
+	// who meant to inherit. A refused file naming the key is strictly
+	// better. (`capability:` is the milder case: absent resolves to
+	// read_only, so misspelling it fails toward the safe value.)
+	//
+	// Deliberately NO schema_version here, unlike the bundle. A
+	// specialist is only ever reached through a bundle that names it,
+	// so the bundle's version already governs the roster; a second,
+	// independently-versioned artifact would multiply the compatibility
+	// matrix by 39 files for a document that is mostly prose. If the
+	// frontmatter ever needs a breaking change, it rides the bundle's
+	// version bump — recorded in docs/README.md's resolved decisions.
 	var fm Frontmatter
-	if err := yaml.Unmarshal(yamlBlock, &fm); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(yamlBlock))
+	dec.KnownFields(true)
+	if err := dec.Decode(&fm); err != nil && !errors.Is(err, io.EOF) {
 		return Frontmatter{}, "", fmt.Errorf("parse frontmatter yaml: %w", err)
 	}
 	return fm, string(body), nil

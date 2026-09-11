@@ -83,6 +83,7 @@ agui:
 
 | Field | Type | Notes |
 |---|---|---|
+| `schema_version` | int | Which bundle schema this file is written for. Currently **`1`**, and **omitting it means `1`** — every bundle written before the key existed loads unchanged. A version this mast does not speak is a load error naming both numbers. See [`schema_version:`](#schema_version--and-why-an-unknown-key-is-refused) below. |
 | `name` | string | Required. Unique per deployment; used as the `workload` metric label. |
 | `description` | string | Human-readable; used in operator UIs and logs. |
 | `mode` | string | `single_session` (default) or `multi_session`. Multi-session is vocabulary-only in v0.1 — declared intent, honored when the multi-session substrate lands (v0.2). |
@@ -138,6 +139,100 @@ agui:
 | `agui.session_model` | string | How a run maps to a mast session: `per_thread` (default — one continuing session per AG-UI `threadId`, matching chat UX) or `per_run` (a fresh session per `runId`, for stateless one-shots). The daemon always derives and namespaces the session id; a client never supplies a raw one. |
 | `agui.input_schema` | map | A **mast-side** convention only: an optional JSON-Schema-shaped hint surfaced in the discovery descriptor so a client can render an input form. AG-UI's `RunAgentInput` has no schema field, so it does **not** constrain the wire input. |
 | `agui.auth.required`, `agui.auth.scopes` | bool, list of strings | Per-endpoint auth policy. `scopes` are enforced per run when a token validator is configured (`MAST_AGUI_TOKEN`): a caller whose token lacks a scope is refused `403`. |
+
+## `schema_version:` — and why an unknown key is refused
+
+The bundle is edited by operators who never import Go, so it versions on
+its own clock rather than mast's ([stability](/reference/stability/)).
+The current schema is **1**:
+
+```yaml
+schema_version: 1
+name: gke-triage
+```
+
+**Omitting it means 1.** Every bundle written before the key existed —
+including all of the examples on this page — keeps loading exactly as it
+did, and there is no migration to run. Write it down if you want the file
+to say out loud what it was written against; leave it out and nothing
+changes.
+
+**A version bump is for a key that changes shape or meaning, not for a
+key being added.** `builtin_tools:` arrived in v0.8 and the schema stayed
+at 1, because an older mast reading a newer bundle is precisely the case
+strictness already catches, by name. What would move the number is
+`budget:` changing units, or `hitl:` changing what its default does.
+
+A bundle declaring a version this binary does not speak is **refused**,
+and the error names both numbers, because the operator holding the file
+needs to know which of the two to change:
+
+```
+workload: "workload.yaml": bundle declares schema_version 2 and this mast
+speaks 1; upgrade mast, or point it at a bundle written for schema 1.
+Refusing rather than loading the keys it happens to recognise: this file
+declares which tools may run without an operator
+```
+
+An explicit `schema_version: 0` is also refused. Absent and `0` are
+different things: absent is a file written before the key existed, and a
+literal `0` is someone reaching for a version number and getting it
+wrong.
+
+### An unrecognised key is a load error, not a warning
+
+Misspell a key and mast refuses to start, naming the key:
+
+```
+workload: parse "workload.yaml": yaml: unmarshal errors:
+  line 8: field tool_catalogue not found in type workload.Bundle
+
+An unrecognised key is refused rather than ignored, because a dropped key
+in this file is a tool that silently stops being gated. Check the spelling
+against the bundle reference; if the key belongs to a newer bundle schema,
+the bundle should declare schema_version and this mast is too old to read it
+```
+
+This is stricter than most YAML config and it is deliberate. This is the
+only file in a mast deployment that can declare a tool safe to run
+without an operator, and mast's own predicate is default-deny-unknown. The
+failure being designed against is a misspelled block — `tool_catalogue:`,
+`hitl_polciy:`, `saftey:` — that leaves a whole section of policy
+unapplied while the daemon logs a clean start and the workload runs all
+night. A `WARN` at boot is not a control; nobody is reading the log at
+the moment it scrolls past.
+
+The strictness reaches nested keys too, which is where the sharper
+version of the same bug lives: `mutatin: true` on a catalog entry leaves
+the tool catalogued, so nothing looks missing, while the tool quietly
+reverts to default-deny-unknown.
+
+The order matters when both go wrong at once. A real bundle from the
+future does not arrive carrying only a version bump — it arrives carrying
+the keys that motivated the bump. mast reads `schema_version` first, on
+its own, so what you are told is "this bundle is from a newer schema" and
+not "field `quarantine_policy` not found", which reads as a typo in a key
+you copied out of correct documentation.
+
+### Specialist frontmatter is strict too, and has no version of its own
+
+The same rule applies to the YAML frontmatter in a `specialists/*.tmpl`
+file, for a reason specific to that file: `tools:` is the one key that
+fails in the *unsafe* direction. An absent `tools:` block means the
+specialist inherits **every** MCP server the workload wires, so a
+misspelled `toosl:` does not narrow the specialist to the servers its
+file carefully lists — it hands over the whole surface, and nothing
+downstream can tell that apart from an author who meant to inherit.
+(`capability:` is the milder case: absent resolves to `read_only`, so
+misspelling it fails toward the safe value.)
+
+Frontmatter deliberately takes **no `schema_version` of its own**, and
+writing one is an error. A specialist is only ever reached through a
+bundle that names it, so the bundle's version already governs the
+roster; a second independently-versioned artifact would multiply the
+compatibility matrix across every `.tmpl` in the tree for a document
+that is mostly prose. If the frontmatter ever needs a breaking change,
+it rides the bundle's version bump.
 
 ## Fan-out rosters
 
