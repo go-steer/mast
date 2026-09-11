@@ -57,7 +57,17 @@ not suggestions.
 
 ## Consumer shapes
 
-Two first-class shapes, same subsystems ([`docs/library-api-design.md`](./docs/library-api-design.md)):
+Two first-class shapes. They share the **governance layer** — the agent
+loop, dispatch shapes, the write gate, the effect outbox, the budget meter
+and its call gate, the behavioral watchdog, and the session event log — and
+they differ in what surrounds a turn: everything that *starts* one without a
+caller (schedules, the monitoring cycle, notify, auto-resume, timed pauses,
+drain) and every operator listener is `package main` under `cmd/mast`, not
+`pkg/`. "Same subsystems" is the claim for the governance half and was
+overstated for the rest until 2026-09-11
+([#288](https://github.com/go-steer/mast/issues/288)); an embedder's host
+already owns the trigger. See
+[`docs/library-api-design.md`](./docs/library-api-design.md):
 
 - **Library.** The root package: `mast.Run` (instruction + input),
   `mast.RunWorkload` (programmatic bundle + specialists),
@@ -67,6 +77,17 @@ Two first-class shapes, same subsystems ([`docs/library-api-design.md`](./docs/l
   CI-enforced **slim-embed guarantee** (reference consumer
   `examples/deploy/slim` + denylist script) keeps the minimal import
   path free of heavyweight deps — pay for what you import.
+
+  Two seams inside the shared half are narrower here than in the daemon,
+  and both fail **closed**: `compose.WriteGateConfig`'s `ToolSchemas` and
+  `ToolRead` are daemon-supplied, so a library embed's producer contract
+  refuses a proposed change rather than validating it against a wired
+  tool's input schema, and a change set that declares a freshness
+  precondition mints no grant — its calls park one at a time instead. A
+  bundle is also what turns the gate on at all: `mast.Run` has no bundle,
+  no workload policy and no resume surface, so it registers no gate
+  (parking a call in a process with no way to un-park it is a hang, not a
+  safety property).
 - **Binary.** `cmd/mast`: serve mode (workload daemon with inject +
   attach + A2A + AG-UI + metrics listeners), one-shot mode, and the
   `mast sessions` / `mast stop` operator CLIs. Serve and one-shot are

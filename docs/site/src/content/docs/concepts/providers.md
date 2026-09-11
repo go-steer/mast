@@ -8,8 +8,15 @@ sidebar:
 Model quality moves month to month. A platform team that hard-codes one
 vendor's client into its agent layer is carrying that curve as a risk it
 cannot cheaply unwind — which is why multi-provider is a pillar here rather
-than a compatibility shim, and why the provider surface is one of the
-interfaces stable since v0.1.
+than a compatibility shim.
+
+Two vendors reach that table today, in four deployment paths, and the
+pillar is the **substitutability** rather than the number: the tier
+indirection, a meter that prices the (backend, model) pair, and a judged
+corpus that runs nightly against both. There is no `pkg/provider`
+interface to implement — the extension point is `mast.Config.Model`, a
+field typed on ADK's `model.LLM`, and the root package it lives on is one
+of the six paths the [v1.0 promise](/reference/stability/) covers.
 
 ## What you can point mast at
 

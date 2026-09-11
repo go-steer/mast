@@ -4,7 +4,20 @@ description: Two embedding paths — the batteries-included root package, or the
 ---
 
 mast ships as a Go library with **two embedding paths**. Pick by dependency
-appetite, not by feature list — both run the same subsystems.
+appetite: the root package is the batteries-included one, and the slim slice
+trades the dispatch shapes and the heavyweight deps for a minimal import
+graph — what it leaves out is listed under [path 2](#path-2-the-slim-slice).
+
+Either way you are embedding the **governance layer**, which is the same
+code the daemon runs: the agent loop, the write gate, the effect outbox,
+budget ceilings and the behavioral watchdog. What you are not embedding is
+what starts a turn when nobody calls — schedules, the monitoring cycle,
+notify, auto-resume, drain and the operator listeners are `cmd/mast`, on the
+assumption that your service already has a trigger and an HTTP surface. Two
+seams inside the gate are also narrower here, and both fail closed: without
+the daemon's tool-schema resolver a proposed change is refused rather than
+validated, and a change set declaring a freshness precondition mints no
+grant, so its calls park one at a time.
 
 ```sh
 go get github.com/go-steer/mast@latest
