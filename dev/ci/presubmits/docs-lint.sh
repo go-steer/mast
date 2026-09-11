@@ -13,8 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# docs-lint.sh — presubmit: prose-drift checks over README + site
-# content (self-test first, so a defanged regex fails loudly).
+# docs-lint.sh — presubmit: prose-drift checks over README, DESIGN.md
+# and the site content (self-test first, so a defanged regex fails
+# loudly).
+#
+# Note for anyone touching the version rule: this job checks out at
+# actions/checkout@v4's default depth, which fetches no tags, so the
+# current release is read from CHANGELOG.md rather than from
+# `git describe`.
 #
 # These scripts are exactly what CI runs (.github/workflows/ci.yml →
 # dev/ci/presubmits/all.sh); run all.sh locally before pushing.

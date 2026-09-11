@@ -20,10 +20,18 @@
 #   2. hard-coded container/image/variant counts
 #   3. pinned @vX.Y.Z installs of our own module
 #   4. site links that hard-code the deploy base (/mast/...)
+#   5. a version claim that no longer names the current release
 #
-# core-agent's fifth rule (wrong-major v1.X.Y prose pins) is
-# deliberately not ported yet: mast is pre-1.0 and its v0.x status
-# lines are legitimate. Revisit at v1.0.
+# core-agent's own fifth rule (wrong-MAJOR vN.X.Y prose pins) is still
+# not ported, and the "revisit at v1.0" note that used to sit here was
+# keyed to the wrong event (#306). It is a check on the *module major*
+# in an import path, so it becomes meaningful at the first major bump
+# — which #300 established can only arrive with an ADK major, since
+# Go's semantic import versioning makes `adk/v3/model.LLM` a different
+# type in a signature the root package exports. Re-key it there. The
+# half of that rule mast actually needed — prose claiming a release
+# that is not the current one — is rule 5 above, and it is needed
+# regardless of major.
 #
 # Usage: dev/tools/docs-lint            scan
 #        dev/tools/docs-lint --self-test  verify the rules still fire
@@ -33,11 +41,43 @@ set -euo pipefail
 cd "$(repo_root)"
 
 scoped_paths() {
-  # README + all Astro Starlight site content markdown. Nothing under
-  # docs/*.md at the top level (design docs cite versions/counts as
-  # historical record), nothing under CHANGELOG.md (version headers
-  # and shipped-scope counts are the point there).
-  find README.md docs/site/src/content -type f \( -name '*.md' -o -name '*.mdx' \) 2>/dev/null | sort
+  # README + DESIGN + all Astro Starlight site content markdown.
+  # Nothing under docs/*.md at the top level (design docs cite
+  # versions/counts as historical record), nothing under CHANGELOG.md
+  # (version headers and shipped-scope counts are the point there).
+  #
+  # DESIGN.md is in scope even though the docs/ exclusion sits right
+  # next to it, because the reason for that exclusion does not reach
+  # it: it is at the repo root, it is the architecture map of what
+  # actually ships rather than a historical record, and it is item 2
+  # in AGENTS.md's required reading order. It was out of scope only
+  # because this list named README.md by hand and nobody added its
+  # sibling — which is how its title sat at "(v0.5)" through a release
+  # with docs-lint green (#306).
+  find README.md DESIGN.md docs/site/src/content -type f \( -name '*.md' -o -name '*.mdx' \) 2>/dev/null | sort
+}
+
+# The release this working tree claims to be, read from the newest
+# released CHANGELOG heading rather than from `git describe`.
+#
+# Deliberate, and the ordering is the whole point: the release-prep PR
+# rolls the changelog AND corrects every version claim in one commit,
+# and the tag is cut on the merge of that PR (v0.7.0 is literally
+# `1882dfb`, "roll the changelog for v0.7.0, and make every version
+# claim true at the tag"). At the moment this rule runs on that PR the
+# heading is already right and the tag does not exist yet, so reading
+# the tag would red the one PR whose job is making these claims true.
+# A shallow CI checkout carries no tags either, and a rule that
+# silently skips when it cannot find a version is the exact failure
+# mode #306 is about — so this is fatal rather than quiet.
+current_release() {
+  local v
+  v=$(sed -n 's/^## \(v[0-9][0-9.]*\).*/\1/p' CHANGELOG.md 2>/dev/null | head -1)
+  if [[ -z "$v" ]]; then
+    echo "docs-lint: cannot determine the current release: no '## vX.Y.Z' heading in CHANGELOG.md" >&2
+    exit 2
+  fi
+  printf '%s\n' "$v"
 }
 
 # Check 1: numeric tool/specialist counts in prose. Both drift on
@@ -104,10 +144,80 @@ check_hardcoded_base() {
     }' || true
 }
 
+# Check 5: a version claim that no longer names the current release.
+#
+# Deliberately anchored to specific phrasings rather than to "any
+# vX.Y.Z in the file". Most version strings in user-facing prose are
+# legitimate history — the roadmap's "Shipped in v0.5.0", install.md's
+# "on the v0.6.0 enforcement pass", a "(they return not_implemented in
+# the v0.2 scaffold)" aside — and a rule that reds those would be
+# turned off within a release. What is checked is the small set of
+# places that are claims about *now*:
+#
+#   a. "Current release: vX.Y.Z" / "current as of vX.Y.Z"
+#   b. a document H1 that carries a parenthesised version
+#   c. a release-asset download URL
+#   d. a release-asset filename, and the "Assets for vX.Y.Z" line
+#      above it
+#
+# (c) and (d) are the ones that actually hurt: install.md sat at
+# v0.4.0 for three releases *including its copy-paste download URLs*,
+# so a reader following the page got a 404 rather than a stale
+# adjective.
+check_stale_version() {
+  local path="$1" cur="$2"
+  local curmm="${cur%.*}"        # v0.7.0 -> v0.7
+  local curbare="${cur#v}"       # v0.7.0 -> 0.7.0
+  awk -v p="$path" -v cur="$cur" -v curmm="$curmm" -v curbare="$curbare" '
+    function ver(s,   r) {
+      if (match(s, /[0-9]+\.[0-9]+\.[0-9]+/)) return substr(s, RSTART, RLENGTH)
+      if (match(s, /[0-9]+\.[0-9]+/)) return substr(s, RSTART, RLENGTH)
+      return ""
+    }
+    function report(got, what) {
+      printf "%s:%d: stale version claim — %s says v%s, the current release is %s\n", p, NR, what, got, cur
+    }
+
+    # (a) a status line making a claim about the current release.
+    match($0, /([Cc]urrent release|[Cc]urrent as of)[^0-9]*[0-9]+\.[0-9]+\.[0-9]+/) {
+      got = ver(substr($0, RSTART, RLENGTH))
+      if (got != "" && got != curbare) report(got, "this status line")
+    }
+
+    # (b) a document title carrying a parenthesised version. Compared
+    # at whatever precision it is written: "(v0.7)" against the
+    # major.minor, "(v0.7.0)" against the full version.
+    /^# / && match($0, /\(v[0-9]+\.[0-9]+(\.[0-9]+)?\)/) {
+      got = ver(substr($0, RSTART, RLENGTH))
+      want = (got ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) ? curbare : substr(curmm, 2)
+      if (got != want) report(got, "this document title")
+    }
+
+    # (c) a release-asset download URL. A wrong one 404s.
+    match($0, /releases\/download\/v[0-9]+\.[0-9]+\.[0-9]+/) {
+      got = ver(substr($0, RSTART, RLENGTH))
+      if (got != curbare) report(got, "this download URL")
+    }
+
+    # (d) a release-asset filename, or the line introducing them.
+    match($0, /mast_[0-9]+\.[0-9]+\.[0-9]+_/) {
+      got = ver(substr($0, RSTART, RLENGTH))
+      if (got != curbare) report(got, "this release asset name")
+      next
+    }
+    match($0, /[Aa]ssets for v[0-9]+\.[0-9]+\.[0-9]+/) {
+      got = ver(substr($0, RSTART, RLENGTH))
+      if (got != curbare) report(got, "this assets line")
+    }
+  ' "$path"
+}
+
 # ---- driver -----------------------------------------------------------
 
 run_all_checks() {
   local findings=0
+  local cur
+  cur=$(current_release)
   while IFS= read -r path; do
     [[ -z "$path" ]] && continue
     local out
@@ -116,6 +226,7 @@ run_all_checks() {
       check_image_counts "$path"
       check_pinned_installs "$path"
       check_hardcoded_base "$path"
+      check_stale_version "$path" "$cur"
     )
     if [[ -n "$out" ]]; then
       printf '%s\n' "$out"
@@ -162,6 +273,49 @@ go get github.com/go-steer/mast/cmd/mast@v0.1.0
 See the [CLI reference](/mast/reference/cli/) — a link that hard-codes the base.
 EOF
 
+  # Rule 5 needs its own fixture: the file's own H1 carries a version,
+  # and the stale strings are compared against a *pinned* synthetic
+  # release (v9.9.9) rather than against whatever CHANGELOG.md says
+  # today — otherwise the self-test would change verdict on release
+  # day. The stale strings below are the two real instances from #288.
+  cat > "$tmp/version.md" <<'EOF'
+# mast — architecture (v0.5)
+
+**Status:** current as of v0.5.0 (2026-08-30).
+
+Current release: **v0.4.0** — two releases stale, and docs-lint read
+this line on every CI run.
+
+Assets for v0.4.0:
+
+- `mast_0.4.0_linux_amd64.tar.gz`
+
+```sh
+curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.4.0/mast_0.4.0_linux_amd64.tar.gz
+```
+
+Legitimate history, which must NOT fire: shipped in v0.5.0, on the
+v0.4.0 change set, and the v0.2 scaffold returns not_implemented.
+EOF
+
+  # The other half of the rule: a page that is correct must stay
+  # silent. A check that fires on everything is as useless as one that
+  # fires on nothing, and this is the half a broad "any vX.Y.Z" regex
+  # would fail.
+  cat > "$tmp/version-ok.md" <<'EOF'
+# mast — architecture (v9.9)
+
+**Status:** current as of v9.9.9 (2026-09-11).
+
+Current release: **v9.9.9**.
+
+Assets for v9.9.9:
+
+- `mast_9.9.9_linux_amd64.tar.gz`
+
+Shipped in v0.5.0, on the v0.4.0 change set, in the v0.2 scaffold.
+EOF
+
   local out=0
   local n
   n=$(check_tool_counts "$tmp/fixture.md" | wc -l)
@@ -176,8 +330,31 @@ EOF
   n=$(check_hardcoded_base "$tmp/fixture.md" | wc -l)
   (( n >= 1 )) || { echo "self-test: check_hardcoded_base fired 0 times, expected ≥1"; out=1; }
 
+  # Rule 5, per phrasing rather than per count: a regex edit that
+  # defangs one of the four shapes should name which one.
+  local stale
+  stale=$(check_stale_version "$tmp/version.md" "v9.9.9")
+  local what
+  for what in "this document title" "this status line" "this download URL" \
+              "this release asset name" "this assets line"; do
+    grep -qF "$what" <<<"$stale" || {
+      echo "self-test: check_stale_version did not fire on \"$what\""; out=1; }
+  done
+  # Both "current release:" and "current as of" are status lines.
+  n=$(grep -cF "this status line" <<<"$stale" || true)
+  (( n >= 2 )) || { echo "self-test: check_stale_version caught $n status line(s), expected 2"; out=1; }
+  # And no finding may land on the legitimate-history line.
+  grep -q ':2[0-9]*: .*v0\.2' <<<"$stale" && {
+    echo "self-test: check_stale_version fired on legitimate historical prose"; out=1; }
+
+  n=$(check_stale_version "$tmp/version-ok.md" "v9.9.9" | wc -l)
+  (( n == 0 )) || {
+    echo "self-test: check_stale_version fired $n time(s) on an up-to-date page, expected 0"
+    check_stale_version "$tmp/version-ok.md" "v9.9.9"
+    out=1; }
+
   if (( out == 0 )); then
-    echo "docs-lint self-test: OK (all 4 rules fired on the fixture)"
+    echo "docs-lint self-test: OK (all 5 rules fired on the fixtures, and rule 5 stayed silent on a current one)"
   fi
   return $out
 }
