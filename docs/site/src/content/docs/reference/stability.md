@@ -111,6 +111,9 @@ will not invalidate a client speaking the older frame.
 The [workload bundle schema](/reference/workload-bundle/) versions
 independently for the same reason: it is edited by people who never
 import Go, and a new YAML key should not cost anyone a major upgrade.
+It carries a [`schema_version:`](/reference/workload-bundle/#schema_version--and-why-an-unknown-key-is-refused)
+of its own — currently `1`, and omitting it means `1` — which moves
+when a key changes shape or meaning, not when a key is added.
 
 ## The CLI is covered
 

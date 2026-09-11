@@ -1052,8 +1052,28 @@ const (
 	AGUISessionPerRun = "per_run"
 )
 
+// CurrentSchemaVersion is the bundle schema this binary speaks.
+//
+// Bump it when a change to the bundle format cannot be read correctly by
+// a mast that predates it — a key changing shape or meaning, not a key
+// being added. Adding an optional key does not need a bump: an older
+// mast refuses it as unknown (see Load), which is a refusal naming the
+// key rather than a silent misreading.
+const CurrentSchemaVersion = 1
+
 // Bundle is the loaded workload bundle.
 type Bundle struct {
+	// SchemaVersion declares which bundle schema this file is written
+	// against. Absent means 1 — every bundle written before the field
+	// existed is a schema-1 bundle, and stays loadable untouched.
+	//
+	// Load refuses a version newer than CurrentSchemaVersion, naming
+	// both numbers. That refusal is the reason the field exists: this
+	// is the file that declares which tools may run without an
+	// operator, so a mast that cannot read all of it must say so rather
+	// than run the part it understands.
+	SchemaVersion int `yaml:"schema_version,omitempty"`
+
 	// Name is the workload identifier — unique per mast deployment.
 	Name string `yaml:"name"`
 

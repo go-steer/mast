@@ -446,9 +446,21 @@ contracts section above already says.
 
 **The bundle schema versions independently.** `workload.yaml` is edited
 by operators who never import Go. Coupling it to the Go major would
-mean a new YAML key forces a mast v2. It gets its own version field in
-[#302](https://github.com/go-steer/mast/issues/302) and its own
-compatibility rules.
+mean a new YAML key forces a mast v2. So it carries its own
+`schema_version:`, currently `1`, on its own clock
+([#302](https://github.com/go-steer/mast/issues/302)). Absent means 1 —
+every bundle written before the key existed keeps loading unchanged —
+and a bundle declaring a version this binary does not speak is refused
+by name rather than partially read. **A version bump is for a key that
+changes shape or meaning, not for a key being added:** adding
+`builtin_tools:` did not bump it, because an older mast reading a newer
+bundle is the case the version exists to catch, and additive keys are
+already caught. Unrecognised keys are a load error, not a warning —
+this is the one file that declares which tools may run without an
+operator, so a block that silently does nothing is a policy that
+silently does not apply. Specialist frontmatter takes **no** version of
+its own; it is reached only through a bundle that names it, so the
+bundle's version governs the roster.
 
 **The CLI is part of the promise.** The binary is a first-class
 consumer shape, and its callers — shell scripts, systemd units,

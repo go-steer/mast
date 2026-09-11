@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+- **`workload.yaml` carries a `schema_version:`, and an unrecognised key is now
+  a load error rather than silence.** The bundle is edited by operators who
+  never import Go, so it versions on its own clock rather than mast's
+  ([#302](https://github.com/go-steer/mast/issues/302)).
+
+  ```yaml
+  schema_version: 1
+  name: gke-triage
+  ```
+
+  **Absent means 1**, so every bundle written before the key existed loads
+  unchanged and there is no migration. A bundle declaring a version this
+  binary does not speak is refused, naming both numbers — the operator
+  holding the file needs to know which of the two to change. An explicit
+  `schema_version: 0` is refused too: absent is a file written before the key
+  existed, a literal `0` is someone reaching for a version number and getting
+  it wrong, and reading the second as the first would hide the mistake. A
+  version bump is reserved for a key that changes **shape or meaning**, not
+  for a key being added — `builtin_tools:` landed in this same release and the
+  schema stayed at 1.
+
+  **Breaking, deliberately: unknown keys are refused, not warned about.** This
+  is the only file in a deployment that can declare a tool safe to run without
+  an operator, and mast's own predicate is default-deny-unknown, so the
+  failure being designed against is a misspelled block — `tool_catalogue:`,
+  `hitl_polciy:` — that leaves a section of policy unapplied while the daemon
+  logs a clean start and the workload runs all night. A `WARN` at boot is not
+  a control. Strictness reaches nested keys, where the sharper version of the
+  bug lives: `mutatin: true` on a catalog entry leaves the tool catalogued, so
+  nothing looks missing, while it quietly reverts to default-deny-unknown.
+
+  Decoding is **two passes and the order is the point**. A real bundle from
+  the future does not arrive carrying only a version bump; it arrives carrying
+  the keys that motivated it. The version is read first, alone, so the report
+  is "this bundle is from a newer schema" and not "field `quarantine_policy`
+  not found", which reads as a typo in a key copied out of correct
+  documentation.
+
+  **Specialist frontmatter is strict too, and deliberately takes no version of
+  its own.** The reason it is strict is `tools:`, the one key that fails in the
+  unsafe direction: `ToolAllowlist.InheritsAllMCP()` is `MCP == nil`, so a
+  misspelled `toosl:` does not narrow the specialist to the servers its file
+  lists — it hands over every MCP server the workload wires. (`capability:` is
+  the milder case; absent resolves to `read_only`, so a typo fails safe.) It
+  gets no `schema_version` because a specialist is only ever reached through a
+  bundle that names it, so the bundle's version already governs the roster,
+  and a second independently-versioned artifact would multiply the
+  compatibility matrix across 39 mostly-prose files.
+
+  This inverts one behaviour shipped days earlier in the same release:
+  [#324](https://github.com/go-steer/mast/issues/324)'s startup summary reads
+  the *constructed* provider precisely because an unknown `builtin_tools:` key
+  used to be dropped in silence. That summary still earns its place — it
+  catches the correctly-spelled key whose credential or provider cannot
+  satisfy it, which no amount of decoder strictness can see.
+
+  All 6 shipped bundles and all 39 shipped `.tmpl` files were checked against
+  the strict decoder before it was adopted, and both checks are pinned as
+  tests.
+
 - **The provider's server-side built-in tools are now off by default, on every
   provider, and a bundle turns them on with `builtin_tools:`.** Breaking, and
   deliberately so: every Gemini model mast constructed was wrapped with

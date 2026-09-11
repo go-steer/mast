@@ -61,6 +61,7 @@ A **workload bundle** is an operator-authored declarative profile for a named cl
 
 ```yaml
 # .agents/workloads/incident-triage.yaml
+schema_version: 1                 # optional; absent means 1 (#302)
 name: incident-triage
 description: |
   GKE pod-failure investigation. Triggered by pager alert
@@ -123,6 +124,7 @@ isolation:
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
+| `schema_version` | int | no (default 1) | Which bundle schema the file is written for, on its own clock rather than mast's Go major ([#302](https://github.com/go-steer/mast/issues/302)). Absent means 1, so every pre-field bundle is unaffected; a version this binary does not speak is a load error naming both numbers, and an explicit `0` is refused rather than read as 1. Bumped when a key changes **shape or meaning**, not when a key is added. Any key not in this reference is a load error too — see the resolved decision in [`./README.md`](./README.md). |
 | `name` | string | yes | Unique within `.agents/workloads/`; used by explicit-selection and classifier-first resolution. |
 | `description` | string | yes | Human-readable; also consumed by classifier-first prompt construction. Phrase as "invoke this workload when …" |
 | `task_class` | string | yes | Public task class the bundle runs under. Determines agent mode + DefaultInstruction variant. |
