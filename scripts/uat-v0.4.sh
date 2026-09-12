@@ -506,8 +506,8 @@ mk_schema "${PRODUCER}/schemas/finding.json"
 # its tool catalog, its capability declaration, its on_mutation: apply —
 # is left exactly as the v0.2 harness has it.
 awk '/^mode: Task$/ { print; print "output_schema: ../schemas/finding.json"; next } { print }' \
-  "${FIXTURE}/specialists/uat-worker.tmpl" > "${PRODUCER}/specialists/uat-worker.tmpl"
-grep -q '^output_schema:' "${PRODUCER}/specialists/uat-worker.tmpl" \
+  "${FIXTURE}/specialists/uat-worker.specialist.md" > "${PRODUCER}/specialists/uat-worker.specialist.md"
+grep -q '^output_schema:' "${PRODUCER}/specialists/uat-worker.specialist.md" \
   || { echo "fixture derivation failed: no output_schema in the derived worker" >&2; exit 1; }
 
 # ---- the handoff fixture: a graph roster over the same tools --------
@@ -559,7 +559,7 @@ edge_trigger:
     auth: bearer
 YAML
 
-cat > "${HANDOFF}/specialists/classify.tmpl" <<'TMPL'
+cat > "${HANDOFF}/specialists/classify.specialist.md" <<'SPECFILE'
 ---
 name: classify
 description: Routes a UAT incident envelope to a specialist by its reason.
@@ -568,9 +568,9 @@ mode: SingleTurn
 
 Read the JSON payload's `reason` field and emit it as a single token,
 with no explanation or punctuation.
-TMPL
+SPECFILE
 
-cat > "${HANDOFF}/specialists/ApplyChange.tmpl" <<'TMPL'
+cat > "${HANDOFF}/specialists/ApplyChange.specialist.md" <<'SPECFILE'
 ---
 name: ApplyChange
 description: Diagnoses a UAT incident and proposes an executable remediation.
@@ -587,9 +587,9 @@ tools:
 
 Diagnose the incident and return a finding. Name the remediation as an
 exact call in `proposed_change`; you cannot make it yourself.
-TMPL
+SPECFILE
 
-cat > "${HANDOFF}/specialists/change-executor.tmpl" <<'TMPL'
+cat > "${HANDOFF}/specialists/change-executor.specialist.md" <<'SPECFILE'
 ---
 name: change-executor
 description: Carries out an approved change against the UAT fixture.
@@ -606,9 +606,9 @@ tools:
 
 Make the approved calls exactly as written, in order. Do not re-derive
 them and do not add any others.
-TMPL
+SPECFILE
 
-cat > "${HANDOFF}/specialists/_fallback.tmpl" <<'TMPL'
+cat > "${HANDOFF}/specialists/_fallback.specialist.md" <<'SPECFILE'
 ---
 name: _fallback
 description: Fallback specialist for UAT incidents with no dedicated handler.
@@ -624,7 +624,7 @@ tools:
 ---
 
 Report what you were given.
-TMPL
+SPECFILE
 
 # ---- the change-set fixture: the handoff roster + freshness rules ---
 # Same three specialists and the same two tools; the workload adds what

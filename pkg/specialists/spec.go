@@ -12,10 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package specialists loads specialist .tmpl files from disk and turns
-// them into ADK v2 agents. .tmpl files are YAML frontmatter (bounded
-// by `---`) followed by a Markdown body used as the specialist's system
-// prompt.
+// Package specialists loads specialist files from disk and turns them
+// into ADK v2 agents. A specialist file is YAML frontmatter (bounded by
+// `---`) followed by a Markdown body used as the specialist's system
+// prompt, and it is named `<name>.specialist.md`.
+//
+// It is not a Go template and never was: text/template is imported by
+// exactly one package in this module (pkg/planner) and reads none of
+// these. The files carried a `.tmpl` extension through v0.8, which
+// invited exactly that misreading — a `{{ ... }}` in one is refused at
+// load rather than interpolated (#272). `.tmpl` still loads with a
+// deprecation warning; see Extension and LegacyExtension (#292).
 //
 // Schema follows docs/specialists-design.md. This package implements
 // the spike subset (name, description, mode, instruction, model
@@ -38,7 +45,7 @@
 // declaration was decoration.
 //
 // A spec's `output_schema:` names a JSON-Schema document relative to
-// the .tmpl file; it is read, normalized and checked at load time (see
+// the specialist file; it is read, normalized and checked at load time (see
 // schema.go) and reaches the agent as llmagent.Config.OutputSchema.
 // From there ADK enforces it — a violation is an error on both paths,
 // never a warning. In Task mode the schema becomes the finish_task
@@ -188,7 +195,7 @@ type ToolAllowlist struct {
 // a read_only specialist when the workload has a tool catalog.
 func (t ToolAllowlist) InheritsAllMCP() bool { return t.MCP == nil }
 
-// Frontmatter is the YAML block at the top of a .tmpl file.
+// Frontmatter is the YAML block at the top of a specialist file.
 type Frontmatter struct {
 	Name        string        `yaml:"name,omitempty"`
 	Description string        `yaml:"description"`
@@ -200,7 +207,7 @@ type Frontmatter struct {
 	Tools       ToolAllowlist `yaml:"tools,omitempty"`
 
 	// OutputSchema is a path to a JSON-Schema document, relative to the
-	// .tmpl file's own directory. It is a reference rather than an
+	// specialist file's own directory. It is a reference rather than an
 	// inline block on purpose — see the comment at the top of schema.go.
 	OutputSchema string `yaml:"output_schema,omitempty"`
 }
@@ -212,6 +219,12 @@ type Spec struct {
 	// preserved for diagnostics.
 	Filename string
 
+	// LegacyExtension is true when Filename ends in the deprecated
+	// LegacyExtension rather than Extension. Reported rather than
+	// refused for one release; WarnLegacyExtension turns it into an
+	// operator-facing warning where a logger exists (#292).
+	LegacyExtension bool
+
 	// Frontmatter fields, promoted for convenience.
 	Name        string
 	Description string
@@ -222,7 +235,7 @@ type Spec struct {
 	Budget      Budget
 	Tools       ToolAllowlist
 
-	// Instruction is the body of the .tmpl file — the specialist's
+	// Instruction is the body of the specialist file — the specialist's
 	// system prompt, verbatim.
 	Instruction string
 

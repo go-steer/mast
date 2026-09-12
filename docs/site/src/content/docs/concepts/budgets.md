@@ -37,7 +37,7 @@ A workload-wide cap is blunt: it cannot tell "the classifier is looping"
 from "the whole incident is expensive". So a specialist can declare its own:
 
 ```yaml
-# specialists/OOMKilled.tmpl
+# specialists/OOMKilled.specialist.md
 budget:
   max_turns: 6
   max_cost_usd: 0.25
@@ -45,8 +45,8 @@ budget:
 
 **Composition is tightest-cap-wins, by construction.** A specialist cannot
 raise its own ceiling above the workload's — a `max_cost_usd: 50` in a
-`.tmpl` under a `max_cost_usd: 5` workload buys nothing. The bundle is the
-outer bound; a specialist may only tighten it.
+specialist file under a `max_cost_usd: 5` workload buys nothing. The bundle
+is the outer bound; a specialist may only tighten it.
 
 That makes the classifier's one cheap turn budgetable as one cheap turn,
 and it lets you give the expensive diagnoser room without giving it to

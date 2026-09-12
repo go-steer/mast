@@ -35,7 +35,7 @@ func plantConfig(t *testing.T, body string) string {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "workload.yaml"), "name: demo\n")
 	mustWrite(t, filepath.Join(root, "mcp.json"), `{"mcpServers":{}}`)
-	mustWrite(t, filepath.Join(root, "specialists", "triage.tmpl"), body)
+	mustWrite(t, filepath.Join(root, "specialists", "triage.specialist.md"), body)
 	mustWrite(t, filepath.Join(root, "schemas", "finding.json"), `{"type":"object"}`)
 	return root
 }
@@ -53,7 +53,7 @@ func mustWrite(t *testing.T, path, body string) {
 func identify(root string) configIdentity {
 	bundle := &workload.Bundle{Filename: filepath.Join(root, "workload.yaml")}
 	specs := []specialists.Spec{{
-		Filename:         filepath.Join(root, "specialists", "triage.tmpl"),
+		Filename:         filepath.Join(root, "specialists", "triage.specialist.md"),
 		OutputSchemaPath: filepath.Join(root, "schemas", "finding.json"),
 	}}
 	return identifyConfig(root, bundle.Filename,
@@ -64,7 +64,7 @@ func TestConfigIdentityCoversEveryLoadedArtifact(t *testing.T) {
 	root := plantConfig(t, "you are a triage specialist")
 	id := identify(root)
 
-	want := []string{"mcp.json", "schemas/finding.json", "specialists/triage.tmpl", "workload.yaml"}
+	want := []string{"mcp.json", "schemas/finding.json", "specialists/triage.specialist.md", "workload.yaml"}
 	var got []string
 	for _, f := range id.Files {
 		got = append(got, f.Name)
@@ -89,7 +89,7 @@ func TestConfigIdentityMovesWithContent(t *testing.T) {
 
 	for _, edit := range []struct{ name, path, body string }{
 		{"the bundle", filepath.Join(root, "workload.yaml"), "name: demo\nmode: multi_session\n"},
-		{"a specialist", filepath.Join(root, "specialists", "triage.tmpl"), "you are a different specialist"},
+		{"a specialist", filepath.Join(root, "specialists", "triage.specialist.md"), "you are a different specialist"},
 		{"a schema", filepath.Join(root, "schemas", "finding.json"), `{"type":"string"}`},
 		{"the catalog", filepath.Join(root, "mcp.json"), `{"mcpServers":{"k8s":{}}}`},
 	} {
@@ -156,7 +156,7 @@ func TestConfigIdentityCountsAVanishedFile(t *testing.T) {
 	root := plantConfig(t, "you are a triage specialist")
 	before := identify(root)
 
-	if err := os.Remove(filepath.Join(root, "specialists", "triage.tmpl")); err != nil {
+	if err := os.Remove(filepath.Join(root, "specialists", "triage.specialist.md")); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	after := identify(root)
@@ -164,7 +164,7 @@ func TestConfigIdentityCountsAVanishedFile(t *testing.T) {
 	if after.Digest == before.Digest {
 		t.Fatal("digest unchanged after a projected file vanished")
 	}
-	if got := after.unreadable(); len(got) != 1 || got[0] != "specialists/triage.tmpl" {
+	if got := after.unreadable(); len(got) != 1 || got[0] != "specialists/triage.specialist.md" {
 		t.Errorf("unreadable() = %v, want the specialist", got)
 	}
 }
@@ -172,10 +172,10 @@ func TestConfigIdentityCountsAVanishedFile(t *testing.T) {
 func TestConfigIdentityNamesWhatChanged(t *testing.T) {
 	root := plantConfig(t, "before")
 	before := identify(root)
-	mustWrite(t, filepath.Join(root, "specialists", "triage.tmpl"), "after")
+	mustWrite(t, filepath.Join(root, "specialists", "triage.specialist.md"), "after")
 
 	got := identify(root).changedFrom(before)
-	if len(got) != 1 || got[0] != "specialists/triage.tmpl" {
+	if len(got) != 1 || got[0] != "specialists/triage.specialist.md" {
 		t.Fatalf("changedFrom = %v, want just the specialist", got)
 	}
 }
@@ -227,13 +227,13 @@ func TestWatchConfigWarnsWhenTheMountedFilesChangeUnderIt(t *testing.T) {
 	defer cancel()
 	go watchConfig(ctx, logger, loaded, 5*time.Millisecond)
 
-	mustWrite(t, filepath.Join(root, "specialists", "triage.tmpl"), "after")
+	mustWrite(t, filepath.Join(root, "specialists", "triage.specialist.md"), "after")
 	got := waitFor(t, log, "NO LONGER MATCHES")
 
 	for _, want := range []string{
-		loaded.Digest,             // what is running
-		"specialists/triage.tmpl", // what moved
-		"restart",                 // what to do
+		loaded.Digest,                      // what is running
+		"specialists/triage.specialist.md", // what moved
+		"restart",                          // what to do
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("warning does not mention %q:\n%s", want, got)
@@ -254,7 +254,7 @@ func TestWatchConfigWarnsOncePerEdit(t *testing.T) {
 	defer cancel()
 	go watchConfig(ctx, logger, loaded, 5*time.Millisecond)
 
-	mustWrite(t, filepath.Join(root, "specialists", "triage.tmpl"), "after")
+	mustWrite(t, filepath.Join(root, "specialists", "triage.specialist.md"), "after")
 	waitFor(t, log, "NO LONGER MATCHES")
 	time.Sleep(100 * time.Millisecond) // ~20 further ticks over the same state
 
@@ -276,7 +276,7 @@ func TestWatchConfigSaysWhenTheDriftIsGone(t *testing.T) {
 	defer cancel()
 	go watchConfig(ctx, logger, loaded, 5*time.Millisecond)
 
-	spec := filepath.Join(root, "specialists", "triage.tmpl")
+	spec := filepath.Join(root, "specialists", "triage.specialist.md")
 	mustWrite(t, spec, "after")
 	waitFor(t, log, "NO LONGER MATCHES")
 

@@ -113,10 +113,10 @@ A specialist may name its own model, and **it may name a different
 provider than the rest of the roster**:
 
 ```yaml
-# specialists/triage-classifier.tmpl
+# specialists/triage-classifier.specialist.md
 model: gemini-2.5-flash-lite      # one cheap classifying turn
 
-# specialists/OOMKilled.tmpl
+# specialists/OOMKilled.specialist.md
 model: claude-sonnet-4-6          # the one that has to reason
 ```
 
@@ -153,10 +153,10 @@ means is not "this step needs Haiku" but "this step is not worth the
 frontier model" — so say that:
 
 ```yaml
-# specialists/triage-classifier.tmpl
+# specialists/triage-classifier.specialist.md
 tier: small                       # one cheap classifying turn
 
-# specialists/OOMKilled.tmpl
+# specialists/OOMKilled.specialist.md
 tier: mid                         # the one that has to reason
 ```
 

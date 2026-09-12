@@ -65,7 +65,7 @@ name: broken
 body
 `
 
-func writeTempTmpl(t *testing.T, dir, name, contents string) {
+func writeTempSpec(t *testing.T, dir, name, contents string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
@@ -75,8 +75,8 @@ func writeTempTmpl(t *testing.T, dir, name, contents string) {
 
 func TestLoadDir(t *testing.T) {
 	dir := t.TempDir()
-	writeTempTmpl(t, dir, "ImagePullBackOff.tmpl", taskSpec)
-	writeTempTmpl(t, dir, "triage-classifier.tmpl", classifierSpec)
+	writeTempSpec(t, dir, "ImagePullBackOff.specialist.md", taskSpec)
+	writeTempSpec(t, dir, "triage-classifier.specialist.md", classifierSpec)
 
 	specs, err := specialists.LoadDir(dir)
 	if err != nil {
@@ -245,8 +245,8 @@ func TestLoadFile_Capability(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			writeTempTmpl(t, dir, "s.tmpl", fmt.Sprintf(body, tc.line))
-			spec, err := specialists.LoadFile(filepath.Join(dir, "s.tmpl"))
+			writeTempSpec(t, dir, "s.specialist.md", fmt.Sprintf(body, tc.line))
+			spec, err := specialists.LoadFile(filepath.Join(dir, "s.specialist.md"))
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("LoadFile(%q) = nil error, want a refusal — an unrecognized capability is a declaration that did not take", tc.line)
@@ -290,8 +290,8 @@ func TestLoadFile_Tier(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			writeTempTmpl(t, dir, "s.tmpl", fmt.Sprintf(body, tc.line))
-			spec, err := specialists.LoadFile(filepath.Join(dir, "s.tmpl"))
+			writeTempSpec(t, dir, "s.specialist.md", fmt.Sprintf(body, tc.line))
+			spec, err := specialists.LoadFile(filepath.Join(dir, "s.specialist.md"))
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("LoadFile(%q) = nil error, want a refusal", tc.line)
@@ -320,10 +320,10 @@ func TestLoadFile_Tier(t *testing.T) {
 // other test noticing.
 func TestLoadFile_EmptyMCPListIsNotAbsent(t *testing.T) {
 	dir := t.TempDir()
-	writeTempTmpl(t, dir, "absent.tmpl", "---\ndescription: d\n---\nbody\n")
-	writeTempTmpl(t, dir, "empty.tmpl", "---\ndescription: d\ntools:\n  mcp: []\n---\nbody\n")
+	writeTempSpec(t, dir, "absent.specialist.md", "---\ndescription: d\n---\nbody\n")
+	writeTempSpec(t, dir, "empty.specialist.md", "---\ndescription: d\ntools:\n  mcp: []\n---\nbody\n")
 
-	absent, err := specialists.LoadFile(filepath.Join(dir, "absent.tmpl"))
+	absent, err := specialists.LoadFile(filepath.Join(dir, "absent.specialist.md"))
 	if err != nil {
 		t.Fatalf("LoadFile(absent): %v", err)
 	}
@@ -331,7 +331,7 @@ func TestLoadFile_EmptyMCPListIsNotAbsent(t *testing.T) {
 		t.Error("a spec with no tools: block does not read as inherit-all")
 	}
 
-	empty, err := specialists.LoadFile(filepath.Join(dir, "empty.tmpl"))
+	empty, err := specialists.LoadFile(filepath.Join(dir, "empty.specialist.md"))
 	if err != nil {
 		t.Fatalf("LoadFile(empty): %v", err)
 	}
@@ -355,11 +355,11 @@ func TestLoadFile_EmptyMCPListIsNotAbsent(t *testing.T) {
 // every axis, and deny-all is exactly what this build does.
 func TestLoadFile_NonEmptySkillsAllowlistIsRefused(t *testing.T) {
 	dir := t.TempDir()
-	writeTempTmpl(t, dir, "granting.tmpl", "---\ndescription: d\ntools:\n  skills:\n    - k8s-triage\n---\nbody\n")
-	writeTempTmpl(t, dir, "denying.tmpl", "---\ndescription: d\ntools:\n  skills: []\n---\nbody\n")
-	writeTempTmpl(t, dir, "silent.tmpl", "---\ndescription: d\n---\nbody\n")
+	writeTempSpec(t, dir, "granting.specialist.md", "---\ndescription: d\ntools:\n  skills:\n    - k8s-triage\n---\nbody\n")
+	writeTempSpec(t, dir, "denying.specialist.md", "---\ndescription: d\ntools:\n  skills: []\n---\nbody\n")
+	writeTempSpec(t, dir, "silent.specialist.md", "---\ndescription: d\n---\nbody\n")
 
-	_, err := specialists.LoadFile(filepath.Join(dir, "granting.tmpl"))
+	_, err := specialists.LoadFile(filepath.Join(dir, "granting.specialist.md"))
 	if err == nil {
 		t.Fatal("a spec granting a skill loaded clean; the allowlist reads as a whitelist and narrows nothing")
 	}
@@ -371,26 +371,26 @@ func TestLoadFile_NonEmptySkillsAllowlistIsRefused(t *testing.T) {
 		}
 	}
 
-	if _, err := specialists.LoadFile(filepath.Join(dir, "denying.tmpl")); err != nil {
+	if _, err := specialists.LoadFile(filepath.Join(dir, "denying.specialist.md")); err != nil {
 		t.Errorf("`skills: []` was refused (%v); the documented deny-all spelling must stay loadable", err)
 	}
-	if _, err := specialists.LoadFile(filepath.Join(dir, "silent.tmpl")); err != nil {
+	if _, err := specialists.LoadFile(filepath.Join(dir, "silent.specialist.md")); err != nil {
 		t.Errorf("a spec with no skills axis was refused: %v", err)
 	}
 }
 
 func TestLoadFile_MissingDescription(t *testing.T) {
 	dir := t.TempDir()
-	writeTempTmpl(t, dir, "broken.tmpl", missingDescSpec)
-	if _, err := specialists.LoadFile(filepath.Join(dir, "broken.tmpl")); err == nil {
+	writeTempSpec(t, dir, "broken.specialist.md", missingDescSpec)
+	if _, err := specialists.LoadFile(filepath.Join(dir, "broken.specialist.md")); err == nil {
 		t.Fatal("expected error for missing description, got nil")
 	}
 }
 
 func TestBuild(t *testing.T) {
 	dir := t.TempDir()
-	writeTempTmpl(t, dir, "ImagePullBackOff.tmpl", taskSpec)
-	writeTempTmpl(t, dir, "triage-classifier.tmpl", classifierSpec)
+	writeTempSpec(t, dir, "ImagePullBackOff.specialist.md", taskSpec)
+	writeTempSpec(t, dir, "triage-classifier.specialist.md", classifierSpec)
 
 	specs, err := specialists.LoadDir(dir)
 	if err != nil {

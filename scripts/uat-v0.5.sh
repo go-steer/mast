@@ -675,7 +675,7 @@ YAML
 BACKREFUSE="${WORK}/ack-refuse"
 cp -r "${FIXTURE}" "${BACKREFUSE}"
 sed -e 's/^        - apply_change$/        - apply_change\n        - findings_ack/' \
-  "${FIXTURE}/specialists/uat-worker.tmpl" > "${BACKREFUSE}/specialists/uat-worker.tmpl"
+  "${FIXTURE}/specialists/uat-worker.specialist.md" > "${BACKREFUSE}/specialists/uat-worker.specialist.md"
 cat > "${BACKREFUSE}/workload.yaml" <<'YAML'
 # Harness fixture for scripts/uat-v0.5.sh's U-ack/B fence assertion.
 name: uat-ack-refuse

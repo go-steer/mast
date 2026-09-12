@@ -38,11 +38,11 @@ import (
 // consumer can point at. So the schema is a bundle asset and every
 // specialist that emits a report references the same one.
 //
-// The reference is resolved relative to the .tmpl file's own directory,
+// The reference is resolved relative to the specialist file's own directory,
 // which makes a roster relocatable — `../schemas/finding.json` means the
 // same thing whether the roster is a workload bundle's specialists/ dir
 // or a shared config root's. Absolute paths are refused because they
-// make a bundle non-portable, not because they are dangerous: a .tmpl
+// make a bundle non-portable, not because they are dangerous: a specialist file
 // already names the tools a specialist may call and writes its system
 // prompt verbatim, so a bundle is a trust domain and confining its file
 // reads would be theatre.
@@ -54,9 +54,9 @@ import (
 var schemaExts = map[string]bool{".json": true, ".yaml": true, ".yml": true}
 
 // loadOutputSchema resolves a spec's `output_schema:` reference against
-// the .tmpl file's directory and returns the parsed, normalized,
+// the specialist file's directory and returns the parsed, normalized,
 // checked schema.
-func loadOutputSchema(tmplPath, ref string) (*genai.Schema, string, error) {
+func loadOutputSchema(specPath, ref string) (*genai.Schema, string, error) {
 	if filepath.IsAbs(ref) {
 		return nil, "", fmt.Errorf("output_schema %q must be relative to the specialist file, not absolute — an absolute path makes the bundle non-portable", ref)
 	}
@@ -64,7 +64,7 @@ func loadOutputSchema(tmplPath, ref string) (*genai.Schema, string, error) {
 	if !schemaExts[ext] {
 		return nil, "", fmt.Errorf("output_schema %q has extension %q (want .json, .yaml or .yml)", ref, ext)
 	}
-	path := filepath.Join(filepath.Dir(tmplPath), filepath.FromSlash(ref))
+	path := filepath.Join(filepath.Dir(specPath), filepath.FromSlash(ref))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", fmt.Errorf("output_schema %q: %w", ref, err)

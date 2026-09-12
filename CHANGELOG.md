@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **Specialist files are now `<name>.specialist.md`, not `<name>.tmpl`.** They
+  are YAML frontmatter plus a Markdown body and have never been Go templates:
+  `text/template` is imported by exactly one package in the module
+  (`pkg/planner`, for the planner's instruction) and it reads none of them
+  ([#292](https://github.com/go-steer/mast/issues/292)).
+
+  The old name was not just inaccurate. A `{{ ... }}` in a body is ADK's
+  placeholder syntax, not the author's, and
+  [#272](https://github.com/go-steer/mast/issues/272) had to add a load-time
+  refusal for it — a defect an author is invited to write by an extension
+  that tells them they are writing a template.
+
+  **`.tmpl` still loads.** mast warns at startup, naming each file and the
+  spelling to move to. To migrate, rename; nothing inside the files changes,
+  and the specialist name is the stem either way:
+
+  ```sh
+  cd .agents/specialists
+  for f in *.tmpl; do mv "$f" "${f%.tmpl}.specialist.md"; done
+  ```
+
+  One specialist present under **both** extensions is a load error rather
+  than a silent pick: mid-rename the leftover is usually the stale copy, and
+  choosing it would mean edits to the renamed file quietly do nothing.
+
+  Support for `.tmpl` is removed in v0.9
+  ([#349](https://github.com/go-steer/mast/issues/349)).
+
 - **`workload.yaml` carries a `schema_version:`, and an unrecognised key is now
   a load error rather than silence.** The bundle is edited by operators who
   never import Go, so it versions on its own clock rather than mast's

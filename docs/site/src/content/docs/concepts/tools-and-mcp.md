@@ -17,7 +17,7 @@ mcp.json                    what this deployment can talk to at all
 workload.yaml               which of those servers this workload uses
   tool_catalog.mcp[]        + per-tool policy overrides
    ↓
-specialists/*.tmpl          which tools this one specialist may call
+specialists/*.specialist.md          which tools this one specialist may call
   tools.mcp[].tools[]
 ```
 

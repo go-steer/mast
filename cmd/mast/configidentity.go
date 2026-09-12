@@ -246,7 +246,7 @@ func (id configIdentity) paths() []string {
 
 // changedFrom names the files whose content differs between the two
 // identities, including ones that appeared, vanished or stopped being
-// readable. Names rather than a count: "specialists/CrashLoopBackOff.tmpl
+// readable. Names rather than a count: "specialists/CrashLoopBackOff.specialist.md
 // changed" is the whole diagnosis, and a count is a second question.
 func (id configIdentity) changedFrom(prev configIdentity) []string {
 	was := make(map[string]string, len(prev.Files))

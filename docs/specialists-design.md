@@ -22,14 +22,26 @@ Mast extends that pattern with a richer per-specialist config (budget, tool allo
 
 ```
 .agents/specialists/
-  ImagePullBackOff.tmpl
-  CrashLoopBackOff.tmpl
-  OOMKilled.tmpl
-  ServiceEndpointMissing.tmpl
+  ImagePullBackOff.specialist.md
+  CrashLoopBackOff.specialist.md
+  OOMKilled.specialist.md
+  ServiceEndpointMissing.specialist.md
   ...
 ```
 
-One file per specialist. Filename (without `.tmpl`) becomes the default name. Each file is YAML frontmatter followed by the specialist's system prompt.
+One file per specialist. Filename (without `.specialist.md`) becomes the default name. Each file is YAML frontmatter followed by the specialist's system prompt.
+
+### The extension (renamed 2026-09-11, closing [#292](https://github.com/go-steer/mast/issues/292))
+
+These files carried a `.tmpl` extension from the fork through v0.7.0, inherited from the gke-agent prototype above. **They are not Go templates and never were.** `text/template` is imported by exactly one package in the module — `pkg/planner`, for the planner instruction — and it reads none of them. Nothing substitutes into a specialist file; the body reaches the agent verbatim as its system prompt.
+
+The extension was not merely inaccurate, it was actively misleading in a way that produced a defect: a `{{ ... }}` in a body is ADK's placeholder syntax, not the author's, and [#272](https://github.com/go-steer/mast/issues/272) had to add an explicit load-time refusal for the state-lookup case. An author who believes they are writing a template writes exactly that.
+
+`.specialist.md` keeps the reality visible. These began life as core-agent skills, and the frontmatter is an *improvement over* prose rather than a rejection of it — the body is still the larger half of the file, and it is Markdown. Editors highlight it correctly. `.specialist.yaml` was considered and rejected for the same reason: accurate about the frontmatter, wrong about the body. `.spec.md` is shorter and collides with "spec" in the test sense.
+
+**Compatibility.** `.tmpl` still loads, and every spec loaded from one raises a deprecation warning naming the files (`pkg/specialists.WarnLegacyExtension`, called from `pkg/config`'s root load and from `cmd/mast`'s path mode, which bypasses `pkg/config` entirely). An out-of-tree bundle is exactly the thing this project tells people to write, so the rename is not a flag day. Support is removed the release after; that removal is [#349](https://github.com/go-steer/mast/issues/349) on the v0.9 milestone rather than a promise in a comment, so it can go stale visibly.
+
+**One stem under both extensions is a load error.** The realistic mistake mid-rename is a copy left behind, and the stale half is usually the `.tmpl`. Picking a winner would be an alphabetical accident, and picking the stale one means edits to the renamed file quietly do nothing.
 
 ## Schema (v1)
 
@@ -63,7 +75,7 @@ tier: small                          # OR a portable tier: small | mid | frontie
                                      # (resolved per provider; see "Model and tier")
 
 # Report contract (optional; free-form output if absent)
-# Path to a JSON-Schema document, relative to this .tmpl file. A shared
+# Path to a JSON-Schema document, relative to this specialist file. A shared
 # file, not an inline block: a report shape is a contract with its
 # consumers, and inlining makes it private to one specialist.
 output_schema: ../schemas/finding.json
@@ -103,7 +115,7 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `description` | string | **required** | Used by parent for tool selection. The parent's prompt sees this as the tool's description; phrase it as guidance for "when to invoke this specialist." |
-| `name` | string | filename without `.tmpl` | Override if filename can't carry it (e.g. non-identifier characters). |
+| `name` | string | filename without `.specialist.md` | Override if filename can't carry it (e.g. non-identifier characters). |
 | `budget.max_turns` | int | 5 | Specialist's internal LLM turn count cap. After this many turns, the specialist must return whatever it has. Matches `spawn_agent` default. |
 | `budget.max_wallclock_seconds` | int | 60 | Hard wall-clock cap; cuts off the specialist regardless of turn count. |
 | `budget.max_cost_usd` | float | 0 | Per-invocation cost ceiling. 0 = inherit session ceiling. Useful for cheap-but-frequently-invoked specialists where bounded per-call cost matters more than session-level. |
@@ -111,7 +123,7 @@ tools available to you. Do not attempt mitigations yourself — return analysis 
 | `capability` | string | `read_only` | Declares whether the specialist is allowed to change anything. `read_only` (the default, so the safe state is what you get by saying nothing) means mast refuses to build the roster if the specialist can reach a mutating tool — see [Capability](#capability-read_only-vs-change_executor-2026-08-14). `change_executor` exempts it and is logged at startup as part of the workload's write surface. The value is a closed enum: an unrecognized one (including the near-miss `change-executor`) fails the load rather than silently defaulting. |
 | `model` | string | inherit parent | Full model ID (`gemini-2.5-flash`, `claude-haiku-4-5`, etc.). Dispatched by model id, exactly like `--model`; the parent's provider alias only disambiguates the Anthropic backend, so a cross-provider override is legal (open Q#4, resolved 2026-08-12). Resolution is memoized per id, and an override that cannot be resolved fails the build rather than silently inheriting the parent's model. Under an offline-fake parent (`echo` / `scripted` / `toolactor`) every override collapses back to the parent so tiered bundles still run credential-free. Common pattern: frontier parent dispatching to cheap-tier specialists for high-volume tasks. Mutually exclusive with `tier`. |
 | `tier` | string | inherit parent | Provider-portable model override: `small`, `mid` or `frontier`, resolved to a concrete model id for the running provider through `pkg/taskclass.ModelForTier` — the same table `--task` uses (v0.4 W1.1a; see [Model and tier](#model-and-tier-2026-08-15)). Says how much model the step is worth rather than which vendor's model it must run on, so a shipped bundle can declare its own cost shape and still load on any provider. Closed enum: an unrecognized value fails the load, as does declaring `model` and `tier` on the same specialist. Everything `model` guarantees holds here too — memoized per resolved id, unresolvable fails the build, offline-fake parents collapse it. |
-| `output_schema` | string | none | Path to a JSON-Schema document (`.json`, `.yaml`, `.yml`) **relative to the `.tmpl` file's own directory**, so a roster stays relocatable. Absent = the specialist returns free-form output. The document is read, type-normalized and checked at *load* time — a malformed contract fails the roster on startup, not on the first turn that dispatches to the specialist. Enforcement is ADK's: in `Task` mode the schema becomes the `finish_task` declaration and a non-conforming call comes back as a validation error the model can correct; in `SingleTurn` mode the reply is validated on the way out and a violation refuses the delegation. Either way the caller sees a refusal that names the offending key, and non-conforming output never becomes the specialist's result. Constraints checked at load: the top level must be an object (see below), every node needs a `type`, arrays need `items`, objects need `properties`, and every `required` name must be a declared property. Mast does not interpret the schema — there is no `Finding` Go type; the shape is a workload asset (`examples/workloads/gke-triage/schemas/finding.json`). |
+| `output_schema` | string | none | Path to a JSON-Schema document (`.json`, `.yaml`, `.yml`) **relative to the specialist file's own directory**, so a roster stays relocatable. Absent = the specialist returns free-form output. The document is read, type-normalized and checked at *load* time — a malformed contract fails the roster on startup, not on the first turn that dispatches to the specialist. Enforcement is ADK's: in `Task` mode the schema becomes the `finish_task` declaration and a non-conforming call comes back as a validation error the model can correct; in `SingleTurn` mode the reply is validated on the way out and a violation refuses the delegation. Either way the caller sees a refusal that names the offending key, and non-conforming output never becomes the specialist's result. Constraints checked at load: the top level must be an object (see below), every node needs a `type`, arrays need `items`, objects need `properties`, and every `required` name must be a declared property. Mast does not interpret the schema — there is no `Finding` Go type; the shape is a workload asset (`examples/workloads/gke-triage/schemas/finding.json`). |
 | `tools.builtin` | []string | — | **A declaration, not a grant ([status](#the-builtin-axis-is-a-declaration-not-a-grant-2026-08-21)).** Names built-in tools the specialist is declared to use. mast offers specialists no built-in tools, so nothing here is granted or narrowed and absent and empty mean the same thing. What reads it is the capability split, the fan-out branch check, and the write-surface startup log — each holding the specialist to the claim rather than acting on it. |
 | `tools.mcp[].server` | string | required if `mcp` set | MCP server name as configured under `.agents/mcp/` (path per [`./config-layout-design.md`](./config-layout-design.md), which is authoritative for layout; an earlier `.agents/mcp.json` reference here was stale). |
 | `tools.mcp[].tools` | []string | all from this server | Allowlist of tools from this MCP server. Absent = whole server; non-empty = narrowed to those names (enforced via stock `tool.FilterToolset`, verified 2026-07-25). |
@@ -216,7 +228,7 @@ Why declare capability at all rather than infer it from the allowlist? Because t
 
 A specialist may override the parent's model in one of two spellings, and the difference is portability.
 
-`model: claude-haiku-4-5` names an exact id. It is the right answer when a bundle has a reason to pin one — a model whose behaviour a prompt was tuned against, a deployment with one provider and no plans for another. It is the wrong answer for anything shipped, because the id is a vendor: a Gemini deployment cannot adopt a bundle whose analysts say `claude-haiku-4-5` without editing every `.tmpl`.
+`model: claude-haiku-4-5` names an exact id. It is the right answer when a bundle has a reason to pin one — a model whose behaviour a prompt was tuned against, a deployment with one provider and no plans for another. It is the wrong answer for anything shipped, because the id is a vendor: a Gemini deployment cannot adopt a bundle whose analysts say `claude-haiku-4-5` without editing every specialist file.
 
 `tier: small | mid | frontier` says the same thing about *spend* without saying anything about *vendor*. At build time `internal/compose` derives the provider family — the explicit `--provider` alias when there is one, otherwise the root model id's prefix, the same dispatch `BuildModel` makes — and resolves the tier through `pkg/taskclass.ModelForTier`. One roster declaration, `tier: small`, becomes `gemini-3.5-flash-lite` under a Gemini root and `claude-haiku-4-5` under an Anthropic one. Because it is the same table `--task` resolves against, `--task=debug` and `tier: frontier` cannot disagree about what the frontier model is.
 
@@ -244,7 +256,7 @@ type Spec struct {
     Budget      Budget
     Model       string         // empty = inherit parent
     Tools       ToolAllowlist  // zero value = inherit all from parent
-    Instruction string         // body of the .tmpl file
+    Instruction string         // body of the specialist file
 }
 
 type Budget struct {
@@ -270,7 +282,7 @@ type MCPAllowlist struct {
     Tools  []string // empty = all from this server
 }
 
-// Load reads all .tmpl files under dir, parses frontmatter + body.
+// Load reads all .specialist.md files under dir, parses frontmatter + body.
 func Load(dir string) ([]Spec, error)
 
 // Register wires each Spec as a tool on the parent, using ADK's
@@ -282,7 +294,7 @@ Estimated size: ~200-400 LOC including YAML parsing, allowlist resolution, model
 
 ## Auto-discovery
 
-At startup, mast scans `.agents/specialists/*.tmpl` once and registers each as a tool. The `--task` profile may default specialists on/off:
+At startup, mast scans `.agents/specialists/*.specialist.md` once and registers each as a tool. The `--task` profile may default specialists on/off:
 
 | Task class | Specialists default |
 |---|---|
@@ -314,12 +326,12 @@ Specialists compose naturally with the patterns already shipped or designed:
 
 ## Choosing between a skill and a specialist (rewritten 2026-07-25)
 
-*The previous revision of this section was pre-reversal residue: it told SKILL.md users to convert skills into instruction files or specialist `.tmpl`s. Since the 2026-07-01 skills reinstatement, skills are first-class — a SKILL.md bundle needs no migration at all: drop it in `.agents/skills/` and reference it from the bundle roster.*
+*The previous revision of this section was pre-reversal residue: it told SKILL.md users to convert skills into instruction files or specialist files. Since the 2026-07-01 skills reinstatement, skills are first-class — a SKILL.md bundle needs no migration at all: drop it in `.agents/skills/` and reference it from the bundle roster.*
 
 The remaining question is authoring-model choice for content *you* write:
 
 1. **Consuming a published SKILL.md** (GKE team, registry, community): use it as-is via `pkg/skills/`. No conversion.
-2. **Authoring mast-native operational content** that needs per-invocation budgets, tool allowlists, a model override, or `SingleTurn` mode: write a specialist `.tmpl`.
+2. **Authoring mast-native operational content** that needs per-invocation budgets, tool allowlists, a model override, or `SingleTurn` mode: write a specialist file.
 3. **Knowledge injection** (content that should ride in the parent's own context rather than be a callable): `pkg/instruction/`'s multi-file loader (`AGENTS.md` / `@include`).
 
 Converting an authored skill into a specialist (to gain budgets/allowlists) is [`./skills-design.md`](./skills-design.md)'s `mast skills convert --to-specialist` (v0.3+); this doc no longer proposes a separate migration script.
@@ -348,7 +360,7 @@ Converting an authored skill into a specialist (to gain budgets/allowlists) is [
 
 - **Hot-reload of specialist files at runtime.** v2 if needed.
 - **Per-specialist permission gate override** (specialist can write to /tmp but parent can't, etc.). Out of scope — specialists inherit parent's permission gate.
-- **Specialist authoring UI in mast-web.** Operators write `.tmpl` files in their editor of choice. Maybe later.
+- **Specialist authoring UI in mast-web.** Operators write `.specialist.md` files in their editor of choice. Maybe later.
 
 ### Previously out of scope, now supported via v2 primitives
 

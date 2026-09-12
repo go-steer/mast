@@ -123,7 +123,7 @@ result, err := mast.RunWorkload(ctx, "custom-triage", input,
 )
 ```
 
-Same for specialists — programmatic registration bypasses file discovery. Useful for library consumers who ship their own specialists inside the binary rather than requiring operators to author `.tmpl` files.
+Same for specialists — programmatic registration bypasses file discovery. Useful for library consumers who ship their own specialists inside the binary rather than requiring operators to author `.specialist.md` files.
 
 ### Server mode
 
@@ -207,7 +207,7 @@ The library API accepts both file-loaded and programmatic config, but the two ar
 - Programmatic `workload.Bundle` values are registered directly.
 - Both end up in the same `workload.Registry` and are indistinguishable at execution time.
 
-Same story for specialists (`.agents/specialists/*.tmpl` → `specialist.Spec` values; programmatic `specialist.Spec` registration is equivalent) and MCP config (`.agents/mcp.json` → `mcp.ServerConfig` values).
+Same story for specialists (`.agents/specialists/*.specialist.md` → `specialist.Spec` values; programmatic `specialist.Spec` registration is equivalent) and MCP config (`.agents/mcp.json` → `mcp.ServerConfig` values).
 
 **Implications:**
 - Library consumers can mix file-loaded and programmatic — load defaults from files, override specific bundles programmatically.

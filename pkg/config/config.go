@@ -40,7 +40,7 @@
 // are ignored (operators may keep e.g. workloads/archive/):
 //
 //   - <root>/workloads/*.yaml (also *.yml) — parsed by pkg/workload.
-//   - <root>/specialists/*.tmpl — parsed by pkg/specialists.
+//   - <root>/specialists/*.specialist.md — parsed by pkg/specialists.
 //   - <root>/a2a/*.yaml (also *.yml) — static A2A agent registrations,
 //     parsed by pkg/a2a (docs/a2a-design.md, "Static registration").
 //

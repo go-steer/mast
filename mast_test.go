@@ -36,7 +36,7 @@ import (
 	"github.com/go-steer/mast/pkg/workload"
 )
 
-// triageBundle is a programmatic workload: no YAML, no .tmpl files, no
+// triageBundle is a programmatic workload: no YAML, no specialist files, no
 // .agents/ discovery — plain pkg/workload + pkg/specialists values.
 func triageBundle(hitl bool) (workload.Bundle, []specialists.Spec) {
 	bundle := workload.Bundle{

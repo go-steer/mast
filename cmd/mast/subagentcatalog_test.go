@@ -168,7 +168,7 @@ func TestSubagentCatalogCarriesDeclaredFields(t *testing.T) {
 		Mode:        specialists.ModeTask,
 		Model:       "gemini-2.5-pro",
 		Capability:  specialists.CapabilityChangeExecutor,
-		Filename:    "specialists/change-executor.tmpl",
+		Filename:    "specialists/change-executor.specialist.md",
 	}}
 
 	got := subagentCatalog(nil, roster, workload.DispatchCoordinator)
@@ -176,7 +176,7 @@ func TestSubagentCatalogCarriesDeclaredFields(t *testing.T) {
 		Name:        "change-executor",
 		Description: "applies approved changes",
 		Model:       "gemini-2.5-pro",
-		Root:        "specialists/change-executor.tmpl",
+		Root:        "specialists/change-executor.specialist.md",
 		Modes:       []string{},
 		Invocation:  attach.InvocationTransfer,
 		Capability:  string(specialists.CapabilityChangeExecutor),
@@ -193,7 +193,7 @@ func TestSubagentCatalogCarriesDeclaredFields(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	const wantJSON = `{"name":"change-executor","description":"applies approved changes","model":"gemini-2.5-pro",` +
-		`"root":"specialists/change-executor.tmpl","modes":[],"invocation":"transfer",` +
+		`"root":"specialists/change-executor.specialist.md","modes":[],"invocation":"transfer",` +
 		`"capability":"change_executor","agent_mode":"Task","tools":{"mcp_grant":"all"}}`
 	if string(blob) != wantJSON {
 		t.Errorf("wire form\n got: %s\nwant: %s", blob, wantJSON)

@@ -129,7 +129,7 @@ spec:
             periodSeconds: 20
       volumes:
         # The workload dir (workload.yaml + mcp.json + schemas/*.json +
-        # specialists/*.tmpl) is projected from a flat ConfigMap;
+        # specialists/*.specialist.md) is projected from a flat ConfigMap;
         # ConfigMap keys can't contain "/", so the generator flattens
         # paths with "_" and items:.path reconstitutes the tree.
         #
@@ -139,8 +139,9 @@ spec:
         # mode routes to _fallback with no sign that a dedicated
         # specialist exists — a silent downgrade, not an error. The
         # schemas/ dir has the same property: `output_schema:` resolves
-        # relative to the .tmpl, so a specialist projected without its
-        # schema fails to load. The startup `workload config identity`
+        # relative to the .specialist.md file, so a specialist projected
+        # without its schema fails to load. The startup
+        # `workload config identity`
         # line reports how many files were loaded, which is the cheapest
         # way to catch an items: list that lost an entry.
         #
@@ -159,34 +160,34 @@ spec:
                 path: schemas/finding.json
               - key: schemas_change-report.json
                 path: schemas/change-report.json
-              - key: specialists_triage-classifier.tmpl
-                path: specialists/triage-classifier.tmpl
-              - key: specialists_CrashLoopBackOff.tmpl
-                path: specialists/CrashLoopBackOff.tmpl
-              - key: specialists_ImagePullBackOff.tmpl
-                path: specialists/ImagePullBackOff.tmpl
-              - key: specialists_ErrImagePull.tmpl
-                path: specialists/ErrImagePull.tmpl
-              - key: specialists_OOMKilled.tmpl
-                path: specialists/OOMKilled.tmpl
-              - key: specialists_FailedMount.tmpl
-                path: specialists/FailedMount.tmpl
-              - key: specialists_FailedScheduling.tmpl
-                path: specialists/FailedScheduling.tmpl
-              - key: specialists_BackOff.tmpl
-                path: specialists/BackOff.tmpl
-              - key: specialists_Unhealthy.tmpl
-                path: specialists/Unhealthy.tmpl
-              - key: specialists_NetworkNotReady.tmpl
-                path: specialists/NetworkNotReady.tmpl
-              - key: specialists_NodeNotReady.tmpl
-                path: specialists/NodeNotReady.tmpl
-              - key: specialists_Evicted.tmpl
-                path: specialists/Evicted.tmpl
-              - key: specialists__fallback.tmpl
-                path: specialists/_fallback.tmpl
-              - key: specialists_change-executor.tmpl
-                path: specialists/change-executor.tmpl
+              - key: specialists_triage-classifier.specialist.md
+                path: specialists/triage-classifier.specialist.md
+              - key: specialists_CrashLoopBackOff.specialist.md
+                path: specialists/CrashLoopBackOff.specialist.md
+              - key: specialists_ImagePullBackOff.specialist.md
+                path: specialists/ImagePullBackOff.specialist.md
+              - key: specialists_ErrImagePull.specialist.md
+                path: specialists/ErrImagePull.specialist.md
+              - key: specialists_OOMKilled.specialist.md
+                path: specialists/OOMKilled.specialist.md
+              - key: specialists_FailedMount.specialist.md
+                path: specialists/FailedMount.specialist.md
+              - key: specialists_FailedScheduling.specialist.md
+                path: specialists/FailedScheduling.specialist.md
+              - key: specialists_BackOff.specialist.md
+                path: specialists/BackOff.specialist.md
+              - key: specialists_Unhealthy.specialist.md
+                path: specialists/Unhealthy.specialist.md
+              - key: specialists_NetworkNotReady.specialist.md
+                path: specialists/NetworkNotReady.specialist.md
+              - key: specialists_NodeNotReady.specialist.md
+                path: specialists/NodeNotReady.specialist.md
+              - key: specialists_Evicted.specialist.md
+                path: specialists/Evicted.specialist.md
+              - key: specialists__fallback.specialist.md
+                path: specialists/_fallback.specialist.md
+              - key: specialists_change-executor.specialist.md
+                path: specialists/change-executor.specialist.md
   volumeClaimTemplates:
     # Session state: SQLite DB (sessions, durable pauses, abort +
     # interruption markers) plus room for growth. Uses the cluster's

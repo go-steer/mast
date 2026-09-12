@@ -396,7 +396,7 @@ mk_specialist() {
     echo
     echo "You are a UAT change executor. Handle the work item you are"
     echo "handed, then call finish_task. This is a test fixture."
-  } > "${dir}/specialists/${name}.tmpl"
+  } > "${dir}/specialists/${name}.specialist.md"
 }
 
 # ---- U-precall: one incident, with and without a ceiling ------------

@@ -71,7 +71,7 @@ description: |
 
 task_class: orchestrate           # public task classes: chat|debug|implement|research|review|orchestrate
 
-specialists:                       # references .agents/specialists/*.tmpl
+specialists:                       # references .agents/specialists/*.specialist.md
   - ImagePullBackOff
   - CrashLoopBackOff
   - OOMKilled
@@ -128,7 +128,7 @@ isolation:
 | `name` | string | yes | Unique within `.agents/workloads/`; used by explicit-selection and classifier-first resolution. |
 | `description` | string | yes | Human-readable; also consumed by classifier-first prompt construction. Phrase as "invoke this workload when …" |
 | `task_class` | string | yes | Public task class the bundle runs under. Determines agent mode + DefaultInstruction variant. |
-| `specialists` | []string | no | Roster of specialist names (filename minus `.tmpl`). Available as `invoke_specialist` targets to the planner; also available to plain-agent invocation. Empty = no specialists. |
+| `specialists` | []string | no | Roster of specialist names (filename minus `.specialist.md`). Available as `invoke_specialist` targets to the planner; also available to plain-agent invocation. Empty = no specialists. |
 | `tool_catalog.builtin` | []string | no | Allowlist of built-in tools. If absent, inherits task-class default. |
 | `tool_catalog.mcp[]` | []MCPAllow | no | Per-MCP-server tool allowlist (same shape as specialists). |
 | `planner.enabled` | bool | no (default false) | If true, planner LlmAgent runs; if false, plain agent runs. |

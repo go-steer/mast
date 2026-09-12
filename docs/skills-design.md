@@ -188,7 +188,7 @@ Policy layering means **operators can consume a skill safely without needing to 
 | Consideration | Reach for a specialist when… | Reach for a skill when… |
 |---|---|---|
 | Origin | You're authoring for a specific deployment | You're consuming a published template |
-| Format | Mast-native `.tmpl` schema | Cross-framework Anthropic-SKILL.md |
+| Format | Mast-native `.specialist.md` schema | Cross-framework Anthropic-SKILL.md |
 | Complexity | Complex — mode, budget, HITL, tool allowlist, model override, per-invocation overrides | Straightforward — task template with prompt + tool needs |
 | Update cadence | Rare (you own it) | Regular (publisher updates; you sync) |
 | Provenance | Local git repo | Signed / provenance-attested from publisher |
@@ -255,7 +255,7 @@ A deployment may consume skills from multiple registries simultaneously (Google-
 3. **Skill-injected instruction vs. specialist system prompt layering.** A workload bundle can enumerate both specialists and skills; how are their contents composed into the resulting agent's context? Bias: separately — each skill is a discrete tool invocation (skill body loaded into the tool's context, not the parent's); specialists are similarly encapsulated. No cross-pollination unless the skill/specialist explicitly reads state via state-bound access.
 4. **Skill `allowed_tools` intersection semantics.** Skill declares `mcp:gke:*`; bundle allows `mcp:gke:get_k8s_resource`. Result: skill can call `get_k8s_resource`; nothing else. Empty intersection: skill invocation errors on load with a clear message.
 5. **Local override of published skills.** Operator wants to consume `google://gke-team/incident-triage@v1.2` but override the model_hint. Options: (a) fork the skill locally, (b) `.agents/skills/overrides/gke-triage.overrides.yaml` with sparse patches, (c) workload-bundle-level override in the `skills:` roster entry. Bias: (c) for simple field overrides; (a) for behavior changes.
-6. **Migration path from skill → specialist.** When operator outgrows a skill, they can re-author as a specialist for finer control. `mast skills convert <name> --to-specialist > .agents/specialists/<name>.tmpl` — feasible but low-priority (v0.3+).
+6. **Migration path from skill → specialist.** When operator outgrows a skill, they can re-author as a specialist for finer control. `mast skills convert <name> --to-specialist > .agents/specialists/<name>.specialist.md` — feasible but low-priority (v0.3+).
 7. **Skill discovery beyond A2A registries.** WASM-based skill marketplaces (WASI-based sandboxed skills); Git-based catalogs (skills served from a repo, discovered via git submodule); IPFS-shaped decentralized catalogs. Not v0.1; capture as future direction.
 8. **Skill hot-reload semantics.** When a registry-discovered skill updates upstream, does the running mast pick it up? Bias: no auto-pickup — operators explicitly `mast skills sync` or the scheduled sync fires (v0.2 with `SIGHUP` semantics). Running sessions keep the skill version they started with; new sessions get the newer version.
 

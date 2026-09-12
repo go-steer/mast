@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,22 +31,62 @@ import (
 	"github.com/go-steer/mast/pkg/taskclass"
 )
 
-// LoadDir reads every *.tmpl file in dir non-recursively and parses each
-// into a Spec. Results are returned sorted by Spec.Name for deterministic
-// ordering.
+// Extension is the specialist file extension. These files are YAML
+// frontmatter plus a Markdown body and have never been Go templates —
+// nothing substitutes into them, and a `{{ ... }}` in one is refused
+// rather than interpolated (#272, checkPlaceholders below). The name
+// says what they are, and editors highlight them correctly (#292).
+const Extension = ".specialist.md"
+
+// LegacyExtension is what specialist files were called through v0.8.
+// Still loaded, with a deprecation warning, for one release: an
+// out-of-tree bundle is exactly the thing this project tells people to
+// write, so the rename cannot be a flag day. Removal is #349 on the
+// v0.9 milestone rather than a promise in this comment, so it can go
+// stale visibly.
+const LegacyExtension = ".tmpl"
+
+// specialistName splits a specialist filename into its stem and which
+// extension it used. ok is false for a file that is neither.
+func specialistName(base string) (stem string, legacy, ok bool) {
+	switch {
+	case strings.HasSuffix(base, Extension):
+		return strings.TrimSuffix(base, Extension), false, true
+	case strings.HasSuffix(base, LegacyExtension):
+		return strings.TrimSuffix(base, LegacyExtension), true, true
+	}
+	return base, false, false
+}
+
+// LoadDir reads every specialist file in dir non-recursively and parses
+// each into a Spec. Both Extension and LegacyExtension are accepted.
+// Results are returned sorted by Spec.Name for deterministic ordering.
+//
+// A stem defined under both extensions is refused. During the rename
+// the realistic mistake is a copy left behind, and the two files are
+// the same specialist under any reading — so which one wins would be an
+// alphabetical accident, and the stale half would keep running.
 func LoadDir(dir string) ([]Spec, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("specialists: read dir %q: %w", dir, err)
 	}
 	var specs []Spec
+	seen := map[string]string{} // stem -> filename it was first seen as
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		if !strings.HasSuffix(e.Name(), ".tmpl") {
+		stem, _, ok := specialistName(e.Name())
+		if !ok {
 			continue
 		}
+		if prev, dup := seen[stem]; dup {
+			return nil, fmt.Errorf(
+				"specialists: %q in %s is defined by both %s and %s — these are the same specialist under two extensions; delete the %s one (%s is deprecated, see #292)",
+				stem, dir, prev, e.Name(), LegacyExtension, LegacyExtension)
+		}
+		seen[stem] = e.Name()
 		path := filepath.Join(dir, e.Name())
 		spec, err := LoadFile(path)
 		if err != nil {
@@ -57,7 +98,34 @@ func LoadDir(dir string) ([]Spec, error) {
 	return specs, nil
 }
 
-// LoadFile reads and parses a single .tmpl file.
+// WarnLegacyExtension logs one deprecation warning naming every spec
+// still loaded from a LegacyExtension file, and nothing when there are
+// none. It lives here so both callers with a logger — pkg/config's
+// root load and cmd/mast's path mode — say the same thing; LoadDir
+// itself stays log-free so an embedder decides where this goes.
+func WarnLegacyExtension(logger *slog.Logger, specs []Spec) {
+	if logger == nil {
+		return
+	}
+	var stale []string
+	for _, s := range specs {
+		if s.LegacyExtension {
+			stale = append(stale, filepath.Base(s.Filename))
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	sort.Strings(stale)
+	logger.Warn("specialist files still use the deprecated "+LegacyExtension+" extension",
+		"files", strings.Join(stale, ", "),
+		"count", len(stale),
+		"rename_to", "<name>"+Extension,
+		"accepted_through", "v0.8",
+		"issue", "https://github.com/go-steer/mast/issues/292")
+}
+
+// LoadFile reads and parses a single specialist file.
 func LoadFile(path string) (Spec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -74,9 +142,10 @@ func LoadFile(path string) (Spec, error) {
 	if err := checkPlaceholders(path, body); err != nil {
 		return Spec{}, err
 	}
+	stem, legacy, _ := specialistName(filepath.Base(path))
 	name := fm.Name
 	if name == "" {
-		name = strings.TrimSuffix(filepath.Base(path), ".tmpl")
+		name = stem
 	}
 	if fm.Description == "" {
 		return Spec{}, fmt.Errorf("specialists: %q: description is required", path)
@@ -147,6 +216,7 @@ func LoadFile(path string) (Spec, error) {
 	}
 	return Spec{
 		Filename:         path,
+		LegacyExtension:  legacy,
 		Name:             name,
 		Description:      fm.Description,
 		Mode:             mode,
@@ -162,7 +232,7 @@ func LoadFile(path string) (Spec, error) {
 }
 
 // splitFrontmatter separates a `---\n<yaml>\n---\n<body>` document. A
-// missing frontmatter block is an error — every .tmpl must declare
+// missing frontmatter block is an error — every specialist file must declare
 // at minimum its description.
 func splitFrontmatter(data []byte) (Frontmatter, string, error) {
 	const sep = "---"

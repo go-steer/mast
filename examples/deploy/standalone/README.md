@@ -33,7 +33,7 @@ Files here:
    ([`docs/config-layout-design.md`](../../../docs/config-layout-design.md));
    the unit pins it via `MAST_CONFIG_DIR` so discovery never depends
    on systemd's working directory. Drop your `workloads/*.yaml` and
-   `specialists/*.tmpl` there (see
+   `specialists/*.specialist.md` there (see
    [`examples/workloads/gke-triage/`](../../workloads/gke-triage/) for
    the shape), then point `--workload=<name>` in the unit at your
    workload's name.

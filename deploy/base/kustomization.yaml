@@ -48,20 +48,20 @@ configMapGenerator:
       - mcp.json=config/mcp.json
       - schemas_finding.json=config/schemas/finding.json
       - schemas_change-report.json=config/schemas/change-report.json
-      - specialists_triage-classifier.tmpl=config/specialists/triage-classifier.tmpl
-      - specialists_CrashLoopBackOff.tmpl=config/specialists/CrashLoopBackOff.tmpl
-      - specialists_ImagePullBackOff.tmpl=config/specialists/ImagePullBackOff.tmpl
-      - specialists_ErrImagePull.tmpl=config/specialists/ErrImagePull.tmpl
-      - specialists_OOMKilled.tmpl=config/specialists/OOMKilled.tmpl
-      - specialists_FailedMount.tmpl=config/specialists/FailedMount.tmpl
-      - specialists_FailedScheduling.tmpl=config/specialists/FailedScheduling.tmpl
-      - specialists_BackOff.tmpl=config/specialists/BackOff.tmpl
-      - specialists_Unhealthy.tmpl=config/specialists/Unhealthy.tmpl
-      - specialists_NetworkNotReady.tmpl=config/specialists/NetworkNotReady.tmpl
-      - specialists_NodeNotReady.tmpl=config/specialists/NodeNotReady.tmpl
-      - specialists_Evicted.tmpl=config/specialists/Evicted.tmpl
-      - specialists__fallback.tmpl=config/specialists/_fallback.tmpl
-      - specialists_change-executor.tmpl=config/specialists/change-executor.tmpl
+      - specialists_triage-classifier.specialist.md=config/specialists/triage-classifier.specialist.md
+      - specialists_CrashLoopBackOff.specialist.md=config/specialists/CrashLoopBackOff.specialist.md
+      - specialists_ImagePullBackOff.specialist.md=config/specialists/ImagePullBackOff.specialist.md
+      - specialists_ErrImagePull.specialist.md=config/specialists/ErrImagePull.specialist.md
+      - specialists_OOMKilled.specialist.md=config/specialists/OOMKilled.specialist.md
+      - specialists_FailedMount.specialist.md=config/specialists/FailedMount.specialist.md
+      - specialists_FailedScheduling.specialist.md=config/specialists/FailedScheduling.specialist.md
+      - specialists_BackOff.specialist.md=config/specialists/BackOff.specialist.md
+      - specialists_Unhealthy.specialist.md=config/specialists/Unhealthy.specialist.md
+      - specialists_NetworkNotReady.specialist.md=config/specialists/NetworkNotReady.specialist.md
+      - specialists_NodeNotReady.specialist.md=config/specialists/NodeNotReady.specialist.md
+      - specialists_Evicted.specialist.md=config/specialists/Evicted.specialist.md
+      - specialists__fallback.specialist.md=config/specialists/_fallback.specialist.md
+      - specialists_change-executor.specialist.md=config/specialists/change-executor.specialist.md
 
 generatorOptions:
   # Overlays reference these ConfigMaps by stable name; disabling the

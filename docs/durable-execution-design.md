@@ -364,7 +364,7 @@ Durable execution enables a debugging capability worth calling out separately: *
 
 Use cases:
 - **Debug a production regression** locally: pull the snapshot, replay against a local mast build, step through the events in a debugger.
-- **Compare specialist versions**: replay the same session against specialist A's `.tmpl` vs. specialist B's; diff the resulting event streams.
+- **Compare specialist versions**: replay the same session against specialist A's file vs. specialist B's; diff the resulting event streams.
 - **Test a bundle refinement** proposed by the learning pipeline: replay historical sessions against the proposed bundle vs. the declared bundle; verify no regressions.
 - **Training / documentation**: use anonymized snapshots as reference material for new operators.
 

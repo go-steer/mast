@@ -25,8 +25,8 @@ import (
 	"github.com/go-steer/mast/pkg/specialists"
 )
 
-// tmplWithSchema is a minimal spec that points at ../schemas/<ref>.
-func tmplWithSchema(ref string) string {
+// specWithSchema is a minimal spec that points at ../schemas/<ref>.
+func specWithSchema(ref string) string {
 	return "---\ndescription: Emits a finding.\noutput_schema: " + ref + "\n---\nbody\n"
 }
 
@@ -56,9 +56,9 @@ required:
 `
 
 // writeBundle lays out the shape a real workload has — a specialists/
-// dir next to a schemas/ dir — and returns the .tmpl path. The layout is
+// dir next to a schemas/ dir — and returns the specialist file path. The layout is
 // part of what is under test: `../schemas/x.json` has to resolve against
-// the .tmpl file's own directory, not the process's cwd, or a roster
+// the specialist file's own directory, not the process's cwd, or a roster
 // stops being relocatable.
 func writeBundle(t *testing.T, ref string, schema string) string {
 	t.Helper()
@@ -76,9 +76,9 @@ func writeBundle(t *testing.T, ref string, schema string) string {
 			t.Fatalf("write schema: %v", err)
 		}
 	}
-	path := filepath.Join(specDir, "diagnoser.tmpl")
-	if err := os.WriteFile(path, []byte(tmplWithSchema(ref)), 0o600); err != nil {
-		t.Fatalf("write tmpl: %v", err)
+	path := filepath.Join(specDir, "diagnoser.specialist.md")
+	if err := os.WriteFile(path, []byte(specWithSchema(ref)), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
 	}
 	return path
 }
@@ -224,7 +224,7 @@ func TestLoadFile_OutputSchemaRejects(t *testing.T) {
 			}
 			// Every load error names the specialist file, because the
 			// operator reading it at 3am has a roster, not a stack.
-			if !strings.Contains(err.Error(), "diagnoser.tmpl") {
+			if !strings.Contains(err.Error(), "diagnoser.specialist.md") {
 				t.Errorf("error does not name the specialist file: %v", err)
 			}
 		})
@@ -235,9 +235,9 @@ func TestLoadFile_OutputSchemaRejects(t *testing.T) {
 // specialists have no report contract and must keep loading without one.
 func TestLoadFile_NoOutputSchema(t *testing.T) {
 	dir := t.TempDir()
-	writeTempTmpl(t, dir, "plain.tmpl", "---\ndescription: No contract.\n---\nbody\n")
+	writeTempSpec(t, dir, "plain.specialist.md", "---\ndescription: No contract.\n---\nbody\n")
 
-	spec, err := specialists.LoadFile(filepath.Join(dir, "plain.tmpl"))
+	spec, err := specialists.LoadFile(filepath.Join(dir, "plain.specialist.md"))
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
