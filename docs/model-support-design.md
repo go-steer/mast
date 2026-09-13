@@ -608,6 +608,122 @@ before M0.
 
 ---
 
+## 10. Prior art surveyed: `charmbracelet/fantasy`
+
+Read 2026-09-13 against fantasy **v0.43.0** (`charm.land/fantasy`, Apache 2.0,
+built to power Charm's Crush). It is worth a section rather than a footnote
+because on paper it is M3 already written: its provider set is very close to
+[§5](#5-the-prioritized-lists)'s list — `openai`, `openaicompat`, `azure`,
+`bedrock`, `openrouter`, `vercel`, `google`, `anthropic`, plus `kronk` for
+local models — and it implements **both** OpenAI dialects, Chat Completions in
+`providers/openai/language_model.go` and Responses in
+`responses_language_model.go`. That is the pair
+[§4.1](#41-three-wire-dialects-not-n-providers)'s decision proposes to build. So the question "does M3 shrink to an import?" is a fair one
+and deserves a measured answer rather than a reflex.
+
+**Decision proposed:** no. fantasy is adopted as **prior art and a test
+pattern, not as a dependency**; `pkg/providers/openai` stays mast's own per
+§4.1, and three specific things are lifted with attribution
+([§10.2](#102-what-is-worth-taking)).
+
+### 10.1 Why it cannot be the runtime
+
+The seam does not line up, and the mismatch is not cosmetic. mast's provider
+contract is ADK's `model.LLM` — `GenerateContent(ctx, *LLMRequest, stream)
+iter.Seq2[*LLMResponse, error]` over `genai.Content`. fantasy's is its own
+`LanguageModel` (`Generate`/`Stream`/`GenerateObject` over `fantasy.Prompt`,
+`model.go:255`) feeding its own agent loop in `agent.go`. mast cannot take that
+loop — the runner, the session store and the resume contract of
+[`./spike-findings.md`](./spike-findings.md) are ADK's — so importing fantasy
+means a genai↔fantasy translation in front of the fantasy↔`openai-go` one it
+already does, and the middle hop is lossy exactly where this document is
+strict:
+
+- **`fantasy.Usage` is six plain `int64`s** (`model.go:10`) — input, output,
+  total, reasoning, cache-creation, cache-read. The *buckets* are right, and
+  notably it carries the cache-**write** one `genai`'s struct lacks
+  ([§4.3](#43-usage-one-normalized-record-carried-beside-the-genai-one)). But a
+  count the provider never reported arrives as `0`, which is precisely the
+  distinction **R3** exists to preserve and the reason §4.3's `Detail` is
+  pointer-valued. Recovering it would mean reading the raw response anyway.
+- **Provider specifics live in a typed registry** keyed by provider id
+  (`provider_registry.go`), so per-provider metadata would be translated into
+  fantasy's vocabulary and then back out into `LLMResponse.CustomMetadata`.
+  §4.3's sidecar wants the SDK's own response, one hop from the wire.
+
+The dependency arithmetic, measured rather than assumed:
+
+| Cost | Measurement |
+|---|---|
+| Build-graph weight | `go list -deps ./providers/openaicompat` is **269 packages, 77 non-stdlib, and clean** — no AWS, no Prometheus, no OTel SDK, no `kronk`/`yzma`. `scripts/check-slim-deps.sh` would still pass. The module's *heavy* requires are pruned by the import graph, so [§7](#7-risks)'s `go.sum` note is the real shape of it, not a build-size problem |
+| Duplicate infrastructure | That same slice adds a **second JSON-schema library** (`kaptinlin/jsonschema`) beside `google/jsonschema-go`, and a **second YAML parser** (`goccy/go-yaml`) beside `yaml.v3` |
+| Go floor | fantasy's `go.mod` says `go 1.27.0`; mast's says `go 1.26.6`. Importing it raises the minimum for every embedder |
+| **Forced SDK upgrades under the shipped adapters** | MVS would take `genai` v1.66.0 → **v1.70.0** and `anthropic-sdk-go` v1.43.0 → **v1.68.0**. This is the sharpest one: adding the *third* provider would move the two SDKs the *first two* adapters are tested against, on someone else's release cadence |
+| API clock | v0.43.0, pre-1.0, moving at the pace its consumer needs, against the [#300](https://github.com/go-steer/mast/issues/300) freeze. Containable — `pkg/providers/*` is named unsupported there — but it is a v0.x dependency under a v1.0 claim |
+
+None of these is individually disqualifying. Together, against a middle hop
+that has to be unwound to satisfy R3 anyway, they say the import buys less
+than it costs.
+
+### 10.2 What is worth taking
+
+Apache 2.0, so all of this is portable under [§10.4](#104-license-mechanics).
+
+1. **`providertests/` — the best idea in the repository.** One shared suite
+   (`common_test.go`: simple, tool, multi-tool, streaming and non-streaming)
+   run against *every* provider through a builder pair, with real HTTP recorded
+   by `charm.land/x/vcr`. That is **R8**'s credential-free recorded turn and
+   [§6](#6-sequencing)'s per-dialect conformance corpus, in the harness shape
+   above mast's per-adapter `toolwire_test.go`. It is a test-only dependency,
+   so it never touches the slim graph.
+2. **`retry.go`.** `retry-after-ms` preferred over `retry-after`, an HTTP-date
+   fallback, a sanity bound on the delay, and a one-shot `OnAuthRefresh` hook
+   that re-runs the pass with a fresh budget and at most once. [#312](https://github.com/go-steer/mast/issues/312)
+   names retry posture as an open question and [#239/#240](https://github.com/go-steer/mast/issues/239)
+   already reconciled genai-vs-anthropic at `model.LLM`; this is a third answer
+   to read before writing a fourth.
+3. **`providers/openaicompat/language_model_hooks.go`** (597 lines) and the
+   per-provider hook files for openrouter, vercel and azure. This is the
+   accumulated list of ways an "OpenAI-compatible" server is not, and it is
+   direct input to [§4.6](#46-capabilities-are-declared-and-mismatches-refuse-at-startup)'s
+   capability vocabulary — the existence of the package at all is independent
+   evidence for the (profile, model) cut of [§4.2](#42-a-model-is-named-by-profile-model-id).
+4. **`providers/bedrock/bedrock.go` is 87 lines** — a naming wrapper that calls
+   its own anthropic provider with `WithBedrock()`, exactly the shape of mast's
+   `pkg/providers/anthropic/vertex.go`. That is corroboration for
+   [§5.1](#51-managed-providers) P1 #4 ("the cheapest item on this page") and it
+   holds whether or not anything else here is taken: `anthropic-sdk-go@v1.43.0`
+   already ships the `bedrock` subpackage mast has in its graph today.
+
+`jsonrepair/` (1,648 lines, for model-emitted tool JSON that does not parse) is
+tempting and is **not** free here: it is called from fantasy's `agent.go` and
+`schema/schema.go`, not from its adapters, so mast's ADK tool path would not
+inherit it by importing a provider. Note it as a candidate if tool-argument
+parse failures show up in #168–#172's measurement, not before.
+
+### 10.3 One negative result worth recording
+
+fantasy's Google provider **never sets `GoogleSearch` or `URLContext`** —
+neither identifier appears anywhere under `providers/google/`. Its default
+therefore matches mast's post-[#340](https://github.com/go-steer/mast/issues/340)
+baseline-off posture by accident rather than by policy, and there is no opt-in
+surface for the three provider-neutral `builtin_tools:` keys to bind to. Taking
+it would trade a gate that can be opened for a hard-coded closed — which is the
+right default and the wrong mechanism, and it is worth knowing before anyone
+reaches for it as the shortcut to a second genai path.
+
+### 10.4 License mechanics
+
+Apache 2.0 with a `NOTICE` file (`Copyright 2025-2026 Charmbracelet, Inc.`), so
+compatible and portable. Two conditions on any lifted code: the Charm copyright
+stays on the file — house rule #2's `Copyright 2026 Google LLC` header alone
+would be **wrong** on a derived file — and the `NOTICE` obligation is carried.
+The convention already exists in this repo: the `// Originally derived from
+go-steer/core-agent@<sha>` line at `../pkg/providers/anthropic/llm.go:15`. A
+checklist, not a blocker.
+
+---
+
 ## Resolved decisions
 
 *(Empty. Everything in this doc is a proposal until it appears here and in the
