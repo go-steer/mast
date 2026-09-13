@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+- **A candidate model is measured on a schedule, and a baseline now has to have
+  measured the same thing.** v0.8.0's deferral holds the gemini `frontier`
+  default at `gemini-3.7-flash` until the judged corpus has been run against
+  `gemini-3.8-flash` — which left the condition resting on someone remembering
+  to run it. `evals-candidate-gemini.yml` runs it weekly instead: the same 31
+  scenarios against the candidate, graded by the incumbent so the model under
+  test is the only variable moving, diffed against the nightly's own board. It
+  reports and never gates. The other half of the bar is the outcome tier on the
+  same model, which has to be started by hand — `GITHUB_TOKEN` cannot fire a
+  `workflow_dispatch`.
+
+  That comparison exposed something the nightlies already had wrong.
+  `dev/ci/evals-nightly-baseline.sh` took the *newest successful run* of a
+  workflow as its baseline, and both nightlies accept a `model` dispatch input
+  whose board uploads under the same artifact name — so one hand-run against
+  another model became the next night's baseline. The numbers were never
+  falsified: the delta compares the model pair recorded on both boards and
+  captions a mismatch "the scores below are not comparable, they are two
+  different measurements". What it cost was the trend, which is what a nightly
+  is for. The lookup now walks back through the last few successful runs and
+  takes the first board whose recorded model *and* grader match this run's,
+  which also covers a run that skipped unconfigured and an artifact that aged
+  out while an older one survived. A deliberate cross-model baseline is
+  requested explicitly with `MAST_EVALS_BASELINE_MODEL`; the candidate workflow
+  is the one caller that wants one.
+
+  **Both of these were written on 2026-09-10 and neither was on `main` until
+  now** ([#354](https://github.com/go-steer/mast/issues/354)). The pull request
+  that carried them was stacked on another, that base was squash-merged into
+  `main` 37 minutes before the child merged *into the base*, and the child's
+  merge therefore landed on an orphaned branch. GitHub reports it as merged;
+  the trunk never had it. So the candidate workflow has never run once, and
+  every nightly since 2026-09-10 has been exposed to the baseline bug above.
+  Nothing in v0.8.0's notes claimed either, so the shipped release was not
+  false — but a merged badge over absent content is a failure mode no check in
+  this repo can see, and the remedy is procedural: **merge a stack one pull
+  request at a time, bottom-up, re-targeting each child onto `main` first.**
+
 ## v0.8.0 (2026-09-13)
 
 *What was quietly not true is now refused.*

@@ -262,9 +262,11 @@ func ModelForTier(provider, tier string) string {
 			// recorded, with its argument and its discharge condition,
 			// in deferredPromotions (latest_in_line_test.go); it
 			// excuses 3.8 and nothing after it, so a 3.9-flash reds the
-			// build rather than inheriting the reasoning. Run the
-			// corpus over `--model gemini-3.8-flash` before editing
-			// this line.
+			// build rather than inheriting the reasoning. The corpus
+			// runs against 3.8-flash weekly
+			// (.github/workflows/evals-candidate-gemini.yml); read its
+			// board, and the outcome tier on the same model, before
+			// editing this line.
 			//
 			// The ported table originally said gemini-3.5-pro — a
 			// model id that never shipped (inherited from core-agent,

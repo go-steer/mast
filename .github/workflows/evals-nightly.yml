@@ -96,6 +96,15 @@ jobs:
     # Forks have no credentials and would post an empty board.
     if: github.repository == 'go-steer/mast'
     timeout-minutes: 90
+    # Job-level rather than on the judge step: the baseline step reads
+    # the same two values to decide whether a previous board measured
+    # the same thing, and the two must not be able to drift apart. Both
+    # may be empty, which lets the harness pick its own defaults — and
+    # leaves the baseline unchecked, so set vars.MAST_EVALS_MODEL /
+    # vars.MAST_EVALS_GRADER if you want the check to bite here.
+    env:
+      MAST_EVALS_MODEL: ${{ inputs.model || vars.MAST_EVALS_MODEL }}
+      MAST_EVALS_GRADER: ${{ inputs.grader || vars.MAST_EVALS_GRADER }}
     steps:
       - uses: actions/checkout@v4
 
@@ -119,7 +128,9 @@ jobs:
 
       # Last night's board, so tonight's can be a delta rather than a
       # wall of absolute numbers. A first run (or an expired artifact)
-      # has none, and the delta section is simply omitted.
+      # has none, and the delta section is simply omitted — as it is
+      # when the newest boards measured a different model than tonight,
+      # which a `model` dispatch of this workflow produces.
       - name: Fetch the previous board
         if: steps.config.outputs.configured == 'true'
         env:
@@ -131,8 +142,6 @@ jobs:
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
           CLOUD_ML_REGION: ${{ vars.MAST_EVALS_VERTEX_REGION || 'us-east5' }}
-          MAST_EVALS_MODEL: ${{ inputs.model || vars.MAST_EVALS_MODEL }}
-          MAST_EVALS_GRADER: ${{ inputs.grader || vars.MAST_EVALS_GRADER }}
         run: dev/ci/evals-nightly.sh
 
       # Uploaded whether or not the run was clean: a board with a row
