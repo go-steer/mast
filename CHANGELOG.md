@@ -1,34 +1,89 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 (2026-09-13)
 
-- **Specialist files are now `<name>.specialist.md`, not `<name>.tmpl`.** They
-  are YAML frontmatter plus a Markdown body and have never been Go templates:
-  `text/template` is imported by exactly one package in the module
-  (`pkg/planner`, for the planner's instruction) and it reads none of them
-  ([#292](https://github.com/go-steer/mast/issues/292)).
+*What was quietly not true is now refused.*
 
-  The old name was not just inaccurate. A `{{ ... }}` in a body is ADK's
-  placeholder syntax, not the author's, and
-  [#272](https://github.com/go-steer/mast/issues/272) had to add a load-time
-  refusal for it — a defect an author is invited to write by an extension
-  that tells them they are writing a template.
+v0.7 added capability — a change that carries a route back, and a gate a real
+model can red. v0.8 adds very little. It is the release where a run of things
+the project had been asserting turned out not to hold, and each one is now
+enforced, corrected, or written down honestly.
 
-  **`.tmpl` still loads.** mast warns at startup, naming each file and the
-  spelling to move to. To migrate, rename; nothing inside the files changes,
-  and the specialist name is the stem either way:
+The pattern is worth naming, because it is why none of these were caught by a
+test. Each was a *claim* rather than a code path: a provider default nobody
+had read, a bundle key nobody had misspelled yet, two package names nobody had
+resolved, a file extension nobody had questioned, a version string a green
+lint had been reading past for three releases. Tests exercise what the code
+does. None of these were about what the code does.
 
-  ```sh
-  cd .agents/specialists
-  for f in *.tmpl; do mv "$f" "${f%.tmpl}.specialist.md"; done
+**Three breaking changes, and the first one is silent.** A Gemini workload
+that had been getting grounded web search stops getting it, and does not
+error — it answers worse. Read that entry before upgrading. The other two fail
+loudly: an unrecognised key in `workload.yaml` is now a load error, and
+`budget.Limits.Catalog` no longer exists. Separately, `.tmpl` specialist files
+still load with a deprecation warning, and stop loading in v0.9.
+
+Four corrections in this release changed no code and so have no entry below,
+but they are the same pass and are on the docs site now. mast no longer claims
+the library gets the daemon's subsystems — it gets the governance layer, while
+everything that starts a turn with nobody calling is `package main`.
+"Multi-provider" is stated as two vendors and four deployment paths rather
+than implying six by counting a fake and a cache as peers. The deployment
+ambition is settled as *someone else installs this*, with the four unpaid
+bills listed on the roadmap rather than left to be discovered. And `docs-lint`
+now reads version claims — the rule whose absence let the install page serve
+v0.4.0 download URLs, and a green check, for three releases.
+
+- **The provider's server-side built-in tools are now off by default, on every
+  provider, and a bundle turns them on with `builtin_tools:`.** Breaking, and
+  deliberately so: every Gemini model mast constructed was wrapped with
+  `GoogleSearch: true, URLContext: true` and no config key reached it, so a
+  workload that wants grounding must now ask for it
+  ([#324](https://github.com/go-steer/mast/issues/324)).
+
+  ```yaml
+  builtin_tools:
+    web_search: true      # gemini: google_search   anthropic: web_search
+    url_context: true     # gemini only
+    code_execution: false # gemini only
   ```
 
-  One specialist present under **both** extensions is a load error rather
-  than a silent pick: mid-rename the leftover is usually the stale copy, and
-  choosing it would mean edits to the renamed file quietly do nothing.
+  What made this worth breaking is that these tools are invisible to every
+  control mast has. A built-in runs inside the vendor's infrastructure and its
+  result arrives folded into the response, so it never becomes a tool call: the
+  permissions gate has nothing to allow, the write gate nothing to park, the
+  effect outbox nothing to record, and the transcript shows a model that simply
+  knew something. A specialist declared `read_only` — a declaration
+  `CheckCapabilitySplit` verifies at startup and [#295](https://github.com/go-steer/mast/issues/295)
+  turned into a runtime measurement — could read the public internet, and the
+  four releases of hardening in front of it were all looking the other way.
 
-  Support for `.tmpl` is removed in v0.9
-  ([#349](https://github.com/go-steer/mast/issues/349)).
+  **mast's baseline is off, not each vendor's baseline**, and that is the part
+  upstream did not do. Gemini ships search and URL context on; Anthropic ships
+  search off. Inheriting them would mean one mast image changing an unattended
+  agent's reach with a `--provider` flag, against the premise that the same
+  bundle runs on either. It also makes the paths with no bundle to read — `mast
+  run`, `mast.Run`, the eval rigs — safe by construction rather than by
+  remembering to write a key. `pkg/providers/gemini.DefaultBuiltinTools()` is
+  unchanged and still on: it is a recommendation to a library caller wrapping a
+  Gemini model directly, and `internal/compose` no longer passes it.
+
+  The keys are tri-state (`*bool`). Absent means mast's default; an explicit
+  `false` records that somebody decided. The gate is per bundle — a specialist's
+  `model:` override resolves through the same gate the root does, so a workload
+  that turned search off cannot have it handed back by an analyst on another
+  tier. There is deliberately no per-specialist axis; under a default-off
+  baseline there is nothing for a specialist to reclaim.
+
+  The daemon now logs what the **constructed model** will send —
+  `model constructed name=gemini-3.7-flash builtin_tools=web_search` — rather
+  than what the bundle said. YAML decoding does not reject unknown keys, so
+  `builtin_tols:` is discarded in silence and a line derived from the same
+  struct would have agreed with the typo. `builtin_tools=none` means the
+  provider has these tools and all of them are off; no field at all means the
+  backend has no such concept (the offline fakes). Ported from core-agent
+  `cbcb624`, with the default flip and the dropped per-specialist axis as
+  mast's own divergences.
 
 - **`workload.yaml` carries a `schema_version:`, and an unrecognised key is now
   a load error rather than silence.** The bundle is edited by operators who
@@ -90,56 +145,76 @@
   the strict decoder before it was adopted, and both checks are pinned as
   tests.
 
-- **The provider's server-side built-in tools are now off by default, on every
-  provider, and a bundle turns them on with `builtin_tools:`.** Breaking, and
-  deliberately so: every Gemini model mast constructed was wrapped with
-  `GoogleSearch: true, URLContext: true` and no config key reached it, so a
-  workload that wants grounding must now ask for it
-  ([#324](https://github.com/go-steer/mast/issues/324)).
+- **v1.0 now has a definition: it is the API freeze, and nothing else.**
+  Restarting version numbers at v0.1.0 is what dropped the stability promises
+  mast inherited when it forked from core-agent. v1.0 is the release that
+  makes them again, and the number will carry no other claim
+  ([#300](https://github.com/go-steer/mast/issues/300)).
 
-  ```yaml
-  builtin_tools:
-    web_search: true      # gemini: google_search   anthropic: web_search
-    url_context: true     # gemini only
-    code_execution: false # gemini only
+  **Six import paths** follow semver from v1.0 — the module root,
+  `pkg/agent`, `pkg/transcript`, `pkg/workload`, `pkg/specialists` and
+  `pkg/budget` — with the other 27 packages under `pkg/` **named
+  individually** as unsupported rather than described as a remainder, because
+  a reader cannot check a remainder against their own import list. `cmd/mast`
+  is in the promise too — flag names, subcommand verbs, and exit codes `0`
+  through `3` — since its callers are shell scripts, systemd units and
+  manifests, none of which a compiler can warn. That half is a check rather
+  than a sentence: `cmd/mast/testdata/cli-surface.txt` pins the surface and
+  deliberately excludes `--help` prose, so wording fixes do not churn the
+  contract.
+
+  Writing this down meant correcting what the corpus had been promising since
+  2026-07-25, which was stability for "the five packages the four pillars
+  stand on". **Two of those five have never existed.** There is no
+  `pkg/provider` and no `pkg/tool`; the real provider extension point is
+  `mast.Config.Model`, a *field* typed on ADK's `model.LLM`. And the mechanism
+  that decision named for everything else — a `// Experimental: API may change
+  without deprecation cycle` marker — was never once written into a `.go` file
+  across seven releases. So for seven releases the answer to "what is not
+  covered" had no enforcement and no readers. A named list in
+  [`DESIGN.md`](./DESIGN.md#the-v10-stability-promise) replaces it, and
+  [`docs/library-api-design.md`](./docs/library-api-design.md)'s surface table
+  is marked superseded rather than patched — every one of its 18 rows is
+  missing the `pkg/` prefix, so none of the paths resolve.
+
+  **What v1.0 will not mean is production-ready.** The threat model
+  ([#305](https://github.com/go-steer/mast/issues/305)) does not exist and the
+  deprecation policy ([#304](https://github.com/go-steer/mast/issues/304)) is
+  a gate on the tag rather than a follow-up to it. Two clocks stay separate
+  from the Go one: wire contracts (attach, A2A, AG-UI, inject) and the bundle
+  schema version, feature-detected by clients no Go compiler sees. One thing
+  is not a policy choice at all — an ADK major can only ship as a mast major,
+  because `mast.Config` exposes `model.LLM` and `session.Service` and Go's
+  semantic import versioning makes `adk/v3/model.LLM` a different type from
+  the v2 one. Such a release will carry no other breaking changes.
+
+- **Specialist files are now `<name>.specialist.md`, not `<name>.tmpl`.** They
+  are YAML frontmatter plus a Markdown body and have never been Go templates:
+  `text/template` is imported by exactly one package in the module
+  (`pkg/planner`, for the planner's instruction) and it reads none of them
+  ([#292](https://github.com/go-steer/mast/issues/292)).
+
+  The old name was not just inaccurate. A `{{ ... }}` in a body is ADK's
+  placeholder syntax, not the author's, and
+  [#272](https://github.com/go-steer/mast/issues/272) had to add a load-time
+  refusal for it — a defect an author is invited to write by an extension
+  that tells them they are writing a template.
+
+  **`.tmpl` still loads.** mast warns at startup, naming each file and the
+  spelling to move to. To migrate, rename; nothing inside the files changes,
+  and the specialist name is the stem either way:
+
+  ```sh
+  cd .agents/specialists
+  for f in *.tmpl; do mv "$f" "${f%.tmpl}.specialist.md"; done
   ```
 
-  What made this worth breaking is that these tools are invisible to every
-  control mast has. A built-in runs inside the vendor's infrastructure and its
-  result arrives folded into the response, so it never becomes a tool call: the
-  permissions gate has nothing to allow, the write gate nothing to park, the
-  effect outbox nothing to record, and the transcript shows a model that simply
-  knew something. A specialist declared `read_only` — a declaration
-  `CheckCapabilitySplit` verifies at startup and [#295](https://github.com/go-steer/mast/issues/295)
-  turned into a runtime measurement — could read the public internet, and the
-  four releases of hardening in front of it were all looking the other way.
+  One specialist present under **both** extensions is a load error rather
+  than a silent pick: mid-rename the leftover is usually the stale copy, and
+  choosing it would mean edits to the renamed file quietly do nothing.
 
-  **mast's baseline is off, not each vendor's baseline**, and that is the part
-  upstream did not do. Gemini ships search and URL context on; Anthropic ships
-  search off. Inheriting them would mean one mast image changing an unattended
-  agent's reach with a `--provider` flag, against the premise that the same
-  bundle runs on either. It also makes the paths with no bundle to read — `mast
-  run`, `mast.Run`, the eval rigs — safe by construction rather than by
-  remembering to write a key. `pkg/providers/gemini.DefaultBuiltinTools()` is
-  unchanged and still on: it is a recommendation to a library caller wrapping a
-  Gemini model directly, and `internal/compose` no longer passes it.
-
-  The keys are tri-state (`*bool`). Absent means mast's default; an explicit
-  `false` records that somebody decided. The gate is per bundle — a specialist's
-  `model:` override resolves through the same gate the root does, so a workload
-  that turned search off cannot have it handed back by an analyst on another
-  tier. There is deliberately no per-specialist axis; under a default-off
-  baseline there is nothing for a specialist to reclaim.
-
-  The daemon now logs what the **constructed model** will send —
-  `model constructed name=gemini-3.7-flash builtin_tools=web_search` — rather
-  than what the bundle said. YAML decoding does not reject unknown keys, so
-  `builtin_tols:` is discarded in silence and a line derived from the same
-  struct would have agreed with the typo. `builtin_tools=none` means the
-  provider has these tools and all of them are off; no field at all means the
-  backend has no such concept (the offline fakes). Ported from core-agent
-  `cbcb624`, with the default flip and the dropped per-specialist axis as
-  mast's own divergences.
+  Support for `.tmpl` is removed in v0.9
+  ([#349](https://github.com/go-steer/mast/issues/349)).
 
 - **`budget.Limits.Catalog` is now `budget.Limits.Pricer`, a one-method
   interface the meter owns.** Breaking, for anyone who set the field directly;

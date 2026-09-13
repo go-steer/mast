@@ -1,15 +1,13 @@
 ---
 title: Roadmap
-description: What v0.7 ships, and what lands after it — honestly.
+description: What v0.8 ships, and what lands after it — honestly.
 ---
 
-mast is at **v0.7.0** — a change mast makes carries a route back, the write
-gate's question is a measurement, and a real model's behaviour can red the
-build. On the v0.6.0 enforcement pass, the v0.5.0 monitoring cycle, the v0.4.0
-change set, the v0.3.0 write gate and the v0.2.0 durable-execution spine. See
-[Shipped in
-v0.7.0](#shipped-in-v070--a-route-back-from-a-change-and-a-gate-a-real-model-can-red)
-below.
+mast is at **v0.8.0** — what was quietly not true is now refused. On the
+v0.7.0 route-back pass, the v0.6.0 enforcement pass, the v0.5.0 monitoring
+cycle, the v0.4.0 change set, the v0.3.0 write gate and the v0.2.0
+durable-execution spine. See [Shipped in
+v0.8.0](#shipped-in-v080--what-was-quietly-not-true-is-now-refused) below.
 
 **All eleven v0.1 exit criteria from the fork design are green.** The
 `--task` profile criterion cleared with the P1.3a/P1.3b adapter ports and
@@ -23,14 +21,22 @@ sessions, and round-tripped a prompt through a real turn over SSE.
 
 ## Stability, precisely
 
-Semver stability from v0.1 is reserved for the **five packages the four
-pillars stand on**: the root `mast` package, `agent`, `transcript` (the
-session operator surface — named `session` pre-v0.1.0, renamed to avoid
-colliding with ADK's own `session` package), and the `provider` and
-`tool` interfaces. Everything else is explicitly
-**experimental** — API may change without a deprecation cycle until the
-version named in the
-[library API design's import-surface table](https://github.com/go-steer/mast/blob/main/docs/library-api-design.md).
+**Nothing is promised yet.** mast is pre-1.0 and every exported path may
+change in any release. v1.0 is the release that makes the promise, and
+[what it will cover](/reference/stability/) is published now so you can
+decide what to depend on today: **six import paths** — the module root,
+`pkg/agent`, `pkg/transcript`, `pkg/workload`, `pkg/specialists`,
+`pkg/budget` — plus `cmd/mast`'s flags, verbs and exit codes, with the
+other 27 packages under `pkg/` named individually as unsupported. v1.0
+means the API stops moving and carries no other claim; in particular it
+is not a production-readiness badge.
+
+*This section previously reserved stability for "the five packages the four
+pillars stand on", naming `provider` and `tool` interfaces. Two of those five
+never existed — the provider extension point is `mast.Config.Model`, a field
+typed on ADK's `model.LLM`, not a package — and the `// Experimental:` marker
+that decision named for everything else was never written into a single `.go`
+file. Corrected in v0.8.0 ([#300](https://github.com/go-steer/mast/issues/300)).*
 
 ## Shipped in v0.1.0-pre
 
@@ -551,6 +557,71 @@ shown it either way — a fix worth having moves `intent_coverage` by a fraction
 of one row's mean. The competing hypothesis is that the models reason past the
 tool rather than fail to find it, and the same experiment separates the two.
 
+## Shipped in v0.8.0 — what was quietly not true is now refused
+
+v0.7 added capability. This release adds very little, and instead closes a run
+of things the project had been asserting that turned out not to hold. None of
+them were caught by a test, for the same reason in every case: each was a
+**claim** rather than a code path. Tests exercise what the code does.
+
+**Three breaking changes, and the first is silent.**
+
+- **A provider's own server-side tools are off unless a bundle asks.** Every
+  Gemini model mast constructed was wrapped with `GoogleSearch: true,
+  URLContext: true`, and no config key reached it. These tools are invisible
+  to every control mast has — a built-in runs inside the vendor's
+  infrastructure and its result arrives folded into the response, so it never
+  becomes a tool call: nothing for the permissions gate to allow, nothing for
+  the write gate to park, nothing for the effect outbox to record. A
+  specialist declared `read_only` could read the public internet, and four
+  releases of hardening were looking the other way. A bundle now opts in with
+  `builtin_tools:` — provider-neutral keys, mast's baseline off on *every*
+  provider rather than each vendor's, so the same bundle does not change an
+  unattended agent's reach when you change `--provider`.
+
+  **Upgrading:** a workload that wants grounded search must now say so. It
+  will not error; it will answer worse.
+
+- **An unrecognised key in `workload.yaml` is a load error.** This is the only
+  file in a deployment that can declare a tool safe to run without an
+  operator, and mast's predicate is default-deny-unknown — so the failure
+  being designed against is a misspelled block that leaves a section of policy
+  unapplied while the daemon logs a clean start and the workload runs all
+  night. A `WARN` at boot is not a control. Strictness reaches nested keys,
+  where the sharper version lives: `mutatin: true` on a catalog entry leaves
+  the tool catalogued, so nothing looks missing.
+
+- **`budget.Limits.Catalog` is now `budget.Limits.Pricer`**, a one-method
+  interface the meter owns, so freezing `pkg/budget` at v1.0 stops freezing
+  `pkg/pricing` alongside it. The daemon and `mast.RunWorkload` are
+  unaffected.
+
+**v1.0 now has a definition, and it is the API freeze and nothing else.** Six
+import paths plus `cmd/mast`'s flags, verbs and exit codes; the other 27
+packages under `pkg/` named individually as unsupported. Writing it down meant
+discovering that the promise the corpus had carried since 2026-07-25 named two
+packages that **never existed**, and enforced its own exceptions with a marker
+never once written into a `.go` file. v1.0 is explicitly **not** a
+production-readiness claim — see [stability](/reference/stability/).
+
+**Specialist files are `<name>.specialist.md`.** They were `.tmpl` and were
+never Go templates: `text/template` is imported by one package in the module
+and reads none of them. The name was not merely inaccurate — a `{{ ... }}` in
+a body is ADK's placeholder syntax, not the author's, and mast had to add a
+load-time refusal for a defect the extension invited. `.tmpl` still loads with
+a warning through this release and stops loading in v0.9.
+
+**Also:** `gemini-3.8-flash` is priced and classified, and the frontier
+default deliberately stays at `gemini-3.7-flash` — 3.8 costs exactly what 3.7
+costs on the same window, so promotion would move no ceiling and the only
+argument left is that the id is newer. Four further corrections changed no
+code: mast no longer claims the library gets the daemon's subsystems,
+"multi-provider" is stated as two vendors and four deployment paths rather
+than counting a fake and a cache as peers, the deployment ambition is settled
+as *someone else installs this* (see below), and `docs-lint` now reads version
+claims — the rule whose absence let this page's install instructions serve
+v0.4.0 download URLs, under a green check, for three releases.
+
 ## Shipped in v0.7.0 — a route back from a change, and a gate a real model can red
 
 v0.6 closed the distance between what a bundle promised and what the runtime
@@ -735,7 +806,7 @@ believed it did.
   scheduled monitoring ships. It remains available to any caller that
   builds its own signal set and knows its workload does not poll.
 
-## What v0.7.0 will not let you do
+## What v0.8.0 will not let you do
 
 **Restore.** A change now carries a recorded route back — the prior state and
 the exact call that undoes it — and mast will not fire that call. Rendering the
@@ -811,6 +882,19 @@ The first three are gaps. The fourth is a decision that looks like a gap,
 which is why it is spelled out rather than left to inference.
 
 ## Next
+
+**v0.9 is the run-up to the freeze**, and two of its issues are gates on v1.0
+rather than features. A [deprecation and compatibility
+policy](https://github.com/go-steer/mast/issues/304), because a stability
+promise with no process for breaking things is not a promise. And a [threat
+model](https://github.com/go-steer/mast/issues/305), which 28 design docs have
+so far gone without, for a product whose whole thesis is that an agent acts
+while nobody is watching.
+
+Alongside them: `.tmpl` specialist files [stop
+loading](https://github.com/go-steer/mast/issues/349), and the second of the
+two exported-API leaks that writing down the v1.0 promise turned up
+[closes](https://github.com/go-steer/mast/issues/338).
 
 - **The last two parity rows** are switchboard's: in-chat Approve/Reject, and
   an approver allowlist.
