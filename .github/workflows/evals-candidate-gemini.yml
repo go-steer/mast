@@ -1,0 +1,202 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The judge tier run against a Gemini model that is not the default yet
+# — the evidence half of a tier-default promotion.
+#
+# ## Why this exists
+#
+# pkg/taskclass.ModelForTier names one model per tier, and
+# TestModelForTier_ReturnsLatestInLine holds it to the newest model in
+# that line unless `deferredPromotions` records a reason to wait. The
+# reason recorded on 2026-09-09 for holding gemini-3.7-flash while
+# gemini-3.8-flash exists is not that 3.8 looks worse — on paper it
+# looks free, same price, same window — it is that nothing had run it.
+# core-agent#579 promoted a frontier default off a spec sheet and #580
+# reverted it a day later. So the deferral names a bar, and this
+# workflow is what walks a candidate up to it: the same 31 scenarios,
+# the same fixture cluster, the same grader, against the candidate.
+#
+# ## What it measures, and what it does not
+#
+# One variable moves. The grader stays pinned to the incumbent default
+# (vars.MAST_EVALS_GEMINI_MODEL) even though the model under test is
+# the candidate, because a candidate grading itself changes two things
+# at once and neither number would mean anything.
+#
+# The baseline is the nightly's own latest board for the incumbent —
+# fetched from evals-nightly-gemini.yml's `judge-board-gemini` artifact
+# — so the delta section is candidate vs incumbent over the same corpus
+# on nearby days. This is the one place a cross-model delta is the
+# point rather than an accident, so MAST_EVALS_BASELINE_MODEL says so
+# out loud; dev/ci/evals-nightly-baseline.sh would otherwise refuse a
+# board that measured a different model. Expect (and read past) the
+# delta's own "the scores below are not comparable, they are two
+# different measurements" caption: it is right that these are two
+# measurements, and comparing them is exactly the decision being made.
+#
+# This board is NOT the promotion. It is one of the two things the
+# deferral asks for, the other being the outcome tier against the same
+# candidate, which nothing here can trigger — GITHUB_TOKEN cannot fire
+# a workflow_dispatch. Run that half by hand:
+#
+#   gh workflow run outcome.yml -f model=gemini-3.8-flash
+#
+# ## Gating
+#
+# It does not. Same rule as the nightlies: J reports, S/U/E gate, O
+# gates. What can turn this run red is its own machinery — a row that
+# never ran, a metric that scores nothing — because a board with a hole
+# in it is not evidence either way.
+#
+# ## Cost and cadence
+#
+# Weekly, not nightly. A candidate does not change between Mondays, and
+# the corpus is 31 metered scenarios; flash pricing keeps a run cheap
+# but not free. Note one number that is not in mast's tables: Artificial
+# Analysis measured ~30% more output tokens per task on 3.8-flash at
+# high thinking, so at an identical published rate the same work bills
+# more. Read the board's cost per scenario, not per token.
+#
+# ## What it needs configured
+#
+# Nothing beyond what evals-nightly-gemini.yml already uses:
+#
+#   vars.MAST_EVALS_VERTEX_PROJECT      GCP project serving Vertex
+#   secrets.MAST_EVALS_WIF_PROVIDER     workload identity provider
+#   secrets.MAST_EVALS_SERVICE_ACCOUNT  service account to impersonate
+#   vars.MAST_EVALS_VERTEX_REGION       optional; defaults to global
+#   vars.MAST_EVALS_GEMINI_MODEL        the incumbent; defaults to gemini-3.7-flash
+#   vars.MAST_EVALS_GEMINI_CANDIDATE    optional; defaults to gemini-3.8-flash
+#
+# When a candidate is promoted, move MAST_EVALS_GEMINI_CANDIDATE to the
+# next one. A run whose candidate equals the incumbent measures nothing
+# — it says so in the summary rather than failing.
+
+name: evals-candidate-gemini
+
+on:
+  schedule:
+    # 10:30 UTC Monday — well clear of the 07:30 Gemini nightly, which
+    # has a 90-minute timeout and shares this project's quota.
+    - cron: '30 10 * * 1'
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: 'Candidate model (overrides vars.MAST_EVALS_GEMINI_CANDIDATE)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  # Reading the nightly's board artifact, and minting the OIDC token
+  # the Vertex auth exchanges.
+  actions: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    # Forks have no credentials and would post an empty board.
+    if: github.repository == 'go-steer/mast'
+    timeout-minutes: 90
+    env:
+      # The candidate is what runs. The incumbent is what grades it and
+      # what its baseline must have measured — three uses of the same
+      # two names, so they live at job scope.
+      MAST_EVALS_MODEL: ${{ inputs.candidate || vars.MAST_EVALS_GEMINI_CANDIDATE || 'gemini-3.8-flash' }}
+      MAST_EVALS_GRADER: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
+      MAST_EVALS_BASELINE_MODEL: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
+      MAST_EVALS_BASELINE_GRADER: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check the tier is configured
+        id: config
+        env:
+          PROJECT: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
+          WIF: ${{ secrets.MAST_EVALS_WIF_PROVIDER }}
+        run: dev/ci/evals-nightly-configured.sh
+
+      - name: Authenticate to Google Cloud
+        if: steps.config.outputs.configured == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.MAST_EVALS_WIF_PROVIDER }}
+          service_account: ${{ secrets.MAST_EVALS_SERVICE_ACCOUNT }}
+
+      # The nightly's history, not this workflow's: the comparison a
+      # promotion decision needs is candidate vs incumbent, not
+      # candidate vs last week's candidate.
+      - name: Fetch the incumbent's board
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAST_EVALS_WORKFLOW: evals-nightly-gemini.yml
+          MAST_EVALS_ARTIFACT: judge-board-gemini
+        run: dev/ci/evals-nightly-baseline.sh
+
+      - name: Judge tier
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GOOGLE_GENAI_USE_VERTEXAI: 'true'
+          GOOGLE_CLOUD_PROJECT: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ vars.MAST_EVALS_VERTEX_REGION || 'global' }}
+          MAST_EVALS_PROVIDER: gemini
+          # Only the summary heading; the board itself names the model
+          # and the grader it actually used.
+          MAST_EVALS_LABEL: gemini candidate
+        run: dev/ci/evals-nightly.sh
+
+      # What the reader is supposed to do with the board above. Written
+      # whatever the run's status: a red board is also a fact about the
+      # candidate, and the bar is the same either way.
+      - name: Note the promotion bar
+        if: always() && steps.config.outputs.configured == 'true'
+        run: |
+          {
+            echo ""
+            if [[ "${MAST_EVALS_MODEL}" == "${MAST_EVALS_GRADER}" ]]; then
+              echo "> The candidate and the incumbent are both \`${MAST_EVALS_MODEL}\`, so this run measured nothing new."
+              echo "> Point \`vars.MAST_EVALS_GEMINI_CANDIDATE\` at the next candidate."
+            else
+              echo "> Candidate \`${MAST_EVALS_MODEL}\`, graded by the incumbent \`${MAST_EVALS_GRADER}\`, against the latest nightly board."
+              echo "> The delta's \"not comparable\" caption is expected here — two models is the measurement."
+              echo ">"
+              echo "> This board is half the bar in \`deferredPromotions\` (pkg/taskclass/latest_in_line_test.go)."
+              echo "> The other half is the outcome tier on the same model, which has to be started by hand:"
+              echo ">"
+              echo ">     gh workflow run outcome.yml -f model=${MAST_EVALS_MODEL}"
+            fi
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload the board
+        if: always() && steps.config.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          # Deliberately not judge-board-gemini: the nightly's baseline
+          # lookup reads that name, and a candidate's board is not the
+          # incumbent's history.
+          name: judge-board-gemini-candidate
+          path: ${{ runner.temp }}/mast-evals/board.json
+          retention-days: 90
+          if-no-files-found: warn

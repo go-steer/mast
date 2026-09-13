@@ -60,9 +60,13 @@ var deferredPromotions = map[string]deferredPromotion{
 			"sheet and #580 reverted it a day later when the parent agent stopped " +
 			"mid-plan. The bar is the bar 3.7 cleared — the full 31-scenario judged " +
 			"corpus over live Vertex, scoring within noise of the current board, with " +
-			"no mid-plan stall. 3.8-flash is reachable today with --model " +
-			"gemini-3.8-flash, which is how that UAT gets run; zero-config stays on " +
-			"3.7-flash until it passes. Note the one number that did move and is not " +
+			"no mid-plan stall. That run is scheduled, not aspirational: " +
+			".github/workflows/evals-candidate-gemini.yml runs the corpus against " +
+			"3.8-flash weekly, graded by the incumbent so only one variable moves, " +
+			"and diffs it against the nightly's board; the mid-plan half is the " +
+			"outcome tier on the same model (gh workflow run outcome.yml -f " +
+			"model=gemini-3.8-flash). Zero-config stays on 3.7-flash until both " +
+			"pass. Note the one number that did move and is not " +
 			"in mast's tables: Artificial Analysis measured ~30% more output tokens " +
 			"per task on 3.8-flash at high thinking, so at an identical output rate " +
 			"the same work bills more — the UAT should read cost per scenario, not " +

@@ -60,6 +60,13 @@
 #
 # Flash pricing puts a run well under the Claude nightly's $5-15.
 #
+# A model that wants to become that default is measured by
+# .github/workflows/evals-candidate-gemini.yml, which runs this same
+# corpus against the candidate and diffs it against this board. The
+# `model` input here stays for one-off investigations; it is not the
+# promotion path, and a run that uses it can no longer become this
+# workflow's baseline.
+#
 # ## What it needs configured
 #
 # The same three settings the Claude nightly uses, and no new ones —
@@ -113,6 +120,12 @@ jobs:
     # Forks have no credentials and would post an empty board.
     if: github.repository == 'go-steer/mast'
     timeout-minutes: 90
+    # Job-level rather than on the judge step: the baseline step reads
+    # the same two values to decide whether a previous board measured
+    # the same thing, and the two must not be able to drift apart.
+    env:
+      MAST_EVALS_MODEL: ${{ inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
+      MAST_EVALS_GRADER: ${{ inputs.grader || inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -135,8 +148,12 @@ jobs:
           service_account: ${{ secrets.MAST_EVALS_SERVICE_ACCOUNT }}
 
       # This workflow's own history, not the Claude nightly's — see the
-      # header. Delta'ing across providers would report a model swap as
-      # a regression on every row.
+      # header. And within that history, only a run that measured the
+      # same model/grader pair: a `model` dispatch above uploads under
+      # this same artifact name, and without the check that hand-run
+      # would be tonight's baseline, costing the night's trend (the
+      # delta would caption itself "not comparable" and it would be
+      # right). The pair comes from the job env.
       - name: Fetch the previous board
         if: steps.config.outputs.configured == 'true'
         env:
@@ -155,8 +172,6 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ vars.MAST_EVALS_VERTEX_REGION || 'global' }}
           MAST_EVALS_PROVIDER: gemini
-          MAST_EVALS_MODEL: ${{ inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
-          MAST_EVALS_GRADER: ${{ inputs.grader || inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
           MAST_EVALS_LABEL: gemini
         run: dev/ci/evals-nightly.sh
 
