@@ -26,6 +26,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
+
+	providerusage "github.com/go-steer/mast/pkg/providers/usage"
 )
 
 // maxPauseTurnContinuations bounds how many times GenerateContent
@@ -183,13 +185,24 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, str
 			if modelVersion == "" || strings.Contains(modelVersion, "/") {
 				modelVersion = params.Model
 			}
-			yield(&adkmodel.LLMResponse{
+			resp := &adkmodel.LLMResponse{
 				Content:       &genai.Content{Role: genai.RoleModel, Parts: parts},
 				ModelVersion:  modelVersion,
 				UsageMetadata: usageMetadata(usage),
 				FinishReason:  mapStopReason(final.StopReason),
 				TurnComplete:  true,
-			}, nil)
+			}
+			// The sidecar carries the cache_creation count genai's usage
+			// shape has nowhere for, so the meter can bill it at the
+			// cache-write rate instead of folding it into fresh input
+			// (#352). Token counts are the turn's, summed across every
+			// request of a pause_turn loop; ServedModel and the request
+			// id name the LAST request, because that is the one a
+			// support ticket about this response is about. ServedModel
+			// is the unedited echo — ModelVersion above may have
+			// substituted the requested id for a resource path.
+			providerusage.Attach(resp, usageDetail(usage, final.Model, final.ID))
+			yield(resp, nil)
 			return
 		}
 	}

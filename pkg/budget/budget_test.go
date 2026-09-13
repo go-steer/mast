@@ -316,10 +316,10 @@ func pricedEvent(modelVersion string, prompt, cached, out int32) *session.Event 
 // vendor moved a rate. The rates below are stated where they are used.
 type ratePricer map[string]perMTok
 
-// perMTok is one model's rates. A zero cacheRead bills cached tokens at
-// the input rate, matching pkg/pricing — an unknown cache rate is not a
-// free one.
-type perMTok struct{ in, cacheRead, out float64 }
+// perMTok is one model's rates. A zero cacheRead or cacheWrite bills
+// that bucket at the input rate, matching pkg/pricing — an unknown cache
+// rate is not a free one.
+type perMTok struct{ in, cacheRead, cacheWrite, out float64 }
 
 func (p ratePricer) PriceCall(backend, modelID string, c Call) (float64, bool) {
 	r, ok := p[backend+"/"+modelID]
@@ -333,9 +333,14 @@ func (p ratePricer) PriceCall(backend, modelID string, c Call) (float64, bool) {
 	if read == 0 {
 		read = r.in
 	}
+	write := r.cacheWrite
+	if write == 0 {
+		write = r.in
+	}
 	const million = 1e6
 	return float64(c.UncachedInputTokens)/million*r.in +
 		float64(c.CachedInputTokens)/million*read +
+		float64(c.CacheWriteTokens)/million*write +
 		float64(c.OutputTokens)/million*r.out, true
 }
 
@@ -345,8 +350,8 @@ func (p ratePricer) PriceCall(backend, modelID string, c Call) (float64, bool) {
 // so the arithmetic is checkable without it.
 func tieredPricer() ratePricer {
 	return ratePricer{
-		"claude-sonnet-5":  {in: 2, cacheRead: 0.2, out: 10},
-		"claude-haiku-4-5": {in: 1, cacheRead: 0.1, out: 5},
+		"claude-sonnet-5":  {in: 2, cacheRead: 0.2, cacheWrite: 2.5, out: 10},
+		"claude-haiku-4-5": {in: 1, cacheRead: 0.1, cacheWrite: 1.25, out: 5},
 	}
 }
 

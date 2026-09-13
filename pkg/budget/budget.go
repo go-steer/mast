@@ -90,7 +90,6 @@ import (
 	"sync"
 
 	"google.golang.org/adk/v2/session"
-	"google.golang.org/genai"
 )
 
 // ErrExceeded is returned by Observe once cumulative usage crosses a
@@ -240,9 +239,73 @@ type Call struct {
 	// at the cache-read rate.
 	CachedInputTokens int
 
+	// CacheWriteTokens is the prompt subset that CREATED a cache entry
+	// this call, billed at the cache-write rate — a premium over fresh
+	// input (Anthropic's 5-minute TTL is 1.25x), not a discount. Zero
+	// for a provider that has no such bucket: Gemini's explicit caches
+	// bill storage per hour rather than per written token.
+	//
+	// The three input buckets are mutually exclusive and sum to the
+	// prompt.
+	CacheWriteTokens int
+
 	// OutputTokens is everything the model generated, billed at the
 	// output rate. On a reasoning model this includes thinking tokens.
 	OutputTokens int
+}
+
+// DetailKey is the model.LLMResponse.CustomMetadata key a provider
+// adapter attaches its usage sidecar under. The meter reads the value
+// there when it implements Detailer and ignores it otherwise.
+//
+// The key is stable and namespaced because the sidecar rides on an
+// ADK-owned map that anything in the process may write to.
+const DetailKey = "mast.usage_detail"
+
+// Detailer is the sidecar contract: what a provider adapter attaches
+// under DetailKey so the meter can see buckets genai's usage metadata
+// has no field for. mast's implementation is pkg/providers/usage.Detail.
+//
+// An interface rather than a named struct type because pkg/budget
+// imports nothing else in this module — a provider package naming a
+// budget type is the right direction for that dependency, and the
+// reverse would drag an unsupported package into the v1.0 freeze
+// through a supported one (#338).
+//
+// The method returns a struct for the same reason Call is one: the
+// buckets are the part expected to grow, and a new field is additive
+// where a new method is not.
+type Detailer interface {
+	UsageBuckets() Buckets
+}
+
+// Buckets is a provider's own statement of the token counts behind one
+// call, for the counts genai's UsageMetadata cannot carry.
+//
+// Every count is a pointer because nil means the provider did not say,
+// which is not the same as zero: an Anthropic turn that wrote no cache
+// entry reports cache_creation_input_tokens = 0, while a provider that
+// has no such concept reports nothing at all, and billing those two the
+// same way is how an undercount reports success.
+//
+// A stated count wins over the genai projection of the same bucket.
+// Absent fields fall back to the genai fields, so an event with no
+// sidecar prices exactly as it did before this type existed.
+type Buckets struct {
+	// CacheReadTokens is the prompt subset served from cache —
+	// Anthropic's cache_read_input_tokens, Gemini's
+	// cachedContentTokenCount. Also reachable through
+	// UsageMetadata.CachedContentTokenCount, so a nil here is not a
+	// gap; the field exists so a provider whose genai projection is
+	// lossy can correct it.
+	CacheReadTokens *int64
+
+	// CacheWriteTokens is the prompt subset that created a cache entry —
+	// Anthropic's cache_creation_input_tokens. genai's usage metadata
+	// has nowhere to carry this, which is why the sidecar exists: folded
+	// into the uncached bucket it is billed at 1x instead of 1.25x and
+	// every cache-warming turn is undercounted (#352).
+	CacheWriteTokens *int64
 }
 
 // Config is the full meter shape: the session's ceilings plus the
@@ -456,7 +519,7 @@ func crossed(scope string, l Limits, u *usage) []Trip {
 func (m *Meter) priceOf(ev *session.Event, p Pricer, backend, model string, rate float64) (cost float64, unpriced bool) {
 	u := ev.UsageMetadata
 	if p != nil {
-		if usd, ok := priceFirst(p, backend, callOf(u), ev.ModelVersion, model); ok {
+		if usd, ok := priceFirst(p, backend, callOf(ev), ev.ModelVersion, model); ok {
 			return usd, false
 		}
 		m.unpriced++
@@ -488,26 +551,53 @@ func priceFirst(p Pricer, backend string, c Call, ids ...string) (float64, bool)
 	return 0, false
 }
 
-// callOf normalizes an ADK usage record into the billable buckets a
+// callOf normalizes one event's usage into the billable buckets a
 // Pricer is asked about. Reading the provider's counters is the meter's
 // job and pricing them is the pricer's, which is the seam: everything
 // below is an assertion about what the counters mean, and nothing below
 // is an assertion about what they cost.
 //
+// Two sources, in that order of authority: the provider's own sidecar
+// (Detailer, when the adapter attached one) and genai's usage metadata.
+// A sidecar refines the split of a prompt whose total the genai record
+// still owns — it never restates the total.
+//
 // Cached input is separated because it bills at the cache-read rate,
 // typically a tenth of fresh input; on a cache-warm agent that subset is
 // the majority of the prompt, so folding it in at the input rate is the
-// single largest source of error in a flat-rate figure.
-func callOf(u *genai.GenerateContentResponseUsageMetadata) Call {
-	// Clamped, not trusted: a provider that over-reports the cached
-	// counter would otherwise produce negative uncached tokens, billed at
-	// the input rate as a credit — a ceiling that gets *further* away the
-	// more the provider miscounts. core-agent's usage tracker guards the
-	// same quirk the same way.
-	cached := int(u.CachedContentTokenCount)
-	if prompt := int(u.PromptTokenCount); cached > prompt {
-		cached = prompt
+// single largest source of error in a flat-rate figure. Cache writes are
+// separated for the mirror-image reason: they bill at a premium, and
+// folding them in undercounts every turn that warms a cache.
+func callOf(ev *session.Event) Call {
+	u := ev.UsageMetadata
+	b := bucketsOf(ev)
+
+	prompt := int(u.PromptTokenCount)
+
+	read := int(u.CachedContentTokenCount)
+	if b.CacheReadTokens != nil {
+		read = int(*b.CacheReadTokens)
 	}
+	var write int
+	if b.CacheWriteTokens != nil {
+		write = int(*b.CacheWriteTokens)
+	}
+
+	// Fitted, not trusted: a provider that over-reports an input bucket
+	// would otherwise produce negative uncached tokens, billed at the
+	// input rate as a credit — a ceiling that gets *further* away the
+	// more the provider miscounts. core-agent's usage tracker guards the
+	// cached counter the same way; every bucket that splits the prompt
+	// needs the same guard, and it belongs here rather than in each
+	// adapter, where the next provider would have to remember it.
+	//
+	// Reads are fitted first, so when the counters do not add up the
+	// residual lands on the write bucket: reads are corroborated by a
+	// genai field mast has always read, writes arrive only from the
+	// sidecar. The error is attributed to the newer counter.
+	read = fitBucket(read, prompt)
+	write = fitBucket(write, prompt-read)
+
 	// Thoughts are billed at the output rate and counted separately from
 	// the candidates: Gemini reports promptTokenCount +
 	// candidatesTokenCount + thoughtsTokenCount == totalTokenCount, so
@@ -518,9 +608,40 @@ func callOf(u *genai.GenerateContentResponseUsageMetadata) Call {
 	// pkg/providers/anthropic never sets it, and Anthropic's own output
 	// count already includes thinking.
 	return Call{
-		UncachedInputTokens: int(u.PromptTokenCount) - cached,
-		CachedInputTokens:   cached,
+		UncachedInputTokens: prompt - read - write,
+		CachedInputTokens:   read,
+		CacheWriteTokens:    write,
 		OutputTokens:        int(u.CandidatesTokenCount) + int(u.ThoughtsTokenCount),
+	}
+}
+
+// bucketsOf returns what the provider said about this call, or the zero
+// Buckets — every field nil, "said nothing" — for an event carrying no
+// sidecar, which is every event from an adapter that does not attach
+// one and every event read back from storage (the sidecar is an
+// in-process value, not part of the persisted event contract).
+func bucketsOf(ev *session.Event) Buckets {
+	d, _ := ev.CustomMetadata[DetailKey].(Detailer)
+	if d == nil {
+		return Buckets{}
+	}
+	return d.UsageBuckets()
+}
+
+// fitBucket clips one input bucket into the room the prompt has left.
+// Negative is not a count, and a bucket bigger than the prompt it is a
+// subset of is a miscount, not a credit.
+func fitBucket(n, room int) int {
+	if room < 0 {
+		room = 0
+	}
+	switch {
+	case n < 0:
+		return 0
+	case n > room:
+		return room
+	default:
+		return n
 	}
 }
 

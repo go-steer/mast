@@ -228,6 +228,15 @@ Spend is computed from each provider's token accounting for the models
 actually used, so a cross-provider roster still rolls up to one
 `max_cost_usd`. See [budgets](/concepts/budgets/).
 
+Providers do not agree on which token buckets exist, and the record mast
+reads usage through is Google's, so a count Anthropic reports and Gemini
+does not had nowhere to go. Since v0.9 each adapter also carries what it
+was actually told — cache reads, cache writes, reasoning and tool-use
+tokens, plus the model the backend says it ran — as a normalized record
+beside the usual one, distinguishing *reported zero* from *not
+reported*. That is what closed the cache-write under-billing described
+in [budgets](/concepts/budgets/#where-the-dollar-figure-comes-from).
+
 ## Reference
 
 - [CLI](/reference/cli/) — `--model`, `--provider`, and the environment
