@@ -85,6 +85,20 @@ bills separately — uncached input, cache reads at a tenth of it, and
 cache *writes* at 1.25x — rather than charging every cached token the
 read rate, which under-reports a cache-heavy turn.
 
+:::note[Cache writes were under-billed before v0.9]
+The rate table has carried a cache-write rate since v0.4, but nothing
+counted the bucket: mast reads usage through a Google GenAI record that
+has a cache-*read* field and no cache-*write* field, so Anthropic's
+`cache_creation_input_tokens` was folded into fresh input and billed at
+1x instead of 1.25x. The turn that warms a cache is exactly the turn
+that pays for it, so the gap is largest where it is least expected — a
+measured 28,804-token warm on `claude-sonnet-5` billed $0.057668 against
+a rate-card $0.072070, a fifth of the turn. Adapters now carry the
+counts a provider reports in a normalized record alongside the GenAI
+one, and the meter prices from that when it is there. A long-running
+session's total moves up, not down; nothing else about it changed.
+:::
+
 Rates are overridable, which is what you want for negotiated enterprise
 pricing or a model mast has never heard of: an operator can drop a
 `pricing.json` next to the workload in `.agents/`, and a library embedder

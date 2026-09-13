@@ -21,6 +21,8 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"google.golang.org/genai"
+
+	providerusage "github.com/go-steer/mast/pkg/providers/usage"
 )
 
 // finalResponseFromMessage builds the terminal LLMResponse from a fully-
@@ -120,22 +122,43 @@ func usageMetadata(u anthropic.Usage) *genai.GenerateContentResponseUsageMetadat
 	// letting /usage's input_tokens_cached / cost_usd_uncached_reference
 	// render Anthropic cache savings the same way Gemini's do.
 	//
-	// KNOWN GAP (Slice B follow-up, tracked separately): cache_creation
-	// tokens are billed at 125% of input rate but the tracker's
-	// CostUSDWithCache path bills them at 1× (they fold into the
-	// uncached-input bucket). Cost is UNDERCOUNTED on cache-warming
-	// turns by roughly (cache_creation_tokens × input_rate × 0.25).
-	// Fixing this needs a new Rates.CacheCreationInputPerMTok field, a
-	// CostUSDWithCache signature bump, and a sidecar for
-	// cache_creation token counts (genai UsageMetadata has no place
-	// to carry them). Steady-state cache-hit turns (where
-	// cache_creation == 0) are unaffected.
+	// cache_creation is the bucket this shape cannot express, and the
+	// one that costs money: it bills at 125% of the input rate, and
+	// folded into PromptTokenCount it is priced at 100%. That gap is
+	// closed beside this record rather than inside it — usageDetail
+	// carries the count in the sidecar, and pkg/budget's callOf prices
+	// it (#352). What is returned here is unchanged, because
+	// PromptTokenCount is still the whole prompt and every consumer
+	// reading it as such is still right.
 	totalInput := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 	return &genai.GenerateContentResponseUsageMetadata{
 		PromptTokenCount:        int32(totalInput),                  // #nosec G115 -- token counts won't overflow int32
 		CachedContentTokenCount: int32(u.CacheReadInputTokens),      // #nosec G115 -- token counts won't overflow int32
 		CandidatesTokenCount:    int32(u.OutputTokens),              // #nosec G115 -- token counts won't overflow int32
 		TotalTokenCount:         int32(totalInput + u.OutputTokens), // #nosec G115 -- token counts won't overflow int32
+	}
+}
+
+// usageDetail builds the sidecar that carries what usageMetadata's
+// genai shape drops — the cache_creation count above all, since nothing
+// else in the response records it and the meter bills it at the wrong
+// rate without it.
+//
+// Both cache counters are stated, including when they are zero: this
+// adapter always knows the answer, and "no cache entry was written this
+// turn" is a measurement, not a silence. The two buckets Gemini reports
+// and Anthropic does not — reasoning and tool-use tokens — are left nil
+// for exactly that reason: Anthropic's output count already includes
+// thinking, and there is no separate figure to report.
+//
+// served and requestID come from the Message; an empty one is omitted
+// rather than recorded as the empty string.
+func usageDetail(u anthropic.Usage, served, requestID string) *providerusage.Detail {
+	return &providerusage.Detail{
+		CacheReadTokens:   providerusage.Int64(u.CacheReadInputTokens),
+		CacheWriteTokens:  providerusage.Int64(u.CacheCreationInputTokens),
+		ServedModel:       served,
+		ProviderRequestID: requestID,
 	}
 }
 

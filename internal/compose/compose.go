@@ -810,12 +810,19 @@ type catalogPricer struct{ cat *pricing.Catalog }
 // cost ceiling that never advances is a ceiling that never fires, and
 // the meter's fallback to the flat rate is the right answer for an
 // unpriceable call either way. It counts both the same.
+//
+// CostUSDWithCacheWrites rather than CostUSDWithCache: the latter is
+// the same arithmetic with a hard-coded zero write bucket, which was
+// the right call only while nothing could count cache writes. The
+// sidecar counts them now (#352), and a row whose
+// CacheCreationInputPerMTok is zero still degrades to the input rate
+// inside pricing rather than here.
 func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float64, bool) {
 	r, ok := p.cat.LookupFor(backend, modelID)
 	if !ok || r.IsZero() {
 		return 0, false
 	}
-	return r.CostUSDWithCache(c.UncachedInputTokens, c.CachedInputTokens, c.OutputTokens), true
+	return r.CostUSDWithCacheWrites(c.UncachedInputTokens, c.CachedInputTokens, c.CacheWriteTokens, c.OutputTokens), true
 }
 
 // builtinPricer prices against the compiled-in catalog. LookupFor

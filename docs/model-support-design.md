@@ -56,11 +56,11 @@ returns text is not a provider that works.
 |---|---|---|
 | **R1** | **Resolvable** from `--model`, a specialist `model:`, and a specialist `tier:` — and unresolvable *fails at construction*, never at the incident | The property `NewModelResolver` and `TierModelName` already enforce; a new provider must not become the first quiet downgrade |
 | **R2** | **Agent-loop correct**: tool calls round-trip with their real input schema, multi-turn tool loops survive, reasoning/thinking blocks round-trip where the API requires echoing them, streaming accumulates, finish reasons map | The empty-schema P0 above. Measured, not eyeballed — see R8 |
-| **R3** | **Usage measured per turn**: prompt, completion, total, cache-read, cache-write, reasoning — each either a number or an explicit *not reported*, never a zero standing in for unknown | "Same usage/stats as Gemini and Claude" is the ask; the zero-vs-unknown distinction is what makes a cost figure auditable |
+| **R3** | **Usage measured per turn**: prompt, completion, total, cache-read, cache-write, reasoning — each either a number or an explicit *not reported*, never a zero standing in for unknown | "Same usage/stats as Gemini and Claude" is the ask; the zero-vs-unknown distinction is what makes a cost figure auditable. **The carrier for it landed in M0** ([§4.3](#43-usage-one-normalized-record-carried-beside-the-genai-one), [#352](https://github.com/go-steer/mast/issues/352)); an adapter meets R3 by attaching a `usage.Detail` and leaving nil what its provider does not report |
 | **R4** | **Priced, or explicitly unpriced**: a catalog entry keyed to the backend that actually served the tokens, or a rendered `$—` | `pkg/pricing` already refuses to render `$0` for an unknown rate. A new backend must not silently inherit a wrong rate — [#178](https://github.com/go-steer/mast/issues/178)'s case, Claude on Vertex, and the symmetric one nobody filed: Gemini on the Developer API priced off Vertex's row. Both closed by v0.6 W10.0; the *requirement* stands, and what a new backend now owes is its rows and its name in the backend allowlist |
 | **R5** | **Tiered in both directions**: `modeltier.Classify` knows the model, `taskclass.ModelForTier` can name it | Without the reverse direction `--task` is inert and the small-tier-parent guard goes quiet; without the forward direction `tier:` rosters cannot run on the provider at all |
 | **R6** | **Budget-enforceable**: `RatePer1K` resolves and `budget.Meter` prices the turn from the catalog rather than the flat fallback | A `max_cost_usd` ceiling on an unpriced model is a ceiling in name only |
-| **R7** | **Observable**: `/usage` per-turn rows, `/stats`, `mast_*` metrics, and the per-specialist cost attribution `MeterScopes` produces | v0.4's `J-cost-tier` check asserts tier resolution against *reported* `ModelVersion`; a provider that doesn't populate it can't be checked |
+| **R7** | **Observable**: `/usage` per-turn rows, `/stats`, `mast_*` metrics, and the per-specialist cost attribution `MeterScopes` produces | v0.4's `J-cost-tier` check asserts tier resolution against *reported* `ModelVersion`; a provider that doesn't populate it can't be checked. Note that `/usage`'s per-turn rows do not exist yet for *any* provider — the tracker behind them was never ported ([#356](https://github.com/go-steer/mast/issues/356)), so this half of R7 is mast's debt rather than a bar a new adapter can clear |
 | **R8** | **Testable offline first**: a recorded-turn fixture that runs credential-free in the U tier, and tool-calling metrics from the E/J tiers before the provider is called supported | [`./v0.3-plan.md`](./v0.3-plan.md) §2's tiers. Issues [#168–#172](https://github.com/go-steer/mast/issues/172) are building exactly the tool-calling measurement a new provider needs to pass. The gating layer is in: [#168](https://github.com/go-steer/mast/issues/168) shipped `internal/toolcatalog`, and **a new adapter's first test is its `toolwire_test.go`** — see below |
 
 R2 and R8 are the ones that will actually cost time. Transport is a week;
@@ -239,14 +239,26 @@ owns that call.
 
 ### 4.3 Usage: one normalized record, carried beside the genai one
 
+**Shipped 2026-09-13 as [#352](https://github.com/go-steer/mast/issues/352)** —
+M0, before any new provider, exactly as the sequencing below asks. What landed
+is the M0 subset of the sketch: `pkg/providers/usage.Detail` with the four token
+pointers, `ServedModel` and `ProviderRequestID`; `budget.Detailer`/`Buckets` as
+the read side; the Anthropic and Gemini adapters attaching it; and
+`catalogPricer` routing the write bucket to `CostUSDWithCacheWrites`. `Backend`,
+`Region` and `KV` are deliberately absent — they are M1/M4's, and a field no
+adapter can populate is a promise, not a record. The rest of this section stands
+as written; the divergences are noted inline.
+
 `genai.GenerateContentResponseUsageMetadata` carries `PromptTokenCount`,
 `CachedContentTokenCount`, `CandidatesTokenCount`, `ThoughtsTokenCount`,
 `ToolUsePromptTokenCount` and `TotalTokenCount`. That is enough for Gemini,
 nearly enough for Claude, and not enough for the rest:
 
-- there is **no cache-write bucket** — the documented Anthropic undercount at
-  `pkg/providers/anthropic/stream.go:123`, roughly
+- there is **no cache-write bucket** — the Anthropic undercount, roughly
   `cache_creation_tokens × input_rate × 0.25` on every cache-warming turn.
+  Measured rather than estimated before the fix: a 28,804-token warm on
+  `claude-sonnet-5` billed **$0.057668 against a rate-card $0.072070**, a
+  $0.014402 gap on one turn and 20% of it, matching the estimate exactly.
   OpenAI's GPT-5.6 family bills cache writes at 1.25× input too, so a second
   provider is about to inherit the same gap;
 - there is **nowhere to put KV-cache statistics** from a self-hosted server;
@@ -256,10 +268,18 @@ nearly enough for Claude, and not enough for the rest:
 ADK's `model.LLMResponse` already carries `CustomMetadata map[string]any`, and
 `openaimodel` already writes provider ids into it. So:
 
-**Decision proposed:** define `pkg/providers/usage.Detail`, attach it under a
+**Decided, and shipped:** define `pkg/providers/usage.Detail`, attach it under a
 stable key (`mast.usage_detail`) from every provider adapter, and have
 `budget.Meter` and the `/usage` projection read it when present and fall back to
 the genai fields when absent.
+
+The meter half needed one thing the sketch does not show. `pkg/budget` imports
+nothing else in this module and must keep not doing so — v1.0 freezes its
+exported surface and a freeze is transitive, so a `*usage.Detail` in a budget
+signature would commit this package too ([`../DESIGN.md`](../DESIGN.md), #338).
+So budget owns the read side: a one-method `Detailer` returning a budget-owned
+`Buckets`, and `pkg/providers/usage` names budget rather than the reverse. It is
+the same remedy `Pricer` got, for the same reason, in the same direction.
 
 ```go
 // Sketch. Every count is a *pointer or an accompanied Reported bitmask —
@@ -280,18 +300,20 @@ type Detail struct {
 Two properties come along for free and both are worth stating, because they are
 existing bugs this closes rather than new features:
 
-- The Anthropic cache-write undercount can finally be priced, and the fix is
-  **smaller than the code comment describing it says**. `stream.go:128` calls for
+- The Anthropic cache-write undercount can finally be priced, and the fix was
+  **smaller than the code comment describing it said**. That comment called for
   "a new `Rates.CacheCreationInputPerMTok` field, a `CostUSDWithCache` signature
-  bump, and a sidecar" — the first two shipped since (`pkg/pricing/pricing.go:92`
-  and `:133`, populated for every Claude row in `builtin.go` and refreshed from
-  LiteLLM at `refresh.go:328`). Only the sidecar is missing, and the only caller
-  of `CostUSDWithCacheWrites` today is `CostUSDWithCache` passing a hard-coded
-  zero (`pricing.go:121`). The comment should be corrected in the same PR.
-- `budget.priceOf` clamps `cached > prompt` today because a provider that
+  bump, and a sidecar" — the first two had shipped since (`pkg/pricing` carries
+  the rate, populated for every Claude row and refreshed from LiteLLM), leaving
+  only the sidecar, plus one line in `catalogPricer` where the sole caller of
+  `CostUSDWithCacheWrites` was passing a hard-coded zero. The stale comment was
+  corrected in the same PR.
+- `budget.priceOf` clamped `cached > prompt` because a provider that
   over-reports the cached counter would otherwise be *credited* tokens. That
-  guard generalizes to every new bucket and must be written once, in the meter,
-  not per adapter.
+  guard generalizes to every new bucket and is written once, in the meter, not
+  per adapter — `fitBucket`, applied to reads first and then to whatever room
+  the reads left, so the residual lands on the bucket with the weaker
+  corroboration.
 
 ### 4.4 Self-hosted: tokens from the response, KV stats from `/metrics`
 
@@ -520,7 +542,7 @@ Six slices. Each names its exit criterion; none is "the code compiles".
 
 | Slice | Work | Exit criterion |
 |---|---|---|
-| **M0** | Usage detail sidecar ([§4.3](#43-usage-one-normalized-record-carried-beside-the-genai-one)) + the meter reading it. **Before any new provider**, retrofitted onto Anthropic | The cache-write undercount is gone: a cache-warming Claude turn prices within a cent of Anthropic's own console figure, pinned by a fixture test. Zero-vs-unreported is distinguishable in `/usage` |
+| **M0** | Usage detail sidecar ([§4.3](#43-usage-one-normalized-record-carried-beside-the-genai-one)) + the meter reading it. **Before any new provider**, retrofitted onto Anthropic. **Done — [#352](https://github.com/go-steer/mast/issues/352), 2026-09-13** | The cache-write undercount is gone: a cache-warming Claude turn prices at the rate card's own figure, pinned by a fixture test built from a measured turn and verified to fail on pre-fix code. Zero-vs-unreported is distinguishable **on the persisted event** — the sidecar's pointers omit what was never reported and serialize a reported zero. Not in `/usage`, which reports turns and cost and has never populated the seven token fields `attach.UsageTotals` declares; that gap is [#356](https://github.com/go-steer/mast/issues/356) and is a projection problem, not a measurement one |
 | **M1** | Provider profiles ([§4.2](#42-a-model-is-named-by-profile-model-id)): registry, config surface, `--provider` opens up, `providerFamily` and `BuildModel` resolve through it | The four shipped backends run unchanged through profiles, with the prefix path kept only as a compat fallback. A bogus profile fails at construction naming the profile |
 | **M2** | Pricing by (profile, model) ([§4.5](#45-pricing-and-the-self-hosted-cost-fiction) 1–2). **Done for the four shipped backends** — v0.6 W10.0, 2026-09-01 | **Closes [#178](https://github.com/go-steer/mast/issues/178)**: Claude-on-Vertex prices off the Vertex table. Generator emits profile-qualified keys; cross-table invariant tests extended to every profile with a tier map. Met for `anthropic`/`anthropic-vertex`/`gemini`/`vertex`; what M2 still owes is the profile-registry spelling of the key once M1 lands, since W10.0 keys on the backend name and a profile is the more general thing |
 | **M3** | `pkg/providers/openai` — `openai-chat` first, `openai-responses` wrapping ADK's | A recorded-turn fixture drives a full tool loop offline in the U/E tiers for both dialects, and the E-tier differentiator evals (exactly-once, refusal, rejection, budget) pass against it. Then a J-tier live run against OpenAI + Vertex MaaS + xAI, with tool-calling metrics from [#168–#172](https://github.com/go-steer/mast/issues/172) at parity with the Claude baseline — **that parity is the gate on calling any of them supported**. `J-cost-tier` needs the per-profile identity rule of [§3](#3-what-the-code-assumes-today)'s tenth seam before a MaaS id can pass it |

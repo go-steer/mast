@@ -373,6 +373,63 @@ func TestCatalogPricer_PricesEachBucketAtItsOwnRate(t *testing.T) {
 	}
 }
 
+// The cache-write bucket, same shape (#352). This is the half the
+// meter's own tests cannot do: they price against a table they wrote,
+// and the claim here is that the rate mast actually ships is a real,
+// higher-than-input number and that the adapter routes the bucket to it.
+func TestCatalogPricer_PricesCacheWritesAtTheirPremiumRate(t *testing.T) {
+	const name = "claude-sonnet-5"
+	r, ok := builtinCatalog().Lookup(name)
+	if !ok || r.IsZero() {
+		t.Fatalf("builtin catalog lost %q; pick another catalog-known model", name)
+	}
+	// A cache write is a premium over fresh input, not a discount — the
+	// direction that makes folding it into the input bucket an undercount
+	// rather than a rounding error.
+	if r.CacheCreationInputPerMTok <= r.InputPerMTok {
+		t.Fatalf("%q has no cache-write premium (%v vs input %v); this test measures nothing",
+			name, r.CacheCreationInputPerMTok, r.InputPerMTok)
+	}
+
+	c := budget.Call{UncachedInputTokens: 1_000_000, CacheWriteTokens: 2_000_000, OutputTokens: 500_000}
+	got, ok := builtinPricer().PriceCall("", name, c)
+	if !ok {
+		t.Fatalf("the builtin catalog does not price %q", name)
+	}
+	want := r.InputPerMTok + 2*r.CacheCreationInputPerMTok + 0.5*r.OutputPerMTok
+	if math.Abs(got-want) > 1e-9 {
+		t.Errorf("PriceCall = $%.6f, want $%.6f", got, want)
+	}
+	// The pre-#352 behaviour, for contrast: the same tokens counted as
+	// fresh input bill strictly less. An adapter that still passed a
+	// hard-coded zero for the write bucket would land on this figure.
+	folded, _ := builtinPricer().PriceCall("", name, budget.Call{
+		UncachedInputTokens: 3_000_000, OutputTokens: 500_000,
+	})
+	if got <= folded {
+		t.Errorf("cache-warming $%.6f is not above folded-as-input $%.6f; the bucket is being ignored", got, folded)
+	}
+}
+
+// A catalog row that prices cache reads but never got a cache-write rate
+// bills writes as fresh input. That is pkg/pricing's documented fallback
+// and it is the conservative direction — the old behaviour, not a free
+// call — but it must be reached through the rate table rather than by
+// the adapter dropping the bucket on the floor.
+func TestCatalogPricer_AMissingCacheWriteRateFallsBackToInput(t *testing.T) {
+	cat := mustCatalog(t, map[string]pricing.ModelRates{
+		"half-priced-model": {InputPerMTok: 2, CachedInputPerMTok: 0.2, OutputPerMTok: 10},
+	})
+	p := catalogPricer{cat: cat}
+	got, ok := p.PriceCall("", "half-priced-model", budget.Call{CacheWriteTokens: 1_000_000})
+	if !ok {
+		t.Fatalf("PriceCall(row with rates) = (%v, false), want a price", got)
+	}
+	if want := 2.0; math.Abs(got-want) > 1e-9 {
+		t.Errorf("PriceCall = $%.6f, want the input rate $%.6f", got, want)
+	}
+}
+
 // A model nobody priced is a miss, so the meter falls back to the flat
 // rate and counts the call. Returning (0, true) instead would report the
 // call as free, and a cost ceiling that never advances never fires.

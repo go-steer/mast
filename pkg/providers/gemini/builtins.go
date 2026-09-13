@@ -28,6 +28,8 @@ import (
 
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
+
+	providerusage "github.com/go-steer/mast/pkg/providers/usage"
 )
 
 // BuiltinTools toggles Gemini's server-side built-in tools surfaced
@@ -346,16 +348,58 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	//      operators see the event in the daemon log even when
 	//      recovery succeeds. #78 follow-up.
 	//
+	//   5. wrapUsageDetail — attaches the provider-usage sidecar to
+	//      whatever the retries settled on. Outermost because a
+	//      response that gets retried away should not be described,
+	//      and because the sidecar describes usage, which is the one
+	//      thing none of the layers below alter.
+	//
 	// Cache-eviction retry lives INSIDE retryOnceOnEmpty so a cache
 	// miss followed by an empty response gets both safety nets. The
 	// two conditions are orthogonal — empty response is a Vertex
 	// silent-STOP shape, cache eviction is a TTL server-state issue.
-	return retryOnceOnEmpty(func() iter.Seq2[*adkmodel.LLMResponse, error] {
+	return wrapUsageDetail(retryOnceOnEmpty(func() iter.Seq2[*adkmodel.LLMResponse, error] {
 		return wrapEmptyTailDetection(
 			l.wrapCachedContentEvictionRetry(ctx, req, stream, cachedTurn, savedSystemInstruction, savedTools, savedToolConfig),
 			stream, l.tolerateEmptyChunks,
 		)
-	})
+	}))
+}
+
+// wrapUsageDetail attaches the provider-usage sidecar to every response
+// that carries usage metadata, leaving the rest untouched.
+//
+// Gemini needs none of this to be priced correctly — its buckets all
+// have a genai field, which is unsurprising since the genai shape is
+// Gemini's. It is here for the property #352 is actually about: with
+// both adapters stating what they measured, a bucket that is absent
+// means the provider did not report it, and mast can tell that apart
+// from a reported zero. CacheWriteTokens stays nil on every Gemini
+// response for exactly that reason — explicit context caches bill
+// storage per hour, so there is no written-token count to report, and
+// nil says so where a zero would claim a cache was warmed for free.
+//
+// Nothing in mast prices off the Gemini sidecar today: the meter reads
+// cache reads from it and gets the same number the genai field already
+// gave it.
+func wrapUsageDetail(inner iter.Seq2[*adkmodel.LLMResponse, error]) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		for resp, err := range inner {
+			if resp != nil && resp.UsageMetadata != nil {
+				u := resp.UsageMetadata
+				d := &providerusage.Detail{
+					CacheReadTokens: providerusage.Int64(int64(u.CachedContentTokenCount)),
+					ReasoningTokens: providerusage.Int64(int64(u.ThoughtsTokenCount)),
+					ToolUseTokens:   providerusage.Int64(int64(u.ToolUsePromptTokenCount)),
+					ServedModel:     resp.ModelVersion,
+				}
+				providerusage.Attach(resp, d)
+			}
+			if !yield(resp, err) {
+				return
+			}
+		}
+	}
 }
 
 // wrapCachedContentEvictionRetry retries the GenerateContent call

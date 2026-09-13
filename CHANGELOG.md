@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **Anthropic cache writes are billed at their own rate, and a long-running
+  session's reported cost goes up.** mast reads token counts through Google
+  GenAI's usage record, which has a cache-*read* bucket and no cache-*write*
+  bucket — so the Anthropic adapter folded `cache_creation_input_tokens` into
+  the prompt count and the meter billed them at 1x instead of 1.25x. This has
+  been true since caching landed and is worst exactly where it is least
+  expected: the turn that warms a cache is the turn that pays for it. Measured
+  rather than estimated — a 28,804-token warm on `claude-sonnet-5` billed
+  **$0.057668 against a rate card $0.072070**, a fifth of the turn
+  ([#352](https://github.com/go-steer/mast/issues/352)).
+
+  Provider adapters now attach a normalized usage record beside the GenAI one
+  (`pkg/providers/usage.Detail`) carrying cache reads, cache writes, reasoning
+  and tool-use tokens plus the model the backend says it ran, and the meter
+  prices from it when present. Every count is a pointer: a reported zero and a
+  bucket the provider never mentioned are different claims and must not
+  serialize the same way. Gemini stamps the record too, though nothing prices
+  off it yet.
+
+  **What this changes for you:** nothing you configure, and one number. A
+  `max_cost_usd` ceiling on a cache-heavy Claude workload now trips where it
+  should have been tripping all along, which is sooner than it did in v0.8.0;
+  the spend ledger and `/usage` cost figure move the same way. Cache *hits*,
+  the steady-state case, are unchanged. An embedder that implements
+  `budget.Pricer` itself should handle the new `Call.CacheWriteTokens` field —
+  ignoring it reproduces the old under-billing, which is why this landed before
+  the v1.0 freeze rather than after it.
+
+  Not fixed here: `/usage` still reports turns and cost only. The eight token
+  fields `attach.UsageTotals` declares have never been populated by anything —
+  the tracker was never ported from core-agent — so the zero-vs-unreported
+  distinction is visible on the event log and not in the operator projection.
+  Filed as [#356](https://github.com/go-steer/mast/issues/356).
+
 - **A candidate model is measured on a schedule, and a baseline now has to have
   measured the same thing.** v0.8.0's deferral holds the gemini `frontier`
   default at `gemini-3.7-flash` until the judged corpus has been run against

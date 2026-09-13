@@ -129,7 +129,7 @@ not claim.
 |---|---|
 | `pkg/transcript` | Operator surface over the ADK session store: list/show summaries, pending-interrupt scan, durable abort/pause markers, resume-token records, and the durable decision records (`approve`/`reject`/`edit`) that `mast sessions export-decisions` writes out as JSONL. (Named `session` pre-v0.1.0; renamed to end the alias collision with ADK's `session`.) |
 | `pkg/eventlog` | Seq-overlay + `Since`/`Watch` stream + audit metadata sidecar layered **on** ADK `session/database` (ADK owns the tables), plus two mast-owned append-only logs folded forward across restarts: `GuardrailStore` (trips and resets, so an `enforce` halt outlives the process that observed it) and `SpendStore` (one row per priced model call, so a cost ceiling does too). Ported from core-agent. |
-| `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. Metering stays in memory and database-free; durability is a two-part seam — `Config.OnSpend` writes each priced call out, `Meter.Restore` folds a previous process's spend back in — which `cmd/mast` wires to `eventlog.SpendStore`. |
+| `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. Metering stays in memory and database-free; durability is a two-part seam — `Config.OnSpend` writes each priced call out, `Meter.Restore` folds a previous process's spend back in — which `cmd/mast` wires to `eventlog.SpendStore`. Token buckets come from the ADK usage record, overridden per bucket by the provider sidecar when the adapter attached one (`budget.Detailer`, #352); an over-reported count is fitted to the room the prompt leaves rather than credited. |
 | `pkg/effects` | The recorded-effect outbox: the session event log **is** the outbox (durable `FunctionCall` = intent, paired `FunctionResponse` = completion), read once per turn in an ADK runner plugin's `BeforeRun`. A dangling mutating intent puts the turn in fail-closed ambiguous-effect mode until an operator acks. |
 | `pkg/approval` | The write gate: the runner-plugin seam where a mutating call parks for an operator, the three-valued verdict (`approve`/`reject`/`edit`), the typed change-set producer, and exact-`(tool, arguments)`-signature grants with their freshness re-read. Policy stays in `pkg/permissions`; the durable pause is ADK's tool-confirmation flow. Since [#296](https://github.com/go-steer/mast/issues/296) it also records what a change overwrote: `capture.go` takes a declared prior-state read before the call runs, on all four paths to execution, and writes the old values plus a proposed revert onto the event log. mast never fires the revert. |
 | `pkg/permissions` | Permission gate + prompt contract (ported). Runtime-wired since v0.3 through `pkg/approval`'s plugin — it decides policy (proceed / ask / refuse) and stays ADK-independent. |
@@ -145,6 +145,7 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 | `pkg/providers/anthropic` | First-party + Vertex backends; thinking-block round-trip, prompt-cache usage fold, draft-2020-12 schema normalization. |
 | `pkg/providers/vertexcache` | Vertex context-cache manager (public so compose and embedders can wire hooks). |
 | `pkg/providers/mock` | Scripted JSONL replay for tests and offline demos. |
+| `pkg/providers/usage` | The normalized usage record adapters attach beside ADK's, under `budget.DetailKey`. Exists because mast reads usage through `genai.GenerateContentResponseUsageMetadata`, which has a cache-*read* bucket and no cache-*write* one — so Anthropic's `cache_creation_input_tokens` was folded into fresh input and billed at 1x instead of 1.25x for eight releases ([#352](https://github.com/go-steer/mast/issues/352)). Every count is a pointer: nil is "the provider did not say", which is not zero. |
 | `pkg/taskclass` / `pkg/modeltier` / `pkg/pricing` | Task-class profiles → model-tier defaults → catalog pricing for the budget meter. |
 | `pkg/instruction` | Instruction assembly. |
 | `pkg/digest` | Tool-result digesting — the structural / agentic / passthrough router, its retrieval store, and per-method telemetry (eventlog-store variant descoped at port). Driven by `pkg/mcp`'s digest wrap since [#221](https://github.com/go-steer/mast/issues/221) (on by default, `--mcp-digest=false` to disable), which is what populates `attach.UsageInfo.DigestMethods` and the `latency_ms` / `savings` tool-result sidecars (both ride a digested response; a response the wrap hands back undigested is byte-identical to the tool's own, because `pkg/approval` compares two reads of the same tool for equality). mast's caller is **structural-only**: it passes no `LLMFallback`, so the agentic path runs only for an embedder that supplies one and `Savings.Subagent*` stay zero on the daemon. |
@@ -429,6 +430,15 @@ one-method `budget.Pricer` instead, taking a `budget.Call` struct so the
 usage buckets §4.3 wants next arrive as fields rather than as a new
 signature; `internal/compose` holds the only adapter, and `pkg/budget`
 now imports nothing else from this module.
+
+That bet paid out one release later. The usage sidecar (#352) needed the
+meter to read cache-write counts that only a provider adapter can
+produce, and `CacheWriteTokens` went into `Call` as a field, with the
+read side a second budget-owned interface — `Detailer`, returning a
+budget-owned `Buckets` — so `pkg/providers/usage` names `pkg/budget` and
+never the reverse. A test in the package now parses its own imports and
+fails on any that names this module, because the property is the point
+and a compiler will not notice it going away.
 
 The three `approval` records are *outputs*. There is no constructor to
 drag in, and their field set is already committed as
