@@ -109,7 +109,7 @@ tool_catalog:
 specialists:
   - analyst
 `)
-	write(filepath.Join("specialists", "analyst.tmpl"), `---
+	write(filepath.Join("specialists", "analyst.specialist.md"), `---
 name: analyst
 description: Reads the cluster and reports. Cannot change anything.
 mode: Task

@@ -1,6 +1,6 @@
 # mast config layout: design
 
-**Status:** draft, 2026-07-01 (updated 2026-07-26 — reconciled with the shipped v0.1 `pkg/config`, which implements the discovery + loading rules and resolved several ambiguities this draft left open; the dated annotations below record where the code's behavior is now the contract). Companion to [`./specialists-design.md`](./specialists-design.md) (`.agents/specialists/*.tmpl`), [`./orchestration-design.md`](./orchestration-design.md) (`.agents/workloads/*.yaml`), [`./mcp-catalog-design.md`](./mcp-catalog-design.md) (`.agents/mcp/*.json`), [`./library-api-design.md`](./library-api-design.md) (config precedence surface), and [`./deployment-design.md`](./deployment-design.md) (config injection patterns per topology). Small doc that ties together the `.agents/` file layout across subsystems and defines precedence rules, naming conflicts, hot-reload semantics, and env-var overrides.
+**Status:** draft, 2026-07-01 (updated 2026-07-26 — reconciled with the shipped v0.1 `pkg/config`, which implements the discovery + loading rules and resolved several ambiguities this draft left open; the dated annotations below record where the code's behavior is now the contract). Companion to [`./specialists-design.md`](./specialists-design.md) (`.agents/specialists/*.specialist.md`), [`./orchestration-design.md`](./orchestration-design.md) (`.agents/workloads/*.yaml`), [`./mcp-catalog-design.md`](./mcp-catalog-design.md) (`.agents/mcp/*.json`), [`./library-api-design.md`](./library-api-design.md) (config precedence surface), and [`./deployment-design.md`](./deployment-design.md) (config injection patterns per topology). Small doc that ties together the `.agents/` file layout across subsystems and defines precedence rules, naming conflicts, hot-reload semantics, and env-var overrides.
 
 ## Why this needs its own doc
 
@@ -12,7 +12,7 @@ Multiple subsystems own file layouts under `.agents/` (specialists, workloads, M
 - Ambiguity about hot-reload — does editing a specialist file take effect immediately or need restart?
 - Ambiguity about env-var overrides — which config values can be overridden and how.
 
-Individual subsystem docs punt on these ("`.agents/specialists/*.tmpl`" without saying where `.agents/` is). This doc gives them one answer.
+Individual subsystem docs punt on these ("`.agents/specialists/*.specialist.md`" without saying where `.agents/` is). This doc gives them one answer.
 
 ## Layout
 
@@ -21,8 +21,8 @@ The canonical layout under `.agents/`:
 ```
 .agents/
   specialists/                  # specialist definitions (see specialists-design.md)
-    ImagePullBackOff.tmpl
-    CrashLoopBackOff.tmpl
+    ImagePullBackOff.specialist.md
+    CrashLoopBackOff.specialist.md
     ...
   workloads/                    # workload bundles (see orchestration-design.md)
     incident-triage.yaml
@@ -78,7 +78,7 @@ Each subsystem directory is scanned per its own rules:
 
 | Directory | Glob | Recursive? |
 |---|---|---|
-| `specialists/` | `*.tmpl` | No; flat directory |
+| `specialists/` | `*.specialist.md` | No; flat directory |
 | `workloads/` | `*.yaml` (also `.yml`) | No; flat directory |
 | `mcp/` | `*.json` | No; flat directory |
 | `a2a/` | `*.yaml` (also `.yml`) | No; flat directory |
@@ -149,7 +149,7 @@ Hot-reload semantics per file class:
 
 | File class | Hot-reload | Trigger | v0.X |
 |---|---|---|---|
-| Specialists (`.tmpl`) | Not v0.1; may add | `SIGHUP` in v0.2 | v0.2 |
+| Specialists (`.specialist.md`) | Not v0.1; may add | `SIGHUP` in v0.2 | v0.2 |
 | Workloads (`.yaml`) | Not v0.1; may add | `SIGHUP` in v0.2 | v0.2 |
 | MCP config (`.json`) | Not v0.1 | Restart required in v0.1; may add SIGHUP later | v0.3+ |
 | Runtime config (`mast.yaml`) | Not v0.1 | Restart required | v0.3+ |
@@ -199,7 +199,7 @@ Config value precedence, highest wins:
 1. **Explicit programmatic** — passed via library API.
 2. **Env var** — `MAST_*` prefix.
 3. **Runtime config file** — `mast.yaml` (via discovery order).
-4. **Subsystem file** — `.agents/*/*.{tmpl,yaml,json}` (via discovery order).
+4. **Subsystem file** — `.agents/*/*.{specialist.md,yaml,json}` (via discovery order).
 5. **Built-in default** — hard-coded fallback.
 
 `.agents/` discovery order:
@@ -232,7 +232,7 @@ Container images built via `examples/deploy/*/Dockerfile` bake in sensible defau
 
 | Subsystem | Config-layout dependency |
 |---|---|
-| **Specialists** | `.agents/specialists/*.tmpl` per [`./specialists-design.md`](./specialists-design.md) |
+| **Specialists** | `.agents/specialists/*.specialist.md` per [`./specialists-design.md`](./specialists-design.md) |
 | **Orchestration** | `.agents/workloads/*.yaml` per [`./orchestration-design.md`](./orchestration-design.md) |
 | **MCP catalog** | `.agents/mcp/*.json` per [`./mcp-catalog-design.md`](./mcp-catalog-design.md); wiring templates under `.agents/mcp/*.example.json` |
 | **Library API** | Programmatic registration bypasses file layout entirely; precedence rules apply uniformly |

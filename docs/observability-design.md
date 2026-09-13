@@ -230,7 +230,7 @@ Prometheus is cardinality-sensitive. Guidance:
 - **Tenant is a high-cardinality dimension** and is *not* on every metric by default. Metrics that include `tenant` are opt-in per deployment (env var `MAST_METRICS_INCLUDE_TENANT=1`) and are expected to be shipped to a store with sufficient scale (Cortex, Thanos, VictoriaMetrics).
 - **Session ID is never a metric label.** Session-shaped queries go through traces.
 - **Tool name / MCP server name** are bounded per deployment (finite tools + finite MCP servers configured); safe as labels.
-- **Specialist name** is bounded by `.agents/specialists/*.tmpl`; safe as a label.
+- **Specialist name** is bounded by `.agents/specialists/*.specialist.md`; safe as a label.
 - **Workload name** is bounded by `.agents/workloads/*.yaml`; safe as a label.
 
 ### Prometheus scrape endpoint

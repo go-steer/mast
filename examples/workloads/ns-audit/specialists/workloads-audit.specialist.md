@@ -7,7 +7,7 @@ description: |
   limits and mutable image tags. Read-only.
 mode: Task
 # Cheap tier: reading one slice of one namespace is not where this
-# bundle should spend. See _synthesis.tmpl for why this is a `tier:`
+# bundle should spend. See _synthesis.specialist.md for why this is a `tier:`
 # and not a `model:`.
 tier: small
 output_schema: ../schemas/finding.json

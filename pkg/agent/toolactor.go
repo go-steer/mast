@@ -251,7 +251,7 @@ var approvedCallRe = regexp.MustCompile(`(?m)^\s*\d+\.\s+([A-Za-z0-9_.:-]+)\((\{
 // history that this turn can still make: one the request offers as a
 // tool and that has no response yet.
 //
-// This is the fake standing in for what change-executor.tmpl instructs a
+// This is the fake standing in for what change-executor.specialist.md instructs a
 // real model to do — make the approved calls as written, in order — and
 // it is deliberately the *only* thing the fake does with them, so the
 // arguments the write gate parks are byte-identical to the ones the

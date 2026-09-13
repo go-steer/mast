@@ -753,7 +753,7 @@ say "S4-exit3: SIGTERM drain expires on a wedged turn -> exit 3"
 NOBUDGET_WL="${WORK}/uat-nobudget"
 mkdir -p "${NOBUDGET_WL}/specialists"
 cp "${FIXTURE}/mcp.json" "${NOBUDGET_WL}/mcp.json"
-cp "${FIXTURE}/specialists/uat-worker.tmpl" "${NOBUDGET_WL}/specialists/uat-worker.tmpl"
+cp "${FIXTURE}/specialists/uat-worker.specialist.md" "${NOBUDGET_WL}/specialists/uat-worker.specialist.md"
 # Same fixture, minus the `budget:` block (grep out those two lines).
 grep -v -e '^budget:' -e 'max_wallclock_seconds:' "${FIXTURE}/workload.yaml" \
   > "${NOBUDGET_WL}/workload.yaml"

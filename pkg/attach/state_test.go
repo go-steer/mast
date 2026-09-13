@@ -162,7 +162,7 @@ func TestIntegration_SubagentsEndpoint(t *testing.T) {
 				Name:        "log-analyst",
 				Description: "reads pod logs",
 				Model:       "gemini-2.5-flash",
-				Root:        "specialists/log-analyst.tmpl",
+				Root:        "specialists/log-analyst.specialist.md",
 				Modes:       []string{},
 				Invocation:  InvocationFanoutBranch,
 				Capability:  "read_only",

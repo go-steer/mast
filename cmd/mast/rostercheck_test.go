@@ -74,7 +74,7 @@ specialists:
   - second
 `)
 	for _, name := range []string{"first", "second"} {
-		write(filepath.Join("specialists", name+".tmpl"), `---
+		write(filepath.Join("specialists", name+".specialist.md"), `---
 name: `+name+`
 description: One of two specialists, which is one too many for bounded.
 mode: SingleTurn

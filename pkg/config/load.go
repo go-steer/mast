@@ -45,7 +45,7 @@ type Config struct {
 	Workloads map[string]workload.Bundle
 
 	// Specialists maps specialist name → loaded spec
-	// (<root>/specialists/*.tmpl, flat scan).
+	// (<root>/specialists/*.specialist.md, flat scan).
 	Specialists map[string]specialists.Spec
 
 	// A2A maps remote-agent name → static A2A registration
@@ -93,7 +93,7 @@ func LoadRoot(root Root, logger *slog.Logger) (*Config, error) {
 	if cfg.Workloads, err = loadWorkloads(filepath.Join(root.Dir, "workloads")); err != nil {
 		return nil, err
 	}
-	if cfg.Specialists, err = loadSpecialists(filepath.Join(root.Dir, "specialists")); err != nil {
+	if cfg.Specialists, err = loadSpecialists(filepath.Join(root.Dir, "specialists"), logger); err != nil {
 		return nil, err
 	}
 	if cfg.A2A, err = loadA2A(filepath.Join(root.Dir, "a2a")); err != nil {
@@ -155,10 +155,11 @@ func loadWorkloads(dir string) (map[string]workload.Bundle, error) {
 	return out, nil
 }
 
-// loadSpecialists loads dir/*.tmpl (flat, non-recursive) via
-// pkg/specialists and rejects same-name collisions. A missing dir
-// yields zero entries.
-func loadSpecialists(dir string) (map[string]specialists.Spec, error) {
+// loadSpecialists loads dir/*.specialist.md (flat, non-recursive) via
+// pkg/specialists and rejects same-name collisions. The deprecated
+// .tmpl extension still loads and is warned about here, where the
+// logger is. A missing dir yields zero entries.
+func loadSpecialists(dir string, logger *slog.Logger) (map[string]specialists.Spec, error) {
 	out := map[string]specialists.Spec{}
 	if !dirExists(dir) {
 		return out, nil
@@ -167,6 +168,7 @@ func loadSpecialists(dir string) (map[string]specialists.Spec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	specialists.WarnLegacyExtension(logger, specs)
 	for _, s := range specs {
 		if prev, ok := out[s.Name]; ok {
 			return nil, fmt.Errorf(

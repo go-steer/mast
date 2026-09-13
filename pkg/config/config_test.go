@@ -15,6 +15,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"os"
@@ -39,7 +40,7 @@ func mkdir(t *testing.T, path string) string {
 	return path
 }
 
-// writeSpecialist writes a minimal valid .tmpl. name == "" omits the
+// writeSpecialist writes a minimal valid specialist file. name == "" omits the
 // explicit name (filename-derived).
 func writeSpecialist(t *testing.T, dir, filename, name string) {
 	t.Helper()
@@ -71,7 +72,7 @@ func writeWorkload(t *testing.T, dir, filename, name string, roster ...string) {
 // specialist (spName).
 func populateRoot(t *testing.T, root, wlName, spName string) {
 	t.Helper()
-	writeSpecialist(t, mkdir(t, filepath.Join(root, "specialists")), spName+".tmpl", "")
+	writeSpecialist(t, mkdir(t, filepath.Join(root, "specialists")), spName+".specialist.md", "")
 	writeWorkload(t, mkdir(t, filepath.Join(root, "workloads")), wlName+".yaml", wlName, spName)
 }
 
@@ -233,8 +234,8 @@ func TestWorkloadNameCollisionFatal(t *testing.T) {
 func TestSpecialistNameCollisionFatal(t *testing.T) {
 	root := tempDir(t)
 	sp := mkdir(t, filepath.Join(root, "specialists"))
-	writeSpecialist(t, sp, "a.tmpl", "classifier") // explicit name
-	writeSpecialist(t, sp, "classifier.tmpl", "")  // filename-derived
+	writeSpecialist(t, sp, "a.specialist.md", "classifier") // explicit name
+	writeSpecialist(t, sp, "classifier.specialist.md", "")  // filename-derived
 
 	_, err := LoadRoot(Root{Dir: root, Source: SourceProject}, testLogger())
 	if err == nil || !strings.Contains(err.Error(), "collision") {
@@ -364,5 +365,28 @@ func TestA2AInvalidConfigFatal(t *testing.T) {
 	_, err := LoadRoot(Root{Dir: root, Source: SourceProject}, testLogger())
 	if err == nil || !strings.Contains(err.Error(), "agent_card_url or endpoint") {
 		t.Fatalf("want fatal a2a validation error, got %v", err)
+	}
+}
+
+// TestLoadRootWarnsOnLegacySpecialistExtension pins the operator-facing
+// half of #292 at the level an operator actually reads. pkg/specialists
+// records the fact on the Spec and stays log-free; if nothing here
+// turns that into a line in the log, the deprecation window is a
+// window nobody is told about, and the removal lands as a surprise.
+func TestLoadRootWarnsOnLegacySpecialistExtension(t *testing.T) {
+	root := tempDir(t)
+	writeSpecialist(t, mkdir(t, filepath.Join(root, "specialists")), "classifier.tmpl", "")
+	writeWorkload(t, mkdir(t, filepath.Join(root, "workloads")), "t.yaml", "t", "classifier")
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if _, err := LoadRoot(Root{Dir: root, Source: SourceProject}, logger); err != nil {
+		t.Fatalf("LoadRoot: %v", err)
+	}
+	got := buf.String()
+	for _, want := range []string{"classifier.tmpl", ".specialist.md", "issues/292"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("root load did not warn about %q: %s", want, got)
+		}
 	}
 }

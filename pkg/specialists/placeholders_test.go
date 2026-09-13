@@ -27,11 +27,11 @@ import (
 // checks the copy against the source it was copied from.
 
 func TestATemplateThatLooksUpSessionStateIsRefused(t *testing.T) {
-	err := checkPlaceholders("Diagnose.tmpl", "Investigate the workload in {project} and report.")
+	err := checkPlaceholders("Diagnose.specialist.md", "Investigate the workload in {project} and report.")
 	if err == nil {
 		t.Fatal("a template asking for state key \"project\" loaded; it would have died on its first run")
 	}
-	for _, want := range []string{"Diagnose.tmpl", "line 1", "{project}", `"project"`} {
+	for _, want := range []string{"Diagnose.specialist.md", "line 1", "{project}", `"project"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error does not mention %s:\n%v", want, err)
 		}
@@ -50,7 +50,7 @@ func TestBracesAroundAnythingElseAreLiteral(t *testing.T) {
 		"An empty pair {} is nothing at all.",
 		"Nothing in braces here.",
 	} {
-		if err := checkPlaceholders("Diagnose.tmpl", body); err != nil {
+		if err := checkPlaceholders("Diagnose.specialist.md", body); err != nil {
 			t.Errorf("refused a literal body %q:\n%v", body, err)
 		}
 	}
@@ -60,10 +60,10 @@ func TestTheSpaceAfterTheColonDecidesIt(t *testing.T) {
 	// The asymmetry worth a test of its own: "app:" is one of ADK's
 	// three state scopes, so the spaced form is prose and the unspaced
 	// form is a lookup. Nothing about the two shapes says so.
-	if err := checkPlaceholders("Diagnose.tmpl", "label it {app: web}"); err != nil {
+	if err := checkPlaceholders("Diagnose.specialist.md", "label it {app: web}"); err != nil {
 		t.Errorf("{app: web} is not a valid state name and must load:\n%v", err)
 	}
-	err := checkPlaceholders("Diagnose.tmpl", "label it {app:web}")
+	err := checkPlaceholders("Diagnose.specialist.md", "label it {app:web}")
 	if err == nil {
 		t.Fatal("{app:web} is a lookup of the app-scoped key \"web\" and must be refused")
 	}
@@ -77,7 +77,7 @@ func TestTheOptionalMarkerIsTheWayToAskForState(t *testing.T) {
 		"Investigate {project?} if the caller named one.",
 		"Investigate {app:project?} if the caller named one.",
 	} {
-		if err := checkPlaceholders("Diagnose.tmpl", body); err != nil {
+		if err := checkPlaceholders("Diagnose.specialist.md", body); err != nil {
 			t.Errorf("refused %q, which cannot fail a run:\n%v", body, err)
 		}
 	}
@@ -86,7 +86,7 @@ func TestTheOptionalMarkerIsTheWayToAskForState(t *testing.T) {
 func TestDoublingTheBracesDoesNotEscapeIt(t *testing.T) {
 	// The first thing anyone tries. The regex matches runs of braces
 	// and the trim takes all of them, so it is the same lookup.
-	err := checkPlaceholders("Diagnose.tmpl", "Investigate {{project}}.")
+	err := checkPlaceholders("Diagnose.specialist.md", "Investigate {{project}}.")
 	if err == nil {
 		t.Fatal("{{project}} loaded; ADK trims it to the same key as {project}")
 	}
@@ -102,7 +102,7 @@ func TestAnArtifactPlaceholderIsRefusedEvenWhenOptional(t *testing.T) {
 		"Quote the summary from {artifact.report}.",
 		"Quote the summary from {artifact.report?}.",
 	} {
-		err := checkPlaceholders("Diagnose.tmpl", body)
+		err := checkPlaceholders("Diagnose.specialist.md", body)
 		if err == nil {
 			t.Fatalf("%q loaded; there is no artifact service for it to load from", body)
 		}
@@ -110,7 +110,7 @@ func TestAnArtifactPlaceholderIsRefusedEvenWhenOptional(t *testing.T) {
 			t.Errorf("the error does not name the artifact:\n%v", err)
 		}
 	}
-	if err := checkPlaceholders("Diagnose.tmpl", "Quote {artifact.report?}."); !strings.Contains(err.Error(), "no artifact service") {
+	if err := checkPlaceholders("Diagnose.specialist.md", "Quote {artifact.report?}."); !strings.Contains(err.Error(), "no artifact service") {
 		t.Errorf("the error should say why the marker did not help:\n%v", err)
 	}
 }
@@ -119,7 +119,7 @@ func TestEveryOffenderIsNamedWithItsLine(t *testing.T) {
 	// All of them, because an author who fixes one and restarts to find
 	// the next learns the rule the slowest possible way.
 	body := "Investigate {project}.\nIt runs in {region}.\nOwned by {temp:team}.\n"
-	err := checkPlaceholders("Diagnose.tmpl", body)
+	err := checkPlaceholders("Diagnose.specialist.md", body)
 	if err == nil {
 		t.Fatal("three lookups loaded")
 	}

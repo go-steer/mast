@@ -72,7 +72,7 @@ func run(ctx context.Context) error {
 
 	// Specs are registered programmatically — no .agents/ directory,
 	// no file discovery, no pkg/config. The same Specs could instead
-	// be loaded from .tmpl files via specialists.LoadDir.
+	// be loaded from .specialist.md files via specialists.LoadDir.
 	classifier, err := specialists.Build(specialists.Spec{
 		Name:        "incident_classifier",
 		Description: "Classifies an incident envelope into a failure mode.",

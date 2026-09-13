@@ -34,7 +34,7 @@ ignored, so you can keep e.g. `workloads/archive/`:
 | Path | Contents |
 |---|---|
 | `<root>/workloads/*.yaml` (also `*.yml`) | [Workload bundles](/reference/workload-bundle/) |
-| `<root>/specialists/*.tmpl` | Specialist templates (YAML frontmatter + instruction body) |
+| `<root>/specialists/*.specialist.md` | Specialist templates (YAML frontmatter + instruction body) |
 | `<root>/a2a/*.yaml` (also `*.yml`) | Static A2A agent registrations |
 
 A missing subdirectory yields zero entries — not an error. Two files

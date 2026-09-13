@@ -426,8 +426,8 @@ WL="${WORK}/schemaless"
 LOG="${WORK}/b.log"
 rm -rf "${WL}"
 cp -r "${WORKLOAD}" "${WL}"
-grep -v '^output_schema:' "${WORKLOAD}/specialists/OOMKilled.tmpl" \
-  > "${WL}/specialists/OOMKilled.tmpl"
+grep -v '^output_schema:' "${WORKLOAD}/specialists/OOMKilled.specialist.md" \
+  > "${WL}/specialists/OOMKilled.specialist.md"
 start_daemon "${LOG}"
 
 assert_http "inject OOMKilled -> 202" "$(inject_code b1 OOMKilled)" 202
@@ -590,18 +590,18 @@ rm -rf "${STRUCT_BAD}" "${STRUCT_OK}"
 cp -r "${WORKLOAD}" "${STRUCT_BAD}"
 # Give a diagnoser back the write tool W2.4 took away from it.
 sed 's|^        - list_k8s_events$|&\n        - patch_k8s_resource|' \
-  "${WORKLOAD}/specialists/OOMKilled.tmpl" > "${STRUCT_BAD}/specialists/OOMKilled.tmpl"
-if ! grep -q 'patch_k8s_resource' "${STRUCT_BAD}/specialists/OOMKilled.tmpl"; then
-  echo "derived struct-undeclared has no patch_k8s_resource; the shipped tmpl's shape changed" >&2
+  "${WORKLOAD}/specialists/OOMKilled.specialist.md" > "${STRUCT_BAD}/specialists/OOMKilled.specialist.md"
+if ! grep -q 'patch_k8s_resource' "${STRUCT_BAD}/specialists/OOMKilled.specialist.md"; then
+  echo "derived struct-undeclared has no patch_k8s_resource; the shipped specialist's shape changed" >&2
   exit 1
 fi
 cp -r "${STRUCT_BAD}" "${STRUCT_OK}"
 # ...and now let it say so. One line of YAML is the whole difference
 # between leg B and leg C.
 sed 's|^output_schema: ../schemas/finding.json$|&\ncapability: change_executor|' \
-  "${STRUCT_BAD}/specialists/OOMKilled.tmpl" > "${STRUCT_OK}/specialists/OOMKilled.tmpl"
-if ! grep -q 'capability: change_executor' "${STRUCT_OK}/specialists/OOMKilled.tmpl"; then
-  echo "derived struct-declared has no capability line; the shipped tmpl's shape changed" >&2
+  "${STRUCT_BAD}/specialists/OOMKilled.specialist.md" > "${STRUCT_OK}/specialists/OOMKilled.specialist.md"
+if ! grep -q 'capability: change_executor' "${STRUCT_OK}/specialists/OOMKilled.specialist.md"; then
+  echo "derived struct-declared has no capability line; the shipped specialist's shape changed" >&2
   exit 1
 fi
 

@@ -62,7 +62,7 @@ unchanged. An explicit `--session-db-driver=postgres` with an empty
    ```
 
    (`/workspace/workload` matches the base image's `--workload`
-   convention — `workload.yaml`, `mcp.json`, `specialists/*.tmpl`.)
+   convention — `workload.yaml`, `mcp.json`, `specialists/*.specialist.md`.)
 
 4. **Deploy:** edit the `REPLACE_ME` markers in `service.yaml`, then
 

@@ -21,9 +21,9 @@ import (
 	"testing"
 )
 
-func loadTmpl(t *testing.T, frontmatter string) error {
+func loadSpec(t *testing.T, frontmatter string) error {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "analyst.tmpl")
+	path := filepath.Join(t.TempDir(), "analyst"+Extension)
 	body := "---\n" + frontmatter + "---\n\nDo the thing.\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func loadTmpl(t *testing.T, frontmatter string) error {
 // TestUnknownFrontmatterKeyIsRefused applies #302's decision to the
 // other artifact an operator writes by hand.
 func TestUnknownFrontmatterKeyIsRefused(t *testing.T) {
-	err := loadTmpl(t, "description: Reads things.\nmodle: gemini-3.5-flash\n")
+	err := loadSpec(t, "description: Reads things.\nmodle: gemini-3.5-flash\n")
 	if err == nil {
 		t.Fatal("a misspelled frontmatter key loaded; it must be refused")
 	}
@@ -60,7 +60,7 @@ func TestUnknownFrontmatterKeyIsRefused(t *testing.T) {
 // misspelling it fails toward the safe value. tools: fails the other
 // way, and it is the reason this loader is strict rather than warning.
 func TestMisspelledToolsKeyIsRefused(t *testing.T) {
-	err := loadTmpl(t, "description: Reads things.\ntoosl:\n  mcp: []\n")
+	err := loadSpec(t, "description: Reads things.\ntoosl:\n  mcp: []\n")
 	if err == nil {
 		t.Fatal("a misspelled tools key loaded; the specialist would silently inherit every MCP server")
 	}
@@ -74,7 +74,7 @@ func TestMisspelledToolsKeyIsRefused(t *testing.T) {
 // for strictness gets weaker and the comment above should be revisited
 // rather than left asserting something the code stopped doing.
 func TestAbsentToolsStillInheritsEverything(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "analyst.tmpl")
+	path := filepath.Join(t.TempDir(), "analyst"+Extension)
 	if err := os.WriteFile(path, []byte("---\ndescription: Reads things.\n---\n\nGo.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestAbsentToolsStillInheritsEverything(t *testing.T) {
 // not, because a specialist is only ever reached through a bundle that
 // names it. Pinned as a test so the asymmetry reads as a choice.
 func TestSpecialistsTakeNoSchemaVersion(t *testing.T) {
-	err := loadTmpl(t, "description: Reads things.\nschema_version: 1\n")
+	err := loadSpec(t, "description: Reads things.\nschema_version: 1\n")
 	if err == nil {
 		t.Fatal("frontmatter accepted schema_version; specialists are governed by the bundle's version, not their own")
 	}
@@ -102,12 +102,16 @@ func TestSpecialistsTakeNoSchemaVersion(t *testing.T) {
 }
 
 // TestShippedSpecialistsStillLoad is the blast-radius guard, the
-// counterpart of workload.TestShippedBundlesStillLoad. 39 .tmpl files
-// ship in this tree; strictness must not have broken one.
+// counterpart of workload.TestShippedBundlesStillLoad. 39 specialist
+// files ship in this tree; strictness must not have broken one.
+//
+// It doubles as the rename's own guard (#292): the walk matches
+// Extension, so leaving one file behind on the old extension shows up
+// as both a floor failure here and a stray in TestNoLegacyExtensionInTree.
 func TestShippedSpecialistsStillLoad(t *testing.T) {
 	n := 0
 	err := filepath.Walk("../..", func(p string, fi os.FileInfo, err error) error {
-		if err != nil || fi.IsDir() || filepath.Ext(p) != ".tmpl" {
+		if err != nil || fi.IsDir() || !strings.HasSuffix(p, Extension) {
 			return nil
 		}
 		n++
@@ -122,6 +126,31 @@ func TestShippedSpecialistsStillLoad(t *testing.T) {
 	// A walk that silently found nothing would pass while checking
 	// nothing — the same trap TestNothingInMastImportsDigest named.
 	if n < 30 {
-		t.Fatalf("walked only %d .tmpl files; the tree has ~39, so this check is not looking where it thinks", n)
+		t.Fatalf("walked only %d %s files; the tree has ~39, so this check is not looking where it thinks", n, Extension)
+	}
+}
+
+// TestNoLegacyExtensionInTree pins the rename itself. LegacyExtension
+// still loads for one release, which is exactly why nothing in this
+// tree may keep using it: a shipped example on the deprecated spelling
+// is the thing people copy, and it would keep the extension alive past
+// its removal by way of everyone's bundles rather than ours.
+func TestNoLegacyExtensionInTree(t *testing.T) {
+	var stray []string
+	err := filepath.Walk("../..", func(p string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(p, LegacyExtension) {
+			stray = append(stray, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stray) > 0 {
+		t.Errorf("%d file(s) still use the deprecated %s extension, rename to %s: %v",
+			len(stray), LegacyExtension, Extension, stray)
 	}
 }

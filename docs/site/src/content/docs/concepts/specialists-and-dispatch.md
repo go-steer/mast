@@ -15,10 +15,10 @@ that bundle and the specialist files beside it, not compiled in.
 examples/workloads/gke-triage/
 ├── workload.yaml            the bundle
 ├── specialists/
-│   ├── triage-classifier.tmpl
-│   ├── OOMKilled.tmpl
+│   ├── triage-classifier.specialist.md
+│   ├── OOMKilled.specialist.md
 │   ├── ...
-│   └── change-executor.tmpl
+│   └── change-executor.specialist.md
 └── schemas/
     ├── finding.json         the diagnosers' report contract
     └── change-report.json   the executor's
@@ -30,9 +30,11 @@ mast checks the answer at startup rather than at incident time.
 
 ## A specialist
 
-A specialist is a `.tmpl` file: YAML frontmatter, then the prompt body. It
-runs as a sub-agent, invoked as a tool by whatever root shape the roster is
-built for.
+A specialist is a `<name>.specialist.md` file: YAML frontmatter, then the
+prompt body. It is not a Go template and never was — nothing substitutes
+into it, and a `{{ ... }}` in the body is refused at load. It runs as a
+sub-agent, invoked as a tool by whatever root shape the roster is built
+for.
 
 ```yaml
 ---
@@ -79,6 +81,34 @@ Five of those lines are worth understanding as concepts rather than fields:
 Exact semantics and every field: [workload bundle
 reference](/reference/workload-bundle/).
 
+### The extension changed in v0.8
+
+These files were called `<name>.tmpl` through v0.7.0. They were never Go
+templates — `text/template` is imported by one package in mast, for the
+planner's instruction, and it reads none of them — and the name invited
+authors to write substitutions that would never fire.
+
+`.tmpl` still loads. mast warns at startup, naming each file:
+
+```
+WARN specialist files still use the deprecated .tmpl extension
+     files="OOMKilled.tmpl, Evicted.tmpl" count=2
+     rename_to=<name>.specialist.md accepted_through=v0.8
+```
+
+To migrate, rename; nothing inside the files changes, and the specialist
+name is the stem either way:
+
+```sh
+cd .agents/specialists
+for f in *.tmpl; do mv "$f" "${f%.tmpl}.specialist.md"; done
+```
+
+Do not leave the old copy behind — one specialist under both extensions is
+a load error, because which one wins would be an alphabetical accident and
+the stale one is usually the `.tmpl`. Support is removed in v0.9
+([#349](https://github.com/go-steer/mast/issues/349)).
+
 ### A key mast does not recognise is refused
 
 Frontmatter is parsed strictly: misspell a key and the file fails to load,
@@ -97,7 +127,8 @@ governs the roster.
 
 ### Braces in the body are not punctuation
 
-The prompt body is a template, and `{...}` is its one piece of syntax. A
+The one thing that *is* substituted into a body is not yours: ADK resolves
+`{...}` before the prompt is sent, and that is the entire syntax. A
 bare identifier in braces is a **session-state lookup**, and an
 `artifact.`-prefixed one is an artifact load — both resolved before the
 prompt is sent. So a body that says "investigate `{project}`" is asking for

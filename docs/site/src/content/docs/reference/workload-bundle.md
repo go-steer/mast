@@ -105,7 +105,7 @@ agui:
 | `tool_catalog.tools[].capture.revert.args` | map | Fixed arguments for the revert call. |
 | `tool_catalog.tools[].capture.revert.args_from_change` | map | Revert arguments taken from the change — how the undo addresses the same object the change addressed. |
 | `tool_catalog.tools[].capture.revert.args_from_capture` | map | Revert arguments taken from the *recorded* state, by dotted path: the old values, going back. A revert that names none of these is refused at load, because it re-applies the change rather than undoing it. |
-| `specialists[]` | list of strings | Specialist names; resolve against the config root's `specialists/*.tmpl`. A roster with a SingleTurn classifier plus a `_fallback` Task specialist enables graph dispatch. |
+| `specialists[]` | list of strings | Specialist names; resolve against the config root's `specialists/*.specialist.md`. A roster with a SingleTurn classifier plus a `_fallback` Task specialist enables graph dispatch. |
 | `dispatch` | string | The root shape this roster is built for: `coordinator`, `graph`, `fanout`, `bounded`, or `auto`. Empty leaves the choice to the caller. `auto` never picks `bounded` — a cost ceiling is declared, never inferred. A shape is a property of the roster, not of how the daemon happened to be launched, so the bundle is where it belongs — `--dispatch` overrides it only when an operator actually typed the flag. |
 | `fanout.max_concurrency` | int | Under `dispatch: fanout`, how many analyst branches run at once. `0` (omitted) means the default, **4**; a negative value means unbounded. Ignored under any other dispatch. |
 | `budget` | block | See below. |
@@ -216,7 +216,7 @@ you copied out of correct documentation.
 
 ### Specialist frontmatter is strict too, and has no version of its own
 
-The same rule applies to the YAML frontmatter in a `specialists/*.tmpl`
+The same rule applies to the YAML frontmatter in a `specialists/*.specialist.md`
 file, for a reason specific to that file: `tools:` is the one key that
 fails in the *unsafe* direction. An absent `tools:` block means the
 specialist inherits **every** MCP server the workload wires, so a
@@ -230,7 +230,7 @@ Frontmatter deliberately takes **no `schema_version` of its own**, and
 writing one is an error. A specialist is only ever reached through a
 bundle that names it, so the bundle's version already governs the
 roster; a second independently-versioned artifact would multiply the
-compatibility matrix across every `.tmpl` in the tree for a document
+compatibility matrix across every specialist file in the tree for a document
 that is mostly prose. If the frontmatter ever needs a breaking change,
 it rides the bundle's version bump.
 
@@ -292,7 +292,7 @@ specialists:
 
 ```yaml
 ---
-# specialists/incident-report.tmpl
+# specialists/incident-report.specialist.md
 description: Classifies one incident and returns the finding report.
 mode: SingleTurn
 tier: small
@@ -345,7 +345,7 @@ digits or `_`), optionally prefixed by exactly one of `app:`, `user:` or
 `{context.node}`, `{...}`, `{}` and `{app: web}` are all literal, while
 `{app:web}` is a lookup of the `app`-scoped key `web`.
 
-A `.tmpl` whose body contains a placeholder that would be resolved and can
+A specialist file whose body contains a placeholder that would be resolved and can
 fail is **refused at load**, naming the file, every offending line and the
 key each one looks up. Loading is where the file and its line numbers still
 exist; the runtime error names neither.
@@ -439,7 +439,7 @@ that holds no mutating tool has nowhere to go.
 
 ## Per-specialist model: `model:` and `tier:`
 
-A specialist `.tmpl` may declare its own model in frontmatter, so a roster
+A specialist file may declare its own model in frontmatter, so a roster
 can run cheap analysts under a frontier synthesizer instead of billing
 every specialist at one tier:
 
@@ -518,7 +518,7 @@ namespace analysts under one `tier: mid` synthesis step.
 
 ## Per-specialist report contract
 
-A specialist `.tmpl` may declare the shape of what it returns:
+A specialist file may declare the shape of what it returns:
 
 ```yaml
 ---
@@ -528,7 +528,7 @@ output_schema: ../schemas/finding.json
 ```
 
 The value is a path to a JSON-Schema document (`.json`, `.yaml` or
-`.yml`), resolved **relative to the `.tmpl` file's own directory** — so
+`.yml`), resolved **relative to the specialist file's own directory** — so
 `../schemas/finding.json` means the same thing whether the roster sits in
 a workload bundle or a shared config root.
 
@@ -1321,7 +1321,7 @@ workload-level and per-specialist budgets both apply, tightest cap wins.
 
 ### Per-specialist ceilings
 
-A specialist `.tmpl` may declare its own budget in frontmatter, alongside
+A specialist file may declare its own budget in frontmatter, alongside
 the model override and report contract above:
 
 ```yaml
@@ -1407,7 +1407,7 @@ matching what it loaded, it says so once:
 level=WARN msg="WORKLOAD CONFIG ON DISK NO LONGER MATCHES THE RUNNING CONFIG
   — the edit has not taken effect" running_digest=sha256:1f0c2a93b7d4e615
   on_disk_digest=sha256:9b31c07ae5f2d488
-  changed=specialists/CrashLoopBackOff.tmpl
+  changed=specialists/CrashLoopBackOff.specialist.md
   remedy="mast does not reload configuration; restart the daemon
   (kubectl rollout restart) to pick this up"
 ```
