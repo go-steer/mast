@@ -749,18 +749,13 @@ func (b *broadcaster) Close() {
 }
 
 // setOperatorEmitter installs (or clears) the typed operator-event
-// callback on a registrant, probing the primary OperatorEventTarget
-// first and falling back to the deprecated EmitTarget (#506) so
-// registrants built against the old method name keep emitting —
-// dropping the fallback would fail SILENTLY (the operator stream
-// would simply go dark for that session).
+// callback on a registrant that implements OperatorEventTarget. A
+// registrant that does not implement it emits no typed events; the
+// assertion failing is not an error, it is the optional capability
+// being absent.
 func setOperatorEmitter(ag Registrant, f func(eventType string, payload any)) {
 	if et, ok := ag.(OperatorEventTarget); ok {
 		et.SetOperatorEventEmitter(f)
-		return
-	}
-	if et, ok := ag.(EmitTarget); ok { //nolint:staticcheck // deliberate deprecation-cycle fallback
-		et.SetAttachEmitter(f)
 	}
 }
 

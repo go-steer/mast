@@ -9,6 +9,11 @@ mast is **pre-1.0**. Nothing on this page is a promise yet — it is the
 promise mast will make at v1.0, published now so you can decide what to
 depend on today.
 
+This page is the *what*. [Compatibility and
+deprecations](/reference/compatibility/) is the *how*: what counts as
+breaking, how long a deprecation lasts before the thing goes away, and
+how long a release is supported.
+
 ## Today, before v1.0
 
 Every exported path may change in any release. In practice the six
@@ -151,16 +156,22 @@ manifests — none of which a compiler can warn. Promised from v1.0:
   on).
 
 Not promised, and safe to change in any release: log lines, stdout
-prose, `--help` wording, and [metric names](/reference/metrics/), which
-have their own compatibility rules.
+prose, `--help` wording, and [metric names](/reference/metrics/) —
+which have **no** compatibility rule, despite what this page said until
+2026-09-14. The metrics page is held to a real scrape in both
+directions, but that gate keeps the documentation honest; it does not
+protect a dashboard. A rename ships with a changelog entry and nothing
+more.
 
 ## What v1.0 does not claim
 
-It is not a production-readiness badge. It says the API stops moving.
+It is not a production-readiness badge. It says the API stops moving —
+and, through the [compatibility
+policy](/reference/compatibility/), what it costs to move it anyway.
 
 What backs the release today is an outcome-evaluation tier that gates
 every tag, per-version acceptance suites, and a cluster-permission
 matrix measured against live GKE. What does not exist yet is a
 published threat model — worth knowing for a product whose whole
-premise is an agent acting while nobody watches. Track both on the
+premise is an agent acting while nobody watches. Track it on the
 [roadmap](/roadmap/).

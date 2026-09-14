@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- **mast has a compatibility and deprecation policy, in force from v1.0.**
+  [`docs/compatibility-policy.md`](docs/compatibility-policy.md) and the
+  [reference page](https://go-steer.github.io/mast/reference/compatibility/)
+  say what counts as breaking, how long a deprecation is visible before the
+  release that removes it, how one is announced, and how long a release is
+  supported ([#304](https://github.com/go-steer/mast/issues/304)). The whole
+  process until now was a single sentence written in 2026-07-01 that never
+  said any of those things.
+
+  The parts most likely to affect you:
+
+  - **Two released minors *and* 90 days** between a `// Deprecated:` marker
+    and the major that removes the symbol. Both floors — mast's fastest
+    minor-to-minor gap has been three days, so a count on its own is a cycle
+    nobody is awake for.
+  - **A default that changes what your workload does is breaking**, even
+    though nothing fails to compile. So is **validation getting stricter on a
+    file that used to load**, with one fenced carve-out for a control that was
+    accepted and then not applied.
+  - **The support window is the current release.** mast does not backport to a
+    previous minor; it never has. When v2.0 ships, `release/v1` gets security
+    and correctness fixes for six months.
+  - **A mast major triggered by an ADK major removes nothing** — that release
+    keeps its promise that the migration is an import path and nothing else.
+  - **Metric names have no compatibility rule.** The stability page said they
+    had "their own compatibility rules", which implied a process that does not
+    exist; it now says what is true.
+
+  Enforced, not only written: `deprecation_test.go` at the module root fails a
+  `Deprecated:` marker that does not name the release removing it. A
+  deprecation with no end date is a permanent second way to do something.
+
+- **Removed: `attach.EmitTarget`**, the pre-#506 spelling of
+  `attach.OperatorEventTarget`, and the broadcaster fallback that probed it.
+  This is the new policy's first application and the only marker in the tree
+  it had to judge: an inherited deprecation, in an unsupported package, with
+  no end date, carried for eight releases — while `docs/fork-design.md`
+  claimed mast did not carry it at all.
+
+  Not breaking for any mast consumer. The 2026-07-29 port pinned core-agent at
+  a SHA chosen to include #519, so `OperatorEventTarget` has been the primary
+  name in every mast release; the only program the fallback could have served
+  is one implementing core-agent's old `SetAttachEmitter` method against
+  *mast's* attach package. `pkg/attach` is not a covered path in any case.
+
 - **The v1.0 promise now says which `pkg/approval` types it covers, and a test
   keeps the list honest.** `pkg/transcript` hands you `approval.Decision`,
   `approval.AppliedEdit` and `approval.CaptureRecord`, so those are frozen at

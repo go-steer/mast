@@ -209,7 +209,7 @@ server needs no credentials and drives tools fully offline.
 ## Cataloging discipline
 
 - **New catalog entries require:** (a) an operator use case, (b) a maintained upstream, (c) wiring template + reference workload, (d) tested in `examples/`. Not a low bar; the catalog stays curated.
-- **Catalog entries get retired when:** (a) upstream is abandoned or (b) operator demand disappears. Retirement includes a deprecation cycle in the catalog docs (same shape as library API deprecations per [`./library-api-design.md`](./library-api-design.md)).
+- **Catalog entries get retired when:** (a) upstream is abandoned or (b) operator demand disappears. Retirement includes a deprecation cycle in the catalog docs (same shape as library API deprecations per [`./compatibility-policy.md`](./compatibility-policy.md) — *retargeted 2026-09-14 from `./library-api-design.md`, whose one-sentence promise that reference predated is now superseded*).
 - **Third-party servers not in the catalog** are still supported — they're just not documented by us. Operators wire them via bundle config directly.
 
 ## Community MCP server contributions

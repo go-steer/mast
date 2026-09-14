@@ -19,7 +19,6 @@ package attach
 import (
 	"context"
 	"net/http"
-	"sync"
 	"testing"
 	"time"
 
@@ -397,42 +396,30 @@ wait:
 	}
 }
 
-// legacyEmitRegistrant implements ONLY the deprecated EmitTarget —
-// the pre-#506 shape. The broadcaster must still wire it: dropping
-// the fallback would fail silently (typed operator events just stop
-// flowing for that session).
-type legacyEmitRegistrant struct {
-	eventfulRegistrant
-	mu      sync.Mutex
-	emitter func(eventType string, payload any)
-}
-
-func (l *legacyEmitRegistrant) SetAttachEmitter(f func(eventType string, payload any)) {
-	l.mu.Lock()
-	l.emitter = f
-	l.mu.Unlock()
-}
-
-func (l *legacyEmitRegistrant) emitterSet() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.emitter != nil
-}
-
-// TestBroadcaster_LegacyEmitTargetFallback pins the #506 deprecation
-// cycle: a registrant built against the old SetAttachEmitter name
-// keeps getting the emitter wired on first subscribe and cleared on
-// last detach.
-func TestBroadcaster_LegacyEmitTargetFallback(t *testing.T) {
+// TestBroadcaster_RegistrantWithoutOperatorEventTargetStillStreams
+// pins what replaced the #506 fallback. OperatorEventTarget is an
+// OPTIONAL capability: a registrant that does not implement it must
+// subscribe, stream and detach normally, emitting no typed events.
+// The failed interface assertion is the absence of a capability, not
+// an error, and nothing downstream may treat it as one.
+//
+// This test took over from TestBroadcaster_LegacyEmitTargetFallback on
+// 2026-09-14, when the deprecated EmitTarget shape went away under
+// docs/compatibility-policy.md. Its subject is the same line of code —
+// setOperatorEmitter's type assertion — minus the branch that probed
+// upstream's old method name, which no mast release ever needed
+// because the 2026-07-29 port pinned core-agent after #519.
+func TestBroadcaster_RegistrantWithoutOperatorEventTargetStillStreams(t *testing.T) {
 	t.Parallel()
 
-	l := &legacyEmitRegistrant{
-		eventfulRegistrant: eventfulRegistrant{
-			stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "legacy-emit"},
-			handle:         &eventlog.Handle{Stream: newFlakyStream()},
-		},
+	plain := &eventfulRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "no-emit"},
+		handle:         &eventlog.Handle{Stream: newFlakyStream()},
 	}
-	entry := &Entry{AppName: "core-agent", UserID: "u", SessionID: "legacy-emit", regSeq: 1, Agent: l}
+	if _, ok := any(plain).(OperatorEventTarget); ok {
+		t.Fatal("fixture implements OperatorEventTarget — it must not, or this test measures nothing")
+	}
+	entry := &Entry{AppName: "core-agent", UserID: "u", SessionID: "no-emit", regSeq: 1, Agent: plain}
 	b, err := newBroadcaster(entry)
 	if err != nil {
 		t.Fatalf("newBroadcaster: %v", err)
@@ -441,16 +428,6 @@ func TestBroadcaster_LegacyEmitTargetFallback(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := b.Subscribe(ctx, 0)
-	if !l.emitterSet() {
-		t.Fatal("deprecated EmitTarget was not wired on first subscribe — the fallback is the whole point of the deprecation cycle")
-	}
 	cancel()
-	drainUntilClosed(t, ch, "legacy-emit subscriber")
-	deadline := time.Now().Add(5 * time.Second)
-	for l.emitterSet() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if l.emitterSet() {
-		t.Fatal("emitter not cleared after last subscriber detached")
-	}
+	drainUntilClosed(t, ch, "no-emit subscriber")
 }
