@@ -18,7 +18,7 @@ views of one.
 ## Inject — the machine trigger
 
 The daemon's own HTTP endpoint (`--listen`, default `:7777`): `/inject`,
-`/resume`, `/abort`, `/metrics`. This is how an incident gets in — an
+`/resume`, `/abort`, `/parks`, `/metrics`. This is how an incident gets in — an
 Alertmanager webhook, a Cloud Scheduler job, a CI step, a `curl` in a
 runbook. Bearer auth via `MAST_INJECT_TOKEN`; unset means unauthenticated,
 which is a dev-only posture and is warned about at startup.
@@ -31,6 +31,57 @@ it remains the right answer when you already run one — your schedules live
 in one place and mast is just another target. What changed in v0.4 is that
 you no longer need one to run something periodically: see [no caller at
 all](#no-caller-at-all--the-workloads-own-clock) below.
+
+### Reading what is parked
+
+`POST /resume` has been able to *answer* a parked approval since v0.2. What
+no out-of-process caller could do until v0.9 was find out what it was
+answering — so a chat bot or a web UI wiring up an Approve button could
+only offer "approve the thing, whatever it is". That is uninformed consent
+with an audit trail, which is worse than the CLI it replaces, because it
+looks like the opposite.
+
+Two read-only routes close that:
+
+| route | returns |
+|---|---|
+| `GET /parks` | every **parked** session, each in full, oldest question first |
+| `GET /parks/{session}` | the named session whether it is parked or not — 200 with an empty `parks` list when it is not, 404 only when no such session exists |
+
+Both need `--session-db`; a daemon without a session store answers 404
+rather than an empty list, because "nothing to approve" and "I cannot see
+parks" are different answers and only one of them means it is safe to stop
+looking. Auth is the same rule as `/resume`: the shared token, or a user
+from the token table. A caller who may answer a park may read it, and a
+caller who may not read it has no business answering one.
+
+The body is always an object with a `sessions` array — for the
+single-session route too, and when nothing is parked. Each session carries
+its `state`, an `awaiting` (`approval` or `input`, an approval outranking a
+question, the same ranking [`turn_state`](#what-turn_state-says) uses), the
+open `parks`, an operator `hold` if one is active, and the `applied` calls
+the gate [captured a revert for](/reference/write-gate/#what-the-change-overwrote).
+
+An approval park carries a `change`: the tool, the arguments, the rendered
+`key`, the gate `policy` that parked it, the proposing specialist, the
+`verdict_format` the gate will accept, a `stale` line when a grant the
+operator already gave no longer covers the call — and the `change_set` the
+call belongs to, when it belongs to one, because an operator cannot
+sensibly trade `scope: change_set` for a set they have not been shown. A
+question park carries none of that: a question is not a change.
+
+What it does **not** carry is as much of the contract as what it does. No
+model output — no reasoning, no narration, none of the assistant text
+around the call. No tool results, including the result of the read that
+produced a capture: only that read's name, its digest, and the declared
+field names travel, because the values are cluster state and can be
+anything. And nothing the write gate did not park on. The projection is
+written out field by field in `cmd/mast/parks.go`, so a field added to the
+transcript cannot reach this wire without someone deciding it should.
+
+A `hold` is reported beside the parks and never as one. Nothing resolves by
+answering a hold, so a client that rendered it as a question would put a
+prompt in front of somebody with nothing to say back.
 
 ## Attach — the operator's live view
 

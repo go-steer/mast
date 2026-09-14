@@ -1462,6 +1462,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		PauseHandler:       pauseHandler,
 		ExtendTokenHandler: extendHandler,
 		StopHandler:        stopHandler,
+		ParksHandler:       parksHandler(store, logger),
 		Logger:             logger,
 		Metrics:            obs.Handler(),
 		// Request contexts derive from the turn lifetime, so when the

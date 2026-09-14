@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-steer/mast/pkg/auth"
 )
@@ -317,5 +318,156 @@ func TestWireContract_ResumeRoundTripsAVerdict(t *testing.T) {
 	}
 	if fmt.Sprint(v.Args["replicas"]) != "2" {
 		t.Errorf("edited args = %v, want replicas 2 — an edit whose arguments do not survive the wire is a mutation nobody authorized", v.Args)
+	}
+}
+
+// The park read's contract (#314).
+//
+// These pin the projection an in-chat approval renders. The rule at the
+// top of this file applies with more force here than anywhere else in
+// it: this is a NEW surface with no clients yet, which is exactly the
+// window in which a rename is cheap and after which it is not.
+
+func TestWireContract_ParksResult(t *testing.T) {
+	assertNames(t, "ParksResult", jsonNames(t, ParksResult{}), []string{"sessions"})
+	assertNames(t, "SessionParks", jsonNames(t, SessionParks{}), []string{
+		"applied", "awaiting", "hold", "parks", "session_id", "state",
+	})
+	assertNames(t, "Park", jsonNames(t, Park{}), []string{
+		"author", "change", "interrupt_id", "kind", "question", "raised_at",
+	})
+	assertNames(t, "ProposedCall", jsonNames(t, ProposedCall{}), []string{
+		"agent", "args", "call_id", "change_set", "key", "policy", "stale", "tool", "verdict_format",
+	})
+	assertNames(t, "ChangeSet", jsonNames(t, ChangeSet{}), []string{
+		"changes", "grantable", "preconditions", "specialist", "ttl_seconds", "ungrantable",
+	})
+	assertNames(t, "Call", jsonNames(t, Call{}), []string{"args", "tool"})
+	assertNames(t, "Hold", jsonNames(t, Hold{}), []string{
+		"expires_at", "message", "minted_at", "reason", "resume_at", "token",
+	})
+	assertNames(t, "AppliedCall", jsonNames(t, AppliedCall{}), []string{
+		"args", "call_id", "captured_at", "digest", "key", "prior_fields", "read", "revert", "tool",
+	})
+}
+
+// TestWireContract_ParkKinds pins the two-value vocabulary a client
+// switches on to decide whether to render an Approve button or a text
+// box. cmd/mast maps the transcript's own spelling onto these; that
+// mapping is pinned there.
+func TestWireContract_ParkKinds(t *testing.T) {
+	if ParkKindApproval != "approval" || ParkKindInput != "input" {
+		t.Errorf("park kinds = %q/%q, want approval/input", ParkKindApproval, ParkKindInput)
+	}
+}
+
+// TestWireContract_ParksResultOmitsTheTranscript is the negative half,
+// and the one #314 actually asked for: the projection must not carry
+// model output, tool results, or anything the write gate did not park
+// on.
+//
+// It asserts on an exhaustively populated value — every field of every
+// type set to a recognisable marker — so that the positive half below
+// is a real check rather than a tour of the fields this test happened
+// to remember.
+func TestWireContract_ParksResultOmitsTheTranscript(t *testing.T) {
+	full := ParksResult{Sessions: []SessionParks{{
+		SessionID: "incident-9",
+		State:     "paused",
+		Awaiting:  ParkKindApproval,
+		Parks: []Park{{
+			InterruptID: "i-3",
+			Kind:        ParkKindApproval,
+			Question:    "Approve mutating call k8s_scale(...)?",
+			Author:      "remediator",
+			RaisedAt:    time.Unix(1757000000, 0).UTC(),
+			Change: &ProposedCall{
+				CallID:        "call-1",
+				Tool:          "k8s_scale",
+				Args:          map[string]any{"replicas": 3},
+				Key:           `k8s_scale(replicas=3)`,
+				Policy:        "ask",
+				Agent:         "remediator",
+				Stale:         "the Deployment changed since you approved",
+				VerdictFormat: map[string]any{"verdict": "approve | reject | edit"},
+				ChangeSet: &ChangeSet{
+					Specialist:    "remediator",
+					Changes:       []Call{{Tool: "k8s_scale", Args: map[string]any{"replicas": 3}}},
+					Grantable:     true,
+					Ungrantable:   "one at a time: no precondition declared",
+					TTLSeconds:    600,
+					Preconditions: map[string]string{"k8s_scale": "k8s_get(deployment/api)"},
+				},
+			},
+		}},
+		Hold: &Hold{
+			Reason:    "operator",
+			Message:   "holding while we page the on-call",
+			Token:     "mrt_x",
+			MintedAt:  time.Unix(1757000001, 0).UTC(),
+			ExpiresAt: time.Unix(1757003601, 0).UTC(),
+			ResumeAt:  time.Unix(1757002000, 0).UTC(),
+		},
+		Applied: []AppliedCall{{
+			CallID:      "call-0",
+			Tool:        "k8s_patch",
+			Args:        map[string]any{"image": "api:v2"},
+			Key:         `k8s_patch(image="api:v2")`,
+			CapturedAt:  time.Unix(1756999000, 0).UTC(),
+			Read:        "k8s_get",
+			Digest:      "sha256:abc",
+			PriorFields: []string{"spec.template.spec.containers[0].image"},
+			Revert:      &Call{Tool: "k8s_patch", Args: map[string]any{"image": "api:v1"}},
+		}},
+	}}}
+
+	raw, err := json.Marshal(full)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	body := string(raw)
+
+	// Every name a transcript projection carries and this one refuses.
+	// Each exists on transcript.Detail, or on a record it embeds, and is
+	// deliberately not copied — see cmd/mast/parks.go, which is where
+	// each omission is argued.
+	for name, why := range map[string]string{
+		"event_count":     "the transcript's size, and the transcript with it",
+		"applied_edits":   "an audit record for a call that already ran, not a pending question",
+		"response_schema": "pkg/transcript's raw jsonschema; verdict_format is the wire form",
+		"payload":         "the pausing node's arbitrary attachment",
+		"abort_reason":    "state says it, and an aborted session is not parked",
+		"prior":           "captured cluster state: unbounded, and read by relays",
+		"read_args":       "the read's arguments, which name objects the caller may not see",
+		"long_running":    "an ADK implementation detail; kind is the wire answer",
+		"tool_name":       "the same detail, spelled the way pkg/transcript spells it",
+	} {
+		if strings.Contains(body, `"`+name+`"`) {
+			t.Errorf("the park projection carries %q (%s):\n%s", name, why, body)
+		}
+	}
+
+	// The positive half: every field of the populated value encodes,
+	// under the name a client codes against.
+	for _, want := range []string{
+		`"session_id":"incident-9"`, `"state":"paused"`, `"awaiting":"approval"`,
+		`"interrupt_id":"i-3"`, `"kind":"approval"`, `"author":"remediator"`,
+		`"question":"Approve mutating call k8s_scale(...)?"`,
+		`"raised_at":"2025-09-04T15:33:20Z"`, `"call_id":"call-1"`, `"tool":"k8s_scale"`,
+		`"policy":"ask"`, `"agent":"remediator"`, `"key":"k8s_scale(replicas=3)"`,
+		`"stale":"the Deployment changed since you approved"`,
+		`"verdict_format":{"verdict":"approve | reject | edit"}`,
+		`"change_set":`, `"specialist":"remediator"`, `"changes":`,
+		`"grantable":true`, `"ungrantable":"one at a time: no precondition declared"`,
+		`"ttl_seconds":600`, `"preconditions":{"k8s_scale":"k8s_get(deployment/api)"}`,
+		`"hold":`, `"reason":"operator"`, `"message":"holding while we page the on-call"`,
+		`"token":"mrt_x"`, `"minted_at":`, `"expires_at":`, `"resume_at":`,
+		`"applied":`, `"call_id":"call-0"`, `"captured_at":`, `"read":"k8s_get"`,
+		`"digest":"sha256:abc"`, `"prior_fields":["spec.template.spec.containers[0].image"]`,
+		`"revert":{"tool":"k8s_patch","args":{"image":"api:v1"}}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("populated park projection is missing %s:\n%s", want, body)
+		}
 	}
 }
