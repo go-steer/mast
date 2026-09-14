@@ -40,12 +40,14 @@ quickstart](/quickstart/library-embed/), which uses only these.
 
 ## What it will not cover
 
-Everything else under `pkg/`: `a2a`, `agui`, `approval`, `attach`,
-`attachadapter`, `auth`, `config`, `digest`, `effects`, `envelope`,
-`eventlog`, `federation`, `graph`, `inject`, `instruction`, `mcp`,
-`modeltier`, `monitor`, `notify`, `observability`, `permissions`,
-`planner`, `pricing`, `providers`, `router`, `serverauth`, `taskclass`
-and `watchdog`.
+The other 32 importable packages under `pkg/`: `a2a`, `agui`,
+`approval`, `attach`, `attachadapter`, `auth`, `config`, `digest`,
+`effects`, `envelope`, `eventlog`, `federation`, `graph`, `inject`,
+`instruction`, `mcp`, `modeltier`, `monitor`, `notify`,
+`observability`, `permissions`, `planner`, `pricing`,
+`providers/anthropic`, `providers/gemini`, `providers/mock`,
+`providers/usage`, `providers/vertexcache`, `router`, `serverauth`,
+`taskclass` and `watchdog`.
 
 These are importable and they are not supported. A minor release may
 change or remove them. If you need one of them to be stable, open an
@@ -59,15 +61,14 @@ type from an unsupported one in an exported signature, that type is
 covered too, whatever this page says — you cannot change it without
 breaking the covered package.
 
-So the two lists are being reconciled before v1.0, one leak at a time,
-and there are two kinds:
+The two lists have been reconciled, and there were two kinds of leak:
 
 - **A type you only ever receive.** `pkg/transcript` hands back
   `approval.Decision` records. Their shape is already public as the
   `mast.decision/v1` JSON that `mast sessions export-decisions` emits,
   so it is committed either way, and a Go copy of it would just be a
-  second name for one schema. These will be listed as covered rather
-  than replaced.
+  second name for one schema. These are listed as covered rather than
+  replaced — see below.
 - **A type you have to construct.** `budget.Limits` used to take a
   `*pricing.Catalog`, which meant committing the catalog's constructor,
   its config-discovery options and its rate struct — none of which is
@@ -77,6 +78,26 @@ and there are two kinds:
 
 The rule, if you are reading your own dependency on mast the same way:
 prefer receiving a type over constructing one.
+
+#### The `approval` types covered by reference
+
+Eight declarations from `pkg/approval` are covered at v1.0 because
+`pkg/transcript` hands them to you. The rest of `pkg/approval` is not.
+
+| You reach it through | Covered |
+|---|---|
+| `Detail.AppliedEdits` | `approval.AppliedEdit` |
+| `Detail.Captures` | `approval.CaptureRecord` |
+| `(*Store).Decisions` | `approval.Decision` |
+| `Decision`'s fields | `approval.Outcome`, `approval.Scope`, `approval.Authority`, `approval.Disposition`, and their constants |
+| `CaptureRecord.Revert` | `approval.ProposedChange` |
+
+Reading them is safe. Depending on anything *else* in `pkg/approval` —
+the write gate's plugin, the grant machinery, the encoders — is not.
+
+The list is enforced by a test that walks `pkg/transcript`'s exported
+declarations and follows their fields, so a new leak fails the build
+rather than quietly enlarging this page's promise.
 
 ## The ADK version is part of the contract
 

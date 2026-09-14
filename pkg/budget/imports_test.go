@@ -32,7 +32,7 @@ const modulePath = "github.com/go-steer/mast"
 //
 // v1.0 freezes this package's exported surface (#300). A freeze is
 // transitive: a type from another package reachable through an exported
-// signature here is frozen too, and 27 of this module's packages are
+// signature here is frozen too, and 32 of this module's packages are
 // named as explicitly unsupported. budget.Limits carried a
 // *pricing.Catalog once, which froze pkg/pricing's table shape by
 // accident; the Pricer interface replaced it so that what crosses the

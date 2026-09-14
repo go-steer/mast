@@ -27,9 +27,9 @@ change in any release. v1.0 is the release that makes the promise, and
 decide what to depend on today: **six import paths** — the module root,
 `pkg/agent`, `pkg/transcript`, `pkg/workload`, `pkg/specialists`,
 `pkg/budget` — plus `cmd/mast`'s flags, verbs and exit codes, with the
-other 27 packages under `pkg/` named individually as unsupported. v1.0
-means the API stops moving and carries no other claim; in particular it
-is not a production-readiness badge.
+other 32 importable packages under `pkg/` named individually as
+unsupported. v1.0 means the API stops moving and carries no other claim;
+in particular it is not a production-readiness badge.
 
 *This section previously reserved stability for "the five packages the four
 pillars stand on", naming `provider` and `tool` interfaces. Two of those five

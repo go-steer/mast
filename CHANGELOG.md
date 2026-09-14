@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **The v1.0 promise now says which `pkg/approval` types it covers, and a test
+  keeps the list honest.** `pkg/transcript` hands you `approval.Decision`,
+  `approval.AppliedEdit` and `approval.CaptureRecord`, so those are frozen at
+  v1.0 whether or not a document says so — a freeze is transitive through
+  exported signatures. They are named as covered **by reference** rather than
+  copied into `pkg/transcript`, because you only ever receive them and their
+  shape is already public as the `mast.decision/v1` JSON that
+  `mast sessions export-decisions` emits; a Go copy would be a second name for
+  one schema ([#338](https://github.com/go-steer/mast/issues/338) task 2).
+
+  Eight declarations are covered, not the three: the four enums
+  `approval.Outcome`, `Scope`, `Authority` and `Disposition` come with
+  `Decision`'s fields, and `approval.ProposedChange` comes with
+  `CaptureRecord.Revert`. That last one is a correction to the issue's own
+  table, found by following the fields. Everything else in `pkg/approval` —
+  the write gate plugin, grants, the encoders — stays unsupported.
+
+  No API changed. What is new is `pkg/transcript/freeze_test.go`, which walks
+  the package's exported declarations, closes over their field types and fails
+  on a leak the list does not name — because adding one otherwise compiles and
+  passes every behavioural test.
+
+  Also corrected: the uncovered-package list said "the other 27 packages under
+  `pkg/`" over 28 names, and one of those names was `providers`, which holds
+  no `.go` files and cannot be imported at all, while the five real packages
+  beneath it were named by nothing. The honest figures are **5 covered and 32
+  not**, and `providers/anthropic`, `providers/gemini`, `providers/mock`,
+  `providers/usage` and `providers/vertexcache` are now listed individually.
+
 - **Breaking: `.tmpl` specialist files no longer load.** v0.8.0 renamed them to
   `<name>.specialist.md` and accepted the old extension for one release with a
   startup warning; that window is now closed
