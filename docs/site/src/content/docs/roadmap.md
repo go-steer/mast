@@ -884,9 +884,11 @@ which is why it is spelled out rather than left to inference.
 ## Next
 
 **v0.9 is the run-up to the freeze**, and two of its issues are gates on v1.0
-rather than features. A [deprecation and compatibility
-policy](https://github.com/go-steer/mast/issues/304), because a stability
-promise with no process for breaking things is not a promise. And a [threat
+rather than features. The [compatibility and deprecation
+policy](/reference/compatibility/) is written — a stability promise with no
+process for breaking things is not a promise — and it lands with the one rule
+in it that a test can hold: a `// Deprecated:` marker must name the release
+that removes it. Still open is a [threat
 model](https://github.com/go-steer/mast/issues/305), which 28 design docs have
 so far gone without, for a product whose whole thesis is that an agent acts
 while nobody is watching.

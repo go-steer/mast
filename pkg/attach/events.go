@@ -415,26 +415,22 @@ type TurnError struct {
 // typed operator-event callback at first-subscriber time, and clears
 // it when the last subscriber disconnects.
 //
-// Registrants that implement neither this nor the deprecated
-// EmitTarget still get the legacy `event: agent` frames pumped from
-// the eventlog (back-compat with every poll-mode client) — they just
-// won't emit typed events (capabilities still fires from the
-// broadcaster directly, and the snapshot frames still flow because
-// they read agent state via StatusProvider / UsageProvider, not via
-// Emit).
+// A registrant that does not implement this still gets the legacy
+// `event: agent` frames pumped from the eventlog (back-compat with
+// every poll-mode client) — it just won't emit typed events
+// (capabilities still fires from the broadcaster directly, and the
+// snapshot frames still flow because they read agent state via
+// StatusProvider / UsageProvider, not via Emit).
+//
+// Upstream's pre-#506 spelling of this interface — EmitTarget, with a
+// SetAttachEmitter method — came across with the 2026-07-29 port and
+// was probed here as a fallback until 2026-09-14. It is gone: the port
+// pinned core-agent at a SHA chosen to include #519, so mast has never
+// shipped a release in which SetAttachEmitter was the current name,
+// and the only program the fallback could have served is one
+// implementing core-agent's old method against mast's attach package.
+// See docs/compatibility-policy.md — an inherited deprecation with no
+// end date is not a cycle.
 type OperatorEventTarget interface {
 	SetOperatorEventEmitter(func(eventType string, payload any))
-}
-
-// EmitTarget is the pre-#506 shape of OperatorEventTarget. The
-// broadcaster still probes it as a fallback, so registrants built
-// against the old method name keep emitting typed events — the
-// failure mode of dropping the fallback would be SILENT (an
-// interface assertion quietly failing means the operator stream
-// just goes dark), which is why this stays for a full deprecation
-// cycle rather than being cut over.
-//
-// Deprecated: implement OperatorEventTarget.
-type EmitTarget interface {
-	SetAttachEmitter(func(eventType string, payload any))
 }

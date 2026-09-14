@@ -158,7 +158,7 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 | `pkg/attachadapter` | Bridges the runner-driven daemon into attach's `Registrant` contract: one injected message = one serialized turn; typed operator events in wire order; interrupt cancels the turn context. |
 | `pkg/inject` | The unattended entry point: `POST /inject`, `/resume`, `/abort`, `/pause`, `/extend-token`, `/stop`, `/ack-effects`, plus `/metrics`. |
 | `pkg/observability` | Fixed Prometheus counter registry + env-gated OTel trace export ([`docs/observability-design.md`](./docs/observability-design.md)). |
-| `pkg/a2a` / `pkg/federation` | A2A v0.3 both ways: the synchronous client, and the server (agent card, `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE) exposing workloads that opt in via the bundle's `a2a.expose`. Plus the frozen `federation.Adapter`/`Handle` interface + `invoke_remote_agent` ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
+| `pkg/a2a` / `pkg/federation` | A2A v0.3 both ways: the synchronous client, and the server (agent card, `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE) exposing workloads that opt in via the bundle's `a2a.expose`. Plus the `federation.Adapter`/`Handle` interface + `invoke_remote_agent` (called "frozen" here since v0.1 in the sense that its shape is settled — **not** a v1.0 commitment; `pkg/federation` is on the uncovered list below, and [`docs/compatibility-policy.md`](./docs/compatibility-policy.md) does not bind it) ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
 | `pkg/agui` | The AG-UI server surface (agent↔user) for CopilotKit apps and chat-platform bots: hand-rolled zero-dep wire types, an HTTP+SSE run endpoint, `/agui/agents.json` discovery, and the HITL interrupt/resume lifecycle. Runtime-free, like `pkg/a2a` ([`docs/ag-ui-design.md`](./docs/ag-ui-design.md)). |
 | `pkg/serverauth` | The request-admission seams both network servers share: pluggable bearer auth (`TokenValidator` → `Principal`, per-surface scope checks) and rate limiting. Stdlib + `golang.org/x/time` only, so it stays slim-embed-safe. |
 | `pkg/mcp` | MCP toolset wiring + per-specialist tool allowlists. HTTP servers get their transport wrapped so a 4xx/5xx carries the server's own error text (an IAM permission name, a quota metric) rather than a bare status line. Every toolset is also wrapped for response digesting (`WithDigest`, `retrieve_raw`) unless the daemon or the server opted out; the wrap exposes `Unwrap()` so mast's own non-model caller — the write gate's precondition read — reaches the tool rather than a digest of it. |
@@ -555,10 +555,27 @@ is the outcome tier gating every release, the per-version UAT suites,
 and a measured RBAC matrix on live GKE; the evidence it does not have
 includes a threat model
 ([#305](https://github.com/go-steer/mast/issues/305)), for a product
-whose thesis is that an agent acts while nobody is watching. A
-stability promise also needs a deprecation process to be worth
-anything, which is [#304](https://github.com/go-steer/mast/issues/304)
-and is a gate on the tag, not a follow-up to it.
+whose thesis is that an agent acts while nobody is watching.
+
+**How a covered thing is allowed to change** is the other half of the
+promise, and it is
+[`docs/compatibility-policy.md`](./docs/compatibility-policy.md)
+([#304](https://github.com/go-steer/mast/issues/304), settled
+2026-09-14 — a gate on the tag, not a follow-up to it). The load-bearing
+parts: a covered symbol is deprecated in a minor and removed in a
+major, after **two released minors and 90 days** — both floors, because
+mast's fastest minor-to-minor gap is three days and a count nobody is
+awake for is not a cycle. A mast major triggered by an **ADK** major
+removes nothing, because "your migration is an import path and nothing
+else" is what makes that release cheap. The support window is the
+current release; mast does not backport, which is a description of
+eight releases of practice before it is a policy. There is **no
+experimental tier** and there will not be one — the covered list above
+is the mechanism, since a reader can diff a list and cannot grep for a
+marker nobody wrote. And the `Deprecated:` marker must name its removal
+version, enforced by `deprecation_test.go` at the module root rather
+than asked for in prose; its first run deleted mast's only marker, an
+inherited one with no end date in an unsupported package.
 
 ## Deliberately not in v0.7
 
