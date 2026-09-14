@@ -393,12 +393,14 @@ package (below). `agent`, `specialists`, `workload` and `budget` are
 what `examples/deploy/slim` actually imports, which is the only
 evidence available that a surface has been exercised by a consumer.
 
-**What it does not cover.** The other 27 packages under `pkg/`, named
-rather than left to omission: `a2a`, `agui`, `approval`, `attach`,
-`attachadapter`, `auth`, `config`, `digest`, `effects`, `envelope`,
-`eventlog`, `federation`, `graph`, `inject`, `instruction`, `mcp`,
-`modeltier`, `monitor`, `notify`, `observability`, `permissions`,
-`planner`, `pricing`, `providers`, `router`, `serverauth`, `taskclass`,
+**What it does not cover.** The other 32 importable packages under
+`pkg/`, named rather than left to omission: `a2a`, `agui`, `approval`,
+`attach`, `attachadapter`, `auth`, `config`, `digest`, `effects`,
+`envelope`, `eventlog`, `federation`, `graph`, `inject`, `instruction`,
+`mcp`, `modeltier`, `monitor`, `notify`, `observability`,
+`permissions`, `planner`, `pricing`, `providers/anthropic`,
+`providers/gemini`, `providers/mock`, `providers/usage`,
+`providers/vertexcache`, `router`, `serverauth`, `taskclass`,
 `watchdog`. They are importable, they are not supported, and a minor
 release may break them. Shrinking that list — by demotion to
 `internal/` where nothing outside the module needs the symbol — is
@@ -406,13 +408,23 @@ release may break them. Shrinking that list — by demotion to
 not wait on it, because "unsupported" is a statement mast can make
 today and "unreachable" is work.
 
+*(Corrected 2026-09-14 with the rest of
+[#338](https://github.com/go-steer/mast/issues/338). This list said
+"27" over 28 names, and one of the 28 was `providers` — which is a
+directory, not a package: it holds no `.go` files, so it cannot be
+imported, while the five real packages beneath it were named by
+nothing. Exactly the failure #300 found in the promise it replaced,
+committed while writing the replacement. `go list ./pkg/...` returns
+37; five are covered above.)*
+
 *(The 2026-07-25 rule said the unpromised packages would each carry an
 `// Experimental:` marker. Seven releases later there are **zero** in
 the tree. A marker nobody writes is not a boundary — this list is, and
 it lives in one file that a reviewer can diff.)*
 
-**The two lists are not a partition, and reconciling them is
-[#338](https://github.com/go-steer/mast/issues/338).** A covered package
+**The two lists were not a partition, and reconciling them was
+[#338](https://github.com/go-steer/mast/issues/338)** — task 1 in v0.9
+as [#339](https://github.com/go-steer/mast/pull/339), task 2 below. A covered package
 whose exported signature names a type from the unsupported 27 has
 committed that type as well, whatever this section says. Two do:
 `pkg/budget` named `pricing.Catalog`, and `pkg/transcript` returns three
@@ -440,16 +452,48 @@ never the reverse. A test in the package now parses its own imports and
 fails on any that names this module, because the property is the point
 and a compiler will not notice it going away.
 
-The three `approval` records are *outputs*. There is no constructor to
+The `approval` records are *outputs*. There is no constructor to
 drag in, and their field set is already committed as
 `approval.DecisionSchema = "mast.decision/v1"` — so a `pkg/transcript`
 copy would be a second Go spelling of one JSON schema, which is the
-drift the v0.5 wire-literal pin exists to prevent. They will be named
-here as covered by reference, with the rest of `pkg/approval` staying
-unsupported. The rule generalizes: **freeze by reference when the type
-is an output whose shape is already committed on the wire; own a narrow
-interface when it is an input the consumer must construct, or a
-dependency already scheduled to change.**
+drift the v0.5 wire-literal pin exists to prevent. The rule
+generalizes: **freeze by reference when the type is an output whose
+shape is already committed on the wire; own a narrow interface when it
+is an input the consumer must construct, or a dependency already
+scheduled to change.**
+
+**So these eight `approval` declarations are covered by reference
+through `pkg/transcript`, and the rest of `pkg/approval` is not:**
+
+| Reached from | Covered by reference |
+|---|---|
+| `Detail.AppliedEdits` | `approval.AppliedEdit` |
+| `Detail.Captures` | `approval.CaptureRecord` |
+| `(*Store).Decisions` | `approval.Decision` |
+| `Decision`'s own fields | `approval.Outcome`, `approval.Scope`, `approval.Authority`, `approval.Disposition` — with their constants, since an enum whose values may change is not frozen |
+| `CaptureRecord.Revert` | `approval.ProposedChange` |
+
+`ProposedChange` is the correction #338's own table needed: it lists
+three records, and following the fields finds a fourth type behind
+`CaptureRecord.Revert`. The answer is still by-reference — a revert an
+operator can be handed has to be the same shape as a change they can
+approve ([#296](https://github.com/go-steer/mast/issues/296)), and
+`revert` is already a field of the `mast.decision/v1` capture on the
+wire — but it was reached by resolving the closure rather than by
+reading the issue, which is the habit #300 was written to install.
+
+**The closure is a test, not only a paragraph.**
+`pkg/transcript/freeze_test.go` parses this package's exported
+declarations, collects every in-module qualified type reachable through
+one, closes over those types' exported fields to a fixed point, and
+fails against a checked-in list. Adding a field of an unsupported type
+to an exported struct here otherwise compiles, passes every behavioural
+test, and silently enlarges what v1.0 promises. The test was verified
+to detect in both directions — dropping an entry, and adding a leak —
+rather than only observed to pass.
+
+Nothing about `pkg/transcript`'s code changed here, and nothing needed
+to. Task 2 of #338 is a statement of what the freeze already commits.
 
 **The two ADK types in the promised surface.** `mast.Config` exposes
 `Model model.LLM` and `Sessions adksession.Service` — deliberate
