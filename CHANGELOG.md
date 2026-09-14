@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **The parity scoreboard reads 18 of 19, and the row still red is mast's.**
+  No code change: the board was re-measured against the sibling repo rather
+  than against this repo's notes about it
+  ([#242](https://github.com/go-steer/mast/issues/242)). Row 17, the approver
+  allowlist, shipped in switchboard on 2026-09-03 and is green — a press is
+  refused against a per-channel list of asserted callers before the prompt is
+  even located, and a list that would match nobody is refused at startup.
+
+  Row 16, in-chat Approve/Reject, was recorded in six places as switchboard's
+  to write. switchboard wrote it. **It answers `POST
+  /sessions/<app>/<id>/perms/respond`, and a mast daemon returns 501 there** —
+  no type in this module implements the `/perms` capabilities outside a test,
+  because `internal/compose` builds the write gate with no prompter, which is
+  the right posture for a substrate whose premise is that nobody is watching.
+  So **approving a parked mutation from a chat button does not work today**;
+  approvals continue to work through `mast sessions` and an authenticated
+  `POST /resume`, unchanged. What mast does with the inherited `/perms`
+  surface is [#364](https://github.com/go-steer/mast/issues/364); making the
+  durable park visible to a gateway is
+  [#313](https://github.com/go-steer/mast/issues/313).
+
+  Worth naming, because it is the reason this went five weeks unnoticed: this
+  repo's stated accountability for row 16 was the wire-contract test added in
+  [#248](https://github.com/go-steer/mast/pull/248), and it pins the verdict
+  vocabulary on `/resume` — an endpoint switchboard's approval client never
+  calls. Both repos built a coherent half against a different route and each
+  half passed its own tests.
+
 - **`cmd/mast`'s daemon entry points take options structs instead of flat
   parameter lists.** No behaviour, flag or exit-code change — `serve()` took
   16 positional parameters, 11 of them consecutive strings, so the listener,
