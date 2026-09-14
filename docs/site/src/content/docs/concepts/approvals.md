@@ -342,3 +342,7 @@ Nothing here removes the operator from the loop. That is the design: mast's
 job is to make sure the operator is *asked*, with the actual call in front
 of them, and that the record of what they said survives the process that
 asked.
+
+The fifth column of that table — what the four layers add up to against a
+deliberate attacker, and the places they are known not to reach — is the
+[threat model](/reference/threat-model/).

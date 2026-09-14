@@ -414,6 +414,11 @@ two datasets, two contracts.
 
 ## The gate is not the only boundary
 
+The gate is, however, the load-bearing one: it is mast's answer to prompt
+injection, because the boundary sits after the model rather than before it.
+The [threat model](/reference/threat-model/) sets out what that buys, what it
+does not, and every place the gate is known not to reach.
+
 Everything above is what mast enforces. What the *cluster* will accept from
 mast is a separate grant, and on Kubernetes it should be a narrower one: an
 approved call still has to get past the API server. See [cluster

@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- **mast has a threat model.**
+  [`docs/threat-model.md`](docs/threat-model.md) and the [reference
+  page](https://go-steer.github.io/mast/reference/threat-model/) collect the
+  trust boundaries, the adversaries, the controls and the accepted risks that
+  had been reasoned out across eight releases and written down in a YAML
+  comment, five composition-time checks and half a dozen issues
+  ([#305](https://github.com/go-steer/mast/issues/305)). No behaviour changes.
+  It is a collection, not an audit, and mast has had no external security
+  review — the document says so.
+
+  The parts worth reading before you deploy:
+
+  - **mast does not defend against prompt injection, and the write gate is
+    the defence.** The boundary is placed after the model rather than before
+    it: a successful injection produces a mutating tool call, and under the
+    default policy that call parks for a human. There is no input filter and
+    there will not be one. Two consequences are stated plainly — wherever the
+    gate does not reach, injection reaches your infrastructure, and a
+    read-only agent can still exfiltrate through a call's arguments.
+  - **The workload bundle is a control-plane input, not configuration.**
+    `tool_catalog.tools[].mutating` is consulted before mast's own
+    classification, so a bundle can reclassify a mutating tool as read-only
+    and take it out of the gate's scope. Write access to the bundle — the
+    mounted ConfigMap, on GKE — is equivalent to write access to whatever the
+    workload can reach. Engine control-flow calls are the unreclassifiable
+    floor under this.
+  - **Two defaults are named as accepted risks**: a bundle with no `budget`
+    block has no ceiling, and the default watchdog posture (`feedback`) tells
+    the model about a tool loop rather than stopping it. Only `enforce`
+    cancels a turn.
+  - **mast gates on verb and nothing gates on scope.** No ceiling bounds how
+    many objects one approved call changes.
+  - **Attribution is opt-in.** Without `MAST_INJECT_USERS_FILE`, an approval
+    is recorded against `shared-bearer-token` rather than a person.
+  - **The inject endpoint does not refuse an unauthenticated non-loopback
+    bind**, unlike the attach, A2A and AG-UI surfaces, and it defaults to
+    `:7777` on all interfaces. Every shipped deployment manifest sets
+    `MAST_INJECT_TOKEN`; a bare `mast serve` does not.
+    ([#361](https://github.com/go-steer/mast/issues/361) — changing it is a
+    breaking CLI change, so it is filed rather than fixed here.)
+  - **`docs/orchestration-design.md`'s classifier-first threat model is
+    annotated as unenforced**, because that path is not implemented and
+    neither is its `allowed_bundles` allowlist. The constraints are correct
+    and are prerequisites if it is ever built.
+
 - **mast has a compatibility and deprecation policy, in force from v1.0.**
   [`docs/compatibility-policy.md`](docs/compatibility-policy.md) and the
   [reference page](https://go-steer.github.io/mast/reference/compatibility/)
