@@ -291,6 +291,25 @@ type StatusProvider interface {
 	AttachStatus() StatusInfo
 }
 
+// TurnStateProvider is the optional capability a Registrant can
+// implement to report the SSE `turn_state` itself, instead of having
+// it derived from StatusInfo.State.
+//
+// The derivation exists because the two vocabularies mostly line up —
+// running is streaming, everything else is idle. They stop lining up
+// at a pause. StatusInfo.State has one "paused"; the wire has two,
+// awaiting_permission and awaiting_elicit, and which one applies is a
+// fact about the session's unresolved interrupt that StatusInfo has
+// nowhere to carry. Without this, a session blocked on a human reports
+// the same string a finished turn reports (#313).
+//
+// Answer with one of the TurnState* constants. An empty or
+// unrecognised answer falls back to the derivation, so a registrant
+// cannot put an off-spec string on the wire by accident.
+type TurnStateProvider interface {
+	AttachTurnState() string
+}
+
 // InterruptProvider is the optional capability for
 // POST /sessions/.../interrupt. Returns true if there was an
 // in-flight turn to cancel, false if the agent was idle (no-op).

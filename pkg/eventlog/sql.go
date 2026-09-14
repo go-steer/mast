@@ -480,10 +480,19 @@ func (s *gormStream) iterateOnceFunc(ctx context.Context, fromSeq int64, q query
 
 // LatestSeq returns the highest seq currently visible under the same
 // filters Since/Watch honor, or 0 when no matching rows exist. A
-// single indexed MAX(seq) query — used by pkg/attach to clamp an
-// unbounded ?since=0 replay to a bounded tail (#385) without scanning
-// (or hydrating) the full table. Optional Stream extension: callers
-// discover it by type assertion.
+// single indexed MAX(seq) query, with no row hydration.
+//
+// Used by pkg/attach's terminal-frame barrier: "has this subscriber
+// been sent the log through the turn's last event" needs the head of
+// the session's rows at the moment the turn returned (#327).
+//
+// The replay clamp is NOT a caller — this comment claimed it was for
+// four releases, and it never was. #385 shipped with NthNewestSeq
+// because the clamp needs the session's own (cap+1)-th-newest row, and
+// arithmetic on a global MAX would let a busy sibling session truncate
+// a quiet one's history (#481).
+//
+// Optional Stream extension: callers discover it by type assertion.
 func (s *gormStream) LatestSeq(ctx context.Context, opts ...QueryOption) (int64, error) {
 	if s.closed.Load() {
 		return 0, ErrClosed

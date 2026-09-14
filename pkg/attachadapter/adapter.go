@@ -125,6 +125,23 @@ type Config struct {
 	// daemon running a bundle that declares `budget:` (#135).
 	GuardrailsFn func() attach.GuardrailInfo
 
+	// TurnStateFn, when set, reports what a session with no turn in
+	// flight is waiting on, as one of attach's TurnState* constants —
+	// TurnStateAwaitingPermission for a write-gate park,
+	// TurnStateAwaitingElicit for any other unresolved interrupt, and
+	// "" for a session that is not parked.
+	//
+	// It has to be a hook rather than adapter state because the truth
+	// is durable, not in-process: a park survives the turn that raised
+	// it, survives a daemon restart, and is resolved by a resume that
+	// may arrive on a different process entirely. The caller projects
+	// it from the session store; this package stays free of
+	// pkg/transcript.
+	//
+	// Nil keeps the pre-#313 behavior, in which a parked session
+	// reports the same turn_state as a finished one.
+	TurnStateFn func() string
+
 	// ResetGuardrailFn, when set, services POST
 	// /sessions/.../guardrails/reset. Nil is a 501 rather than a
 	// silent no-op: a session wedged past its ceiling stays wedged for
@@ -135,7 +152,7 @@ type Config struct {
 
 // Adapter implements attach.Registrant plus the optional capability
 // interfaces mast's daemon can honestly serve: StatusProvider,
-// UsageProvider, ToolsProvider, SubagentCatalogProvider,
+// TurnStateProvider, UsageProvider, ToolsProvider, SubagentCatalogProvider,
 // GuardrailProvider, GuardrailResetter, InterruptProvider,
 // DescriptionProvider, and OperatorEventTarget.
 //
@@ -246,7 +263,7 @@ func (ad *Adapter) startDrainLocked() {
 // drain runs queued messages one turn at a time until the queue is
 // empty, emitting the typed operator-event sequence around each turn
 // (status-update streaming → turn-complete | turn-error →
-// status-update idle) per the attach wire spec.
+// status-update with the post-turn state) per the attach wire spec.
 func (ad *Adapter) drain() {
 	for {
 		ad.mu.Lock()
@@ -306,8 +323,15 @@ func (ad *Adapter) drain() {
 				LatencyMs: time.Since(started).Milliseconds(),
 			})
 		}
+		// Not unconditionally idle: RunTurn also returns when the write
+		// gate parks a mutating call or a node asks the operator a
+		// question, and both of those are the turn ENDING WITH A
+		// QUESTION OPEN. Reporting them as idle tells every consumer
+		// that a session blocked on a human is a session with nothing
+		// happening — the two states an operator most needs to tell
+		// apart, rendered identically (#313).
 		ad.emitEvent(attach.EventStatusUpdate, attach.StatusUpdate{
-			TurnState: attach.TurnStateIdle,
+			TurnState: ad.AttachTurnState(),
 		})
 	}
 }
@@ -364,15 +388,54 @@ func (ad *Adapter) appendInterruptAudit() {
 }
 
 // AttachStatus implements attach.StatusProvider.
+//
+// A session with no turn in flight is "paused" rather than "idle" when
+// TurnStateFn says it is parked — GET /status has carried a "paused"
+// value in its documented vocabulary since the adapter shipped and had
+// no way to produce it.
 func (ad *Adapter) AttachStatus() attach.StatusInfo {
 	ad.mu.Lock()
 	running := ad.cancelTurn != nil
 	ad.mu.Unlock()
-	state := "idle"
-	if running {
-		state = "running"
+	state := attach.AgentStateIdle
+	switch {
+	case running:
+		state = attach.AgentStateRunning
+	case ad.awaiting() != "":
+		state = attach.AgentStatePaused
 	}
 	return attach.StatusInfo{State: state, ModelName: ad.cfg.ModelName}
+}
+
+// AttachTurnState implements attach.TurnStateProvider: the SSE
+// turn_state for this session right now.
+//
+// A live turn outranks a park. During a resume the parked interrupt is
+// still unresolved on the transcript — its FunctionResponse lands
+// inside the turn — so the durable projection reads "awaiting" for the
+// whole run, and reporting that instead of streaming would leave the
+// session frozen on the operator's screen while it works.
+func (ad *Adapter) AttachTurnState() string {
+	ad.mu.Lock()
+	running := ad.cancelTurn != nil
+	ad.mu.Unlock()
+	if running {
+		return attach.TurnStateStreaming
+	}
+	if s := ad.awaiting(); s != "" {
+		return s
+	}
+	return attach.TurnStateIdle
+}
+
+// awaiting asks the configured hook what the session is parked on.
+// Empty when no hook is wired, which is the honest answer for a caller
+// that gave the adapter no way to find out.
+func (ad *Adapter) awaiting() string {
+	if ad.cfg.TurnStateFn == nil {
+		return ""
+	}
+	return ad.cfg.TurnStateFn()
 }
 
 // AttachUsage implements attach.UsageProvider. Zero UsageInfo when
@@ -493,3 +556,8 @@ func newPromptID() string {
 // interrupted turn's session handle — the write-lease violation #57
 // fixed.
 var _ attach.InterruptSelfAuditor = (*Adapter)(nil)
+
+// Compile-time pin (#313): losing this capability puts the adapter
+// back to reporting a session parked on a human as `idle` — the same
+// string a finished turn gets — with nothing in the build to say so.
+var _ attach.TurnStateProvider = (*Adapter)(nil)

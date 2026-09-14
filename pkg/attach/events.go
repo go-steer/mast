@@ -264,6 +264,19 @@ const (
 	TurnStateAwaitingElicit     = "awaiting_elicit"
 )
 
+// validTurnState reports whether s is one of the four values the spec
+// defines. The guard is on the TurnStateProvider path: a registrant
+// computing a turn state from its own durable state is one typo away
+// from publishing a string no client knows, and the derivation it
+// would have fallen back to is a correct-if-coarse answer.
+func validTurnState(s string) bool {
+	switch s {
+	case TurnStateIdle, TurnStateStreaming, TurnStateAwaitingPermission, TurnStateAwaitingElicit:
+		return true
+	}
+	return false
+}
+
 // StatusUpdate is emitted on session-level state changes (turn
 // start/end, model swap, perm-mode change, provider change) and
 // also once right after Capabilities as a full snapshot.

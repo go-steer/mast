@@ -154,8 +154,8 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 
 | Package | Role |
 |---|---|
-| `pkg/attach` | The mast-native operator transport (HTTP/SSE): session registry + resume gating, seq'd replay + live tail, inject/wake/interrupt, capabilities frames, agent card, prompt broker, peer registry (optionally durable across hub restarts), rate limiting, and the guardrail surface (`GET`/`POST /sessions/{id}/guardrails[/reset]`) an `enforce` halt is cleared through. Ported from core-agent; wire-compatible with it (mast-web serves both). |
-| `pkg/attachadapter` | Bridges the runner-driven daemon into attach's `Registrant` contract: one injected message = one serialized turn; typed operator events in wire order; interrupt cancels the turn context. |
+| `pkg/attach` | The mast-native operator transport (HTTP/SSE): session registry + resume gating, seq'd replay + live tail, inject/wake/interrupt, capabilities frames, agent card, prompt broker, peer registry (optionally durable across hub restarts), rate limiting, and the guardrail surface (`GET`/`POST /sessions/{id}/guardrails[/reset]`) an `enforce` halt is cleared through. Ported from core-agent; wire-compatible with it (mast-web serves both). Fan-out is non-blocking with one exception: `turn-complete` / `turn-error` are held until the event log has reached every subscriber, because the terminal frame and the turn's own text arrive from two sources and the frame used to win ([#327](https://github.com/go-steer/mast/issues/327)). Every way that wait can fail releases the frame and logs. |
+| `pkg/attachadapter` | Bridges the runner-driven daemon into attach's `Registrant` contract: one injected message = one serialized turn; typed operator events in wire order; interrupt cancels the turn context. The turn state it publishes is not derived from that in-flight state alone: a write-gate park makes `RunTurn` *return*, so `Config.TurnStateFn` reads the pause off the transcript and the adapter reports `awaiting_permission` / `awaiting_elicit` over a session waiting on a person ([#313](https://github.com/go-steer/mast/issues/313)). A live turn outranks the park it is resolving. |
 | `pkg/inject` | The unattended entry point: `POST /inject`, `/resume`, `/abort`, `/pause`, `/extend-token`, `/stop`, `/ack-effects`, plus `/metrics`. |
 | `pkg/observability` | Fixed Prometheus counter registry + env-gated OTel trace export ([`docs/observability-design.md`](./docs/observability-design.md)). |
 | `pkg/a2a` / `pkg/federation` | A2A v0.3 both ways: the synchronous client, and the server (agent card, `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE) exposing workloads that opt in via the bundle's `a2a.expose`. Plus the `federation.Adapter`/`Handle` interface + `invoke_remote_agent` (called "frozen" here since v0.1 in the sense that its shape is settled — **not** a v1.0 commitment; `pkg/federation` is on the uncovered list below, and [`docs/compatibility-policy.md`](./docs/compatibility-policy.md) does not bind it) ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
@@ -611,7 +611,11 @@ defect; what is a defect is the corpus counting the resulting red row
 against a sibling repo. mast's approval model is the durable
 write-gate park, and making *that* answerable from a thread is
 switchboard's #84 over mast's
-[#313](https://github.com/go-steer/mast/issues/313). What mast does
+[#313](https://github.com/go-steer/mast/issues/313), **which shipped
+2026-09-14** — a parked session now reports `awaiting_permission`
+rather than `idle`, at the transition and in the boot snapshot, so the
+gateway half is unblocked and the row's remaining mast-side work is the
+`/perms` fork. What mast does
 with the dead `/perms` fork it inherited is
 [#364](https://github.com/go-steer/mast/issues/364). mast's existing
 side is a wire-contract test that the resume shape and
