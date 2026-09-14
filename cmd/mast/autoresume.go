@@ -18,12 +18,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"google.golang.org/genai"
 
-	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/pkg/effects"
@@ -74,15 +72,10 @@ var errAutoResumeSuperseded = errors.New("auto-resume: session superseded since 
 // kind uses, so aborted/paused refusal, the per-session turn lock, the
 // budget meter, and the effects outbox backstop all apply unchanged.
 type autoResumer struct {
-	runner       *runner.Runner
-	logger       *slog.Logger
-	store        *transcript.Store
-	meters       *meterPool
-	wds          *watchdogPool
-	obs          *observability.Registry
-	tracker      *turnTracker
-	turnLocks    *sessionTurnLocks
-	workloadName string
+	// The turn-execution seams, shared with every other surface that
+	// starts a turn (#293). Embedded, so a.store / a.logger / a.obs read
+	// exactly as they did when this struct spelled the nine fields out.
+	turnDeps
 	bundle       *workload.Bundle
 	dispatchMode string
 	// pred / subAgents are the same effects classification the outbox
@@ -292,8 +285,7 @@ func (a *autoResumer) resumeOne(ctx context.Context, c transcript.InterruptedCan
 
 	// 8. Drive through the shared chokepoint.
 	label := "autoresume:" + c.SessionID
-	err := runTurnPre(ctx, a.runner, a.logger, a.store, a.meters, a.wds, a.obs,
-		a.tracker, a.turnLocks, a.workloadName, c.SessionID, msg, label, preTurn, nil)
+	err := runTurnPre(ctx, a.turnDeps, c.SessionID, msg, label, preTurn, nil)
 	switch {
 	case err == nil:
 		// The turn finished within (a fresh) boot: clear both markers so a

@@ -150,6 +150,75 @@ type runFlags struct {
 	version          *bool
 }
 
+// serve's parameters are grouped by concern rather than passed flat
+// (#293). The flat list reached sixteen parameters, eleven of them
+// consecutive strings, which made a transposed pair at the call site
+// compile and be wrong at runtime — swapping --attach-listen and
+// --a2a-listen would have bound each server to the other's address with
+// no error anywhere. A struct literal names every field at the call
+// site, so the same mistake has to be written down to be made.
+//
+// One struct per concern, deliberately not one struct for all of serve:
+// a single settings blob would only relocate the problem, since nothing
+// about it says which fields belong together. For the same reason
+// --watchdog and --mcp-digest stay positional below: they configure
+// unrelated subsystems (safety posture, MCP response digesting), they
+// are not the same type, and inventing a group for them to sit in would
+// be grouping for the metric rather than for the reader.
+//
+// core-agent's cmd/core-agent run() has the same shape at a larger
+// scale and already applies this convention unevenly (agentCardOpts,
+// attachOpts, checkpointOpts and friends alongside ~30 flat
+// parameters). The convention is shared; the structs deliberately are
+// not — the two binaries' overlapping concerns already carry different
+// representations (core-agent takes a --session-db bool plus a path,
+// mast takes a path plus a driver; core-agent's digest knob is negated
+// and mast's is not), so a shared type would have to be wrong in one
+// repo to be right in the other. See docs/sibling-sync.md.
+
+// workloadOpts is what to run and in what shape. The two travel
+// together because dispatch is resolved against the workload's own
+// bundle when the flag is empty (resolveDispatch).
+type workloadOpts struct {
+	arg      string // --workload: a discovery name or a directory path
+	dispatch string // --dispatch: empty means read it off the bundle
+}
+
+// modelOpts is the resolved model selection. Both fields have already
+// been through resolveModelSelection by the time serve sees them.
+type modelOpts struct {
+	provider string // --provider alias, possibly empty
+	name     string // --model, always populated
+}
+
+// listenOpts is every network address the daemon is configured with.
+// Four inbound binds and, deliberately in the same struct, the one
+// outbound URL: it is a string that used to sit next to the four in the
+// flat list, which is exactly the adjacency that made a transposition
+// silent.
+type listenOpts struct {
+	inject string // --listen: the inject endpoint, the only one on by default
+	attach string // --attach-listen: TCP address or unix: path, empty disables
+	a2a    string // --a2a-listen: empty disables
+	agui   string // --agui-listen: empty disables
+	notify string // --notify-url: outbound, where a monitoring cycle posts
+}
+
+// sessionOpts is where session state lives. Empty db means in-memory
+// sessions and no durability.
+type sessionOpts struct {
+	db     string // --session-db: a SQLite path or a Postgres DSN
+	driver string // --session-db-driver: sqlite or postgres
+}
+
+// resumeOpts is the boot-time auto-resume policy: whether to scan for
+// sessions a prior shutdown interrupted, and how stale an interruption
+// may be before it is left for an operator instead.
+type resumeOpts struct {
+	auto   bool          // --auto-resume
+	window time.Duration // --auto-resume-window: 0 disables the freshness gate
+}
+
 // registerRunFlags declares the serve/one-shot flags on fs.
 func registerRunFlags(fs *flag.FlagSet) *runFlags {
 	return &runFlags{
@@ -325,7 +394,19 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
-	if err := serve(logger, *workloadFlag, *dispatchMode, *providerFlag, *modelName, *listen, *attachListen, *a2aListen, *aguiListen, *notifyURL, *sessionDB, *sessionDrv, *autoResume, *autoResumeWindow, *watchdogFlag, *mcpDigest); err != nil {
+	if err := serve(logger,
+		workloadOpts{arg: *workloadFlag, dispatch: *dispatchMode},
+		modelOpts{provider: *providerFlag, name: *modelName},
+		listenOpts{
+			inject: *listen,
+			attach: *attachListen,
+			a2a:    *a2aListen,
+			agui:   *aguiListen,
+			notify: *notifyURL,
+		},
+		sessionOpts{db: *sessionDB, driver: *sessionDrv},
+		resumeOpts{auto: *autoResume, window: *autoResumeWindow},
+		*watchdogFlag, *mcpDigest); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).
@@ -502,7 +583,7 @@ func newResumeByToken(
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
-func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelName, listen, attachListen, a2aListen, aguiListen, notifyURL, sessionDB, sessionDrv string, autoResume bool, autoResumeWindow time.Duration, watchdogFlag string, mcpDigest bool) error {
+func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listenOpts, sessions sessionOpts, resumes resumeOpts, watchdogFlag string, mcpDigest bool) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	if bearer == "" {
@@ -522,7 +603,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// errors an operator should hear about at startup rather than on the
 	// first cycle that had something to report — including the one that
 	// matters: the outbound token must not be an inbound one.
-	notifyClient, err := buildNotifyClient(logger, notifyURL, map[string]string{
+	notifyClient, err := buildNotifyClient(logger, listeners.notify, map[string]string{
 		"MAST_INJECT_TOKEN": bearer,
 		"MAST_ATTACH_TOKEN": os.Getenv("MAST_ATTACH_TOKEN"),
 		"MAST_A2A_TOKEN":    os.Getenv("MAST_A2A_TOKEN"),
@@ -565,18 +646,18 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// the model is constructed first and the bundle's `builtin_tools:`
 	// block is what gates the provider's server-side tools (#324).
 	var roster *loadedWorkload
-	if workloadArg != "" {
-		bundle, specs, cfgDir, err := resolveWorkload(logger, workloadArg)
+	if wl.arg != "" {
+		bundle, specs, cfgDir, err := resolveWorkload(logger, wl.arg)
 		if err != nil {
-			logger.Error("failed to load workload", "workload", workloadArg, "error", err.Error())
+			logger.Error("failed to load workload", "workload", wl.arg, "error", err.Error())
 			return err
 		}
 		roster = &loadedWorkload{bundle: bundle, specs: specs, cfgDir: cfgDir}
 	}
 
-	llm, err := buildModel(turnCtx, providerName, modelName, roster.builtinTools())
+	llm, err := buildModel(turnCtx, mdl.provider, mdl.name, roster.builtinTools())
 	if err != nil {
-		logger.Error("failed to construct model", "model", modelName, "error", err.Error())
+		logger.Error("failed to construct model", "model", mdl.name, "error", err.Error())
 		return err
 	}
 	// The server-side built-ins are named here or nowhere: they never
@@ -606,12 +687,12 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		// which is the one configuration with nothing to persist to.
 		durableDB *gorm.DB
 	)
-	if attachListen != "" {
-		if sessionDB == "" {
+	if listeners.attach != "" {
+		if sessions.db == "" {
 			logger.Error(errAttachNeedsSessionDB.Error())
 			return errAttachNeedsSessionDB
 		}
-		dial, err := sessionDialector(sessionDrv, sessionDB)
+		dial, err := sessionDialector(sessions.driver, sessions.db)
 		if err != nil {
 			logger.Error("failed to construct session service", "error", err.Error())
 			return err
@@ -624,10 +705,10 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		defer func() { _ = elHandle.Close() }()
 		sessionSvc = elHandle.Service
 		durableDB = elHandle.DB
-		logger.Info("session db opened (eventlog overlay for attach)", "driver", sessionDrv)
+		logger.Info("session db opened (eventlog overlay for attach)", "driver", sessions.driver)
 	} else {
 		var err error
-		sessionSvc, durableDB, err = buildSessionService(turnCtx, sessionDrv, sessionDB, logger)
+		sessionSvc, durableDB, err = buildSessionService(turnCtx, sessions.driver, sessions.db, logger)
 		if err != nil {
 			logger.Error("failed to construct session service", "error", err.Error())
 			return err
@@ -650,7 +731,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// metric registry both need the bundle this call is about to load.
 	subObs := &daemonSubRunObserver{}
 
-	built, err := buildRoot(turnCtx, logger, llm, providerName, modelName, workloadArg, roster, dispatchMode,
+	built, err := buildRoot(turnCtx, logger, llm, mdl, wl, roster,
 		hostSeams{pause: pauseRec, subRun: subObs, digest: newDigestOptions(logger, mcpDigest)})
 	if err != nil {
 		logger.Error("failed to construct root agent", "error", err.Error())
@@ -763,7 +844,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		return err
 	}
 
-	meters := newMeterPool(bundle, specs, providerName, modelName)
+	meters := newMeterPool(bundle, specs, mdl.provider, mdl.name)
 	// Resolved here rather than at flag time because the bundle is a
 	// source: --watchdog > safety.watchdog > mast's default. Logged at
 	// Info with its source, because a posture nobody can see is a
@@ -837,11 +918,11 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	} else if bundle != nil && (bundle.Budget.MaxCostUSD > 0 || bundle.Budget.MaxTurns > 0) {
 		// Two ways to arrive here, and they are not the same operator
 		// mistake. Naming the wrong one is what #274 did.
-		if sessionDB == "" {
+		if sessions.db == "" {
 			logger.Warn("budget ceilings without --session-db: sessions are in-memory, so spend is not persisted and a restart hands this workload its full budget back")
 		} else {
 			logger.Warn("budget ceilings without a durable ledger: the session backend opened no connection to write one to, so a restart hands this workload its full budget back",
-				"driver", sessionDrv)
+				"driver", sessions.driver)
 		}
 	}
 
@@ -875,12 +956,28 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// (bounded by the workload wallclock budget) instead of losing it.
 	turnLocks := newSessionTurnLocks()
 
+	// Everything a turn needs that is fixed for the daemon's lifetime,
+	// assembled once. Every surface that starts a turn takes this, so
+	// "which objects does a turn run against" has one answer rather
+	// than six threaded argument lists.
+	deps := turnDeps{
+		r:            r,
+		logger:       logger,
+		store:        store,
+		meters:       meters,
+		wds:          wds,
+		obs:          obs,
+		tracker:      tracker,
+		turnLocks:    turnLocks,
+		workloadName: workloadName,
+	}
+
 	// Operator attach surface (--attach-listen): registry + resumer +
 	// per-session adapters over the same runTurn path the inject
 	// endpoint drives. Bound here (fail-fast), served after the inject
 	// server is up.
 	var att *attachDeps
-	if attachListen != "" {
+	if listeners.attach != "" {
 		grView := &guardrailView{meters: meters, wds: wds, logger: logger}
 		wiring := attachWiring{
 			appName:     appName,
@@ -925,11 +1022,11 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 					defer cancel()
 				}
 				msg := genai.NewContentFromText(message, genai.RoleUser)
-				return runTurn(turnCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sid, msg, "attach:inject")
+				return runTurn(turnCtx, deps, sid, msg, "attach:inject")
 			},
 		}
 		var err error
-		att, err = buildAttach(logger, attachListen, os.Getenv("MAST_ATTACH_TOKEN"), store, wiring.adapterFor)
+		att, err = buildAttach(logger, listeners.attach, os.Getenv("MAST_ATTACH_TOKEN"), store, wiring.adapterFor)
 		if err != nil {
 			logger.Error("failed to construct attach surface", "error", err.Error())
 			return err
@@ -948,20 +1045,17 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		a2aSrv *a2a.Server
 		a2aLn  net.Listener
 	)
-	if a2aListen != "" {
-		backend := &a2aBackend{
-			store: store, obs: obs, tracker: tracker, logger: logger, workloadName: workloadName,
-			r: r, meters: meters, wds: wds, turnLocks: turnLocks, bundle: bundle, reg: newTaskRegistry(),
-		}
-		a2aSrv, err = buildA2AServer(logger, a2aListen, bundle, backend, obs, turnCtx)
+	if listeners.a2a != "" {
+		backend := &a2aBackend{turnDeps: deps, bundle: bundle, reg: newTaskRegistry()}
+		a2aSrv, err = buildA2AServer(logger, listeners.a2a, bundle, backend, obs, turnCtx)
 		if err != nil {
 			logger.Error("failed to construct A2A server", "error", err.Error())
 			return err
 		}
 		if a2aSrv != nil {
-			a2aLn, err = a2aListener(a2aListen)
+			a2aLn, err = a2aListener(listeners.a2a)
 			if err != nil {
-				logger.Error("failed to bind A2A listener", "addr", a2aListen, "error", err.Error())
+				logger.Error("failed to bind A2A listener", "addr", listeners.a2a, "error", err.Error())
 				return err
 			}
 			defer func() { _ = a2aSrv.Close() }()
@@ -977,20 +1071,17 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		aguiSrv *agui.Server
 		aguiLn  net.Listener
 	)
-	if aguiListen != "" {
-		backend := &aguiBackend{
-			store: store, obs: obs, tracker: tracker, logger: logger, workloadName: workloadName,
-			r: r, meters: meters, wds: wds, turnLocks: turnLocks, bundle: bundle,
-		}
-		aguiSrv, err = buildAGUIServer(logger, aguiListen, bundle, backend, obs, turnCtx)
+	if listeners.agui != "" {
+		backend := &aguiBackend{turnDeps: deps, bundle: bundle}
+		aguiSrv, err = buildAGUIServer(logger, listeners.agui, bundle, backend, obs, turnCtx)
 		if err != nil {
 			logger.Error("failed to construct AG-UI server", "error", err.Error())
 			return err
 		}
 		if aguiSrv != nil {
-			aguiLn, err = aguiListener(aguiListen)
+			aguiLn, err = aguiListener(listeners.agui)
 			if err != nil {
-				logger.Error("failed to bind AG-UI listener", "addr", aguiListen, "error", err.Error())
+				logger.Error("failed to bind AG-UI listener", "addr", listeners.agui, "error", err.Error())
 				return err
 			}
 			defer func() { _ = aguiSrv.Close() }()
@@ -1011,7 +1102,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			return err
 		}
 		att.ensure(sessionIDFor(p))
-		return dispatch(reqCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, p)
+		return dispatch(reqCtx, deps, bundle, p)
 	}
 	// resumeByInterrupt is the shared inner resume path (operator
 	// interrupt keying, token keying, and the timed-pause scheduler all
@@ -1046,7 +1137,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 			}
 		}
 		att.ensure(req.SessionID)
-		return resume(reqCtx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, req, preTurn)
+		return resume(reqCtx, deps, bundle, req, preTurn)
 	}
 	resumeByToken := newResumeByToken(store, logger, resumeByInterrupt)
 	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
@@ -1140,23 +1231,15 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	// start a fresh turn after the drain has sampled "all turns finished"
 	// (closed immediately when the pass never launches).
 	bootDone := make(chan struct{})
-	if autoResume && sessionDB != "" {
+	if resumes.auto && sessions.db != "" {
 		ar := &autoResumer{
-			runner:       r,
-			logger:       logger,
-			store:        store,
-			meters:       meters,
-			wds:          wds,
-			obs:          obs,
-			tracker:      tracker,
-			turnLocks:    turnLocks,
-			workloadName: workloadName,
+			turnDeps:     deps,
 			bundle:       bundle,
 			dispatchMode: dispatchMode,
 			pred:         effPred,
 			subAgents:    effSubAgents,
 			external:     subIntents.Dangling,
-			window:       autoResumeWindow,
+			window:       resumes.window,
 		}
 		go func() {
 			defer close(bootDone)
@@ -1164,7 +1247,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		}()
 	} else {
 		close(bootDone)
-		if autoResume {
+		if resumes.auto {
 			logger.Info("auto-resume enabled but --session-db is empty (in-memory sessions); nothing to resume")
 		}
 	}
@@ -1228,8 +1311,8 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 				logger.Info("monitoring notifications armed; a cycle that changes nothing will not wake the model", args...)
 			}
 			st := newScheduledTrigger(store, logger, obs, tracker, workloadName, defaultUserID, interval, jitter,
-				newScheduledFireCallback(r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, bundle, collector, nf, att.ensure))
-			if sessionDB == "" {
+				newScheduledFireCallback(deps, bundle, collector, nf, att.ensure))
+			if sessions.db == "" {
 				// The anchor lands in an in-memory store that dies with
 				// the process, so the cadence re-phases on every restart.
 				// Worth saying out loud: "the schedule survives a restart"
@@ -1264,7 +1347,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 		monitorAckHandler = acker.forward
 		logger.Info("operator acknowledgements armed; they are attributed here and suppressed by the producer",
 			"workload", workloadName, "tool", acker.tool)
-		if sessionDB == "" {
+		if sessions.db == "" {
 			// The attribution is the half mast alone holds, and without a
 			// durable store it dies with the process — leaving the
 			// producer's suppression in place with no record of who asked
@@ -1364,7 +1447,7 @@ func serve(logger *slog.Logger, workloadArg, dispatchMode, providerName, modelNa
 	}
 
 	srv, err := inject.New(inject.Config{
-		Listen:             listen,
+		Listen:             listeners.inject,
 		BearerToken:        bearer,
 		Authenticator:      injectAuthn,
 		Handler:            handler,
@@ -1685,11 +1768,11 @@ type hostSeams struct {
 	digest *mastmcp.DigestOptions
 }
 
-func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, providerName, modelName, workloadArg string, pre *loadedWorkload, dispatch string, seams hostSeams) (rootBuild, error) {
-	if err := validateDispatch(dispatch); err != nil {
+func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, mdl modelOpts, wl workloadOpts, pre *loadedWorkload, seams hostSeams) (rootBuild, error) {
+	if err := validateDispatch(wl.dispatch); err != nil {
 		return rootBuild{}, err
 	}
-	if workloadArg == "" {
+	if wl.arg == "" {
 		logger.Warn("no --workload supplied; running trivial single-agent coordinator")
 		a, err := mastagent.NewCoordinator(mastagent.CoordinatorConfig{
 			Name:        "trivial_coordinator",
@@ -1697,7 +1780,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 			Instruction: "Acknowledge the incident briefly.",
 			Model:       llm,
 		})
-		return rootBuild{agent: a, dispatch: resolveDispatch(dispatch, nil)}, err
+		return rootBuild{agent: a, dispatch: resolveDispatch(wl.dispatch, nil)}, err
 	}
 
 	// pre is the roster serve() already resolved, so the bundle that
@@ -1705,14 +1788,14 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 	// built from. A caller that has not resolved one (a test, any path
 	// that only has the flag value) passes nil and this loads it.
 	if pre == nil {
-		bundle, specs, cfgDir, err := resolveWorkload(logger, workloadArg)
+		bundle, specs, cfgDir, err := resolveWorkload(logger, wl.arg)
 		if err != nil {
 			return rootBuild{}, err
 		}
 		pre = &loadedWorkload{bundle: bundle, specs: specs, cfgDir: cfgDir}
 	}
 	bundle, loaded, cfgDir := pre.bundle, pre.specs, pre.cfgDir
-	resolved := resolveDispatch(dispatch, &bundle)
+	resolved := resolveDispatch(wl.dispatch, &bundle)
 	if resolved == workload.DispatchAuto {
 		// Resolve `auto` here rather than handing it downstream: the
 		// returned shape is what the caller's own decisions key off
@@ -1771,7 +1854,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		return rootBuild{}, err
 	}
 
-	toolsets, extraTools, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, modelName, seams.digest)
+	toolsets, extraTools, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, mdl.name, seams.digest)
 	if err != nil {
 		return rootBuild{}, err
 	}
@@ -1780,8 +1863,8 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, provider
 		Bundle:          bundle,
 		Specs:           loaded,
 		Model:           llm,
-		ModelName:       modelName,
-		Provider:        providerName,
+		ModelName:       mdl.name,
+		Provider:        mdl.provider,
 		Toolsets:        toolsets,
 		SpecialistTools: extraTools,
 		Dispatch:        compose.Dispatch(resolved),
@@ -2648,7 +2731,35 @@ func toolPolicies(bundle *workload.Bundle) []effects.ToolPolicy {
 	return out
 }
 
-func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, p envelope.InjectPayload) error {
+// turnDeps is the set of objects every turn runs against, fixed for the
+// daemon's lifetime and identical on all six surfaces that start one
+// (inject, resume, attach, A2A, AG-UI, the scheduled trigger and
+// auto-resume). It exists because that list was threaded positionally
+// through runTurnPre from all of them, and because two of those
+// surfaces had already grown a private copy of it — a2aBackend and
+// aguiBackend each carried these nine fields with a comment saying they
+// were "the same objects the inject/attach/resume paths thread into
+// runTurnPre". Both now embed this instead, so adding a dependency is
+// one field rather than six call sites and two duplicated structs
+// (#293).
+//
+// None of these are per-turn: the session id, the message and the label
+// stay positional below, because they are what distinguishes one turn
+// from the next and burying them in a struct would hide the arguments a
+// reader actually needs to see at a call site.
+type turnDeps struct {
+	r            *runner.Runner
+	logger       *slog.Logger
+	store        *transcript.Store
+	meters       *meterPool
+	wds          *watchdogPool
+	obs          *observability.Registry
+	tracker      *turnTracker
+	turnLocks    *sessionTurnLocks
+	workloadName string
+}
+
+func dispatch(ctx context.Context, d turnDeps, bundle *workload.Bundle, p envelope.InjectPayload) error {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal inject payload: %w", err)
@@ -2660,14 +2771,14 @@ func dispatch(ctx context.Context, r *runner.Runner, logger *slog.Logger, store 
 		defer cancel()
 	}
 	msg := genai.NewContentFromText(fmt.Sprintf("INJECT %s", string(body)), genai.RoleUser)
-	return runTurn(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sessionIDFor(p), msg, "inject:"+p.Reason)
+	return runTurn(ctx, d, sessionIDFor(p), msg, "inject:"+p.Reason)
 }
 
 // resume feeds an operator's approval verdict back into a paused
 // session. The runner treats a user turn carrying a FunctionResponse
 // whose ID matches a pending InterruptID as a resume (see adk/v2
 // runner buildResumeResponses).
-func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, req inject.ResumeRequest, preTurn func(context.Context) error) error {
+func resume(ctx context.Context, d turnDeps, bundle *workload.Bundle, req inject.ResumeRequest, preTurn func(context.Context) error) error {
 	// Same wallclock ceiling as the inject and attach paths — resume
 	// turns are not budget-exempt either (#47).
 	if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
@@ -2675,12 +2786,12 @@ func resume(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *t
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
 		defer cancel()
 	}
-	msg, err := resumeMessage(ctx, store, req)
+	msg, err := resumeMessage(ctx, d.store, req)
 	if err != nil {
 		return err
 	}
-	obs.HITLResume(workloadName)
-	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, req.SessionID, msg, "resume:"+req.InterruptID, preTurn, nil)
+	d.obs.HITLResume(d.workloadName)
+	return runTurnPre(ctx, d, req.SessionID, msg, "resume:"+req.InterruptID, preTurn, nil)
 }
 
 // resumeMessage builds the user turn that answers a pending interrupt.
@@ -2799,8 +2910,8 @@ func consumeIfAnswered(ctx context.Context, store *transcript.Store, logger *slo
 	}
 }
 
-func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string) error {
-	return runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks, workloadName, sessionID, msg, label, nil, nil)
+func runTurn(ctx context.Context, d turnDeps, sessionID string, msg *genai.Content, label string) error {
+	return runTurnPre(ctx, d, sessionID, msg, label, nil, nil)
 }
 
 // runTurnPre is runTurn with an optional hook that runs under the
@@ -2820,7 +2931,7 @@ func runTurn(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *
 // onEvent, when non-nil, is invoked for each runner event after it is
 // logged and metered — the A2A message/send path uses it to capture the
 // final assistant answer and any HITL-pause signal for its reply.
-func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error, onEvent func(*session.Event)) (err error) {
+func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Content, label string, preTurn func(context.Context) error, onEvent func(*session.Event)) (err error) {
 	// The turn's own span, opened before anything can refuse the turn
 	// so a refusal is traceable too, and before the lock so the queue
 	// wait is inside it. Everything ADK emits below — invoke_agent,
@@ -2828,7 +2939,7 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// here; on the paths with no HTTP request behind them (scheduled
 	// fire, auto-resume) that is the difference between a trace and a
 	// pile of roots. See turnspan.go.
-	ctx, ts := startTurnSpan(ctx, obs, workloadName, sessionID, label)
+	ctx, ts := startTurnSpan(ctx, d.obs, d.workloadName, sessionID, label)
 	defer func() { ts.end(err) }()
 
 	// One turn per session (#62): ADK's stale-session check makes a
@@ -2836,9 +2947,9 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// them, so same-session turns queue here. The wait genuinely
 	// honors ctx (channel semaphore) — bounded by the wallclock
 	// budget, the request lifetime, and drain-expiry cancellation.
-	unlock, err := turnLocks.lock(ctx, sessionID)
+	unlock, err := d.turnLocks.lock(ctx, sessionID)
 	if err != nil {
-		if tracker.isDraining() {
+		if d.tracker.isDraining() {
 			// The wait was cut by drain-expiry cancellation: this is
 			// the daemon refusing work, not a dispatch failure — 503,
 			// same contract as the drain gate (#65).
@@ -2853,15 +2964,15 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// abort / hard-pause sweep target.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	tracker.registerCancel(sessionID, cancel)
-	defer tracker.unregisterCancel(sessionID)
+	d.tracker.registerCancel(sessionID, cancel)
+	defer d.tracker.unregisterCancel(sessionID)
 
 	// Chokepoint check, after registration. A read failure skips the
 	// check (fail-open): the refusals are availability guards, and an
 	// unreadable ops overlay must not wedge every session — the
 	// fail-closed safety guard is the effects outbox. ErrNotFound is
 	// the normal fresh-session case (the runner auto-creates).
-	if d, derr := store.Get(ctx, "", sessionID); derr == nil {
+	if d, derr := d.store.Get(ctx, "", sessionID); derr == nil {
 		if d.State == transcript.StateAborted {
 			return fmt.Errorf("session %q is aborted (%s); session_aborted: %w", sessionID, d.AbortReason, inject.ErrConflict)
 		}
@@ -2877,7 +2988,7 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// the loop → halt → crash → restart cycle enforce mode exists to
 	// break just resumes, each restart handing the loop a clean
 	// backstop. One fold per session per process; fails open.
-	wds.restore(ctx, sessionID)
+	d.wds.restore(ctx, sessionID)
 
 	// Watchdog halt (--watchdog=enforce): refuse before any model
 	// call. The refusal has to be structural — auto-resume, a
@@ -2885,7 +2996,7 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// them would otherwise re-drive the loop that tripped it. Placed
 	// after the chokepoint checks so an aborted or gate-paused session
 	// still reports the state an operator set deliberately.
-	if err := wds.preflight(sessionID); err != nil {
+	if err := d.wds.preflight(sessionID); err != nil {
 		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
 	}
 
@@ -2894,8 +3005,8 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// the watchdog pair above: one fold per session per process, and a
 	// storage fault leaves the ceiling armed against this process's own
 	// spend rather than refusing the turn.
-	meters.restore(ctx, sessionID)
-	if err := meters.preflight(sessionID); err != nil {
+	d.meters.restore(ctx, sessionID)
+	if err := d.meters.preflight(sessionID); err != nil {
 		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
 	}
 
@@ -2906,13 +3017,13 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	}
 
 	// Shutdown bookkeeping brackets the whole turn (see turnTracker).
-	tracker.begin(sessionID)
-	defer tracker.end(sessionID)
+	d.tracker.begin(sessionID)
+	defer d.tracker.end(sessionID)
 
 	// Budget enforcement point: the meter folds UsageMetadata from
 	// each streamed event; crossing a ceiling cancels the run context,
 	// aborting any in-flight model/tool work.
-	meter := meters.meter(sessionID)
+	meter := d.meters.meter(sessionID)
 
 	// The pre-call half of the same ceiling (W10.2). Observe below is
 	// the durable ledger and stays exactly as it is — a call that
@@ -2944,12 +3055,12 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 			return nil
 		}
 		tokens, cost, calls := meter.Snapshot()
-		logger.Error("BUDGET CEILING — refused a model call before it was made",
+		d.logger.Error("BUDGET CEILING — refused a model call before it was made",
 			"turn", label, "session", sessionID,
 			"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
 			"refusals", n-sessionRefusalsBefore, "reason", first.Error(),
 		)
-		obs.BudgetTrip(workloadName)
+		d.obs.BudgetTrip(d.workloadName)
 		ts.complete(observability.OutcomeBudgetExceeded, first)
 		return first
 	}
@@ -2967,11 +3078,11 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		if scopedNew <= 0 {
 			return
 		}
-		logger.Warn("BUDGET CEILING — a specialist was refused; the turn routed on",
+		d.logger.Warn("BUDGET CEILING — a specialist was refused; the turn routed on",
 			"turn", label, "session", sessionID,
 			"refusals", scopedNew, "reason", first.Error(),
 		)
-		obs.BudgetTrip(workloadName)
+		d.obs.BudgetTrip(d.workloadName)
 	}
 
 	// Export the turn's cost delta whichever way the turn ends. The
@@ -2986,12 +3097,12 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	grantsBefore := meter.FinalReportsTaken()
 	defer func() {
 		_, costAfter, _ := meter.Snapshot()
-		obs.AddCost(workloadName, costAfter-costBefore)
+		d.obs.AddCost(d.workloadName, costAfter-costBefore)
 		// Same delta onto the span. Registered after the span's own
 		// defer, so it runs first and the span is still open.
 		ts.cost(costAfter - costBefore)
 		if granted := meter.FinalReportsTaken() - grantsBefore; granted > 0 {
-			logger.Warn("BUDGET CEILING — a stopped specialist bought its final report",
+			d.logger.Warn("BUDGET CEILING — a stopped specialist bought its final report",
 				"turn", label, "session", sessionID, "grants", granted,
 				"note", "budget.final_report: one model call past the ceiling, report tool only")
 		}
@@ -3003,19 +3114,19 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// an unattended workload that operator is a log nobody is tailing,
 	// and the model about to repeat the call is the only party that can
 	// decide not to.
-	msg = prependFeedback(wds.feedback(sessionID), msg)
+	msg = prependFeedback(d.wds.feedback(sessionID), msg)
 
 	// Watchdog tap (pkg/watchdog): per-session accumulation across
 	// turns, per-turn dedup of aggregator re-emissions (core-agent
 	// #363).
-	enf := wds.enforcer(sessionID)
-	fb := wds.feedback(sessionID)
+	enf := d.wds.enforcer(sessionID)
+	fb := d.wds.feedback(sessionID)
 	onAlert := func(a watchdog.Alert) {
 		// Retained as well as logged: GET /guardrails answers "has this
 		// session been misbehaving?", and the alert is gone from the
 		// watchdog the moment Tap hands it here.
-		wds.note(sessionID, a)
-		logger.Warn("watchdog alert",
+		d.wds.note(sessionID, a)
+		d.logger.Warn("watchdog alert",
 			"turn", label, "session", sessionID,
 			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
 		// Queue the model-facing half for the next turn. Not this one:
@@ -3031,21 +3142,21 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 		// the one way the daemon already knows how to unwind.
 		if enf.Observe(a) {
 			_, reason := enf.Tripped()
-			logger.Error("WATCHDOG HALT — cancelling the turn",
+			d.logger.Error("WATCHDOG HALT — cancelling the turn",
 				"turn", label, "session", sessionID,
 				"signal", a.Signal, "reason", reason)
 			// Persist before cancelling. The halt has to outlive this
 			// process, and the crash it is most needed for is the one
 			// that follows the loop it just stopped.
-			wds.recordTrip(sessionID, a, reason)
+			d.wds.recordTrip(sessionID, a, reason)
 			cancel()
 		}
 	}
 
 	events := 0
-	for event, err := range watchdog.Tap(r.Run(ctx, defaultUserID, sessionID, msg, adkagent.RunConfig{
+	for event, err := range watchdog.Tap(d.r.Run(ctx, defaultUserID, sessionID, msg, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeNone,
-	}), wds.watchdog(sessionID), onAlert) {
+	}), d.wds.watchdog(sessionID), onAlert) {
 		if err != nil {
 			// A halt cancels the run context, so the runner's own
 			// error here is "context canceled" — reporting that would
@@ -3054,16 +3165,16 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 				ts.complete(observability.OutcomeWatchdogHalt, terr)
 				return terr
 			}
-			logger.Error("runner emitted error", "turn", label, "session", sessionID, "error", err.Error(), "events_before_error", events)
+			d.logger.Error("runner emitted error", "turn", label, "session", sessionID, "error", err.Error(), "events_before_error", events)
 			ts.complete(observability.OutcomeError, err)
 			return err
 		}
 		events++
-		logEvent(logger, event, sessionID)
+		logEvent(d.logger, event, sessionID)
 		if onEvent != nil {
 			onEvent(event)
 		}
-		obs.Observe(event, workloadName)
+		d.obs.Observe(event, d.workloadName)
 		if berr := meter.Observe(event); berr != nil {
 			tokens, cost, calls := meter.Snapshot()
 			// A specialist crossing its own cap is not the session's
@@ -3076,20 +3187,20 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 			// returned — and the coordinator gets a refusal to route
 			// around on its next dispatch.
 			if scope, ok := budget.Scope(berr); ok {
-				logger.Warn("BUDGET CEILING — a specialist crossed its own cap; the session continues",
+				d.logger.Warn("BUDGET CEILING — a specialist crossed its own cap; the session continues",
 					"turn", label, "session", sessionID, "specialist", scope,
 					"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
 					"error", berr.Error(),
 				)
-				obs.BudgetTrip(workloadName)
+				d.obs.BudgetTrip(d.workloadName)
 			} else {
-				logger.Error("BUDGET EXCEEDED — aborting session turn",
+				d.logger.Error("BUDGET EXCEEDED — aborting session turn",
 					"turn", label, "session", sessionID,
 					"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
 					"error", berr.Error(),
 				)
 				cancel()
-				obs.BudgetTrip(workloadName)
+				d.obs.BudgetTrip(d.workloadName)
 				ts.complete(observability.OutcomeBudgetExceeded, berr)
 				return berr
 			}
@@ -3135,7 +3246,7 @@ func runTurnPre(ctx context.Context, r *runner.Runner, logger *slog.Logger, stor
 	// times says the same thing ten times.
 	noteScopedRefusals()
 	tokens, cost, calls := meter.Snapshot()
-	logger.Info("turn complete", "turn", label, "session", sessionID, "events", events,
+	d.logger.Info("turn complete", "turn", label, "session", sessionID, "events", events,
 		"session_tokens", tokens, "session_cost_usd", fmt.Sprintf("%.4f", cost), "session_model_calls", calls)
 	ts.complete(observability.OutcomeOK, nil)
 	return nil

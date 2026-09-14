@@ -110,15 +110,7 @@ func (h *turnHarness) seed(t *testing.T, sid string, events ...*adksession.Event
 
 func (h *turnHarness) autoResumerWith(pred effects.Predicate, subAgents map[string]bool, window time.Duration) *autoResumer {
 	return &autoResumer{
-		runner:       h.runner,
-		logger:       discardLogger(),
-		store:        h.store,
-		meters:       h.meters,
-		wds:          h.wds,
-		obs:          h.obs,
-		tracker:      h.tracker,
-		turnLocks:    h.locks,
-		workloadName: "(test)",
+		turnDeps:     h.deps(),
 		dispatchMode: "coordinator",
 		pred:         pred,
 		subAgents:    subAgents,

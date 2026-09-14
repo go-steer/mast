@@ -49,13 +49,13 @@ func newA2ABackend(t *testing.T, sessionIDs ...string) (*a2aBackend, *transcript
 	}
 	store := transcript.NewStore(svc, appName)
 	obs := observability.New()
-	return &a2aBackend{
+	return &a2aBackend{turnDeps: turnDeps{
 		store:        store,
 		obs:          obs,
 		tracker:      newTurnTracker(store, discardLogger(), obs, "(test)"),
 		logger:       discardLogger(),
 		workloadName: "triage",
-	}, store
+	}}, store
 }
 
 // newA2ABackendRunner builds an a2aBackend backed by a real turn stack
@@ -65,18 +65,7 @@ func newA2ABackend(t *testing.T, sessionIDs ...string) (*a2aBackend, *transcript
 func newA2ABackendRunner(t *testing.T, m model.LLM) *a2aBackend {
 	t.Helper()
 	h := newTurnHarness(t, m)
-	return &a2aBackend{
-		store:        h.store,
-		obs:          h.obs,
-		tracker:      h.tracker,
-		logger:       discardLogger(),
-		workloadName: "(test)",
-		r:            h.runner,
-		meters:       h.meters,
-		wds:          h.wds,
-		turnLocks:    h.locks,
-		reg:          newTaskRegistry(),
-	}
+	return &a2aBackend{turnDeps: h.deps(), reg: newTaskRegistry()}
 }
 
 // TestA2ABackendSubmitMessageCompleted drives a message/send turn end to

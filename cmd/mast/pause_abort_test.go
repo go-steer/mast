@@ -143,9 +143,26 @@ func newTurnHarnessOpts(t *testing.T, m model.LLM, mode watchdog.Mode, tools ...
 	return h
 }
 
+// deps is the harness's turnDeps, so a test drives a turn through the
+// same struct the daemon builds in serve rather than an argument list
+// that has to be kept in step with it by hand.
+func (h *turnHarness) deps() turnDeps {
+	return turnDeps{
+		r:            h.runner,
+		logger:       discardLogger(),
+		store:        h.store,
+		meters:       h.meters,
+		wds:          h.wds,
+		obs:          h.obs,
+		tracker:      h.tracker,
+		turnLocks:    h.locks,
+		workloadName: "(test)",
+	}
+}
+
 func (h *turnHarness) turn(ctx context.Context, sid string) error {
 	msg := genai.NewContentFromText("hello", genai.RoleUser)
-	return runTurn(ctx, h.runner, discardLogger(), h.store, h.meters, h.wds, h.obs, h.tracker, h.locks, "(test)", sid, msg, "test")
+	return runTurn(ctx, h.deps(), sid, msg, "test")
 }
 
 func (h *turnHarness) eventCount(t *testing.T, sid string) int {

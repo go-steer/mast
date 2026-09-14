@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **`cmd/mast`'s daemon entry points take options structs instead of flat
+  parameter lists.** No behaviour, flag or exit-code change — `serve()` took
+  16 positional parameters, 11 of them consecutive strings, so the listener,
+  session-DB and model arguments could be transposed at the call site and
+  still compile ([#293](https://github.com/go-steer/mast/issues/293)). They
+  are now `workloadOpts` / `modelOpts` / `listenOpts` / `sessionOpts` /
+  `resumeOpts`, and the nine turn dependencies that `a2aBackend`,
+  `aguiBackend` and `autoResumer` each held a private copy of are one
+  embedded `turnDeps`. Across the seven functions touched: 91 parameters
+  down to 41.
+
+  The convention is shared with core-agent
+  ([#685](https://github.com/go-steer/core-agent/issues/685)) and recorded in
+  [`docs/sibling-sync.md`](docs/sibling-sync.md); the structs themselves are
+  deliberately not shared, because the two signatures have exactly one
+  parameter name in common and it means different things in each. It ships
+  with `cmd/mast/paramgroup_test.go`, which fails if one of those entry
+  points regrows a flat list — a convention nothing measures is not a
+  convention.
+
 - **mast has a threat model.**
   [`docs/threat-model.md`](docs/threat-model.md) and the [reference
   page](https://go-steer.github.io/mast/reference/threat-model/) collect the

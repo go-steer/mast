@@ -41,14 +41,12 @@ import (
 
 	"log/slog"
 
-	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	buildversion "github.com/go-steer/mast/internal/version"
 	"github.com/go-steer/mast/pkg/a2a"
 	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -60,20 +58,14 @@ import (
 // daemon (Stage A), so every task resolves to workloadName for the scope
 // check.
 type a2aBackend struct {
-	store        *transcript.Store
-	obs          *observability.Registry
-	tracker      *turnTracker
-	logger       *slog.Logger
-	workloadName string
-
-	// message/send (Stage B) execution seams — the same objects the
-	// inject/attach/resume paths thread into runTurnPre.
-	r         *runner.Runner
-	meters    *meterPool
-	wds       *watchdogPool
-	turnLocks *sessionTurnLocks
-	bundle    *workload.Bundle
-	reg       *taskRegistry
+	// The turn-execution seams — the same objects the
+	// inject/attach/resume paths thread into runTurnPre. This struct
+	// used to spell the nine of them out; they are now the shared
+	// turnDeps (#293), embedded so b.store / b.logger / b.obs read
+	// unchanged.
+	turnDeps
+	bundle *workload.Bundle
+	reg    *taskRegistry
 }
 
 // taskRegistry is the in-process record of A2A task outcomes. A
@@ -408,8 +400,7 @@ func (b *a2aBackend) runTask(ctx context.Context, p a2a.SubmitParams, emit func(
 			progressSeq++
 		}
 	}
-	err := runTurnPre(ctx, b.r, b.logger, b.store, b.meters, b.wds, b.obs, b.tracker, b.turnLocks,
-		b.workloadName, taskID, msg, label, nil, onEvent)
+	err := runTurnPre(ctx, b.turnDeps, taskID, msg, label, nil, onEvent)
 
 	// Drain can begin after the pre-check while we are blocked on the turn
 	// lock; runTurnPre then returns ErrUnavailable. Surface it as retryable

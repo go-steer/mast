@@ -43,17 +43,7 @@ import (
 func newAGUIBackendRunner(t *testing.T, m model.LLM) *aguiBackend {
 	t.Helper()
 	h := newTurnHarness(t, m)
-	return &aguiBackend{
-		store:        h.store,
-		obs:          h.obs,
-		tracker:      h.tracker,
-		logger:       discardLogger(),
-		workloadName: "(test)",
-		r:            h.runner,
-		meters:       h.meters,
-		wds:          h.wds,
-		turnLocks:    h.locks,
-	}
+	return &aguiBackend{turnDeps: h.deps()}
 }
 
 // collectEmit returns an emit func plus a pointer to the slice it appends to.
@@ -668,7 +658,7 @@ func newAGUIBackendPlanner(t *testing.T, m model.LLM) *aguiBackend {
 	if err != nil {
 		t.Fatalf("runner.New: %v", err)
 	}
-	return &aguiBackend{
+	return &aguiBackend{turnDeps: turnDeps{
 		store:        store,
 		obs:          obs,
 		tracker:      newTurnTracker(store, discardLogger(), obs, "(test)"),
@@ -678,7 +668,7 @@ func newAGUIBackendPlanner(t *testing.T, m model.LLM) *aguiBackend {
 		meters:       newMeterPool(nil, nil, "", "test-model"),
 		wds:          newWatchdogPool(watchdog.ModeWarn),
 		turnLocks:    newSessionTurnLocks(),
-	}
+	}}
 }
 
 // TestAGUIBackendHITLPauseAndResume drives the full HITL lifecycle over a planner
