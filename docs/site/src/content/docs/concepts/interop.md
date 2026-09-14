@@ -40,6 +40,51 @@ running turn, read a session's transcript, inject an operator message,
 answer a parked approval. It needs `--session-db`, since the live tail
 pumps from the event log.
 
+### What `turn_state` says
+
+Every `status-update` frame carries a `turn_state`, and a client that
+renders "is this session busy, or does it need me?" reads that and nothing
+else. It has four values:
+
+| `turn_state` | means |
+|---|---|
+| `streaming` | a turn is running right now |
+| `awaiting_permission` | the [write gate](/concepts/approvals/) parked a mutating call; somebody has to approve or reject it |
+| `awaiting_elicit` | the session asked a question — `request_operator_input` — and is waiting for the answer |
+| `idle` | none of the above |
+
+The distinction matters because a parked session **finishes its turn**.
+The gate does not block inside the call; it records the question durably
+and returns, so from the daemon's point of view nothing is running. Before
+v0.9 that is exactly what the wire said: a session waiting on a human
+reported `idle`, the same string a session that finished its work reports,
+and a gateway rendering an approval card had no frame to hang it on.
+
+Two things follow from where the answer comes from. It is read from the
+**transcript**, not from in-memory turn state, so it survives a daemon
+restart — a session parked yesterday still reports `awaiting_permission`
+today. And it is in the **boot snapshot**, the `status-update` every client
+receives on connect, so a client that attaches an hour after the park sees
+it without having been present for the frame.
+
+Two cases are deliberately not `awaiting_*`. A session paused by
+`pause_session` reports `idle`: that is a hold an operator placed, not a
+question anyone is waiting on an answer to. And a session resuming from a
+park reports `streaming` for the whole resume turn, even though the
+interrupt it is answering stays open on the transcript until mid-turn —
+a live turn outranks the park it is resolving, because reporting otherwise
+would freeze the session on an operator's screen while it works.
+
+One ordering guarantee comes with this. `turn-complete` and `turn-error`
+are now held until the turn's own event-log frames have reached every
+subscriber. They previously raced: the terminal frame went straight to
+subscribers the moment the turn returned, while the answer travelled
+through the event log and the pump, so a client that finalized its render
+on `turn-complete` could drop the last message. If the log cannot be
+queried, or does not catch up within two seconds, the terminal frame is
+released anyway and the delay is logged — a late frame is a correctness
+bug, a missing one is worse.
+
 `GET /sessions/{id}/tools` lists the tools the daemon actually holds, each
 with a `source`, the MCP `server` it came from if it has one, and a
 `gate_state` — what the [write gate](/concepts/approvals/) would do to a

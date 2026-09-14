@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/attachadapter"
@@ -57,6 +58,11 @@ type attachWiring struct {
 	// so unlike the tool catalog there is nothing to refresh.
 	subagents []attach.SubagentCatalogInfo
 
+	// store backs the turn-state projection: whether a session is
+	// parked, and on what, is durable state rather than something the
+	// adapter can observe (#313).
+	store *transcript.Store
+
 	// usage, guardrails, resetGuardrail and runTurn take the session
 	// ID because they close over per-session daemon state (the meter
 	// pool, the watchdog pool, the turn locks).
@@ -90,11 +96,51 @@ func (w attachWiring) config(sid string) attachadapter.Config {
 			return w.tools.snapshot(w.contextOrBackground())
 		},
 		SubagentsFn:  func() []attach.SubagentCatalogInfo { return w.subagents },
+		TurnStateFn:  func() string { return w.turnState(sid) },
 		GuardrailsFn: func() attach.GuardrailInfo { return w.guardrails(sid) },
 		ResetGuardrailFn: func(req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
 			return w.resetGuardrail(sid, req)
 		},
 	}
+}
+
+// turnStateReadTimeout bounds the store read behind the turn-state
+// projection. It runs on the attach status path — a boot snapshot, a
+// GET /status, the frame at the end of every turn — so a wedged
+// database must cost the answer, not the request.
+const turnStateReadTimeout = 2 * time.Second
+
+// turnState projects a session's durable pause onto the attach
+// turn_state vocabulary, or "" for a session that is not parked (which
+// the adapter reads as idle).
+//
+// The two vocabularies are deliberately separate and meet here: the
+// transcript's answer is about a session, the wire's is a protocol
+// string in a spec pkg/transcript must not know about. Three lines of
+// mapping is the price of that, and it is the right price.
+//
+// Every failure reports "" — no store, an unreadable session, a
+// timeout. The fallback is the pre-#313 answer, which is wrong about a
+// parked session but is not a lie about anything else; failing the
+// status read instead would take down a surface an operator reaches
+// for precisely when things are going badly.
+func (w attachWiring) turnState(sid string) string {
+	if w.store == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(w.contextOrBackground(), turnStateReadTimeout)
+	defer cancel()
+	d, err := w.store.Get(ctx, "", sid)
+	if err != nil {
+		return ""
+	}
+	switch d.Awaiting() {
+	case transcript.AwaitingApproval:
+		return attach.TurnStateAwaitingPermission
+	case transcript.AwaitingInput:
+		return attach.TurnStateAwaitingElicit
+	}
+	return ""
 }
 
 func (w attachWiring) contextOrBackground() context.Context {

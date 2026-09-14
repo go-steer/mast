@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **A session waiting on a human now says so on the wire.** The attach
+  `turn_state` reports `awaiting_permission` when the write gate has parked a
+  mutating call and `awaiting_elicit` when the session asked a question
+  ([#313](https://github.com/go-steer/mast/issues/313)). Both constants had
+  been declared since attach mode shipped and neither had ever been produced:
+  a parked session reported `idle`, the same string a session that finished
+  its work reports, so a gateway had no frame to hang an approval card on.
+  This is the last mast-side blocker on the parity board's one remaining red
+  row (in-chat Approve/Reject, via
+  [switchboard#84](https://github.com/go-steer/switchboard/issues/84)).
+
+  The reason the bug survived four releases is that a parked session **is**
+  finished, as far as the daemon can see — the gate records the question
+  durably and returns rather than blocking inside the call. So the answer is
+  read from the transcript, not from in-memory turn state, which has two
+  consequences worth stating: it survives a restart, and it is in the boot
+  snapshot every client gets on connect, so a client attaching an hour after
+  the park sees the park. Two pauses are deliberately still `idle`: a
+  `pause_session` hold, which is something an operator placed rather than a
+  question, and the resume turn itself, where a live turn outranks the
+  interrupt it is on its way to resolve.
+
+- **`turn-complete` no longer overtakes the answer it terminates.** The
+  terminal frame went straight to subscribers the instant the turn returned,
+  while the turn's final text travelled event log → pump → fan-out, so a
+  client that finalized its render on `turn-complete` could drop the last
+  message ([#327](https://github.com/go-steer/mast/issues/327)). The frame is
+  now held until the log has caught up to every subscriber. Every failure
+  path degrades rather than hangs — no queryable log, an empty log, a query
+  error, or a two-second timeout all release the frame and log the reason,
+  because a late frame is a correctness bug and a missing one is worse.
+
+  Shipped with #313 deliberately: both defects live in the same eleven lines
+  of `pkg/attachadapter`, and `docs/sibling-sync.md` had recorded that doing
+  one alone would mean touching those lines twice. Along the way #327 gave
+  `pkg/eventlog`'s `LatestSeq` its first caller — its doc comment had named
+  one for four releases and never had it.
+
 - **An AG-UI client can now watch named session-state keys change, and by
   default it still sees none of them.** A workload's bundle declares
   `agui.state_projection: [plan, phase]`; a run's write to a named key is

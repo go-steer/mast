@@ -994,6 +994,10 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 			// /agents answers "what is running", and that is empty most
 			// of the time (#134).
 			subagents: subagentCatalog(bundle, specs, built.dispatch),
+			// The turn_state projection: a session parked on the write
+			// gate reported `idle` — the string a finished turn gets —
+			// for every release the attach surface has existed (#313).
+			store: store,
 			usage: func(sid string) attach.UsageInfo {
 				_, cost, calls := meters.meter(sid).Snapshot()
 				return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}

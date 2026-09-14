@@ -82,6 +82,24 @@ const (
 	StateIdle        = "idle"
 )
 
+// What a paused session is waiting on, as reported by Detail.Awaiting.
+// A second, narrower vocabulary than the state labels above because
+// StatePaused answers "can this session take a turn" and these answer
+// "who has to do something about it" — and the two most consequential
+// answers to the second question live inside the one label the first
+// question produces.
+const (
+	// AwaitingApproval is a write-gate park (pkg/approval, W2): the
+	// agent proposed a mutating call and cannot proceed until an
+	// operator returns a verdict on that specific call.
+	AwaitingApproval = "approval"
+	// AwaitingInput is any other unresolved interrupt — a
+	// RequestedInput, or a long-running park such as
+	// request_operator_input / pause_session. The agent asked a
+	// question; somebody has to answer it.
+	AwaitingInput = "input"
+)
+
 // Session-state keys written by Store.Abort. Unprefixed, so they land
 // in per-session state (not app:/user: scope) and survive in the same
 // store the runner reads.
@@ -237,6 +255,40 @@ type Detail struct {
 	// a FunctionCall records what was sent and its FunctionResponse what
 	// came back, and neither records what was there before.
 	Captures []approval.CaptureRecord `json:"captures,omitempty"`
+}
+
+// Awaiting reports what this session is waiting on — AwaitingApproval,
+// AwaitingInput, or "" for a session that is not waiting on anybody.
+//
+// Three calls are worth stating rather than reading off the code.
+//
+// A write-gate park outranks a plain interrupt when both are open. It
+// is the one with a blast radius: it authorizes a mutating call, and a
+// client that can render only one prompt should render that one.
+//
+// A gate-only pause — Store.PauseGate, an operator hold or a timed
+// hold, with no pending interrupt — reports "". It is a stop somebody
+// placed on the session, not a question the agent asked, and nothing
+// resolves by answering it. Reporting it as "awaiting" would put a
+// prompt in front of an operator with nothing to say back.
+//
+// The discriminator is the parked tool's name, not the payload: ADK
+// spells a write-gate park as a long-running call to
+// toolconfirmation.FunctionCallName, and scanPending already records
+// that name on the pending record (it is what makes the park project
+// with an operator-facing summary at all).
+func (d Detail) Awaiting() string {
+	if d.State != StatePaused {
+		return ""
+	}
+	out := ""
+	for _, p := range d.Pending {
+		if p.ToolName == toolconfirmation.FunctionCallName {
+			return AwaitingApproval
+		}
+		out = AwaitingInput
+	}
+	return out
 }
 
 // Store wraps an ADK session.Service with the operator-facing

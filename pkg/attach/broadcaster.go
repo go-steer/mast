@@ -21,6 +21,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"google.golang.org/adk/v2/session"
 
@@ -352,9 +353,19 @@ func (b *broadcaster) register(sub *subscriber, since int64) (registered, firstS
 // here when something happens that needs to reach the operator.
 //
 // Safe to call concurrently from any goroutine.
+//
+// One exception to "non-blocking": a terminal frame (turn-complete /
+// turn-error) waits, bounded, for the eventlog to catch up first —
+// see awaitLogDelivered. Ordering between terminal frames and the
+// status-update that follows them is preserved for free, because the
+// producer emits them from one goroutine and this call is
+// synchronous.
 func (b *broadcaster) Emit(eventType string, payload any) {
 	if eventType == "" {
 		return // Defensive: callers should always pass a non-empty type.
+	}
+	if eventType == EventTurnComplete || eventType == EventTurnError {
+		b.awaitLogDelivered()
 	}
 	frame := Frame{Type: eventType, TypedData: payload}
 	b.mu.Lock()
@@ -362,6 +373,117 @@ func (b *broadcaster) Emit(eventType string, payload any) {
 	for sub := range b.subs {
 		b.sendTyped(sub, frame)
 	}
+}
+
+// headSeqStream is the optional eventlog.Stream extension the
+// terminal-frame barrier needs (implemented by the production
+// gormStream). Streams without it — test fakes, exotic embeddings —
+// skip the barrier and keep the pre-#327 unordered delivery.
+type headSeqStream interface {
+	LatestSeq(ctx context.Context, opts ...eventlog.QueryOption) (int64, error)
+}
+
+// terminalFrameWait bounds how long a terminal frame is held for the
+// log to catch up. The pump's default poll is 200ms, so this is room
+// for several polls plus a slow query; past it, the ordering guarantee
+// is abandoned rather than the frame.
+//
+// Package-level var (not const) purely as a test seam, same as
+// maxReplayEvents; production code never mutates it.
+var terminalFrameWait = 2 * time.Second
+
+// terminalFramePoll is how often the barrier re-reads the subscribers'
+// cursors. Short: the common case is that the pump is mid-poll and the
+// wait is over in single-digit milliseconds.
+const terminalFramePoll = 2 * time.Millisecond
+
+// awaitLogDelivered holds a turn's terminal frame until every current
+// subscriber has been SENT the session's log through its current head.
+//
+// The defect it closes (#327): the adapter publishes turn-complete the
+// instant RunTurn returns, straight into the fan-out. The turn's final
+// assistant text does not take that path — it is appended to the
+// eventlog and reaches subscribers when the pump next polls. So the
+// frame that says "this turn is over" can arrive up to one poll ahead
+// of the answer it terminates, and a consumer that finalizes its
+// render on turn-complete drops the text. That is not an exotic
+// consumer; it is the natural way to write one, and mast's consumers
+// are machines with nobody watching to notice the answer land after
+// the "done".
+//
+// The wait is per-subscriber on that subscriber's own lastSent, not on
+// the pump's cursor, because a freshly-attached client is fed by its
+// own replayThenTail goroutine and the pump's progress says nothing
+// about what that client has received.
+//
+// Every failure path degrades to the pre-fix unordered delivery rather
+// than hanging or dropping the frame: no subscribers, a stream with no
+// LatestSeq, a head-query error, an empty log, shutdown, or the
+// deadline. A late frame is a correctness bug; a missing one is worse.
+func (b *broadcaster) awaitLogDelivered() {
+	fs, ok := b.stream.(headSeqStream)
+	if !ok || !b.hasSubscribers() {
+		// No seq index to ask, or nobody attached to order anything for.
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), terminalFrameWait)
+	defer cancel()
+	head, err := fs.LatestSeq(ctx, b.query...)
+	if err != nil || head == 0 {
+		debugf("broadcaster %s/%s terminal-frame barrier skipped (head=%d err=%v)", b.entry.AppName, b.entry.SessionID, head, err)
+		return
+	}
+	deadline := time.Now().Add(terminalFrameWait)
+	for {
+		if b.allDeliveredThrough(head) {
+			return
+		}
+		if time.Now().After(deadline) {
+			log.Printf("attach: broadcaster %s/%s terminal frame released before the log caught up to seq %d (waited %s); a consumer may see turn-complete ahead of the turn's last event", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry
+				b.entry.AppName, b.entry.SessionID, head, terminalFrameWait)
+			return
+		}
+		select {
+		case <-b.closing: // nil on white-box-constructed broadcasters; never fires, which is correct
+			return
+		case <-time.After(terminalFramePoll):
+		}
+	}
+}
+
+// hasSubscribers reports whether anyone is attached. Asked before the
+// head query so a session nobody is watching pays neither the query
+// nor the wait.
+func (b *broadcaster) hasSubscribers() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for sub := range b.subs {
+		if !sub.closed {
+			return true
+		}
+	}
+	return false
+}
+
+// allDeliveredThrough reports whether every attached subscriber has
+// been sent the log through seq. Vacuously true with no subscribers,
+// which is the right answer for a barrier whose last subscriber left
+// mid-wait.
+func (b *broadcaster) allDeliveredThrough(seq int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for sub := range b.subs {
+		if sub.closed {
+			continue
+		}
+		sub.dedupMu.Lock()
+		behind := sub.lastSent < seq
+		sub.dedupMu.Unlock()
+		if behind {
+			return false
+		}
+	}
+	return true
 }
 
 // deliverBootFrames pushes the spec-required opening frames into a
@@ -443,23 +565,32 @@ func (b *broadcaster) deliverBootFrames(ctx context.Context, sub *subscriber) {
 // (state/model_name) to the spec's StatusUpdate (turn_state/model)
 // keeps the two surfaces aligned without forcing agents to implement
 // a second snapshot method just for SSE.
+//
+// This is the boot frame, so it is also the only thing a client that
+// connects AFTER a park ever sees about that park — the transition
+// frame the adapter emits at park time went out to whoever was
+// listening then. That is the case #313 is really about: an operator
+// frontend opens a stream onto a session that has been waiting for an
+// hour and has to be told what it is waiting for.
 func (b *broadcaster) statusSnapshot() StatusUpdate {
 	out := StatusUpdate{TurnState: TurnStateIdle}
-	p, ok := b.entry.Agent.(StatusProvider)
-	if !ok {
-		return out
-	}
-	info := p.AttachStatus()
-	out.Model = info.ModelName
-	switch info.State {
-	case AgentStateRunning:
-		out.TurnState = TurnStateStreaming
-	default:
-		// deferred / paused / idle / unknown all map to idle from
+	if p, ok := b.entry.Agent.(StatusProvider); ok {
+		info := p.AttachStatus()
+		out.Model = info.ModelName
+		if info.State == AgentStateRunning {
+			out.TurnState = TurnStateStreaming
+		}
+		// deferred / paused / idle / unknown all derive to idle from
 		// the consumer's perspective — the agent isn't currently
-		// producing tokens. Future PRs can distinguish deferred /
-		// paused with their own turn-state values.
-		out.TurnState = TurnStateIdle
+		// producing tokens. The derivation is wrong for exactly one
+		// case, a session paused waiting on a person, and
+		// TurnStateProvider below is how a registrant that can tell
+		// says so.
+	}
+	if p, ok := b.entry.Agent.(TurnStateProvider); ok {
+		if ts := p.AttachTurnState(); validTurnState(ts) {
+			out.TurnState = ts
+		}
 	}
 	return out
 }

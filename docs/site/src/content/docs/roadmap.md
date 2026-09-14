@@ -943,10 +943,42 @@ this means for you: **approving a parked mutation from a chat button does not
 work today**, and the path that will make it work is mast's durable approval
 park being visible to a gateway, not this route being revived. Tracked as
 [#364](https://github.com/go-steer/mast/issues/364) (what mast does with the
-dead surface) over [#313](https://github.com/go-steer/mast/issues/313) (a
-parked session still reports itself idle, so a gateway cannot tell there is a
-question to render). Approvals continue to work as they always have: `mast
-sessions` plus an authenticated `POST /resume`.
+dead surface) over [#313](https://github.com/go-steer/mast/issues/313), and
+**#313 is now done** — see below. Approvals continue to work as they always
+have: `mast sessions` plus an authenticated `POST /resume`.
+
+Which brings the other half of v0.9's attach work: **a session waiting on a
+human now says so.** Until this release a parked session reported
+`turn_state: "idle"` — the same string a session that finished its work
+reports — so nothing watching the stream could tell the difference between
+"done" and "blocked on you". It now reports `awaiting_permission` when the
+write gate has parked a mutating call, and `awaiting_elicit` when the session
+asked you a question. Both values were declared in the protocol from the
+beginning and neither had ever been sent.
+
+The reason it took this long is worth knowing if you write a client: **a
+parked session really is finished**, from the daemon's point of view. The
+gate does not block inside the call waiting for you; it writes the question
+down and lets the turn return. So the answer is read from the transcript, not
+from whatever the process happens to be doing, and two useful properties
+follow. It survives a restart — a session parked yesterday still reports
+`awaiting_permission` today. And it is in the snapshot every client gets on
+connect, so attaching an hour after the park still shows you the park.
+
+Two pauses deliberately stay `idle`. A `pause_session` hold is something an
+operator placed, not a question anyone owes an answer to. And a session
+resuming from a park reports `streaming` for the whole resume turn, even
+though the interrupt it is answering stays open on the transcript until
+mid-turn — otherwise the session would look frozen on your screen while it
+works.
+
+One ordering fix ships with it: **`turn-complete` no longer arrives before the
+answer it terminates**. The terminal frame went straight out the moment a turn
+returned while the turn's final text travelled through the event log, so a
+client that finalized its render on `turn-complete` could drop the last
+message. The frame now waits for the log to catch up — and if the log cannot
+be read, or takes longer than two seconds, the frame goes out anyway and the
+daemon logs why. A late frame is a correctness bug; a missing one is worse.
 
 ## Further out
 

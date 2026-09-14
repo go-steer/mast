@@ -1113,7 +1113,7 @@ write-gate park makes `RunTurn` return, so `pkg/attachadapter/adapter.go:299-311
 `turn-complete` and then `TurnStateIdle` over a session that is in fact waiting for a human. A
 declared state nothing can produce is a claim on the wire that is not true — and note that this is
 the *same three lines of code* the `5b41cc1` analogue lands on. Whoever fixes either should look at
-both.
+both. **Both were fixed together on 2026-09-14**; see carry-forward 4 below for what shipped.
 
 One thing this pass did **not** find, having gone looking: `deploy/base/51-deployment-watcher.yaml`
 probes `/healthz`, mast serves no such route, and that is not a bug. The watcher container is
@@ -1275,11 +1275,19 @@ Carried forward from 2026-09-09, in the order they are worth doing:
    bounded read. Take upstream's refusals with the feature: no outbound provider call, no `auth`
    field, no session IDs or counts in an unauthenticated body, and log one line per health
    *transition* rather than per probe.
-4. **[#327](https://github.com/go-steer/mast/issues/327) (`5b41cc1`) +
+4. ~~**[#327](https://github.com/go-steer/mast/issues/327) (`5b41cc1`) +
    [#313](https://github.com/go-steer/mast/issues/313) — one seam, two defects.**
    `pkg/attachadapter/adapter.go:299-311` publishes the terminal frame ahead of the answer *and*
-   reports a parked session as idle. Whoever opens that file should fix both; doing one and leaving
-   the other means touching the same eleven lines twice.
+   reports a parked session as idle.~~ **Both shipped 2026-09-14, in one PR**, on the advice this
+   entry gave: doing one and leaving the other would have meant touching the same eleven lines
+   twice. #313 turned out to need more than those lines — the frame at the end of a turn is not the
+   only place a client learns the turn state, and the *boot snapshot* (`broadcaster.statusSnapshot`)
+   is the only one a client that attaches after the park ever sees. The durable answer comes from
+   `transcript.Detail.Awaiting()`, reaches `pkg/attach` through a new optional
+   `TurnStateProvider` capability, and is mapped to the wire vocabulary in `cmd/mast` — the one
+   place both vocabularies are in scope. #327's barrier gave `pkg/eventlog`'s `LatestSeq` its first
+   caller in four releases; its doc comment had named a caller it never had. No trailer bumps —
+   mast's own fix at a seam mast's adapter owns, not a re-port.
 5. **[#328](https://github.com/go-steer/mast/issues/328) (`1423bb1`) — a group-readable users
    file.** Not live in mast's shipped recipe, which is why it
    is fifth rather than second. File it anyway: the failure lands at boot on whoever adds multi-user
@@ -1310,10 +1318,17 @@ and unchanged; the third is new:
   collides with what [#206](https://github.com/go-steer/mast/issues/206) documented).
 - Whether ADK-installed dispatch tools should meet the permissions gate (raised by `32aed49`,
   answerable only from mast's own allowlist story).
-- **Whether `awaiting_permission` and `awaiting_elicit` should be emitted or removed.** This ledger
+- ~~**Whether `awaiting_permission` and `awaiting_elicit` should be emitted or removed.** This ledger
   can now say the choice is mast's alone to make — core-agent declares both and produces neither, so
   there is no upstream behavior to stay compatible with and no drift to close. See the #313
-  subsection above.
+  subsection above.~~ **Answered 2026-09-14: emitted.** Removing them would have been the cheaper
+  change and the wrong one — mast *has* both conditions durably on the transcript, and a gateway
+  cannot render a question it cannot see. Both are now produced. The narrower question the choice
+  turned on is which pause counts: a park waiting on a person does, a
+  `pause_session` hold an operator placed does not, and an approval outranks a plain question when
+  a session carries both. **mast is now ahead of core-agent on this vocabulary**, which is the first
+  time this ledger has recorded that direction on the attach wire; it is not owed upstream, because
+  the durable-park semantics it reads are mast's own.
 
 And one row that is neither a port nor a question, but a **precondition to write down**: `181327c`
 becomes portable the moment mast offers a prompt-cache TTL knob, and until then it is a rate mast
