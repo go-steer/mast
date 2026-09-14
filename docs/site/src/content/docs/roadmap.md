@@ -883,15 +883,22 @@ which is why it is spelled out rather than left to inference.
 
 ## Next
 
-**v0.9 is the run-up to the freeze**, and two of its issues are gates on v1.0
-rather than features. The [compatibility and deprecation
-policy](/reference/compatibility/) is written — a stability promise with no
-process for breaking things is not a promise — and it lands with the one rule
-in it that a test can hold: a `// Deprecated:` marker must name the release
-that removes it. Still open is a [threat
-model](https://github.com/go-steer/mast/issues/305), which 28 design docs have
-so far gone without, for a product whose whole thesis is that an agent acts
-while nobody is watching.
+**v0.9 is the run-up to the freeze**, and two of its issues were gates on v1.0
+rather than features. Both are now written. The [compatibility and deprecation
+policy](/reference/compatibility/) is a stability promise's other half — a
+promise with no process for breaking things is not a promise — and it lands
+with the one rule in it that a test can hold: a `// Deprecated:` marker must
+name the release that removes it.
+
+The [threat model](/reference/threat-model/) is the document a security review
+asks for, and the corpus had gone 29 docs without one for a product whose whole
+thesis is that an agent acts while nobody is watching. It is mostly collection —
+the boundaries, the controls and the accepted risks were all reasoned out
+already, just scattered across a YAML comment, five startup checks and half a
+dozen issues. What it adds is the sentence none of those said out loud: **mast
+does not defend against prompt injection, and the write gate is the defence.**
+The boundary is placed after the model rather than before it, which makes the
+gate's coverage a security property and every accepted gap in it worth naming.
 
 Alongside them: `.tmpl` specialist files [stop
 loading](https://github.com/go-steer/mast/issues/349), and the second of the

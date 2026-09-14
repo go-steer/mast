@@ -551,11 +551,12 @@ passed every test in the tree.
 
 **What v1.0 is not.** It is not a claim of production readiness. It
 says the API stops moving and nothing else. The evidence mast does have
-is the outcome tier gating every release, the per-version UAT suites,
-and a measured RBAC matrix on live GKE; the evidence it does not have
-includes a threat model
-([#305](https://github.com/go-steer/mast/issues/305)), for a product
-whose thesis is that an agent acts while nobody is watching.
+is the outcome tier gating every release, the per-version UAT suites, a
+measured RBAC matrix on live GKE, and — since 2026-09-14 — a written
+threat model ([`docs/threat-model.md`](./docs/threat-model.md),
+[#305](https://github.com/go-steer/mast/issues/305)). What that document
+is *not* is an external security review; mast has had none, and the
+threat model says so in its own second paragraph.
 
 **How a covered thing is allowed to change** is the other half of the
 promise, and it is
@@ -601,6 +602,12 @@ Settled rather than deferred, as of 2026-08-31: **the write gate does
 not reach inside a planner dispatch, and will not** — the combination
 stays refused at composition, for the structural reason in the
 contracts above ([#235](https://github.com/go-steer/mast/issues/235)).
+This is the sharpest entry in
+[`docs/threat-model.md`](./docs/threat-model.md) § 5.1, which is where
+the security reading of it lives: the write gate is mast's answer to
+prompt injection, so the gate's coverage boundary is a security
+boundary, and that is the argument for refusing the composition rather
+than documenting the hole.
 The other half of that issue — the **outbox record** — shipped
 2026-09-01: a per-dispatch recorder on the same observer seam that
 meters a dispatch writes each mutating intent and completion to the
