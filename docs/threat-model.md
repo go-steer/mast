@@ -371,6 +371,33 @@ comparable project surveyed gates on scope either. Closing it at runtime
 means a per-tool cardinality precondition, and it is not filed as
 planned work.
 
+### 4.4 What a connected AG-UI client can read
+
+Added 2026-09-14 with the per-key `StateDelta` projection (#98,
+[`./ag-ui-design.md`](./ag-ui-design.md) Stage 3), because that stage
+opened mast's first deliberate *read* surface onto session state and a
+threat model that only reasons about mutation would not have caught it.
+
+An authenticated AG-UI client sees the run's messages and tool activity,
+plus exactly the session-state keys the workload's bundle names in
+`agui.state_projection`. That list is empty by default, so by default a
+client sees none of it, and a key the list does not name emits nothing at
+all rather than a redacted patch — a client cannot learn that an unlisted
+key changed.
+
+The allowlist direction is the whole control. Session state is not a
+curated view of the run: it is whatever the runtime wrote there, and that
+includes `pkg/graph`'s node results and judge verdicts and `pkg/approval`'s
+grants and captured change sets. Under a denylist, every state key added
+later would silently become a publication decision taken by whoever added
+it — a placement this document refuses everywhere else. The enabled list
+is logged at startup so an operator can read the published surface off the
+log rather than off the bundle they believe is mounted.
+
+What this does **not** bound: a key on the list publishes its whole value,
+not a filtered projection of it, so allowlisting a key whose value is a
+struct publishes every field that struct grows later. Name leaf keys.
+
 ---
 
 ## 5. Known-accepted risks

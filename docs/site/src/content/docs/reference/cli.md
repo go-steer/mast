@@ -460,6 +460,7 @@ agui:
   endpoint_path: /agui/incident-triage    # defaults to /agui/<name>
   description: Investigate GKE pod-failure incidents.
   session_model: per_thread               # or per_run
+  state_projection: [plan, phase]         # empty (default) publishes no state
   auth:
     scopes: [incident-triage.run]
 ```
@@ -488,6 +489,19 @@ a raw session id, and an id that would collide with a reserved
 picks the mapping: `per_thread` (the default — one continuing session per
 thread, matching chat UX) or `per_run` (a fresh session per run, for
 stateless one-shots).
+
+**State.** By default the only state frame a client sees is that opening
+`StateSnapshot`, which is the client's own input state echoed back — mast
+publishes none of the session state the run itself writes. A workload opts
+in per key with `agui.state_projection: [plan, phase]`; a write to a named
+key then arrives as a `StateDelta` carrying RFC 6902 patches
+(`{"op": "add", "path": "/plan", "value": …}`, keys sorted). A key that is
+not on the list produces no operation at all, so a client cannot tell that
+it changed. This is an allowlist on purpose: session state carries whatever
+the run put there, approval grants and captured change sets included. The
+daemon logs the enabled list at startup, so what a workload publishes can
+be read off the log rather than off the bundle you believe is mounted; an
+empty or duplicated entry is refused before the listener binds.
 
 **HITL.** A turn that parks for human input closes the stream with a
 terminal `RunFinished` whose `outcome.type` is `interrupt`, listing each

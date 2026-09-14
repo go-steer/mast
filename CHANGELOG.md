@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **An AG-UI client can now watch named session-state keys change, and by
+  default it still sees none of them.** A workload's bundle declares
+  `agui.state_projection: [plan, phase]`; a run's write to a named key is
+  published as an AG-UI `StateDelta` carrying RFC 6902 patches
+  (`{"op": "add", "path": "/plan", "value": …}`, keys sorted). This resolves
+  open question 7 in `docs/ag-ui-design.md`
+  ([#98](https://github.com/go-steer/mast/issues/98)), and closes the gap
+  where `StateDelta` was an exported wire type mast never once emitted.
+
+  The default is empty and that is the load-bearing part: session state is
+  whatever the runtime put there — graph node results, judge verdicts,
+  approval grants, captured change sets — and the AG-UI client is a browser.
+  A key the list does not name produces **no operation at all**, not a
+  redacted one, so a client cannot learn that it changed. An empty or
+  duplicated entry is refused before the listener binds; the enabled list is
+  logged at startup so the published surface can be read off the log rather
+  than off the bundle you believe is mounted. See the new blast-radius
+  section in [the threat model](https://go-steer.github.io/mast/reference/threat-model/).
+
+  Two corrections ride along, both of them documentation that had drifted
+  from the code. The `agui:` example in `docs/ag-ui-design.md` carried
+  `streaming:` and `activity_events:` keys — neither field exists, and since
+  [#302](https://github.com/go-steer/mast/issues/302) made an unrecognised
+  bundle key a load error, a bundle copied from that example would not have
+  started the daemon. They are removed, and a test now fails if either is
+  ever implemented without the docs being restored. Separately, the doc's
+  deferred list now says out loud that `RunAgentInput.tools` is parsed and
+  then dropped rather than reaching the run.
+
 - **The parity scoreboard reads 18 of 19, and the row still red is mast's.**
   No code change: the board was re-measured against the sibling repo rather
   than against this repo's notes about it

@@ -101,7 +101,9 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   turn through the same `runTurnPre` chokepoint, with the full HITL
   interrupt/resume lifecycle (terminal `RunFinished{outcome: interrupt}` →
   resume via a new run's `resume` array). The `agui://` federation client,
-  per-key state deltas, and client-declared tools are v0.3.
+  per-key state deltas, and client-declared tools were listed here as v0.3;
+  none of the three landed in v0.3, and **per-key state deltas shipped in
+  v0.9** — see [Next](#next). The other two are still open.
 - **Local / stdio MCP** — generic, transport-dispatched MCP wiring (a
   `mcp.json` catalog with http/stdio dispatch, not gke-only), with stdio
   control-plane hardening: env scoping and command allowlisting.
@@ -905,6 +907,21 @@ loading](https://github.com/go-steer/mast/issues/349), and the second of the
 two exported-API leaks that writing down the v1.0 promise turned up
 [closes](https://github.com/go-steer/mast/issues/338).
 
+**An AG-UI client can now watch a run's state change — if you say which keys.**
+Until v0.9 the only state frame a client ever saw was the opening snapshot of
+its own input echoed back; `StateDelta` was an exported wire type mast never
+emitted. A workload now declares
+[`agui.state_projection`](/reference/workload-bundle/) and a write to a named
+key arrives as an RFC 6902 patch. **The list is empty by default and that is
+the point.** Session state is not a view someone designed for display — it is
+whatever the run put there, graph node results and judge verdicts and approval
+grants and captured change sets alike — and the client on the other end is a
+browser. So publication is an allowlist, and a key you did not name emits
+nothing at all rather than a redacted placeholder: a client cannot even learn
+that it changed. Adding a key is a decision about a browser-reachable surface;
+the daemon logs the enabled list at startup so you can check what a running
+workload publishes without trusting the bundle you think is mounted.
+
 Also in v0.9: **the parity scoreboard was re-measured rather than re-asserted**,
 and it had one row attributed to the wrong repo. The board reads **18 of 19**.
 The **approver allowlist** is green — switchboard shipped it on 2026-09-03, and
@@ -933,9 +950,11 @@ sessions` plus an authenticated `POST /resume`.
 
 ## Further out
 
-- **AG-UI remaining slices** — the `agui://` federation client, per-key
-  `StateDelta` emission, activity/reasoning events, webhook push, and
-  client-declared tool acceptance.
+- **AG-UI remaining slices** — the `agui://` federation client,
+  activity/reasoning events, webhook push, client-declared tool acceptance
+  (`RunAgentInput.tools` is parsed today and then dropped), and
+  client-disconnect reconnect. Per-key `StateDelta` emission left this list
+  in v0.9.
 - **Planner shapes** — the `run_shape_*` vocabulary tools wired to the
   reference-graph library (they return `not_implemented` in the v0.2
   scaffold), plus more starters: supervisor+workers, sequential pipeline,

@@ -29,8 +29,11 @@ package main
 // the open interrupts (projected from the durable session state), and a
 // subsequent run carrying RunAgentInput.Resume answers them by driving a
 // FunctionResponse turn through the same chokepoint — the AG-UI spelling of
-// mast's durable pause/resume (docs/durable-execution-design.md). The agui://
-// federation client and per-key state deltas remain follow-on stages.
+// mast's durable pause/resume (docs/durable-execution-design.md), and per-key
+// state deltas: a runtime state write whose key the bundle's
+// agui.state_projection allowlist names is published as an RFC 6902 patch, and
+// a workload that declares no allowlist publishes nothing. The agui://
+// federation client remains a follow-on stage.
 
 import (
 	"context"
@@ -40,6 +43,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +94,22 @@ func (b *aguiBackend) sessionModel() string {
 		return b.bundle.AGUI.SessionModel
 	}
 	return workload.AGUISessionPerThread
+}
+
+// stateProjection returns the set of runtime state keys this workload
+// publishes to its AG-UI clients as StateDelta patches. Nil when the bundle
+// declares none, which is the default and means no StateDelta is ever emitted
+// — the set is built once per run rather than consulted as a slice per event,
+// because a state write arrives on the hot event path.
+func (b *aguiBackend) stateProjection() map[string]bool {
+	if b.bundle == nil || len(b.bundle.AGUI.StateProjection) == 0 {
+		return nil
+	}
+	keys := make(map[string]bool, len(b.bundle.AGUI.StateProjection))
+	for _, k := range b.bundle.AGUI.StateProjection {
+		keys[k] = true
+	}
+	return keys
 }
 
 // sessionIDFor derives the mast session id for a run from the client-supplied
@@ -179,7 +199,8 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 
 	// Opening frames (mirrors A2A's initial Task snapshot as its first emit):
 	// RunStarted, then a StateSnapshot echoing the client's input state, or an
-	// empty object when absent. Per-key StateDelta emission is a follow-on.
+	// empty object when absent. Interior StateDelta patches follow from the
+	// projection allowlist, if the workload declares one.
 	emit(agui.NewRunStarted(in.ThreadID, in.RunID))
 	snapshot := in.State
 	if len(snapshot) == 0 {
@@ -194,7 +215,7 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 		defer cancel()
 	}
 
-	em := &aguiEmitter{emit: emit}
+	em := &aguiEmitter{emit: emit, projection: b.stateProjection(), logger: b.logger}
 	err := runTurnPre(ctx, b.turnDeps, sessionID, msg, label, nil, em.onEvent)
 
 	return b.classifyRun(ctx, sessionID, em, err)
@@ -375,6 +396,15 @@ type aguiEmitter struct {
 	emit func(any)
 	seq  int
 
+	// projection is the workload's agui.state_projection allowlist as a set.
+	// Nil means the workload publishes no state, so onEvent never looks at a
+	// state delta at all.
+	projection map[string]bool
+
+	// logger records a state value that will not marshal. Optional: the
+	// emitter is constructed in tests without one.
+	logger *slog.Logger
+
 	// lastText is the final model-authored answer, surfaced in
 	// RunFinished.result; interrupted records a HITL pause signal.
 	lastText    string
@@ -402,6 +432,10 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 	if ev.RequestedInput != nil || len(ev.LongRunningToolIDs) > 0 {
 		e.interrupted = true
 	}
+	// State writes ride on the event's Actions, not its Content, so this runs
+	// before the Content nil-check: pkg/graph stashes a node result on an event
+	// that carries no content at all.
+	e.emitStateDelta(ev.Actions.StateDelta)
 	if ev.Content == nil {
 		return
 	}
@@ -437,6 +471,49 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 			e.emitToolResult(part.FunctionResponse)
 		}
 	}
+}
+
+// emitStateDelta publishes the allowlisted subset of one event's runtime state
+// writes as an RFC 6902 JSON Patch (#98, resolving docs/ag-ui-design.md OQ 7).
+//
+// Three properties are deliberate. It is a **filter, not a redaction**: a key
+// the projection does not name produces no op, rather than an op with a
+// scrubbed value, so a client cannot learn that a key it may not see changed.
+// Ops are emitted in **sorted key order**, because Go's map iteration is
+// randomized and a patch stream a client diffs across runs should not reorder
+// for no reason. And a value that will not marshal is **dropped with a warning
+// rather than emitted as null** — null is a legitimate state value, so a
+// marshal failure rendered as one would publish a change that did not happen.
+func (e *aguiEmitter) emitStateDelta(delta map[string]any) {
+	if len(e.projection) == 0 || len(delta) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(delta))
+	for k := range delta {
+		if e.projection[k] {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	sort.Strings(keys)
+	ops := make([]agui.PatchOp, 0, len(keys))
+	for _, k := range keys {
+		raw, err := json.Marshal(delta[k])
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("AG-UI state projection skipped a key whose value will not marshal",
+					"key", k, "error", err)
+			}
+			continue
+		}
+		ops = append(ops, agui.PatchOp{Op: "add", Path: agui.StatePointer(k), Value: raw})
+	}
+	if len(ops) == 0 {
+		return
+	}
+	e.emit(agui.NewStateDelta(ops))
 }
 
 // emitToolCall streams one model tool invocation as start → args → end. The
@@ -490,6 +567,33 @@ func aguiExposedWorkloads(bundle *workload.Bundle) []agui.ExposedWorkload {
 		InputSchema:  bundle.AGUI.InputSchema,
 		Scopes:       bundle.AGUI.Auth.Scopes,
 	}}
+}
+
+// checkStateProjection refuses an agui.state_projection list that cannot mean
+// what its author meant, at startup rather than at the first state write.
+//
+// Two shapes are refused and one deliberately is not. An **empty entry** is
+// refused because it can only come from a stray "-" or a trailing comma, and
+// it would silently match no key forever — the failure mode #290's decorative
+// RBAC binding had. A **duplicate** is refused because a list a reader counts
+// to answer "what does this publish?" must not double-count, and because the
+// duplicate is usually a half-finished edit. A key that names state the
+// workload never writes is **not** refused: which keys a roster produces
+// depends on the dispatch shape and on tools resolved at runtime, so a
+// startup check could only guess, and guessing wrong would refuse a correct
+// bundle.
+func checkStateProjection(bundle *workload.Bundle) error {
+	seen := map[string]bool{}
+	for i, k := range bundle.AGUI.StateProjection {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("agui: state_projection[%d] for workload %q is empty: remove the entry or name a state key", i, bundle.Name)
+		}
+		if seen[k] {
+			return fmt.Errorf("agui: state_projection for workload %q names %q twice", bundle.Name, k)
+		}
+		seen[k] = true
+	}
+	return nil
 }
 
 // aguiValidator builds the endpoint's token validator from MAST_AGUI_TOKEN.
@@ -572,6 +676,17 @@ func buildAGUIServer(
 	if m := bundle.AGUI.SessionModel; m != "" && m != workload.AGUISessionPerThread && m != workload.AGUISessionPerRun {
 		return nil, fmt.Errorf("agui: invalid session_model %q for workload %q (want %q or %q)",
 			m, bundle.Name, workload.AGUISessionPerThread, workload.AGUISessionPerRun)
+	}
+	if err := checkStateProjection(bundle); err != nil {
+		return nil, err
+	}
+	if n := len(bundle.AGUI.StateProjection); n > 0 {
+		// Said out loud at startup for the same reason the builtin-tools summary
+		// is (#324): a publication allowlist is a security setting, and an
+		// operator should be able to read what this daemon publishes off the log
+		// rather than off the bundle they think is mounted.
+		logger.Info("AG-UI state projection enabled",
+			"workload", bundle.Name, "keys", bundle.AGUI.StateProjection)
 	}
 	validator, err := aguiValidator(logger, exposed)
 	if err != nil {

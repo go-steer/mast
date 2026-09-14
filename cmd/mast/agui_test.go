@@ -867,3 +867,235 @@ func TestAGUIClassifyRunInterruptWithoutProjection(t *testing.T) {
 		t.Fatalf("degraded interrupt path leaked a resume-less interrupt: %+v", res)
 	}
 }
+
+// mkStateEvent builds a runner event carrying only a state write — no content
+// at all, which is the shape pkg/graph stashes a node result on.
+func mkStateEvent(delta map[string]any) *adksession.Event {
+	ev := adksession.NewEvent(context.Background(), "inv-agui-test")
+	ev.Actions.StateDelta = delta
+	return ev
+}
+
+// stateDeltas extracts the decoded patch arrays from the collected frames, in
+// emission order.
+func stateDeltas(t *testing.T, frames []any) [][]agui.PatchOp {
+	t.Helper()
+	var out [][]agui.PatchOp
+	for _, f := range frames {
+		sd, ok := f.(agui.StateDelta)
+		if !ok {
+			continue
+		}
+		var ops []agui.PatchOp
+		if err := json.Unmarshal(sd.Delta, &ops); err != nil {
+			t.Fatalf("StateDelta.Delta %s is not a patch array: %v", sd.Delta, err)
+		}
+		out = append(out, ops)
+	}
+	return out
+}
+
+// TestAGUIEmitterPublishesNoStateWithoutAProjection is the default-off half of
+// #98's state slice, and the one worth having: session state is whatever the
+// runtime put there — pkg/graph writes routing keys and judge verdicts,
+// pkg/approval writes grants and change sets — and the AG-UI client is a
+// browser. A workload that declares no agui.state_projection must publish none
+// of it.
+//
+// Neutralize check, measured rather than assumed: default-off is held by two
+// independent guards in emitStateDelta — the len(e.projection) == 0 early
+// return and the per-key e.projection[k] filter — and removing either one alone
+// leaves this test green. Removing BOTH fails it, with a patch carrying the
+// grant. That is the honest report: this test pins the property, and the
+// separate TestAGUIEmitterProjectsOnlyAllowlistedKeys is what pins the filter.
+func TestAGUIEmitterPublishesNoStateWithoutAProjection(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit}
+	e.onEvent(mkStateEvent(map[string]any{
+		"plan":                  "step 1",
+		"mast:grant:scale/once": map[string]any{"approver": "sre-oncall"},
+	}))
+	if len(*got) != 0 {
+		t.Fatalf("a workload with no state_projection emitted %d frame(s): %v", len(*got), *got)
+	}
+}
+
+// TestAGUIEmitterProjectsOnlyAllowlistedKeys pins that the projection is a
+// filter and not a redaction: an unlisted key produces no op at all, so a
+// client cannot even learn that it changed. It also pins the ordering, because
+// Go randomizes map iteration and a patch stream a client diffs across runs
+// should not reorder for no reason.
+//
+// Neutralize check: replace the e.projection[k] test with an unconditional
+// append and "secret" appears in the patch.
+func TestAGUIEmitterProjectsOnlyAllowlistedKeys(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit, projection: map[string]bool{"plan": true, "phase": true}}
+	e.onEvent(mkStateEvent(map[string]any{
+		"plan":   "step 1",
+		"phase":  "diagnose",
+		"secret": "do not publish",
+	}))
+
+	deltas := stateDeltas(t, *got)
+	if len(deltas) != 1 {
+		t.Fatalf("state deltas = %d, want 1", len(deltas))
+	}
+	ops := deltas[0]
+	if len(ops) != 2 {
+		t.Fatalf("ops = %+v, want exactly the two allowlisted keys", ops)
+	}
+	if ops[0].Path != "/phase" || ops[1].Path != "/plan" {
+		t.Fatalf("ops out of sorted key order: %q then %q", ops[0].Path, ops[1].Path)
+	}
+	for _, op := range ops {
+		if op.Op != "add" {
+			t.Fatalf("op %+v: want \"add\", the only op correct against a client state document mast cannot see", op)
+		}
+	}
+	if string(ops[1].Value) != `"step 1"` {
+		t.Fatalf("plan value = %s, want the state value verbatim", ops[1].Value)
+	}
+	for _, f := range *got {
+		if sd, ok := f.(agui.StateDelta); ok && strings.Contains(string(sd.Delta), "secret") {
+			t.Fatalf("unlisted key leaked into the patch: %s", sd.Delta)
+		}
+	}
+}
+
+// TestAGUIEmitterStateDeltaRidesAnEventWithNoContent pins the ordering bug the
+// obvious implementation has: state writes ride on Actions, not Content, and
+// pkg/graph stashes a node result on an event carrying no content at all.
+//
+// Neutralize check: move the emitStateDelta call below onEvent's
+// `if ev.Content == nil { return }` and this fails with zero frames.
+func TestAGUIEmitterStateDeltaRidesAnEventWithNoContent(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit, projection: map[string]bool{"result": true}}
+	ev := mkStateEvent(map[string]any{"result": map[string]any{"ok": true}})
+	if ev.Content != nil {
+		t.Fatal("fixture is wrong: the event should carry no content")
+	}
+	e.onEvent(ev)
+	if len(stateDeltas(t, *got)) != 1 {
+		t.Fatalf("a contentless state event emitted %d frame(s), want 1", len(*got))
+	}
+}
+
+// TestAGUIEmitterEscapesStateKeysInPointers: mast's own state keys are
+// compound and generated — pkg/approval's grant key embeds a tool signature
+// with a "/" in it — so an unescaped pointer would address a nested member
+// that does not exist rather than the key that changed.
+//
+// Neutralize check: return "/" + key from agui.StatePointer and this fails.
+func TestAGUIEmitterEscapesStateKeysInPointers(t *testing.T) {
+	emit, got := collectEmit()
+	key := "mast:grant:scale_deployment/once"
+	e := &aguiEmitter{emit: emit, projection: map[string]bool{key: true}}
+	e.onEvent(mkStateEvent(map[string]any{key: "granted"}))
+
+	deltas := stateDeltas(t, *got)
+	if len(deltas) != 1 || len(deltas[0]) != 1 {
+		t.Fatalf("deltas = %+v, want one op", deltas)
+	}
+	if got := deltas[0][0].Path; got != "/mast:grant:scale_deployment~1once" {
+		t.Fatalf("pointer = %q, want the slash escaped as ~1", got)
+	}
+}
+
+// TestStatePointerEscapesBothReservedCharacters covers the half the emitter
+// test above cannot reach on its own: RFC 6901 reserves "~" as well as "/", and
+// the two escapes are order-dependent — escaping "/" first would turn a literal
+// "~1" in a key into "~01" on the second pass and address the wrong member.
+//
+// Neutralize check: swap the two ReplaceAll calls in StatePointer and the
+// "~1 already in the key" case fails.
+func TestStatePointerEscapesBothReservedCharacters(t *testing.T) {
+	for _, tc := range []struct{ key, want string }{
+		{"plan", "/plan"},
+		{"", "/"},
+		{"a/b", "/a~1b"},
+		{"a~b", "/a~0b"},
+		{"a~1b", "/a~01b"},
+		{"a/~b", "/a~1~0b"},
+	} {
+		if got := agui.StatePointer(tc.key); got != tc.want {
+			t.Errorf("StatePointer(%q) = %q, want %q", tc.key, got, tc.want)
+		}
+	}
+}
+
+// TestAGUIEmitterDropsAnUnmarshalableStateValue: null is a legitimate state
+// value, so a marshal failure rendered as null would publish a change that did
+// not happen. The key is dropped and the run continues.
+func TestAGUIEmitterDropsAnUnmarshalableStateValue(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit, projection: map[string]bool{"bad": true, "good": true}}
+	e.onEvent(mkStateEvent(map[string]any{
+		"bad":  make(chan int), // channels do not marshal
+		"good": 1,
+	}))
+	deltas := stateDeltas(t, *got)
+	if len(deltas) != 1 || len(deltas[0]) != 1 {
+		t.Fatalf("deltas = %+v, want exactly the one marshalable key", deltas)
+	}
+	if deltas[0][0].Path != "/good" {
+		t.Fatalf("surviving op = %+v, want /good", deltas[0][0])
+	}
+}
+
+// TestBuildAGUIServerRejectsBadStateProjection: an empty entry matches no key
+// forever and a duplicate makes the list uncountable, so both are refused at
+// startup rather than at the first state write. A key naming state the
+// workload never writes is deliberately accepted — which keys a roster
+// produces depends on the dispatch shape and on runtime-resolved tools.
+func TestBuildAGUIServerRejectsBadStateProjection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys []string
+		want string
+	}{
+		{"empty entry", []string{"plan", "  "}, "is empty"},
+		{"duplicate", []string{"plan", "plan"}, "twice"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := &workload.Bundle{
+				Name: "wl",
+				AGUI: workload.AGUI{Expose: true, StateProjection: tc.keys},
+			}
+			_, err := buildAGUIServer(discardLogger(), "127.0.0.1:0", bundle, &aguiBackend{}, nil, context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one mentioning %q", err, tc.want)
+			}
+		})
+	}
+	t.Run("a key nothing writes is accepted", func(t *testing.T) {
+		bundle := &workload.Bundle{
+			Name: "wl",
+			AGUI: workload.AGUI{Expose: true, StateProjection: []string{"never_written"}},
+		}
+		if _, err := buildAGUIServer(discardLogger(), "127.0.0.1:0", bundle, &aguiBackend{}, nil, context.Background()); err != nil {
+			t.Fatalf("buildAGUIServer refused an unwritten key: %v", err)
+		}
+	})
+}
+
+// TestAGUIBackendStateProjection pins the bundle→emitter wiring, which is the
+// seam a unit test on the emitter alone cannot reach: a backend whose bundle
+// declares no projection must build an emitter that publishes nothing.
+func TestAGUIBackendStateProjection(t *testing.T) {
+	if got := (&aguiBackend{}).stateProjection(); got != nil {
+		t.Fatalf("nil bundle: projection = %v, want nil", got)
+	}
+	if got := (&aguiBackend{bundle: &workload.Bundle{Name: "w"}}).stateProjection(); got != nil {
+		t.Fatalf("no state_projection declared: projection = %v, want nil", got)
+	}
+	b := &aguiBackend{bundle: &workload.Bundle{
+		Name: "w",
+		AGUI: workload.AGUI{Expose: true, StateProjection: []string{"plan", "phase"}},
+	}}
+	got := b.stateProjection()
+	if len(got) != 2 || !got["plan"] || !got["phase"] {
+		t.Fatalf("projection = %v, want the two declared keys", got)
+	}
+}

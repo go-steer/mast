@@ -1026,6 +1026,18 @@ type AGUI struct {
 	// session id; a client never supplies a raw session id.
 	SessionModel string `yaml:"session_model,omitempty"`
 
+	// StateProjection is the allowlist of runtime state keys published to the
+	// client as RFC 6902 StateDelta patches (docs/ag-ui-design.md OQ 7). Empty
+	// (the default) emits no StateDelta at all.
+	//
+	// It is an allowlist rather than a denylist because session state is
+	// whatever the runtime put there — pkg/graph writes routing keys, node
+	// results and judge verdicts; pkg/approval writes grants and change sets —
+	// and the AG-UI client is a browser, not an operator. Publishing by default
+	// would make every future state key an exfiltration decision taken by
+	// whoever added it, which is the placement docs/threat-model.md refuses.
+	StateProjection []string `yaml:"state_projection,omitempty"`
+
 	// Auth is the per-endpoint auth policy.
 	Auth AGUIAuth `yaml:"auth,omitempty"`
 }

@@ -159,7 +159,7 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 | `pkg/inject` | The unattended entry point: `POST /inject`, `/resume`, `/abort`, `/pause`, `/extend-token`, `/stop`, `/ack-effects`, plus `/metrics`. |
 | `pkg/observability` | Fixed Prometheus counter registry + env-gated OTel trace export ([`docs/observability-design.md`](./docs/observability-design.md)). |
 | `pkg/a2a` / `pkg/federation` | A2A v0.3 both ways: the synchronous client, and the server (agent card, `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE) exposing workloads that opt in via the bundle's `a2a.expose`. Plus the `federation.Adapter`/`Handle` interface + `invoke_remote_agent` (called "frozen" here since v0.1 in the sense that its shape is settled — **not** a v1.0 commitment; `pkg/federation` is on the uncovered list below, and [`docs/compatibility-policy.md`](./docs/compatibility-policy.md) does not bind it) ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
-| `pkg/agui` | The AG-UI server surface (agent↔user) for CopilotKit apps and chat-platform bots: hand-rolled zero-dep wire types, an HTTP+SSE run endpoint, `/agui/agents.json` discovery, and the HITL interrupt/resume lifecycle. Runtime-free, like `pkg/a2a` ([`docs/ag-ui-design.md`](./docs/ag-ui-design.md)). |
+| `pkg/agui` | The AG-UI server surface (agent↔user) for CopilotKit apps and chat-platform bots: hand-rolled zero-dep wire types, an HTTP+SSE run endpoint, `/agui/agents.json` discovery, the HITL interrupt/resume lifecycle, and per-key state publication (a run's write to a key named in the bundle's `agui.state_projection` becomes an RFC 6902 `StateDelta`; the list is empty by default, and a key not on it emits nothing rather than a redaction). Runtime-free, like `pkg/a2a` ([`docs/ag-ui-design.md`](./docs/ag-ui-design.md)). |
 | `pkg/serverauth` | The request-admission seams both network servers share: pluggable bearer auth (`TokenValidator` → `Principal`, per-surface scope checks) and rate limiting. Stdlib + `golang.org/x/time` only, so it stays slim-embed-safe. |
 | `pkg/mcp` | MCP toolset wiring + per-specialist tool allowlists. HTTP servers get their transport wrapped so a 4xx/5xx carries the server's own error text (an IAM permission name, a quota metric) rather than a bare status line. Every toolset is also wrapped for response digesting (`WithDigest`, `retrieve_raw`) unless the daemon or the server opted out; the wrap exposes `Unwrap()` so mast's own non-model caller — the write gate's precondition read — reaches the tool rather than a digest of it. |
 
@@ -688,8 +688,10 @@ forever. The accepted cost is that a red can land on `main` and the
 refusal arrives at the tag.
 
 Still deferred here: the remaining AG-UI slices (`agui://`
-federation client, per-key `StateDelta`, webhook push, client-declared
-tools, [`docs/ag-ui-design.md`](./docs/ag-ui-design.md)); the
+federation client, webhook push, client-declared tools, activity and
+reasoning events, [`docs/ag-ui-design.md`](./docs/ag-ui-design.md) —
+per-key `StateDelta` left this list 2026-09-14 and shipped as the
+`agui.state_projection` allowlist, default empty); the
 `run_shape_*` planner vocabulary wired to the reference-graph library
 (it returns `not_implemented` in the shipped scaffold); multi-session
 attach (ACL store, per-caller auth, operator session creation) and
