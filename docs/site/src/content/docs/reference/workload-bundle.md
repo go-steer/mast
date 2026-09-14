@@ -75,6 +75,7 @@ agui:
   endpoint_path: /agui/incident-triage
   description: Investigate GKE pod-failure incidents.
   session_model: per_thread
+  state_projection: [plan, phase]
   auth:
     scopes: [incident-triage.run]
 ```
@@ -138,6 +139,7 @@ agui:
 | `agui.description` | string | Surfaced in the `/agui/agents.json` discovery descriptor; defaults to the workload description. |
 | `agui.session_model` | string | How a run maps to a mast session: `per_thread` (default — one continuing session per AG-UI `threadId`, matching chat UX) or `per_run` (a fresh session per `runId`, for stateless one-shots). The daemon always derives and namespaces the session id; a client never supplies a raw one. |
 | `agui.input_schema` | map | A **mast-side** convention only: an optional JSON-Schema-shaped hint surfaced in the discovery descriptor so a client can render an input form. AG-UI's `RunAgentInput` has no schema field, so it does **not** constrain the wire input. |
+| `agui.state_projection` | list of strings | Allowlist of runtime state keys published to the client as `StateDelta` patches. **Empty (the default) publishes nothing.** A key on the list is emitted as an RFC 6902 `{"op": "add", "path": "/<key>", "value": …}` whenever the run writes it; a key not on the list produces no operation at all, so a client cannot tell that it changed. Treat this as a publication decision, not a display preference: session state holds whatever the runtime put there, including approval grants and captured change sets, and the AG-UI client is a browser. An empty or duplicated entry is refused at startup; a key the workload never happens to write is accepted. |
 | `agui.auth.required`, `agui.auth.scopes` | bool, list of strings | Per-endpoint auth policy. `scopes` are enforced per run when a token validator is configured (`MAST_AGUI_TOKEN`): a caller whose token lacks a scope is refused `403`. |
 
 ## `schema_version:` — and why an unknown key is refused

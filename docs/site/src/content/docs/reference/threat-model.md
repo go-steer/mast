@@ -197,6 +197,15 @@ and you have approved 400 changes. This is a known gap, measured by the
 outcome eval tier rather than closed, and no comparable project
 surveyed gates on scope either.
 
+**What a connected AG-UI client can read** is the run's messages and tool
+activity, plus exactly the session-state keys the bundle names in
+[`agui.state_projection`](/reference/workload-bundle/) — which is empty by
+default, so by default none. Session state is not a curated view: it holds
+whatever the run put there, approval grants and captured change sets
+included, which is why publication is an allowlist rather than a denylist.
+Adding a key is a decision about a browser-reachable surface, so make it
+like one.
+
 ## Accepted risks
 
 Settled, not deferred. Listed so you find them here instead of

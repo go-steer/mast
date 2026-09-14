@@ -29,7 +29,10 @@
 
 package agui
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // ProtocolVersion is the AG-UI protocol line this server implements. It is
 // advertised in the discovery descriptor and pinned per release
@@ -294,10 +297,11 @@ type ToolCallResult struct {
 }
 
 // StateSnapshot carries the full shared-state document; StateDelta carries an
-// RFC-6902 JSON Patch against the last snapshot. Stage 1 emits one opening
-// StateSnapshot (echoing the input State); per-key StateDelta emission is
-// deferred (it needs a state-projection allowlist), but the type ships so the
-// state vocabulary is complete.
+// RFC-6902 JSON Patch against the last snapshot. Every run opens with one
+// StateSnapshot echoing the client's input state; a StateDelta follows for each
+// runtime state write whose key the workload's agui.state_projection allowlist
+// names (#98). A workload that declares no projection emits no StateDelta at
+// all — session state is not a publication surface by default.
 type StateSnapshot struct {
 	baseEvent
 	Snapshot json.RawMessage `json:"snapshot"`
@@ -306,6 +310,36 @@ type StateSnapshot struct {
 type StateDelta struct {
 	baseEvent
 	Delta json.RawMessage `json:"delta"`
+}
+
+// PatchOp is one RFC 6902 JSON Patch operation in a StateDelta's Delta array.
+//
+// mast emits exactly one op kind, "add", and that is a deliberate reading of
+// the RFC rather than a simplification: for an object member, "add" replaces
+// the value when the member exists and creates it when it does not, while
+// "replace" fails against a target that does not have the member. The opening
+// StateSnapshot echoes the CLIENT's state document, so the daemon does not
+// know which keys that document already carries — "add" is the only op that is
+// correct either way, and it makes a patch stream idempotent under a client
+// that reconnects and replays.
+type PatchOp struct {
+	Op    string          `json:"op"`
+	Path  string          `json:"path"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+// StatePointer renders a top-level state key as an RFC 6901 JSON Pointer.
+//
+// The escaping is not decorative: a state key containing "/" would otherwise
+// render as a two-segment pointer addressing a nested member that does not
+// exist, and one containing "~" would collide with the escape syntax itself.
+// mast's own state keys (pkg/graph's route/verdict/node keys, pkg/approval's
+// grant and change-set keys) are compound and generated, so this is reachable
+// rather than theoretical.
+func StatePointer(key string) string {
+	esc := strings.ReplaceAll(key, "~", "~0")
+	esc = strings.ReplaceAll(esc, "/", "~1")
+	return "/" + esc
 }
 
 // newBase stamps a base envelope for the given event type. Timestamp is left
@@ -379,6 +413,26 @@ func NewToolCallEnd(toolCallID string) ToolCallEnd {
 
 func NewToolCallResult(toolCallID, content string) ToolCallResult {
 	return ToolCallResult{baseEvent: newBase(EventToolCallResult), ToolCallID: toolCallID, Content: content}
+}
+
+// NewStateDelta builds a state-patch event from a prepared op list. The caller
+// owns the op list — which keys are in it is the projection allowlist's
+// decision, not this package's — and an empty list yields a delta of "[]"
+// rather than "null", because a client parsing the array should not have to
+// special-case the absence of one. Callers are expected not to emit an empty
+// patch at all; the server does not suppress one for them.
+func NewStateDelta(ops []PatchOp) StateDelta {
+	if ops == nil {
+		ops = []PatchOp{}
+	}
+	raw, err := json.Marshal(ops)
+	if err != nil {
+		// Unreachable with well-formed ops: PatchOp's only non-scalar field is
+		// already json.RawMessage, which marshals as-is. Emitting an empty patch
+		// beats emitting a frame whose delta is the literal "null".
+		raw = json.RawMessage("[]")
+	}
+	return StateDelta{baseEvent: newBase(EventStateDelta), Delta: raw}
 }
 
 func NewStateSnapshot(snapshot json.RawMessage) StateSnapshot {

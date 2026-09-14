@@ -99,7 +99,12 @@ AG-UI ships in stages under umbrella #84, mirroring the A2A cadence.
 
 - **Stage 1 (shipped).** Server core. IN: the bundle `agui:` section (`expose`, `endpoint_path`, `description`, `input_schema`, `session_model`, `auth.scopes`); a per-workload HTTP+SSE run endpoint plus the `/agui/agents.json` discovery descriptor; `RunAgentInput` acceptance; shared auth + rate limiting (see [Auth](#auth-1)); the happy-path event stream (`RunStarted` → a `StateSnapshot` echoing the client's input state → the model's answer as a `TextMessage` triad, with `ToolCallStart/Args/End` + `ToolCallResult` for tool activity → a terminal `RunFinished` / `RunError`); and the `mast_agui_runs_total{workload,outcome}` + `mast_agui_run_duration_seconds{workload}` metrics. Every run drives the same `runTurnPre` chokepoint every other turn kind funnels through (turn-lock, abort / gate-pause refusal, budget meter, watchdog, effects outbox by construction), and the session id is always daemon-derived and namespaced under `agui-` with an ownership fence against the reserved ops-row namespace — a client never supplies a raw session id.
 - **Stage 2 (shipped).** The HITL interrupt/resume lifecycle. A turn that parks on a HITL primitive (a `request_operator_input`-class long-running tool, or a programmatic/external-signal pause) now closes the stream with a terminal `RunFinished{outcome: {type: "interrupt", interrupts: [{id, message, responseSchema?, expiresAt?}]}}` — projected from the durable session's pending-interrupt state, not a fabricated success and no longer the honest-placeholder `RunError{interrupt}` Stage 1 emitted. The client resumes by starting a **new run** whose `RunAgentInput.Resume` carries one `ResumeEntry` per interrupt (`Status: "resolved"` or `"cancelled"`, optional payload); the daemon reconciles each entry against the session's open interrupt ids, builds the resume function-response, and drives the resume turn through the same `runTurnPre` chokepoint — a resume against no open interrupt (or an unknown id) is refused with `ErrNotResumable` (HTTP 409) rather than silently forking a fresh turn. Because the resume is a *new* run (new `runId`), reaching the parked session under `session_model: per_run` (which keys the session on `runId`) requires the resume to carry `RunAgentInput.parentRunId` naming the run that parked; under the default `per_thread` the shared `threadId` reaches it with no extra field. The terminal interrupt frame records the `interrupted` outcome on `mast_agui_runs_total`.
-- **Deferred (documented, follow-on stages).** The `agui://` federation client ([Mast as AG-UI client](#mast-as-ag-ui-client)); per-key `StateDelta` projection (needs the `agui.state_projection` allowlist, OQ #7); client-declared tools (`RunAgentInput.Tools`, OQ #6); activity/reasoning events; the mast-extension webhook push; and client-disconnect reconnect.
+- **Stage 3 (shipped, 2026-09-14, #98).** Per-key `StateDelta` projection, resolving [OQ #7](#open-questions). A workload's bundle declares `agui.state_projection: [key, …]`; a runtime state write (ADK's `session.EventActions.StateDelta`, which is where `pkg/graph` and `pkg/approval` put theirs) whose key the list names is published as an RFC 6902 patch, keys sorted, one `add` op each. Everything else about it follows from the default being empty:
+  - **Allowlist, and a filter rather than a redaction.** An unlisted key produces no op at all, so a client cannot learn that it changed. Session state is whatever the runtime put there, including grants and change sets, and the AG-UI client is a browser — a denylist would make every future state key an exfiltration decision taken by whoever added it.
+  - **`add` is the only op mast emits**, and that is a reading of RFC 6902 rather than a shortcut: for an object member `add` replaces an existing value and creates a missing one, while `replace` fails against a target that lacks the member. The opening `StateSnapshot` echoes the *client's* state document, so the daemon does not know which keys that document already carries; `add` is correct either way and makes the stream idempotent under a client that reconnects and replays.
+  - **The emission sits above the content check** in the event handler, because state rides on `Actions` and not on `Content`: `pkg/graph` stashes a node result on an event carrying no content at all.
+  - **Refused at startup, not at the first write:** an empty entry (it matches no key, forever) or a duplicate. A key naming state the workload never writes is deliberately accepted — which keys a roster produces depends on the dispatch shape and on runtime-resolved tools, so refusing one would be a guess. The enabled allowlist is logged at startup for the same reason the builtin-tools summary is: an operator should be able to read what the daemon publishes off the log rather than off the bundle they believe is mounted.
+- **Deferred (documented, follow-on stages).** The `agui://` federation client ([Mast as AG-UI client](#mast-as-ag-ui-client)); client-declared tools (`RunAgentInput.Tools`, OQ #6 — note the field is parsed today and then dropped, never reaching `RunInput`); activity/reasoning events; the mast-extension webhook push; and client-disconnect reconnect.
 
 ##### Build-vs-buy: hand-rolled, zero-dependency (overrides the July SDK-wrap guidance)
 
@@ -132,9 +137,19 @@ agui:
   auth:
     required: true
     scopes: [incident-triage.read, incident-triage.write]
-  streaming: true                                 # emit incremental events
-  activity_events: true                           # emit ActivitySnapshot for planner steps
+  state_projection: [plan, phase]                 # allowlist: which state keys
+                                                  # reach the client as StateDelta
+                                                  # patches. Empty = none.
 ```
+
+> **Correction, 2026-09-14 (#98).** This example previously ended with two more
+> keys, `streaming: true` and `activity_events: true`. Neither field exists on
+> `workload.AGUI`, and since [#302](https://github.com/go-steer/mast/issues/302)
+> made an unrecognised bundle key a load error rather than a warning, a bundle
+> copied from this example would not have started the daemon at all. They are
+> removed rather than implemented: incremental streaming is the whole-message
+> emission Stage 1 chose deliberately, and activity events are still deferred
+> (see [Phasing](#phasing)). Every key shown above now exists.
 
 Workloads without an `agui` section are not exposed via AG-UI — same conservative default as A2A. Deliberate: AG-UI exposure has real ops implications (auth setup, external client contract stability, user-facing UX considerations).
 
@@ -182,7 +197,8 @@ Mast's internal event stream emits AG-UI events uniformly:
 | tool call end | `ToolCallEnd{toolCallId}` + `ToolCallResult{content}` |
 | specialist / sub-workflow invocation | `ToolCallStart` (nested) + child span visibility via `parentMessageId` |
 | planner step | `ActivitySnapshot{activityType: "PLAN"}` |
-| state write (bundle-configured state key) | `StateDelta{delta}` (RFC 6902 patches) |
+| state write to a key named in `agui.state_projection` | `StateDelta{delta}` — one `{"op": "add", "path": "/<key>", "value": …}` per allowlisted key that changed, keys sorted. **Shipped** (#98). |
+| state write to any other key | *nothing* — a filter, not a redaction: an unlisted key produces no op, so a client cannot learn that it changed |
 | `RequestInputEvent` (HITL pause) | `RunFinished{outcome: {type: "interrupt", interrupts: [{id, message, responseSchema, expiresAt}]}}` |
 | session finish (`finish_task`) | `RunFinished{outcome: {type: "success"}, result}` |
 | session error | `RunError{message, code}` |
@@ -313,7 +329,7 @@ CopilotKit's chat-platform bot SDK is open-source (no per-seat cost). Operators 
 4. **Concurrent-run policy.** Default: one active run per thread; queue if another arrives. Configurable per bundle. What's the queue depth? Bias: 3; reject with `RunError` if exceeded; observable via metric.
 5. **Reasoning event exposure.** Some model reasoning tokens are sensitive (chain-of-thought reveals prompt-injection surface). Bias: default off; opt-in per bundle (`agui.emit_reasoning: true`); document the tradeoff.
 6. **Tool declarations from AG-UI clients.** `RunAgentInput.tools` lets clients declare tools they expose *to* the agent (frontend tool calls). Mast can support this (client-side tools count as another tool class the planner can invoke); need to reconcile with bundle `tool_catalog` allowlist. Bias: client-declared tools require `agui.accept_client_tools: true` opt-in per bundle; intersected with bundle allowlist same as skills.
-7. **State delta authorship.** AG-UI `StateDelta` events publish state changes to the client. Which mast state keys emit? Bias: bundle declares `agui.state_projection: [key1, key2]` — explicit allowlist of state keys projected to the client; default empty (nothing projected without explicit config).
+7. **State delta authorship.** AG-UI `StateDelta` events publish state changes to the client. Which mast state keys emit? Bias: bundle declares `agui.state_projection: [key1, key2]` — explicit allowlist of state keys projected to the client; default empty (nothing projected without explicit config). *Resolved 2026-09-14 (Stage 3, #98): the bias shipped as written, and two things the bias did not say are settled with it. An unlisted key emits **nothing** rather than a redacted op, so the projection is a filter and a client cannot learn that an unlisted key changed; and mast emits only `add` ops, because the opening `StateSnapshot` echoes the client's own state document and the daemon therefore cannot know which members that document already has. See [Implementation status](#implementation-status-v02-stages-12).*
 8. **Aggregation endpoint content model.** `/agui/agents.json` is mast-defined; format-shape TBD. Bias: JSON array of `{name, endpoint, description, input_schema, auth: {scopes}}` per exposed workload. Keep it simple; align with CopilotKit conventions once they publish one.
 9. **CopilotKit-hosted vs. self-hosted-bot deployment guidance.** CopilotKit sells a managed platform; self-hosting the `@copilotkit/channels` bot process alongside mast is also viable. Bias: document both; recommend self-hosted for platform teams with existing GKE/Cloud Run infra; recommend managed for teams without.
 10. **AG-UI-native workload authoring UX.** Some workloads are natively chat-shaped and want UI hints in their bundle (starter messages, quick-reply chips, avatar). AG-UI protocol supports these via `Custom` events. Bias: pass through as-is; provide helper functions in `pkg/agui/` for common patterns; don't add mast-specific extensions.
