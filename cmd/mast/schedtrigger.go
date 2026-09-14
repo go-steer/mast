@@ -25,7 +25,6 @@ import (
 
 	"google.golang.org/genai"
 
-	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/pkg/auth"
@@ -468,13 +467,13 @@ func (t *scheduledTrigger) persist(ctx context.Context, lastFire time.Time, fire
 // does not reach runTurnPre at all. "Notify only on change" that woke
 // the model on every tick and then declined to post would be the
 // feature in name and none of the saving.
-func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *transcript.Store, meters *meterPool, wds *watchdogPool, obs *observability.Registry, tracker *turnTracker, turnLocks *sessionTurnLocks, workloadName string, bundle *workload.Bundle, collector *monitorCollector, nf *notifier, ensure func(string)) func(context.Context, time.Time) error {
+func newScheduledFireCallback(d turnDeps, bundle *workload.Bundle, collector *monitorCollector, nf *notifier, ensure func(string)) func(context.Context, time.Time) error {
 	var prompt string
 	if bundle != nil && bundle.EdgeTrigger.Scheduled != nil {
 		prompt = bundle.EdgeTrigger.Scheduled.Prompt
 	}
 	return func(fireCtx context.Context, tick time.Time) error {
-		sessionID := scheduledSessionID(workloadName, tick)
+		sessionID := scheduledSessionID(d.workloadName, tick)
 		if transcript.IsReservedSessionID(sessionID) {
 			// Only reachable through a workload name ending in the
 			// reserved ops-row suffix. Refusing here keeps the rule that
@@ -520,7 +519,7 @@ func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *tran
 		}
 		body, err := json.Marshal(scheduledPayload{
 			Kind:        "scheduled",
-			Workload:    workloadName,
+			Workload:    d.workloadName,
 			Tick:        tick.UTC().Format(time.RFC3339),
 			Collected:   facts.Collected,
 			Transitions: facts.Transitions,
@@ -548,8 +547,8 @@ func newScheduledFireCallback(r *runner.Runner, logger *slog.Logger, store *tran
 		if speech.speaks() {
 			onEvent = cap.onEvent
 		}
-		if err := runTurnPre(ctx, r, logger, store, meters, wds, obs, tracker, turnLocks,
-			workloadName, sessionID, msg, "scheduled:"+tick.UTC().Format(time.RFC3339), nil, onEvent); err != nil {
+		if err := runTurnPre(ctx, d, sessionID, msg,
+			"scheduled:"+tick.UTC().Format(time.RFC3339), nil, onEvent); err != nil {
 			nf.cycleFailed(ctx, tick, err)
 			return err
 		}

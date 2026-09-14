@@ -46,13 +46,11 @@ import (
 
 	"log/slog"
 
-	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/mast/pkg/agui"
 	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/serverauth"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
@@ -63,19 +61,12 @@ import (
 // synchronously and its terminal disposition rides the SSE stream, so there is
 // no out-of-band task-state read to reconcile.
 type aguiBackend struct {
-	store        *transcript.Store
-	obs          *observability.Registry
-	tracker      *turnTracker
-	logger       *slog.Logger
-	workloadName string
-
 	// Turn-execution seams — the same objects the inject/attach/resume/a2a
-	// paths thread into runTurnPre.
-	r         *runner.Runner
-	meters    *meterPool
-	wds       *watchdogPool
-	turnLocks *sessionTurnLocks
-	bundle    *workload.Bundle
+	// paths thread into runTurnPre, shared as turnDeps (#293) rather than
+	// re-declared here. Embedded, so b.store / b.logger / b.obs read
+	// unchanged.
+	turnDeps
+	bundle *workload.Bundle
 }
 
 // aguiSessionPrefix namespaces every AG-UI-derived session id. Like the
@@ -204,8 +195,7 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 	}
 
 	em := &aguiEmitter{emit: emit}
-	err := runTurnPre(ctx, b.r, b.logger, b.store, b.meters, b.wds, b.obs, b.tracker, b.turnLocks,
-		b.workloadName, sessionID, msg, label, nil, em.onEvent)
+	err := runTurnPre(ctx, b.turnDeps, sessionID, msg, label, nil, em.onEvent)
 
 	return b.classifyRun(ctx, sessionID, em, err)
 }

@@ -70,6 +70,69 @@ against it explicitly rather than assuming the next batch will sweep it up.
 
 ---
 
+## Shared conventions
+
+Every verdict above is about a commit. This section is the other half of sync discipline: a
+*shape* both repos hold, where the agreement is the deliverable and no code crosses between them.
+Entries are dated and say explicitly what ports and what does not — "we agreed on a convention"
+is the kind of sentence that reads as settled and enforces nothing.
+
+### Options structs on entry-point signatures — agreed 2026-09-14
+
+mast [#293](https://github.com/go-steer/mast/issues/293); the upstream counterpart is core-agent
+[#685](https://github.com/go-steer/core-agent/issues/685), open since 2026-08-13.
+
+**The convention.** A `cmd/` entry point groups its flag-derived arguments into small
+single-purpose structs named for the concern they carry — `attachOpts`, `listenOpts`,
+`sessionOpts` — instead of taking one positional parameter per flag. A new flag extends the struct
+it belongs to; if it belongs to none of them, that is the moment to name a new concern rather than
+to append to the list.
+
+**What was measured**, 2026-09-14, against core-agent `dba904a` and mast `5b60c67`:
+
+| | core-agent `run()` | mast `serve()` before | mast `serve()` after |
+|---|---|---|---|
+| parameters | 43 | 16 | 8 |
+| longest run of adjacent same-typed parameters | 7 `string` | 11 `string` | 1 |
+| options structs in the signature | 8 | 0 | 5 |
+
+**The convention ports; the structs deliberately do not.** The two signatures have exactly **one**
+parameter name in common — `sessionDB`, which is a `bool` upstream (paired with a separate
+`sessionDBPath`) and a path `string` here (paired with `sessionDrv`, because mast also speaks
+Postgres). The other concepts that overlap are the same way round: upstream carries `noMCPDigest`,
+mast carries `mcpDigest`; upstream `modelOverride` may be empty, mast's `modelName` is always
+populated by the time `serve` sees it. A shared struct would have to be wrong in one repo to be
+right in the other. This is why #293 could land in mast without waiting for a matching upstream
+commit, and why the acceptance criterion it was filed under — "matching commit in core-agent" —
+is discharged by the agreement and the measurement, not by a port.
+
+**The finding that made the guard test non-optional.** core-agent has held this convention for at
+least as long as #685 has been open — six of these structs were already in `run()`'s signature at
+`4ac5efb` — and nothing enforces it. Between `4ac5efb` (2026-08-13, the commit
+#685 measured) and `dba904a` (2026-09-14), `run()` went **39 → 43** parameters *while that issue
+was open*: five arrived, one left. Two of the five arrived grouped (`checkpointCfg
+checkpointOpts`, whose arrival retired the loose `noCheckpoint bool` that left, and `subagentCfg
+subagentOpts`), and three arrived loose (`agentsDirFlag string`, `noPromptCache bool`,
+`promptCacheTTL string`). So the convention wins roughly two flags in five and the list still
+grows net positive. That is [#300](https://github.com/go-steer/mast/issues/300)'s lesson in a
+second repo: a convention nothing measures is not a convention.
+
+mast's side of the agreement therefore ships with a mechanism, not just a refactor —
+`cmd/mast/paramgroup_test.go` reads the package with `go/ast` and fails if a named entry point
+grows past its recorded parameter count, if it declares two adjacent same-typed parameters, or if
+*any* non-test free function in `package main` passes nine. It is offered upstream on #685 rather
+than ported: core-agent's own ceilings are different numbers, and its `funlen`/`gocognit` ratchet
+(#662) already occupies the neighbouring job.
+
+**What is not covered.** The adjacency rule is scoped to the six named functions, not applied
+package-wide, because 18 non-test free functions in `cmd/mast` declare some pair of adjacent
+same-typed parameters today (27 counting test helpers). A blanket version forbids idiomatic
+`func(a, b string)` and would red the tree on arrival; it would also have turned #293 into a
+package-wide sweep. The nine-parameter cap is the only thing covering the other ~110 non-test
+free functions, and it catches nothing today by design — revisit when it first does.
+
+---
+
 ## Triage of 2026-08-17
 
 Against core-agent `origin/main` @ `ee3d6ec`. 48 upstream commits across 53 of mast's 182 ported

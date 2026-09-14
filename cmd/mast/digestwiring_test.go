@@ -103,8 +103,9 @@ func catalogNames(t *testing.T, b rootBuild) []string {
 // echo this test would pass with the wiring removed.
 func TestBuildRootPublishesRetrieveRawWhenDigestingIsOn(t *testing.T) {
 	built, err := buildRoot(context.Background(), discardLogger(),
-		mastagent.NewToolActorModel("toolactor"), "", "toolactor",
-		digestableWorkload(t), nil, workload.DispatchCoordinator,
+		mastagent.NewToolActorModel("toolactor"),
+		modelOpts{name: "toolactor"},
+		workloadOpts{arg: digestableWorkload(t), dispatch: workload.DispatchCoordinator}, nil,
 		hostSeams{digest: newDigestOptions(discardLogger(), true)})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
@@ -119,8 +120,9 @@ func TestBuildRootPublishesRetrieveRawWhenDigestingIsOn(t *testing.T) {
 // (the v0.3 tool_catalog finding).
 func TestBuildRootOmitsRetrieveRawWhenDigestingIsOff(t *testing.T) {
 	built, err := buildRoot(context.Background(), discardLogger(),
-		mastagent.NewToolActorModel("toolactor"), "", "toolactor",
-		digestableWorkload(t), nil, workload.DispatchCoordinator,
+		mastagent.NewToolActorModel("toolactor"),
+		modelOpts{name: "toolactor"},
+		workloadOpts{arg: digestableWorkload(t), dispatch: workload.DispatchCoordinator}, nil,
 		hostSeams{digest: newDigestOptions(discardLogger(), false)})
 	if err != nil {
 		t.Fatalf("buildRoot: %v", err)
