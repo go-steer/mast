@@ -905,8 +905,31 @@ loading](https://github.com/go-steer/mast/issues/349), and the second of the
 two exported-API leaks that writing down the v1.0 promise turned up
 [closes](https://github.com/go-steer/mast/issues/338).
 
-- **The last two parity rows** are switchboard's: in-chat Approve/Reject, and
-  an approver allowlist.
+Also in v0.9: **the parity scoreboard was re-measured rather than re-asserted**,
+and it had one row attributed to the wrong repo. The board reads **18 of 19**.
+The **approver allowlist** is green — switchboard shipped it on 2026-09-03, and
+it is stricter than the env var it was matched against: the list is per channel,
+the "anyone here may answer" posture is a value somebody wrote rather than an
+empty setting, and a list that would match nobody is refused at startup instead
+of discovered from a thread.
+
+**In-chat Approve/Reject is the last red row, and it is mast's, not
+switchboard's.** switchboard wrote its half too; it answers a mast daemon at
+`POST /sessions/<app>/<id>/perms/respond`, and **mast returns 501 there**. That
+is not a bug in the sense of something broken by accident: the whole `/perms`
+family is a synchronous ask-the-human-at-the-keyboard surface that mast
+inherited with a ported package, and mast builds its write gate with no
+prompter on purpose, because the premise of the product is that nobody is
+watching. mast is honest about it on the wire — the capability report says
+`perms_stream: false` — so a client reading capabilities never tries. What
+this means for you: **approving a parked mutation from a chat button does not
+work today**, and the path that will make it work is mast's durable approval
+park being visible to a gateway, not this route being revived. Tracked as
+[#364](https://github.com/go-steer/mast/issues/364) (what mast does with the
+dead surface) over [#313](https://github.com/go-steer/mast/issues/313) (a
+parked session still reports itself idle, so a gateway cannot tell there is a
+question to render). Approvals continue to work as they always have: `mast
+sessions` plus an authenticated `POST /resume`.
 
 ## Further out
 

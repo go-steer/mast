@@ -592,11 +592,30 @@ classification and switchboard's ingress rather than growing either
 here. Two things around them stay out on purpose. An **ack window** is
 deferred permanently rather than to a version, because the expiry
 belongs to the producer and a clock kept here would be a second
-suppression state to disagree with. The **in-chat Approve/Reject
-surface** and its approver allowlist are switchboard's to write, not
-mast's — the last two parity rows; mast's side is a wire-contract test
-that the resume shape and `X-Asserted-Caller` do not move underneath
-them.
+suppression state to disagree with. The **approver allowlist** was
+switchboard's to write and it wrote it (parity row 17, green
+2026-09-03): a press is refused against a per-channel list of asserted
+callers before the prompt is even located.
+
+The **in-chat Approve/Reject surface** was recorded here as
+switchboard's too, and that was wrong — corrected 2026-09-14 while
+closing [#242](https://github.com/go-steer/mast/issues/242).
+switchboard shipped its half; it answers `POST
+/sessions/<app>/<sid>/perms/respond`, and on a mast daemon that route
+is a **501**. Every `/perms` route in `pkg/attach` gates on a
+capability no type in this module implements outside a test, because
+`internal/compose` builds the write gate with no `Prompter` — there is
+no human on stdin in an unattended daemon, so the synchronous prompt
+path is never reached. That is the right posture and it is not a
+defect; what is a defect is the corpus counting the resulting red row
+against a sibling repo. mast's approval model is the durable
+write-gate park, and making *that* answerable from a thread is
+switchboard's #84 over mast's
+[#313](https://github.com/go-steer/mast/issues/313). What mast does
+with the dead `/perms` fork it inherited is
+[#364](https://github.com/go-steer/mast/issues/364). mast's existing
+side is a wire-contract test that the resume shape and
+`X-Asserted-Caller` do not move underneath either of them.
 
 Settled rather than deferred, as of 2026-08-31: **the write gate does
 not reach inside a planner dispatch, and will not** — the combination
