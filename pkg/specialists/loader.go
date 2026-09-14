@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,57 +37,75 @@ import (
 // says what they are, and editors highlight them correctly (#292).
 const Extension = ".specialist.md"
 
-// LegacyExtension is what specialist files were called through v0.8.
-// Still loaded, with a deprecation warning, for one release: an
-// out-of-tree bundle is exactly the thing this project tells people to
-// write, so the rename cannot be a flag day. Removal is #349 on the
-// v0.9 milestone rather than a promise in this comment, so it can go
-// stale visibly.
-const LegacyExtension = ".tmpl"
+// legacyExtension is what specialist files were called through v0.8.
+// It no longer loads (#349, the removal #292 scheduled): the name is
+// kept only so a roster that still uses it is refused by name rather
+// than skipped in silence — see LoadDir.
+//
+// Deliberately unexported, and deliberately permanent. Unexported
+// because nothing outside this package has a reason to branch on a
+// spelling that no longer works; permanent because every bundle ever
+// written before v0.9 carries it, and there is no date after which
+// naming the old extension in the error becomes wrong.
+const legacyExtension = ".tmpl"
 
-// specialistName splits a specialist filename into its stem and which
-// extension it used. ok is false for a file that is neither.
-func specialistName(base string) (stem string, legacy, ok bool) {
-	switch {
-	case strings.HasSuffix(base, Extension):
-		return strings.TrimSuffix(base, Extension), false, true
-	case strings.HasSuffix(base, LegacyExtension):
-		return strings.TrimSuffix(base, LegacyExtension), true, true
+// specialistName splits a specialist filename into its stem. ok is
+// false for a file that is not a specialist.
+func specialistName(base string) (stem string, ok bool) {
+	if strings.HasSuffix(base, Extension) {
+		return strings.TrimSuffix(base, Extension), true
 	}
-	return base, false, false
+	return base, false
 }
 
 // LoadDir reads every specialist file in dir non-recursively and parses
-// each into a Spec. Both Extension and LegacyExtension are accepted.
-// Results are returned sorted by Spec.Name for deterministic ordering.
+// each into a Spec. Results are returned sorted by Spec.Name for
+// deterministic ordering.
 //
-// A stem defined under both extensions is refused. During the rename
-// the realistic mistake is a copy left behind, and the two files are
-// the same specialist under any reading — so which one wins would be an
-// alphabetical accident, and the stale half would keep running.
+// A file under the removed .tmpl extension fails the whole directory,
+// and does so before any other file is parsed. Two choices are encoded
+// there. Refusing rather than skipping, because an unrecognised file is
+// an *absent* specialist: a bundle that names it fails later with
+// "references specialist %q not found in %s" while the file sits in
+// that directory, and a bundle that does not name it loses a specialist
+// with nothing said at all — the silent-downgrade shape this loader
+// exists to avoid. And refusing first, because for an operator carrying
+// a pre-v0.9 roster this is the diagnostic that explains the upgrade;
+// letting a malformed sibling win the race would hand them an error
+// about frontmatter instead.
 func LoadDir(dir string) ([]Spec, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("specialists: read dir %q: %w", dir, err)
 	}
+	var legacy []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), legacyExtension) {
+			legacy = append(legacy, e.Name())
+		}
+	}
+	if len(legacy) > 0 {
+		sort.Strings(legacy)
+		return nil, fmt.Errorf(
+			"specialists: %d file(s) in %s use the %s extension, which loaded with a warning in v0.8 and was removed in v0.9: %s\n"+
+				"\trename each to <name>%s — the stem is the specialist name your workload.yaml already lists, so renaming the files is the whole migration\n"+
+				"\tsee https://github.com/go-steer/mast/issues/292",
+			len(legacy), dir, legacyExtension, strings.Join(legacy, ", "), Extension)
+	}
+	// No stem-collision check: with one extension the stem is the
+	// filename minus a fixed suffix, so two entries in one directory
+	// cannot produce the same stem. The check that used to live here
+	// existed only because .tmpl and .specialist.md could name the same
+	// specialist twice, and that pair is now the refusal above.
 	var specs []Spec
-	seen := map[string]string{} // stem -> filename it was first seen as
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		stem, _, ok := specialistName(e.Name())
-		if !ok {
+		if _, ok := specialistName(e.Name()); !ok {
 			continue
 		}
-		if prev, dup := seen[stem]; dup {
-			return nil, fmt.Errorf(
-				"specialists: %q in %s is defined by both %s and %s — these are the same specialist under two extensions; delete the %s one (%s is deprecated, see #292)",
-				stem, dir, prev, e.Name(), LegacyExtension, LegacyExtension)
-		}
-		seen[stem] = e.Name()
-		path := filepath.Join(dir, e.Name())
-		spec, err := LoadFile(path)
+		spec, err := LoadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -96,33 +113,6 @@ func LoadDir(dir string) ([]Spec, error) {
 	}
 	sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
 	return specs, nil
-}
-
-// WarnLegacyExtension logs one deprecation warning naming every spec
-// still loaded from a LegacyExtension file, and nothing when there are
-// none. It lives here so both callers with a logger — pkg/config's
-// root load and cmd/mast's path mode — say the same thing; LoadDir
-// itself stays log-free so an embedder decides where this goes.
-func WarnLegacyExtension(logger *slog.Logger, specs []Spec) {
-	if logger == nil {
-		return
-	}
-	var stale []string
-	for _, s := range specs {
-		if s.LegacyExtension {
-			stale = append(stale, filepath.Base(s.Filename))
-		}
-	}
-	if len(stale) == 0 {
-		return
-	}
-	sort.Strings(stale)
-	logger.Warn("specialist files still use the deprecated "+LegacyExtension+" extension",
-		"files", strings.Join(stale, ", "),
-		"count", len(stale),
-		"rename_to", "<name>"+Extension,
-		"accepted_through", "v0.8",
-		"issue", "https://github.com/go-steer/mast/issues/292")
 }
 
 // LoadFile reads and parses a single specialist file.
@@ -142,7 +132,7 @@ func LoadFile(path string) (Spec, error) {
 	if err := checkPlaceholders(path, body); err != nil {
 		return Spec{}, err
 	}
-	stem, legacy, _ := specialistName(filepath.Base(path))
+	stem, _ := specialistName(filepath.Base(path))
 	name := fm.Name
 	if name == "" {
 		name = stem
@@ -216,7 +206,6 @@ func LoadFile(path string) (Spec, error) {
 	}
 	return Spec{
 		Filename:         path,
-		LegacyExtension:  legacy,
 		Name:             name,
 		Description:      fm.Description,
 		Mode:             mode,

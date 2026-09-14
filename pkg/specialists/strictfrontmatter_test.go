@@ -130,18 +130,19 @@ func TestShippedSpecialistsStillLoad(t *testing.T) {
 	}
 }
 
-// TestNoLegacyExtensionInTree pins the rename itself. LegacyExtension
-// still loads for one release, which is exactly why nothing in this
-// tree may keep using it: a shipped example on the deprecated spelling
-// is the thing people copy, and it would keep the extension alive past
-// its removal by way of everyone's bundles rather than ours.
+// TestNoLegacyExtensionInTree pins the rename itself. It guarded the
+// deprecation window (a shipped example on the old spelling is the
+// thing people copy, which would have kept the extension alive by way
+// of everyone's bundles rather than ours) and it outlives it: since
+// #349 a stray .tmpl is not a deprecated file, it is a file that fails
+// its own directory's load.
 func TestNoLegacyExtensionInTree(t *testing.T) {
 	var stray []string
 	err := filepath.Walk("../..", func(p string, fi os.FileInfo, err error) error {
 		if err != nil || fi.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(p, LegacyExtension) {
+		if strings.HasSuffix(p, legacyExtension) {
 			stray = append(stray, p)
 		}
 		return nil
@@ -150,7 +151,7 @@ func TestNoLegacyExtensionInTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(stray) > 0 {
-		t.Errorf("%d file(s) still use the deprecated %s extension, rename to %s: %v",
-			len(stray), LegacyExtension, Extension, stray)
+		t.Errorf("%d file(s) use the removed %s extension, rename to %s: %v",
+			len(stray), legacyExtension, Extension, stray)
 	}
 }

@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- **Breaking: `.tmpl` specialist files no longer load.** v0.8.0 renamed them to
+  `<name>.specialist.md` and accepted the old extension for one release with a
+  startup warning; that window is now closed
+  ([#349](https://github.com/go-steer/mast/issues/349), the removal
+  [#292](https://github.com/go-steer/mast/issues/292) scheduled). This is a
+  breaking change to a **file convention**, not to an API: no Go signature you
+  call changed, and a bundle that renamed its files in v0.8 needs nothing.
+
+  A directory holding one fails to load, naming every offending file:
+
+  ```
+  specialists: 2 file(s) in .agents/specialists use the .tmpl extension,
+  which loaded with a warning in v0.8 and was removed in v0.9:
+  Evicted.tmpl, OOMKilled.tmpl
+  	rename each to <name>.specialist.md — the stem is the specialist name
+  	your workload.yaml already lists, so renaming the files is the whole
+  	migration
+  	see https://github.com/go-steer/mast/issues/292
+  ```
+
+  Migration is the same one-liner as in v0.8; nothing inside the files
+  changes, and the specialist name is the stem either way:
+
+  ```sh
+  cd .agents/specialists
+  for f in *.tmpl; do mv "$f" "${f%.tmpl}.specialist.md"; done
+  ```
+
+  **The file is refused rather than ignored, deliberately.** mast's loader
+  skips what it does not recognise, so simply dropping the extension would
+  have made a `.tmpl` an *absent* specialist instead of a rejected one. The
+  error you would get is `references specialist "OOMKilled" not found in
+  .agents/specialists` — about a missing file, for a file sitting in that
+  directory, spelled correctly — and a specialist your `workload.yaml` does
+  not name by hand would have disappeared from the roster with nothing said at
+  all. If you are upgrading v0.7 → v0.9 directly you never saw the v0.8
+  warning; this message is what you get instead.
+
+  Also removed, and breaking for an embedder that used them:
+  `specialists.LegacyExtension`, `specialists.WarnLegacyExtension` and the
+  `Spec.LegacyExtension` field. All three existed only to let a caller place
+  the deprecation warning; there is no warning to place. `pkg/specialists` is
+  one of the six packages the v1.0 freeze covers
+  ([#300](https://github.com/go-steer/mast/issues/300)), which is why this
+  removal is happening now rather than after it.
+
 - **Anthropic cache writes are billed at their own rate, and a long-running
   session's reported cost goes up.** mast reads token counts through Google
   GenAI's usage record, which has a cache-*read* bucket and no cache-*write*

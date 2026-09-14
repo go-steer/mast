@@ -15,8 +15,8 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -368,25 +368,35 @@ func TestA2AInvalidConfigFatal(t *testing.T) {
 	}
 }
 
-// TestLoadRootWarnsOnLegacySpecialistExtension pins the operator-facing
-// half of #292 at the level an operator actually reads. pkg/specialists
-// records the fact on the Spec and stays log-free; if nothing here
-// turns that into a line in the log, the deprecation window is a
-// window nobody is told about, and the removal lands as a surprise.
-func TestLoadRootWarnsOnLegacySpecialistExtension(t *testing.T) {
+// TestLoadRootRefusesALegacySpecialistExtension is the removal half of
+// #292, filed as #349, pinned at the level an operator actually hits.
+// The v0.8 version of this test asserted a WARN; the point of the
+// change is that a WARN was never a control (#302), and the file has to
+// stop the load.
+//
+// The specific failure guarded here is the one a skip would produce.
+// This root's workload references `classifier`, so if LoadDir quietly
+// ignored classifier.tmpl the operator's error would come from
+// cross-file validation two steps later — "references specialist
+// %q not found in %s" — about a file that is sitting in that exact
+// directory, spelled correctly, with the wrong suffix. That error sends
+// someone looking for a missing file. This one tells them to rename it.
+func TestLoadRootRefusesALegacySpecialistExtension(t *testing.T) {
 	root := tempDir(t)
 	writeSpecialist(t, mkdir(t, filepath.Join(root, "specialists")), "classifier.tmpl", "")
 	writeWorkload(t, mkdir(t, filepath.Join(root, "workloads")), "t.yaml", "t", "classifier")
 
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	if _, err := LoadRoot(Root{Dir: root, Source: SourceProject}, logger); err != nil {
-		t.Fatalf("LoadRoot: %v", err)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	_, err := LoadRoot(Root{Dir: root, Source: SourceProject}, logger)
+	if err == nil {
+		t.Fatal("LoadRoot accepted a root whose specialist still uses .tmpl")
 	}
-	got := buf.String()
 	for _, want := range []string{"classifier.tmpl", ".specialist.md", "issues/292"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("root load did not warn about %q: %s", want, got)
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q: %v", want, err)
 		}
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("the load reported a missing specialist rather than a renamed one: %v", err)
 	}
 }

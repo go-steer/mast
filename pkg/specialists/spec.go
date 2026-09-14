@@ -21,8 +21,9 @@
 // exactly one package in this module (pkg/planner) and reads none of
 // these. The files carried a `.tmpl` extension through v0.8, which
 // invited exactly that misreading — a `{{ ... }}` in one is refused at
-// load rather than interpolated (#272). `.tmpl` still loads with a
-// deprecation warning; see Extension and LegacyExtension (#292).
+// load rather than interpolated (#272). Since v0.9 a `.tmpl` file does
+// not load at all: LoadDir refuses the directory and names the rename
+// (#292, #349).
 //
 // Schema follows docs/specialists-design.md. This package implements
 // the spike subset (name, description, mode, instruction, model
@@ -218,12 +219,6 @@ type Spec struct {
 	// Filename is the path (or filename) the spec was loaded from,
 	// preserved for diagnostics.
 	Filename string
-
-	// LegacyExtension is true when Filename ends in the deprecated
-	// LegacyExtension rather than Extension. Reported rather than
-	// refused for one release; WarnLegacyExtension turns it into an
-	// operator-facing warning where a logger exists (#292).
-	LegacyExtension bool
 
 	// Frontmatter fields, promoted for convenience.
 	Name        string

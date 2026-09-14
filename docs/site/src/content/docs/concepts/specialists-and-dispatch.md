@@ -81,20 +81,31 @@ Five of those lines are worth understanding as concepts rather than fields:
 Exact semantics and every field: [workload bundle
 reference](/reference/workload-bundle/).
 
-### The extension changed in v0.8
+### The extension changed in v0.8, and `.tmpl` stopped loading in v0.9
 
 These files were called `<name>.tmpl` through v0.7.0. They were never Go
 templates — `text/template` is imported by one package in mast, for the
 planner's instruction, and it reads none of them — and the name invited
 authors to write substitutions that would never fire.
 
-`.tmpl` still loads. mast warns at startup, naming each file:
+:::caution[`.tmpl` no longer loads]
+v0.8 accepted it with a startup warning. **v0.9 refuses it**
+([#349](https://github.com/go-steer/mast/issues/349)): a directory holding
+one fails to load, and mast names every file and the rename.
 
 ```
-WARN specialist files still use the deprecated .tmpl extension
-     files="OOMKilled.tmpl, Evicted.tmpl" count=2
-     rename_to=<name>.specialist.md accepted_through=v0.8
+specialists: 2 file(s) in .agents/specialists use the .tmpl extension,
+which loaded with a warning in v0.8 and was removed in v0.9:
+Evicted.tmpl, OOMKilled.tmpl
+	rename each to <name>.specialist.md — the stem is the specialist name
+	your workload.yaml already lists, so renaming the files is the whole
+	migration
+	see https://github.com/go-steer/mast/issues/292
 ```
+
+If you are coming from v0.7 you never saw the warning, because it only
+ever existed in v0.8. This is the message instead.
+:::
 
 To migrate, rename; nothing inside the files changes, and the specialist
 name is the stem either way:
@@ -104,10 +115,18 @@ cd .agents/specialists
 for f in *.tmpl; do mv "$f" "${f%.tmpl}.specialist.md"; done
 ```
 
-Do not leave the old copy behind — one specialist under both extensions is
-a load error, because which one wins would be an alphabetical accident and
-the stale one is usually the `.tmpl`. Support is removed in v0.9
-([#349](https://github.com/go-steer/mast/issues/349)).
+Do not leave the old copy behind. One specialist under both extensions
+still fails the load — now because the `.tmpl` half is refused outright,
+which is a better answer to the same mistake: through v0.8 both loaded and
+picking one would have been an alphabetical accident, with the stale copy
+usually winning.
+
+mast refuses these files rather than ignoring them on purpose. An ignored
+file is an *absent* specialist, so the error you would get instead is
+`references specialist "OOMKilled" not found in .agents/specialists` — for
+a file sitting in that directory, spelled correctly, with the wrong
+suffix. And a specialist your `workload.yaml` does not name by hand would
+simply disappear from the roster with nothing said at all.
 
 ### A key mast does not recognise is refused
 
