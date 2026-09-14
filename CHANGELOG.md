@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **An out-of-process caller can now read the change it is being asked to
+  approve.** `GET /parks` lists every parked session, oldest question first;
+  `GET /parks/{session}` answers for one session whether it is parked or not
+  ([#314](https://github.com/go-steer/mast/issues/314)). Both are on the
+  inject listener, authenticated exactly like `POST /resume`, and both need
+  `--session-db`. `POST /resume` has been able to *answer* a parked approval
+  since v0.2; nothing outside the process could find out what it was
+  answering, which reduces every chat or web approval to "approve the thing,
+  whatever it is" — uninformed consent with an audit trail, which is worse
+  than the CLI it replaces because it looks like the opposite. An approval
+  park now carries the tool, the arguments, the rendered key, the gate policy
+  that parked it, the proposing specialist, the verdict format the gate will
+  accept, a staleness line when a grant no longer covers the call, and the
+  change set the call belongs to. Alongside them: an operator hold if one is
+  active, reported beside the parks and never as one, and the calls that
+  already ran with a revert the gate captured (#296) — the first time
+  anything outside the process could read one.
+
+  **What the projection leaves behind is as much of the contract as what it
+  carries**: no model output, no tool results — including the result of the
+  read that produced a capture, where only the read's name, its digest and
+  the declared field names travel, because the values are live cluster state
+  and this body goes to chat relays — and nothing the write gate did not park
+  on. `pkg/inject` declares the JSON shape and imports neither
+  `pkg/transcript` nor `pkg/approval`, so `cmd/mast/parks.go` is the single
+  place both vocabularies are in scope and a field added to the transcript
+  cannot reach a client without a line someone wrote. Two answers are
+  deliberately distinguishable: a session that exists and is not parked is
+  200 with an empty list, and a daemon with no session store is 404 rather
+  than an empty list — "nothing to approve" and "I cannot see parks" are
+  different answers and only one of them means it is safe to stop looking.
+
 - **A session waiting on a human now says so on the wire.** The attach
   `turn_state` reports `awaiting_permission` when the write gate has parked a
   mutating call and `awaiting_elicit` when the session asked a question

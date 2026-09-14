@@ -377,6 +377,12 @@ type Config struct {
 	// StopHandler is called for each valid stop POST. Optional.
 	StopHandler StopHandler
 
+	// ParksHandler answers GET /parks and GET /parks/{session} — the
+	// only read on this server. Optional; nil leaves both routes
+	// answering 404. See parks.go for the projection it returns and,
+	// more importantly, for what that projection deliberately omits.
+	ParksHandler ParksHandler
+
 	// Logger is the structured logger. Defaults to slog.Default().
 	Logger *slog.Logger
 
@@ -425,6 +431,8 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("POST /pause", s.handlePause)
 	mux.HandleFunc("POST /extend-token", s.handleExtendToken)
 	mux.HandleFunc("POST /stop", s.handleStop)
+	mux.HandleFunc("GET /parks", s.handleParks)
+	mux.HandleFunc("GET /parks/{session}", s.handleParks)
 	if cfg.Metrics != nil {
 		mux.Handle("GET /metrics", cfg.Metrics)
 	}
@@ -466,6 +474,39 @@ var routes = []route{
 	{"POST", "/pause"},
 	{"POST", "/extend-token"},
 	{"POST", "/stop"},
+	{"GET", "/parks"},
+	{"GET", "/parks/{session}"},
+}
+
+// routeMatches reports whether path is served by the route pattern,
+// treating a `{name}` segment as a single-segment wildcard the way
+// http.ServeMux does.
+//
+// handleRoot needs this because a wrong-method request never reaches
+// the mux pattern that would have served it: `/` claims the path, so
+// the 405 has to be reconstructed here. Comparing patterns literally
+// would have made POST /parks/abc a 404 that lists `GET
+// /parks/{session}` two lines below the complaint.
+func routeMatches(pattern, path string) bool {
+	if pattern == path {
+		return true
+	}
+	p, q := strings.Split(pattern, "/"), strings.Split(path, "/")
+	if len(p) != len(q) {
+		return false
+	}
+	for i := range p {
+		if strings.HasPrefix(p[i], "{") && strings.HasSuffix(p[i], "}") {
+			if q[i] == "" {
+				return false
+			}
+			continue
+		}
+		if p[i] != q[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // routeList is routes plus /metrics when the server was given a
@@ -506,7 +547,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, rt := range s.routeList() {
-		if rt.path == r.URL.Path {
+		if routeMatches(rt.path, r.URL.Path) {
 			w.Header().Set("Allow", rt.method)
 			http.Error(w, fmt.Sprintf("mast inject server: %s takes %s, not %s", rt.path, rt.method, r.Method), http.StatusMethodNotAllowed)
 			return

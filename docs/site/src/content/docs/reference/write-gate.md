@@ -114,6 +114,14 @@ can be killed between asking it and hearing the answer; the pause is
 still there when the next process starts, with the same interrupt id, and
 the call runs exactly once when it is finally approved.
 
+Over HTTP, `GET /parks/{session}` answers the same question to a caller
+that is not on the daemon's machine, and `GET /parks` lists every session
+waiting on somebody, oldest first — the change, its arguments, the change
+set it belongs to, and the verdict format the gate will accept. That is
+what a chat or web Approve button has to read before it can honestly claim
+the operator approved anything in particular; see [interop](/concepts/interop/#reading-what-is-parked)
+for the shape and for what the projection deliberately leaves behind.
+
 ## The verdict
 
 Answer it over `POST /resume`, the same endpoint every other interrupt
