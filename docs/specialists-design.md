@@ -31,7 +31,7 @@ Mast extends that pattern with a richer per-specialist config (budget, tool allo
 
 One file per specialist. Filename (without `.specialist.md`) becomes the default name. Each file is YAML frontmatter followed by the specialist's system prompt.
 
-### The extension (renamed 2026-09-11, closing [#292](https://github.com/go-steer/mast/issues/292))
+### The extension (renamed 2026-09-11 closing [#292](https://github.com/go-steer/mast/issues/292); `.tmpl` removed 2026-09-14 closing [#349](https://github.com/go-steer/mast/issues/349))
 
 These files carried a `.tmpl` extension from the fork through v0.7.0, inherited from the gke-agent prototype above. **They are not Go templates and never were.** `text/template` is imported by exactly one package in the module — `pkg/planner`, for the planner instruction — and it reads none of them. Nothing substitutes into a specialist file; the body reaches the agent verbatim as its system prompt.
 
@@ -39,9 +39,19 @@ The extension was not merely inaccurate, it was actively misleading in a way tha
 
 `.specialist.md` keeps the reality visible. These began life as core-agent skills, and the frontmatter is an *improvement over* prose rather than a rejection of it — the body is still the larger half of the file, and it is Markdown. Editors highlight it correctly. `.specialist.yaml` was considered and rejected for the same reason: accurate about the frontmatter, wrong about the body. `.spec.md` is shorter and collides with "spec" in the test sense.
 
-**Compatibility.** `.tmpl` still loads, and every spec loaded from one raises a deprecation warning naming the files (`pkg/specialists.WarnLegacyExtension`, called from `pkg/config`'s root load and from `cmd/mast`'s path mode, which bypasses `pkg/config` entirely). An out-of-tree bundle is exactly the thing this project tells people to write, so the rename is not a flag day. Support is removed the release after; that removal is [#349](https://github.com/go-steer/mast/issues/349) on the v0.9 milestone rather than a promise in a comment, so it can go stale visibly.
+**The compatibility window was one release, and it is closed.** v0.8 loaded `.tmpl` and raised a deprecation warning naming the files, from `pkg/config`'s root load and from `cmd/mast`'s path mode (path mode bypasses `pkg/config` entirely, and is the shape an out-of-tree bundle author is most likely running). An out-of-tree bundle is exactly the thing this project tells people to write, so the rename was not a flag day. v0.9 removes it, on the schedule the issue recorded rather than on a comment's promise.
 
-**One stem under both extensions is a load error.** The realistic mistake mid-rename is a copy left behind, and the stale half is usually the `.tmpl`. Picking a winner would be an alphabetical accident, and picking the stale one means edits to the renamed file quietly do nothing.
+**A `.tmpl` file is refused, not skipped, and that is the substance of the removal.** Deleting the extension branch from `specialistName` would have been the whole change, and it would have been wrong: `LoadDir` skips what it does not recognise, so a `.tmpl` becomes an *absent* specialist rather than a rejected one. Measured on `pkg/config`, the operator's error then reads
+
+```
+config: workload "t" (.../workloads/t.yaml) references specialist "classifier" not found in .../specialists
+```
+
+— about a missing file, for a file sitting in that directory, spelled correctly, with the wrong suffix. Worse, a roster the bundle does *not* enumerate loses a specialist with nothing said at all: the silent downgrade [#302](https://github.com/go-steer/mast/issues/302) rejected for unknown bundle keys, and the same shape as the `items:` projection defect in [`./v0.3-plan.md`](./v0.3-plan.md) §W1.3. So `LoadDir` fails the directory, names every offending file, and gives the rename. The `.tmpl` constant survives for that message alone — unexported now, because nothing outside the package has a reason to branch on a spelling that no longer works, and permanent, because every bundle written before v0.9 carries it and there is no date after which naming it in the error becomes wrong.
+
+The refusal runs as its own pass **before** any file is parsed. Mid-migration a roster plausibly holds both a leftover `.tmpl` and a file someone was editing when the boot failed, and if a frontmatter error won that race the operator fixes the frontmatter, boots again, and only then learns about the rename.
+
+**One stem under both extensions** — the leftover-copy mistake — is now covered by that refusal rather than by a separate check. Through v0.8 both files loaded and picking a winner would have been an alphabetical accident, with the stale `.tmpl` usually the winner; the explicit collision error that guarded it is gone because with a single extension the stem is the filename minus a fixed suffix, so two entries in one directory cannot collide. Keeping the check would have left an error that can never fire, reading like a guard that does something.
 
 ## Schema (v1)
 

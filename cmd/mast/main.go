@@ -1618,11 +1618,6 @@ func resolveWorkload(logger *slog.Logger, arg string) (workload.Bundle, []specia
 		if err != nil {
 			return workload.Bundle{}, nil, "", fmt.Errorf("load specialists: %w", err)
 		}
-		// Path mode skips pkg/config entirely, so the deprecation
-		// warning has to be raised here too — otherwise the one shape
-		// an out-of-tree bundle author is most likely to be using is
-		// the one that never mentions the rename (#292).
-		specialists.WarnLegacyExtension(logger, loaded)
 		return bundle, loaded, arg, nil
 	}
 
