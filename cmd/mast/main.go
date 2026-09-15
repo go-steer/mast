@@ -48,6 +48,7 @@ import (
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
 	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/internal/modeltext"
 	buildversion "github.com/go-steer/mast/internal/version"
 	"github.com/go-steer/mast/pkg/a2a"
 	mastagent "github.com/go-steer/mast/pkg/agent"
@@ -3365,8 +3366,8 @@ func logEvent(logger *slog.Logger, event *session.Event, sessionID string) {
 			if part == nil {
 				continue
 			}
-			if part.Text != "" {
-				summary = part.Text
+			if text, ok := modeltext.Text(part); ok {
+				summary = text
 				break
 			}
 			if part.FunctionCall != nil {

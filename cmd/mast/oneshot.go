@@ -38,6 +38,7 @@ import (
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/internal/modeltext"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/observability"
@@ -267,8 +268,8 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 		}
 		if event.Content != nil {
 			for _, part := range event.Content.Parts {
-				if part != nil && part.Text != "" {
-					lastText = part.Text
+				if text, ok := modeltext.Text(part); ok {
+					lastText = text
 				}
 			}
 		}
