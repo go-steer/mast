@@ -579,6 +579,21 @@ invisible to a smoke test that only checks the model answered.
   `include=["reasoning.encrypted_content"]`. A Chat Completions dialect drops
   reasoning between turns *silently* — no error, just a worse agent. The
   `reasoning_echo` capability flag exists to make that a declared property.
+- **Reasoning *requests* differ per model, not just per dialect, and the
+  difference is a 400.** The bullet above is about reading reasoning back; the
+  matching risk on the way out is that one vendor can carry two incompatible
+  request shapes at once. Anthropic replaced `thinking.type=enabled` with
+  `thinking.type=adaptive` at the 4-6 generation and removed the old one at
+  4-7, so from #369 `pkg/providers/anthropic` picks by model ID and an unknown
+  model takes the newer shape — the migration runs one way, so guessing the
+  older one guesses wrong. Two things generalize to the M1 providers. A
+  capability flag keyed on the *provider* is the wrong grain for this: the
+  split is inside one backend, between two models a single roster can name in
+  adjacent specialists. And `output_config.effort`, the field Anthropic's own
+  400 recommends, is deliberately unused, because the set of legal bands is
+  itself per-model — `claude-opus-4-6` rejects `xhigh`, `claude-haiku-4-5`
+  rejects the parameter outright — so adopting it would trade a one-bit table
+  for a three-axis one and add a new way to 400.
 - **Table rot scales linearly with providers.** `modeltier.Classify`,
   `taskclass.ModelForTier` and the pricing catalog move together today only
   because `TestBuiltinModelsKnownToCompanionTables` fails the build. Extend that

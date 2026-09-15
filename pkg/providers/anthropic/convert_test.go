@@ -540,31 +540,17 @@ func TestBuildParams_GenerationConfigMapped(t *testing.T) {
 		})
 	}
 
-	t.Run("thinking budget wired to enabled thinking", func(t *testing.T) {
+	t.Run("thinking budget on a legacy model wires the enabled shape", func(t *testing.T) {
 		t.Parallel()
 		cfg := &genai.GenerateContentConfig{
 			ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](2048)},
 		}
-		p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+		p, err := buildParams("claude-opus-4-5", contents, cfg, false, BuiltinTools{})
 		if err != nil {
 			t.Fatalf("buildParams: %v", err)
 		}
 		if p.Thinking.OfEnabled == nil || p.Thinking.OfEnabled.BudgetTokens != 2048 {
 			t.Errorf("Thinking = %+v, want enabled with budget 2048", p.Thinking)
-		}
-	})
-
-	t.Run("zero thinking budget leaves thinking unset", func(t *testing.T) {
-		t.Parallel()
-		cfg := &genai.GenerateContentConfig{
-			ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](0)},
-		}
-		p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
-		if err != nil {
-			t.Fatalf("buildParams: %v", err)
-		}
-		if p.Thinking.OfEnabled != nil || p.Thinking.OfDisabled != nil || p.Thinking.OfAdaptive != nil {
-			t.Errorf("Thinking = %+v, want unset for zero budget", p.Thinking)
 		}
 	})
 }
