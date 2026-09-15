@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **The only thinking config mast could send was rejected by its own default
+  model.** ([#369](https://github.com/go-steer/mast/issues/369)) A caller who
+  asked `claude-opus-5` for a thinking budget got a **400, not a degraded
+  turn**: Anthropic replaced the budget-carrying `thinking.type=enabled` with
+  `thinking.type=adaptive` at the 4-6 generation and removed the old one at
+  4-7, and `enabled` was the only shape `pkg/providers/anthropic` could build.
+  mast's own `DefaultModel` is `claude-opus-5`.
+
+  The two shapes are mutually exclusive and the split runs *inside* one
+  provider, so mast now picks by model ID, measured per model rather than
+  assumed — one live request per cell against Vertex `global`,
+  anthropic-sdk-go v1.43.0:
+
+  | model | `enabled` | `adaptive` |
+  | --- | --- | --- |
+  | `claude-haiku-4-5`, `claude-opus-4-5` | accepted | 400 |
+  | `claude-opus-4-6` | accepted, deprecated | accepted |
+  | `claude-opus-4-7`, `-4-8`, `claude-opus-5`, `claude-sonnet-5` | 400 | accepted |
+
+  An **unknown** model takes `adaptive`. The migration runs one way, so the
+  legacy list is closed and guessing the older shape for a model released
+  tomorrow guesses wrong.
+
+  **A budget of zero now disables thinking, which it never did.** It is the
+  one thing `genai.ThinkingConfig` can say that means "do not think", and mast
+  sent no thinking parameter at all — measured, `claude-opus-5` then returns a
+  signed thinking block anyway. `thinking.type=disabled` is accepted by every
+  model in the table above.
+
+  **`IncludeThoughts` stops being a no-op** on adaptive models: it selects
+  `display`, defaulting to `omitted`. The signature still comes back so a tool
+  loop still replays, but mast does not pay for reasoning text that
+  [#370](https://github.com/go-steer/mast/issues/370) filters out of every
+  surface it has. Asking for it is the caller's explicit decision.
+
+  Deliberately unused: `output_config.effort`, the field Anthropic's own 400
+  message recommends. The set of legal bands is itself per-model
+  (`claude-opus-4-6` rejects `xhigh`, `claude-haiku-4-5` rejects the parameter
+  outright), so mapping a token budget onto a band would trade a one-bit table
+  for a three-axis one and add a new way to 400. A budget is honoured exactly
+  where the API can express it and read as "think" where it cannot.
+
+  Nothing in mast sets `ThinkingConfig`, so this is reachable only by a
+  library embedder building the `model.LLMRequest` themselves — it was still
+  shipped code that could not succeed. **The test that let it ship is the
+  reusable part**: `convert_test.go` asserted that a budget produced the
+  `enabled` shape, a statement about what mast sends and never about what the
+  model accepts, so it passed on every run while every live call failed.
+
 - **A model's thinking no longer counts as its answer.**
   ([#370](https://github.com/go-steer/mast/issues/370)) Frontier providers
   return reasoning as a text part flagged `Thought` — Anthropic's thinking

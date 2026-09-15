@@ -94,13 +94,125 @@ func applyGenerationConfig(params *anthropic.MessageNewParams, cfg *genai.Genera
 	if tc := toolChoiceParam(cfg.ToolConfig); tc != nil {
 		params.ToolChoice = *tc
 	}
-	// Thinking: only an explicit positive budget opts in. genai's
-	// IncludeThoughts alone has no Anthropic equivalent (thinking
-	// blocks are always returned when thinking is enabled).
-	if cfg.ThinkingConfig != nil && cfg.ThinkingConfig.ThinkingBudget != nil &&
-		*cfg.ThinkingConfig.ThinkingBudget > 0 {
-		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(int64(*cfg.ThinkingConfig.ThinkingBudget))
+	applyThinkingConfig(params, cfg.ThinkingConfig)
+}
+
+// applyThinkingConfig maps genai's ThinkingConfig onto whichever of
+// Anthropic's two thinking shapes the target model accepts. The two are
+// mutually exclusive and the split is by model generation, measured per
+// model rather than assumed (#369):
+//
+//	model             thinking.type=enabled   thinking.type=adaptive
+//	claude-haiku-4-5  accepted                400 "not supported"
+//	claude-opus-4-5   accepted                400 "not supported"
+//	claude-opus-4-6   accepted, deprecated    accepted
+//	claude-opus-4-7   400 "not supported"     accepted
+//	claude-opus-4-8   400 "not supported"     accepted
+//	claude-opus-5     400 "not supported"     accepted
+//	claude-sonnet-5   400 "not supported"     accepted
+//
+// So there is no single shape that works everywhere, and sending the
+// wrong one is a hard 400 rather than a degraded turn — which is what
+// mast did on its own DefaultModel until this function existed.
+//
+// "disabled" is the one shape every model above accepts, which is why a
+// zero budget can be honoured at all. Before #369 a zero budget sent no
+// thinking param and the model thought anyway.
+//
+// Deliberately absent: output_config.effort. genai carries a token
+// budget and effort is a band, so the two do not line up — but the
+// decisive reason is measured rather than aesthetic. The set of legal
+// bands is itself per-model (claude-opus-4-6 rejects "xhigh" and lists
+// only low/medium/high/max; claude-haiku-4-5 rejects the parameter
+// outright), so mapping a budget onto a band would turn the one-bit
+// table below into a three-axis one and would 400 on a model that
+// accepts adaptive perfectly well. A budget is honoured exactly where
+// the API can express it and read as "think" where it cannot.
+func applyThinkingConfig(params *anthropic.MessageNewParams, tc *genai.ThinkingConfig) {
+	if tc == nil {
+		return
 	}
+	// A zero or negative budget is a request not to think. It is the
+	// only knob genai has for that, and it outranks IncludeThoughts:
+	// there is nothing to show.
+	if tc.ThinkingBudget != nil && *tc.ThinkingBudget <= 0 {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfDisabled: &anthropic.ThinkingConfigDisabledParam{},
+		}
+		return
+	}
+	budgeted := tc.ThinkingBudget != nil && *tc.ThinkingBudget > 0
+
+	if legacyThinkingModel(params.Model) {
+		// The legacy shape cannot express "think" without a number, so
+		// IncludeThoughts alone stays the no-op it has always been here.
+		if budgeted {
+			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(int64(*tc.ThinkingBudget))
+		}
+		return
+	}
+	if !budgeted && !tc.IncludeThoughts {
+		return
+	}
+	// display is the Anthropic equivalent IncludeThoughts never had.
+	// The default is "omitted" — the signature still comes back, so a
+	// tool loop still replays (#357), but mast does not pay for
+	// reasoning text that #370 filters out of every surface it has.
+	// Asking for it is the caller's explicit decision.
+	display := anthropic.ThinkingConfigAdaptiveDisplayOmitted
+	if tc.IncludeThoughts {
+		display = anthropic.ThinkingConfigAdaptiveDisplaySummarized
+	}
+	params.Thinking = anthropic.ThinkingConfigParamUnion{
+		OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{Display: display},
+	}
+}
+
+// legacyThinkingModels are the model families that reject
+// thinking.type=adaptive and need the older budget-carrying
+// thinking.type=enabled instead. Keys are base IDs — see baseModelID.
+//
+// The set is closed, not a work-in-progress. Anthropic deprecated
+// "enabled" at the 4-6 generation (it still answers, with a deprecation
+// warning naming adaptive) and removed it at 4-7, so the migration runs
+// one way only: a model released after this list was written takes
+// adaptive, which is why an unknown ID falls through to adaptive rather
+// than to the shape that used to be safe. 4-6 is deliberately NOT here
+// — it accepts both and the vendor's own warning says to prefer
+// adaptive.
+var legacyThinkingModels = map[string]bool{
+	"claude-haiku-4-5":  true,
+	"claude-opus-4-5":   true,
+	"claude-sonnet-4-5": true,
+}
+
+func legacyThinkingModel(modelID string) bool {
+	return legacyThinkingModels[baseModelID(modelID)]
+}
+
+// baseModelID strips a snapshot suffix so a pinned model resolves to its
+// family. Anthropic writes it as "-20251101" on the first-party API and
+// as "@20251101" on Vertex; both appear in mast configs.
+func baseModelID(modelID string) string {
+	if base, _, ok := strings.Cut(modelID, "@"); ok {
+		modelID = base
+	}
+	if i := strings.LastIndexByte(modelID, '-'); i >= 0 && isDigits(modelID[i+1:]) && len(modelID)-i-1 == 8 {
+		modelID = modelID[:i]
+	}
+	return modelID
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // toolChoiceParam maps genai's FunctionCallingConfig onto Anthropic's
