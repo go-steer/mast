@@ -53,6 +53,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/mast/internal/modeltext"
 	"github.com/go-steer/mast/pkg/agui"
 	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/serverauth"
@@ -447,8 +448,8 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 	if model {
 		var sb strings.Builder
 		for _, part := range ev.Content.Parts {
-			if part != nil && part.Text != "" {
-				sb.WriteString(part.Text)
+			if text, ok := modeltext.Text(part); ok {
+				sb.WriteString(text)
 			}
 		}
 		if sb.Len() > 0 {

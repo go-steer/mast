@@ -22,6 +22,7 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/mast/internal/modeltext"
 	"github.com/go-steer/mast/pkg/effects"
 )
 
@@ -205,8 +206,8 @@ func TraceFromEvents(events adksession.Events, pred effects.Predicate, subAgents
 			// Only the model's own text is the run's response. A user
 			// turn appended after the report would otherwise become
 			// FinalText and the severity would be read from it.
-			if part.Text != "" && ev.Content.Role == genai.RoleModel {
-				tr.FinalText = part.Text
+			if text, ok := modeltext.Text(part); ok && ev.Content.Role == genai.RoleModel {
+				tr.FinalText = text
 			}
 			if fc := part.FunctionCall; fc != nil && fc.ID != "" {
 				if isControl(fc.Name, subAgents) {

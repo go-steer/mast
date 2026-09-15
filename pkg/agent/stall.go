@@ -22,6 +22,8 @@ import (
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/mast/internal/modeltext"
 )
 
 // FinishTaskToolName is ADK's name for the tool a Task-mode agent reports
@@ -213,17 +215,20 @@ func FinishOnStall(agentName string, payload StallPayload) llmagent.AfterModelCa
 }
 
 // responseText concatenates a content's text parts, skipping thinking blocks —
-// they are for the provider's replay, not for the caller to read.
+// they are for the provider's replay, not for the caller to read. This was the
+// only place in the repo that made that distinction until #370 gave it a name;
+// it now calls the same predicate as everyone else.
 func responseText(c *genai.Content) string {
 	var b strings.Builder
 	for _, p := range c.Parts {
-		if p == nil || p.Text == "" || p.Thought {
+		text, ok := modeltext.Text(p)
+		if !ok {
 			continue
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(p.Text)
+		b.WriteString(text)
 	}
 	return b.String()
 }

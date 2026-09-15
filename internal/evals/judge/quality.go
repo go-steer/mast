@@ -25,6 +25,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/mast/internal/evals"
+	"github.com/go-steer/mast/internal/modeltext"
 )
 
 // MetricResponseQuality is the judge tier's own metric name. It sits
@@ -147,7 +148,9 @@ func (j *Judge) Grade(ctx context.Context, sc evals.Scenario, response string) (
 			continue
 		}
 		for _, p := range resp.Content.Parts {
-			text.WriteString(p.Text)
+			if s, ok := modeltext.Text(p); ok {
+				text.WriteString(s)
+			}
 		}
 	}
 

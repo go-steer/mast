@@ -15,6 +15,23 @@ Every surface is **off by default except inject**, and each carries its own
 token. That is deliberate: they are separate trust boundaries, not four
 views of one.
 
+## What none of them publish
+
+**A model's thinking is not part of any answer mast gives.** Frontier models
+return their reasoning as a distinct kind of content — Anthropic calls it a
+thinking block, Gemini a thought part — and it comes back in the same field
+as the answer, marked rather than separated. mast reads the mark. Reasoning
+is replayed to the provider on the next turn, because a signed thinking block
+has to come back intact for the model to continue, and it goes nowhere else:
+not into the A2A result artifact, not into an AG-UI `TextMessage` frame or
+`RunFinished.result`, not into the `/parks` projection, not into a specialist
+result the planner reads, and not into the daemon's own operator log.
+
+This is a floor, not a policy. A surface that should publish reasoning — the
+activity/reasoning events AG-UI clients want — will do it by asking for it,
+per workload and off by default. What is ruled out is publishing it by
+forgetting to check.
+
 ## Inject — the machine trigger
 
 The daemon's own HTTP endpoint (`--listen`, default `:7777`): `/inject`,

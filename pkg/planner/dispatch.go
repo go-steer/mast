@@ -112,6 +112,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/workflow"
+
+	"github.com/go-steer/mast/internal/modeltext"
 )
 
 // NewRoot constructs the planner and wraps it as a runnable root
@@ -329,8 +331,8 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 			}
 			if ev.Content != nil {
 				for _, part := range ev.Content.Parts {
-					if part != nil && part.Text != "" {
-						lastText = part.Text
+					if text, ok := modeltext.Text(part); ok {
+						lastText = text
 					}
 				}
 			}

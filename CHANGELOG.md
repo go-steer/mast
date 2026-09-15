@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **A model's thinking no longer counts as its answer.**
+  ([#370](https://github.com/go-steer/mast/issues/370)) Frontier providers
+  return reasoning as a text part flagged `Thought` — Anthropic's thinking
+  block, Gemini's thought part — in the same field as the answer, marked
+  rather than separated. mast made that distinction in exactly one place, the
+  stall detector in `pkg/agent`, and omitted it in eight others: the A2A
+  result artifact and its streaming progress frames, the AG-UI `TextMessage`
+  stream and `RunFinished.result`, `mast run`'s printed answer, the specialist
+  result the planner reads back from a dispatch, the daemon's own operator
+  log, and the eval trace's `FinalText`. Each of the eight tested
+  `part.Text != ""`, which is true of a thinking block.
+
+  **Nothing leaked, and that was luck rather than design.** Measured against
+  live `claude-opus-5` on Vertex: under the request mast sends today the model
+  returns a thinking block with a signature and an *empty* body, so the
+  emptiness check skipped it by accident. The same model asked with
+  `{"type":"adaptive","display":"summarized"}` returns the reasoning text
+  populated. Three unrelated changes would have turned the omission into a
+  disclosure — fixing the thinking config mast sends
+  ([#369](https://github.com/go-steer/mast/issues/369)), adding a reasoning
+  key to the bundle, or a vendor flipping a default — and none of them would
+  have touched the eight lines or failed a test.
+
+  All nine reads now go through one predicate, `internal/modeltext.Text`,
+  which reports the caller-facing text of a part and whether there is any, so
+  "the model said nothing" and "the model thought something I must not repeat"
+  stay distinguishable at the call site. Reasoning is still replayed to the
+  provider intact — a signed thinking block has to come back for the model to
+  continue — and a redacted thinking block, which carries no text at all,
+  reads as not-caller-facing rather than as an empty answer. This is the floor
+  the planned per-bundle `agui.emit_reasoning` opt-in opts in *from*: a surface
+  that publishes reasoning should do it by reading `Thought` parts
+  deliberately, not by failing to filter them.
+
 - **An out-of-process caller can now read the change it is being asked to
   approve.** `GET /parks` lists every parked session, oldest question first;
   `GET /parks/{session}` answers for one session whether it is parked or not
