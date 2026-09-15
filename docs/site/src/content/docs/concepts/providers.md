@@ -222,6 +222,37 @@ line reports what the constructed model will send —
 than assumed. See
 [`builtin_tools:`](/reference/workload-bundle/#builtin_tools--the-providers-own-server-side-tools).
 
+## Asking a model to think, or not to
+
+mast does not ask any model to think. Every provider decides that for
+itself on the request mast sends, which for a reasoning model usually
+means it thinks. The knob exists for library embedders who build the
+request themselves: `genai.ThinkingConfig`, with a token budget and an
+`IncludeThoughts` flag.
+
+Since v0.9 that knob reaches Anthropic in the shape the target model
+accepts, which is not one shape. Anthropic replaced the budget-carrying
+`thinking.type=enabled` with `thinking.type=adaptive` at the 4-6
+generation and removed the old one at 4-7, so a budget sent to
+`claude-opus-5` used to be a **400, not a degraded turn** — and
+`claude-opus-5` is mast's own default Claude model. mast now picks by
+model: a budget goes to older models as a budget, and to newer ones as
+"think", because there is no field on the newer API that takes a number
+of tokens.
+
+A budget of **zero** is the one case worth knowing about. It reads as
+"do not think", and it is the one request that could not say so: mast
+sent no thinking parameter at all and the model thought anyway. It now
+sends `thinking.type=disabled`, which every Claude model accepts, and
+the reasoning stops.
+
+`IncludeThoughts: true` asks for the reasoning text itself. It is off by
+default, and that is a cost decision as much as a privacy one: mast does
+not publish a model's thinking on any surface (see
+[interop](/concepts/interop/#what-none-of-them-publish)), so paying for
+text nothing reads would be waste. Older Claude models have no way to
+express the request and ignore the flag, as they always have.
+
 ## Cost
 
 Spend is computed from each provider's token accounting for the models
