@@ -36,8 +36,10 @@ package main
 // second per-bundle publication surface and follows the same shape: a workload
 // setting agui.emit_reasoning streams the model's thinking as a REASONING_*
 // phase ahead of its answer, and one that does not emits no reasoning frame at
-// all. Activity events and the agui:// federation client remain follow-on
-// stages.
+// all. A STEP_STARTED/STEP_FINISHED bracket names the agent that authored each
+// stretch of the run, unconditionally and with no bundle key — see openStep for
+// why a step is authorship here and not the design text's "turn-N". The
+// ACTIVITY_* family and the agui:// federation client remain follow-on stages.
 
 import (
 	"context"
@@ -283,6 +285,11 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 	}
 	err := runTurnPre(ctx, b.turnDeps, sessionID, msg, label, nil, em.onEvent)
 
+	// Close the open author bracket before the server writes the terminal
+	// frame, whatever the disposition: a dangling STEP_STARTED outlives the run
+	// in a client that tracks it.
+	em.closeStep()
+
 	return b.classifyRun(ctx, sessionID, em, err)
 }
 
@@ -474,6 +481,10 @@ type aguiEmitter struct {
 	// emitter is constructed in tests without one.
 	logger *slog.Logger
 
+	// step is the name of the open STEP_STARTED bracket — the agent that
+	// authored the most recent model event — or "" when none is open.
+	step string
+
 	// lastText is the final model-authored answer, surfaced in
 	// RunFinished.result; interrupted records a HITL pause signal.
 	lastText    string
@@ -512,6 +523,12 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 	}
 	model := ev.Content.Role == genai.RoleModel
 
+	// The step bracket opens before this event's own frames, so the reasoning
+	// and answer below land inside the step that produced them.
+	if model {
+		e.openStep(ev.Author)
+	}
+
 	// Reasoning before the answer, because that is the order the model
 	// produced them in (a thinking part precedes the text part in the same
 	// content) and a client renders the stream in arrival order.
@@ -549,6 +566,65 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 			e.emitToolResult(part.FunctionResponse)
 		}
 	}
+}
+
+// openStep opens a STEP_STARTED bracket for author, closing the previous one
+// first, and does nothing if that author's step is already open. Together with
+// closeStep it answers the question the AG-UI step family asks and the protocol
+// deliberately does not: what is a step in mast (#98, resolving
+// docs/ag-ui-design.md's activity-events row).
+//
+// **A step is the stretch of a run authored by one agent, named after it.**
+// The design text proposed `stepName: "turn-N"`, and that is degenerate here:
+// an AG-UI run drives exactly one turn through runTurnPre, so every run would
+// report turn-1 and the frame would carry no information. Authorship does
+// carry information — it is where a coordinator hands off to a specialist, and
+// where a graph node's agent takes over — which is the "workflow shape in the
+// UI" the row was actually asking for.
+//
+// Three properties are worth stating.
+//
+// **It reads session.Event.Author, and only on a model-authored event.** Author
+// is the attribution seam the rest of mast already trusts: pkg/budget buckets
+// spend by it, pkg/effects classifies by it, and pkg/specialists records that
+// it carries the agent's name on every dispatch shape mast builds (Branch does
+// not — it is empty in the coordinator/sub-agent-tool shape). Restricting the
+// read to model events means the author is an agent by construction, so no
+// roster set has to be threaded here to keep a user echo or a runtime-
+// synthesized event from naming a step after something that is not one.
+//
+// **It is unconditional — no bundle key.** Unlike the state projection and
+// reasoning, this publishes nothing a permitted client could not already see:
+// a handoff reaches the same stream as a transfer_to_agent / invoke_specialist
+// ToolCallStart naming the very same agent. That is #377's rule for the public
+// descriptor applied to a frame family, and with nothing to switch off, a key
+// would only add a bundle field that can be set wrong (and, since #302, a
+// spelling that is fatal at load).
+//
+// **The brackets are flat, and under a parallel fan-out one name can bracket
+// more than once.** Events arrive serialized on one stream, so this reports the
+// order they arrived in rather than a nesting mast cannot observe; a fan-out
+// whose workers interleave produces alternating brackets. Reporting arrival
+// order is honest, and collapsing it would invent a structure.
+func (e *aguiEmitter) openStep(author string) {
+	if author == "" || author == e.step {
+		return
+	}
+	e.closeStep()
+	e.emit(agui.NewStepStarted(author))
+	e.step = author
+}
+
+// closeStep finishes the open bracket, if any. RunAgent calls it once the turn
+// returns — for every disposition, including an abort and a HITL pause, because
+// a client tracking an open step has no other way to learn the run ended and a
+// dangling STEP_STARTED is worse than a step that ends early.
+func (e *aguiEmitter) closeStep() {
+	if e.step == "" {
+		return
+	}
+	e.emit(agui.NewStepFinished(e.step))
+	e.step = ""
 }
 
 // emitReasoning publishes one model event's thinking parts as a REASONING_*

@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **An AG-UI run now shows which agent is working.**
+  ([#98](https://github.com/go-steer/mast/issues/98)) The stream brackets each
+  stretch of a run in `STEP_STARTED` / `STEP_FINISHED` frames, and **the step
+  name is the agent that authored it**. A single-agent workload gets one
+  bracket around the whole run; a coordinator that hands off to a specialist
+  gets one per handoff, so a chat UI can render "log-analyzer is working"
+  without parsing tool calls. The bracket closes before the terminal frame on
+  every disposition, including an abort and a HITL pause — a dangling
+  `STEP_STARTED` outlives the run in a client that tracks it.
+
+  **The design text's unit was wrong and had to be replaced rather than
+  implemented.** It proposed `stepName: "turn-N"`. An AG-UI run drives exactly
+  one turn through the shared chokepoint, so every run of every workload would
+  have reported `turn-1` — a frame carrying no information at all. Authorship
+  is what actually varies inside a run.
+
+  **There is no bundle key and no `capabilities` bit**, which inverts the two
+  publication surfaces that shipped before it in v0.9. Those are opt-in because
+  they disclose something a client could not otherwise see. A step does not: a
+  handoff already reaches the same stream as a `transfer_to_agent` /
+  `invoke_specialist` tool call naming the same agent. A switch with nothing
+  behind it is a bundle field that can be set wrong, and since #302 a
+  misspelling is fatal at load.
+
+  **One thing steps do not cover**, stated because the shape of the gap matters:
+  a **planner** dispatch runs its specialist under a private runner whose events
+  never reach the stream this emitter reads. Coordinator and graph dispatch
+  never had that gap, which is why their handoffs bracket. So a planner
+  workload's client sees the `invoke_specialist` tool call and nothing inside
+  it, and the `ACTIVITY_*` frames that would fill it stay deferred — blocked on
+  a publication decision about a specialist's interior reaching a browser, not
+  on scheduling.
+
 - **`/agui/agents.json` now says what a run on each workload will actually
   publish.** ([#377](https://github.com/go-steer/mast/issues/377)) Every
   descriptor carries a `capabilities` object:
@@ -118,7 +151,10 @@
   Activity events (`StepStarted`, `ActivitySnapshot`) were coupled with
   reasoning in #98's issue text and are **not** in this change. They are a
   different vocabulary with no sensitivity argument attached, and their
-  planner-step half needs a seam the emitter does not have yet.
+  planner-step half needs a seam the emitter does not have yet. *(The
+  `StepStarted` half shipped separately later in this release; the
+  `ActivitySnapshot` half is still out, and the seam is now named — see the
+  step-events entry above.)*
 
 - **Approving a parked mutation from a chat button works, and the parity
   scoreboard reads 19 of 19.**

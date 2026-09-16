@@ -1015,14 +1015,23 @@ daemon logs why. A late frame is a correctness bug; a missing one is worse.
 
 ## Further out
 
-- **AG-UI remaining slices** — the `agui://` federation client, activity
-  events (`StepStarted`, `ActivitySnapshot`), webhook push, client-declared
-  tool acceptance (`RunAgentInput.tools` is parsed today and then dropped),
-  and client-disconnect reconnect. Per-key `StateDelta` emission and the
-  reasoning events both left this list in v0.9; activity events stayed
-  because they are a different vocabulary with no sensitivity argument
-  attached, and their planner-step half needs a seam the emitter does not
-  have yet.
+- **AG-UI remaining slices** — the `agui://` federation client, the
+  `ACTIVITY_*` frames, webhook push, client-declared tool acceptance
+  (`RunAgentInput.tools` is parsed today and then dropped), and
+  client-disconnect reconnect. Per-key `StateDelta` emission, the reasoning
+  events and the `STEP_STARTED`/`STEP_FINISHED` bracket all left this list in
+  v0.9.
+
+  What is left of the activity family is the **planner** half, and it is
+  blocked rather than unscheduled. A planner dispatch runs each specialist
+  under a private runner, so none of its events reach the stream the AG-UI
+  emitter reads — coordinator and graph dispatch never had that gap, which is
+  why their handoffs already bracket as steps. Opening it means deciding
+  whether a planner-dispatched specialist's interior may reach a browser at
+  all, which is a publication question of the same class as reasoning and
+  wants its own answer. A client is not blind to the dispatch in the
+  meantime: the `invoke_specialist` call is an ordinary tool call on the
+  stream. It just cannot see inside it.
 - **Planner shapes** — the `run_shape_*` vocabulary tools wired to the
   reference-graph library (they return `not_implemented` in the v0.2
   scaffold), plus more starters: supervisor+workers, sequential pipeline,

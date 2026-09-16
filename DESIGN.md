@@ -159,7 +159,7 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 | `pkg/inject` | The unattended entry point: `POST /inject`, `/resume`, `/abort`, `/pause`, `/extend-token`, `/stop`, `/ack-effects`, plus `GET /parks`, `/parks/{session}` and `/metrics`. |
 | `pkg/observability` | Fixed Prometheus counter registry + env-gated OTel trace export ([`docs/observability-design.md`](./docs/observability-design.md)). |
 | `pkg/a2a` / `pkg/federation` | A2A v0.3 both ways: the synchronous client, and the server (agent card, `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE) exposing workloads that opt in via the bundle's `a2a.expose`. Plus the `federation.Adapter`/`Handle` interface + `invoke_remote_agent` (called "frozen" here since v0.1 in the sense that its shape is settled — **not** a v1.0 commitment; `pkg/federation` is on the uncovered list below, and [`docs/compatibility-policy.md`](./docs/compatibility-policy.md) does not bind it) ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
-| `pkg/agui` | The AG-UI server surface (agent↔user) for CopilotKit apps and chat-platform bots: hand-rolled zero-dep wire types, an HTTP+SSE run endpoint, `/agui/agents.json` discovery, the HITL interrupt/resume lifecycle, and two per-bundle publication surfaces, both empty-or-off by default and both silent rather than redacted when off: per-key state (a run's write to a key named in `agui.state_projection` becomes an RFC 6902 `StateDelta`; a key not on the list emits nothing) and the model's reasoning (`agui.emit_reasoning` publishes the `REASONING_*` phase bracket; off emits no frame at all, and the provider's thought signature is never published under either setting). The discovery descriptor advertises both per workload, read through the optional `CapabilityReporter` the `Backend` implements rather than from a second read of the bundle. Runtime-free, like `pkg/a2a` ([`docs/ag-ui-design.md`](./docs/ag-ui-design.md)). |
+| `pkg/agui` | The AG-UI server surface (agent↔user) for CopilotKit apps and chat-platform bots: hand-rolled zero-dep wire types, an HTTP+SSE run endpoint, `/agui/agents.json` discovery, the HITL interrupt/resume lifecycle, and two per-bundle publication surfaces, both empty-or-off by default and both silent rather than redacted when off: per-key state (a run's write to a key named in `agui.state_projection` becomes an RFC 6902 `StateDelta`; a key not on the list emits nothing) and the model's reasoning (`agui.emit_reasoning` publishes the `REASONING_*` phase bracket; off emits no frame at all, and the provider's thought signature is never published under either setting). The discovery descriptor advertises both per workload, read through the optional `CapabilityReporter` the `Backend` implements rather than from a second read of the bundle. A third frame family, the `STEP_STARTED`/`STEP_FINISHED` bracket naming the agent that authored each stretch of a run, has **no** key and no capability bit — it publishes nothing a permitted client could not already read off the stream, and every workload emits it, so there is nothing per-bundle to report. Runtime-free, like `pkg/a2a` ([`docs/ag-ui-design.md`](./docs/ag-ui-design.md)). |
 | `pkg/serverauth` | The request-admission seams both network servers share: pluggable bearer auth (`TokenValidator` → `Principal`, per-surface scope checks) and rate limiting. Stdlib + `golang.org/x/time` only, so it stays slim-embed-safe. |
 | `pkg/mcp` | MCP toolset wiring + per-specialist tool allowlists. HTTP servers get their transport wrapped so a 4xx/5xx carries the server's own error text (an IAM permission name, a quota metric) rather than a bare status line. Every toolset is also wrapped for response digesting (`WithDigest`, `retrieve_raw`) unless the daemon or the server opted out; the wrap exposes `Unwrap()` so mast's own non-model caller — the write gate's precondition read — reaches the tool rather than a digest of it. |
 
@@ -701,12 +701,17 @@ forever. The accepted cost is that a red can land on `main` and the
 refusal arrives at the tag.
 
 Still deferred here: the remaining AG-UI slices (`agui://`
-federation client, webhook push, client-declared tools, activity
-events, [`docs/ag-ui-design.md`](./docs/ag-ui-design.md) —
+federation client, webhook push, client-declared tools, the
+`ACTIVITY_*` frames, [`docs/ag-ui-design.md`](./docs/ag-ui-design.md) —
 per-key `StateDelta` left this list 2026-09-14 and shipped as the
-`agui.state_projection` allowlist, default empty, and **reasoning
+`agui.state_projection` allowlist, default empty; **reasoning
 events** left it 2026-09-16 as `agui.emit_reasoning`, default false,
-which this line should have said when Stage 4 landed); the
+which this line should have said when Stage 4 landed; and the
+**`STEP_*` bracket** left it the same day with no key at all,
+named after the authoring agent. What is left of the activity
+family is its planner half, and that is blocked on a seam rather
+than unscheduled: a planner dispatch runs on a private runner whose
+events never reach the stream the AG-UI emitter reads); the
 `run_shape_*` planner vocabulary wired to the reference-graph library
 (it returns `not_implemented` in the shipped scaffold); multi-session
 attach (ACL store, per-caller auth, operator session creation) and

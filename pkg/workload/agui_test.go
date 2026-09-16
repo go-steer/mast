@@ -70,6 +70,12 @@ func TestAGUIEmitReasoningParses(t *testing.T) {
 // merely aspirational, it was broken. This test is what keeps the corrected
 // example honest: if either key is ever implemented, this fails and whoever
 // implements it has to come back and restore the documentation.
+//
+// Both keys have since been answered rather than left pending, which is why
+// this stays a refusal: incremental streaming is not what Stage 1 chose, and
+// the step half of the activity family shipped in #98 with no key at all —
+// STEP_STARTED/STEP_FINISHED disclose nothing a permitted client could not
+// already read off the stream, so there is nothing for an operator to switch.
 func TestAGUIDocumentedButUnimplementedKeysAreRefused(t *testing.T) {
 	for _, key := range []string{"streaming: true", "activity_events: true"} {
 		_, err := loadYAML(t, "agui:\n  expose: true\n  "+key+"\n"+minimal)

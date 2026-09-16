@@ -120,8 +120,9 @@ type ResumeEntry struct {
 type EventType string
 
 // The AG-UI event vocabulary this server emits (docs/ag-ui-design.md emission
-// map): the lifecycle, text-message triad, tool-call quartet, state, and
-// reasoning families. The activity/raw/custom families are still deferred.
+// map): the lifecycle (including the step bracket), text-message triad,
+// tool-call quartet, state, and reasoning families. The activity/raw/custom
+// families are still deferred.
 const (
 	// Lifecycle.
 	EventRunStarted   EventType = "RUN_STARTED"
@@ -258,8 +259,14 @@ type RunError struct {
 	Code    RunErrorCode `json:"code,omitempty"`
 }
 
-// StepStarted / StepFinished bracket a named step within a run (reserved for
-// multi-step workloads; modeled so consumers can rely on the vocabulary).
+// StepStarted / StepFinished bracket a named step within a run. The protocol
+// leaves the naming to the server; this package holds no opinion on it, and
+// the daemon's emitter picks the name (cmd/mast/agui.go names a step after the
+// agent that authored the model events inside it, so a client sees where a
+// coordinator handed off to a specialist).
+//
+// The brackets are flat and never nest: a step is closed before the next one
+// opens, and the last open step is closed before the run's terminal frame.
 type StepStarted struct {
 	baseEvent
 	StepName string `json:"stepName"`
@@ -448,6 +455,18 @@ func NewRunFinishedInterrupt(threadID, runID string, interrupts []Interrupt) Run
 
 func NewRunError(msg string, code RunErrorCode) RunError {
 	return RunError{baseEvent: newBase(EventRunError), Message: msg, Code: code}
+}
+
+// NewStepStarted / NewStepFinished build the step bracket. The name is the
+// caller's to choose and is echoed verbatim; the two frames must carry the
+// same string for a consumer to pair them.
+
+func NewStepStarted(stepName string) StepStarted {
+	return StepStarted{baseEvent: newBase(EventStepStarted), StepName: stepName}
+}
+
+func NewStepFinished(stepName string) StepFinished {
+	return StepFinished{baseEvent: newBase(EventStepFinished), StepName: stepName}
 }
 
 func NewTextMessageStart(messageID string) TextMessageStart {

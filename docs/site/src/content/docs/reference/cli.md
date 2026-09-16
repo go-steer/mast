@@ -502,6 +502,13 @@ key means a server older than this object, an explicit `false` is a live
 promise that the frame family will not appear, and a client needs to tell
 those apart.
 
+There is no bit for the `STEP_*` bracket, and that is the same reasoning
+read the other way: every workload emits it, so there is nothing per-bundle
+to report. A frame family that is uniform across a daemon belongs to the
+protocol version, not to this object — and `protocol_version` does not move
+for it, because `STEP_STARTED` / `STEP_FINISHED` are core AG-UI vocabulary a
+`0.1` client already has to tolerate.
+
 Adding `capabilities` did not move the document behind the token. The rule
 it follows is that this descriptor may state what a client permitted to run
 would observe in the stream anyway — reasoning from the first
@@ -516,8 +523,9 @@ is an AG-UI `RunAgentInput`; the response is the run streamed as SSE
 frames: `RunStarted`, then a `StateSnapshot` echoing the client's input
 state, then the model's answer as a `TextMessage` triad
 (`TextMessageStart`/`Content`/`End`) with `ToolCallStart`/`Args`/`End`
-and `ToolCallResult` frames for any tool activity, then exactly one
-terminal frame — `RunFinished` on success (`outcome: {type: "success"}`)
+and `ToolCallResult` frames for any tool activity — all of it inside a
+`StepStarted`/`StepFinished` bracket naming the agent that produced it —
+then exactly one terminal frame — `RunFinished` on success (`outcome: {type: "success"}`)
 or on a HITL pause (`outcome: {type: "interrupt", interrupts: […]}`), or
 `RunError` (`aborted` when the session was aborted or gate-paused,
 `internal` on a runner error). Updates are
@@ -529,6 +537,23 @@ a raw session id, and an id that would collide with a reserved
 picks the mapping: `per_thread` (the default — one continuing session per
 thread, matching chat UX) or `per_run` (a fresh session per run, for
 stateless one-shots).
+
+**Steps.** A run brackets its work with `StepStarted` / `StepFinished`
+frames, and **the step name is the agent that authored that stretch of the
+run**. A single-agent workload therefore produces one bracket around the
+whole run; a coordinator that hands off to a specialist produces one per
+handoff, so a client can show which agent is working without parsing tool
+calls. The brackets are flat — a step closes before the next one opens, and
+the open one closes before the terminal frame, on every disposition
+including an abort and a HITL pause. Under a parallel fan-out the workers'
+events interleave on one stream, so the same name can bracket more than
+once; that is the arrival order, not a nesting. **There is no switch for
+this** — unlike the two keys below, a step publishes nothing a caller
+permitted to run could not already read off the stream, since a handoff
+arrives as a `transfer_to_agent` / `invoke_specialist` tool call naming the
+same agent. One thing steps do *not* cover: a **planner** dispatch runs its
+specialist on a private stream, so you see the `invoke_specialist` tool call
+and no step inside it.
 
 **State.** By default the only state frame a client sees is that opening
 `StateSnapshot`, which is the client's own input state echoed back — mast

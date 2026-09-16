@@ -103,6 +103,8 @@ func TestEventTypeDiscriminators(t *testing.T) {
 		{"run-started", NewRunStarted("t", "r"), EventRunStarted},
 		{"run-finished", NewRunFinished("t", "r", json.RawMessage(`"done"`)), EventRunFinished},
 		{"run-error", NewRunError("boom", RunErrorInternal), EventRunError},
+		{"step-started", NewStepStarted("triage"), EventStepStarted},
+		{"step-finished", NewStepFinished("triage"), EventStepFinished},
 		{"text-start", NewTextMessageStart("m1"), EventTextMessageStart},
 		{"text-content", NewTextMessageContent("m1", "hi"), EventTextMessageContent},
 		{"text-end", NewTextMessageEnd("m1"), EventTextMessageEnd},
@@ -208,6 +210,8 @@ func TestEventWireKeys(t *testing.T) {
 		{"run-started", NewRunStarted("t", "r"), []string{"type", "threadId", "runId"}},
 		{"run-finished", NewRunFinished("t", "r", json.RawMessage(`"x"`)), []string{"type", "threadId", "runId", "result", "outcome"}},
 		{"run-error", NewRunError("boom", RunErrorInternal), []string{"type", "message", "code"}},
+		{"step-started", NewStepStarted("triage"), []string{"type", "stepName"}},
+		{"step-finished", NewStepFinished("triage"), []string{"type", "stepName"}},
 		{"text-start", NewTextMessageStart("m1"), []string{"type", "messageId", "role"}},
 		{"text-content", NewTextMessageContent("m1", "hi"), []string{"type", "messageId", "delta"}},
 		{"text-end", NewTextMessageEnd("m1"), []string{"type", "messageId"}},
@@ -262,6 +266,30 @@ func TestTextMessageStartRole(t *testing.T) {
 	}
 	if got.Role != "assistant" {
 		t.Errorf("role = %q, want assistant", got.Role)
+	}
+}
+
+// TestStepNameSurvivesTheWire pins that both step frames carry the caller's
+// name verbatim under the same key. Pairing a STEP_FINISHED with its
+// STEP_STARTED is a string comparison on the consumer's side — mast names steps
+// after an agent, and agent names are operator-authored, so the frames must not
+// normalize, trim, or case-fold what they are handed.
+func TestStepNameSurvivesTheWire(t *testing.T) {
+	const name = "Log-Analyzer v2"
+	for _, ev := range []any{NewStepStarted(name), NewStepFinished(name)} {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatalf("Marshal(%T): %v", ev, err)
+		}
+		var probe struct {
+			StepName string `json:"stepName"`
+		}
+		if err := json.Unmarshal(b, &probe); err != nil {
+			t.Fatalf("Unmarshal(%T): %v", ev, err)
+		}
+		if probe.StepName != name {
+			t.Errorf("%T stepName = %q, want %q", ev, probe.StepName, name)
+		}
 	}
 }
 
