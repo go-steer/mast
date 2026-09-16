@@ -713,8 +713,8 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	if err != nil {
 		return nil, fmt.Errorf("mast: %w", err)
 	}
-	if writeGate != nil {
-		plugins = append(plugins, writeGate)
+	if writeGate.Plugin != nil {
+		plugins = append(plugins, writeGate.Plugin)
 	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,

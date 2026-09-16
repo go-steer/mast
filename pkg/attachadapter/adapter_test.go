@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -355,6 +356,9 @@ func TestAttachCapabilitiesReportsOnlyWiredFuncs(t *testing.T) {
 	if got.Guardrails || got.CostCeiling {
 		t.Errorf("unwired adapter reports %+v", got)
 	}
+	if got.Perms {
+		t.Errorf("unwired adapter advertises the perms read: %+v — GET /perms would answer the zero PermsInfo, which describes a daemon that gates nothing (#375)", got)
+	}
 
 	// A read without a reset is not a guardrail surface: the flag gates
 	// whether a client offers the button.
@@ -396,6 +400,26 @@ func TestAttachCapabilitiesReportsOnlyWiredFuncs(t *testing.T) {
 	// model calls.
 	if got := bounded.AttachCapabilities(); !got.CostCeiling {
 		t.Errorf("turn-capped session reports no cost ceiling: %+v", got)
+	}
+
+	// PermsFn follows the same rule as the guardrail funcs, and needs
+	// its own leg because *Adapter now satisfies attach.PermsProvider
+	// unconditionally — so the method set says yes on every daemon and
+	// only the report can say no (#375).
+	cfg = baseConfig(t, run)
+	cfg.PermsFn = func() attach.PermsInfo { return attach.PermsInfo{Mode: "ask"} }
+	withPerms, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := withPerms.AttachCapabilities(); !got.Perms {
+		t.Errorf("a wired PermsFn is not advertised: %+v", got)
+	}
+	if got := withPerms.AttachPerms(); got.Mode != "ask" {
+		t.Errorf("AttachPerms = %+v, want the hook's answer passed through", got)
+	}
+	if got := bare.AttachPerms(); !reflect.DeepEqual(got, attach.PermsInfo{}) {
+		t.Errorf("unwired AttachPerms = %+v, want the zero value — which the route never serves, because it 501s first", got)
 	}
 }
 

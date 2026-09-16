@@ -55,6 +55,7 @@ func TestBuildFeatures_ReporterOverridesInterfacePresence(t *testing.T) {
 		featureCostCeiling:  false,
 		featureGuardrails:   false,
 		featureObserverMode: false,
+		featurePerms:        false,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildFeatures with reporter:\n got  %#v\n want %#v (report must beat interface presence)", got, want)

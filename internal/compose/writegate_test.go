@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/pkg/permissions"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -36,10 +37,11 @@ import (
 // either reaches the tool-execution seam or silently does not.
 
 func TestWriteGate_NoBundleNoGate(t *testing.T) {
-	p, err := WriteGate(WriteGateConfig{})
+	res, err := WriteGate(WriteGateConfig{})
 	if err != nil {
 		t.Fatalf("WriteGate: %v", err)
 	}
+	p := res.Plugin
 	if p != nil {
 		t.Fatalf("WriteGate returned a plugin with no bundle — a mutating call in a library embed would park with no resume surface to un-park it, which hangs the caller rather than protecting them")
 	}
@@ -49,10 +51,11 @@ func TestWriteGate_NoBundleNoGate(t *testing.T) {
 // where it matters: a bundle that says nothing about mutation still gets
 // a gate registered.
 func TestWriteGate_BundleDefaultsToGated(t *testing.T) {
-	p, err := WriteGate(WriteGateConfig{Bundle: &workload.Bundle{Name: "b"}})
+	res, err := WriteGate(WriteGateConfig{Bundle: &workload.Bundle{Name: "b"}})
 	if err != nil {
 		t.Fatalf("WriteGate: %v", err)
 	}
+	p := res.Plugin
 	if p == nil {
 		t.Fatalf("WriteGate returned no plugin for a bundle with no hitl block; the default is require_approval and it must be enforced, not just documented")
 	}
@@ -68,15 +71,71 @@ func TestWriteGate_BundleDefaultsToGated(t *testing.T) {
 // refuses require_approval without a gate, so WriteGate must supply one
 // rather than pass the refusal up as a startup failure.
 func TestWriteGate_DefaultGateIsSuppliedUnderRequireApproval(t *testing.T) {
-	p, err := WriteGate(WriteGateConfig{Bundle: &workload.Bundle{
+	res, err := WriteGate(WriteGateConfig{Bundle: &workload.Bundle{
 		Name: "b",
 		HITL: workload.HITL{OnMutation: workload.OnMutationRequireApproval},
 	}})
 	if err != nil {
 		t.Fatalf("WriteGate: %v", err)
 	}
+	p := res.Plugin
 	if p == nil {
 		t.Fatal("WriteGate returned no plugin under an explicit require_approval")
+	}
+}
+
+// TestWriteGate_ReturnsTheGateItBuilt: the caller gets the permissions
+// gate back, or nil, and the split follows the policy.
+//
+// cmd/mast reports this object on GET /perms (#375). Returning it —
+// rather than having the daemon rebuild one and describe that — is
+// what makes the reported mode a statement about the gate in force. A
+// nil answer under apply/dry_run is the load-bearing half: it is what
+// lets the daemon omit `mode` instead of naming one nothing consults.
+func TestWriteGate_ReturnsTheGateItBuilt(t *testing.T) {
+	for _, tc := range []struct {
+		policy   workload.OnMutation
+		wantGate bool
+	}{
+		{workload.OnMutationRequireApproval, true},
+		{"", true}, // the default is require_approval
+		{workload.OnMutationApply, false},
+		{workload.OnMutationDryRun, false},
+	} {
+		res, err := WriteGate(WriteGateConfig{Bundle: &workload.Bundle{
+			Name: "b",
+			HITL: workload.HITL{OnMutation: tc.policy},
+		}})
+		if err != nil {
+			t.Fatalf("WriteGate(%q): %v", tc.policy, err)
+		}
+		if got := res.Gate != nil; got != tc.wantGate {
+			t.Errorf("WriteGate(%q): gate returned = %v, want %v", tc.policy, got, tc.wantGate)
+		}
+	}
+
+	// A caller-supplied gate comes back as itself, not as a copy: what
+	// an operator reads has to be the object the gate consults, or a
+	// later mode change would be invisible on the read surface.
+	mine := permissions.New(permissions.Options{})
+	res, err := WriteGate(WriteGateConfig{
+		Bundle: &workload.Bundle{Name: "b"},
+		Gate:   mine,
+	})
+	if err != nil {
+		t.Fatalf("WriteGate: %v", err)
+	}
+	if res.Gate != mine {
+		t.Error("WriteGate did not return the caller's own gate")
+	}
+
+	// No bundle, no gate — and no plugin either.
+	res, err = WriteGate(WriteGateConfig{})
+	if err != nil {
+		t.Fatalf("WriteGate: %v", err)
+	}
+	if res.Gate != nil {
+		t.Error("WriteGate returned a gate with no bundle")
 	}
 }
 
@@ -85,13 +144,14 @@ func TestWriteGate_PolicyPassesThrough(t *testing.T) {
 		workload.OnMutationApply,
 		workload.OnMutationDryRun,
 	} {
-		p, err := WriteGate(WriteGateConfig{Bundle: &workload.Bundle{
+		res, err := WriteGate(WriteGateConfig{Bundle: &workload.Bundle{
 			Name: "b",
 			HITL: workload.HITL{OnMutation: policy},
 		}})
 		if err != nil {
 			t.Fatalf("WriteGate(%s): %v", policy, err)
 		}
+		p := res.Plugin
 		// apply and dry_run both still register: apply audits every
 		// mutating call it lets through, and dry_run has to intercept.
 		if p == nil {
@@ -126,13 +186,14 @@ func TestWriteGate_SuppliedPredicateWins(t *testing.T) {
 		asked = append(asked, name)
 		return effects.ClassReadOnly
 	}
-	p, err := WriteGate(WriteGateConfig{
+	res, err := WriteGate(WriteGateConfig{
 		Bundle:    &workload.Bundle{Name: "b"},
 		Predicate: pred,
 	})
 	if err != nil {
 		t.Fatalf("WriteGate: %v", err)
 	}
+	p := res.Plugin
 	// The read-only branch of the gate's callback returns before it
 	// touches the agent context, which is what lets this probe run
 	// without a live invocation. Anything that reaches further — the
@@ -356,7 +417,7 @@ func TestChangeSetCheckerFailsClosedWithNoResolver(t *testing.T) {
 // the plugin the daemon registers, not just exist in this package.
 func TestWriteGate_InstallsTheProducerContract(t *testing.T) {
 	var asked []string
-	p, err := WriteGate(WriteGateConfig{
+	res, err := WriteGate(WriteGateConfig{
 		Bundle: &workload.Bundle{Name: "b"},
 		Specs:  []specialists.Spec{execSpec("change-executor", "patch_k8s_resource")},
 		ToolSchemas: func(name string) (*jsonschema.Schema, error) {
@@ -367,6 +428,7 @@ func TestWriteGate_InstallsTheProducerContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteGate: %v", err)
 	}
+	p := res.Plugin
 	out, err := p.BeforeToolCallback()(nil, stubTool(approval.FinishTaskToolName), map[string]any{
 		approval.ChangeSetField: []any{map[string]any{"tool": "kubectl_scale", "arguments": "{}"}},
 	})

@@ -93,10 +93,14 @@ func TestBuildFeatures_ServerAndEntryFlags(t *testing.T) {
 		featureSpecialists:  true,
 		featureInterrupt:    true,
 		// Reserved keys advertised as false so consumers see an
-		// explicit "no" rather than key absence.
+		// explicit "no" rather than key absence. featurePerms is false
+		// here because featureRichRegistrant does not implement
+		// PermsProvider — perms_stream and perms are separate wirings
+		// and this fixture has only the first.
 		featureCostCeiling:  false,
 		featureGuardrails:   false,
 		featureObserverMode: false,
+		featurePerms:        false,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildFeatures mismatch:\n got  %#v\n want %#v", got, want)

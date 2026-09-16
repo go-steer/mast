@@ -154,17 +154,28 @@ func (h *handlers) doPricing(w http.ResponseWriter, _ *http.Request, entry *Entr
 
 // ===== PR A2 mutation handlers =====
 //
-// Reads (perms) follow the same "200 with empty data if no provider"
-// convention as PR A1 reads. Writes (perms/allow, perms/deny,
-// pricing/refresh, pricing/set, reload) return 501 when the
-// capability isn't registered, since the operator's POST must take
-// effect or fail loudly.
+// Writes (perms/allow, perms/deny, pricing/refresh, pricing/set,
+// reload) return 501 when the capability isn't registered, since the
+// operator's POST must take effect or fail loudly.
+//
+// The perms READ is the one exception to the PR A1 "200 with empty
+// data if no provider" convention, and #375 is why. That convention
+// is safe for a read whose zero value is visibly nothing — an empty
+// tool list, a blank model name. It is not safe here: PermsInfo's
+// zero value is a well-formed description of a daemon that permits
+// everything and has decided nothing, which is a stronger claim than
+// "unknown" and the opposite of a governed daemon's truth. A client
+// cannot distinguish the two, so the route refuses instead.
 
 const operatorPostMaxBytes = 8 * 1024
 
 // doPerms — GET /perms.
 
 func (h *handlers) doPerms(w http.ResponseWriter, _ *http.Request, entry *Entry) {
+	if !entryFeature(entry, featurePerms) {
+		http.Error(w, "perms capability not registered", http.StatusNotImplemented)
+		return
+	}
 	out := PermsInfo{}
 	if p, ok := entry.Agent.(PermsProvider); ok {
 		out = p.AttachPerms()

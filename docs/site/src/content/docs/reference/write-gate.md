@@ -394,6 +394,67 @@ captured" and sends you away from an undo you had.
 Bundles that declare no capture are unaffected: nothing is read, nothing is
 recorded, and the view is unchanged.
 
+## Reading what governs a session, over HTTP
+
+`GET /sessions/<app>/<session>/perms` answers two questions a client needs
+before it can render anything useful: what rules is this session running
+under, and what has already been decided in it.
+
+```json
+{
+  "mode": "ask",
+  "on_mutation": "require_approval",
+  "approvals": [
+    {
+      "tool": "scale_deployment",
+      "key": "scale_deployment(deployment=api, replicas=2)",
+      "decision": "allow-once",
+      "at": "2026-08-16T09:00:00Z",
+      "approver": "alice@example.com"
+    },
+    {
+      "tool": "rollout_restart",
+      "key": "rollout_restart(deployment=api)",
+      "decision": "deny",
+      "at": "2026-08-16T09:02:11Z",
+      "refusal": "denied_by_operator",
+      "approver": "alice@example.com"
+    }
+  ]
+}
+```
+
+The two policy fields are on **separate axes** and neither substitutes for
+the other. `on_mutation` is your bundle's
+[`hitl.on_mutation`](/reference/workload-bundle/) — whether a mutating call
+is parked for a human at all. `mode` describes the permissions gate that
+adjudicates the call once it is unparked, and is **absent** under `apply`
+and `dry_run`, where mast builds no gate. An absent `mode` means there is
+no gate, not a permissive one.
+
+The `approvals` list is read from the session's durable decision log, so it
+survives a restart and reports only that session's answers. Three fields
+keep a row from over-claiming:
+
+- **`refusal`** distinguishes an operator saying no from mast refusing the
+  operator's answer. `decision: "deny"` alone flattens the two, and they
+  mean very different things about who is in control.
+- **`change_set`**, when present, means nobody was asked about *this* call —
+  it fired on a grant minted by an earlier answer about a different one.
+  Render it as authorized, not as approved.
+- **`approver`** is who answered. An empty one means mast recorded nobody;
+  do not invent a name. Machine approvers are spelled `mast:…`.
+
+`key` is the call that **ran**. On an edited call that is the operator's
+version, not the model's; `mast sessions export-decisions` below carries
+both halves.
+
+**Check the `perms` capability first.** Through v0.8 this route answered
+`200` with `{"mode":""}` on every mast daemon — a well-formed description
+of a daemon that gates nothing, which no client could tell from the truth.
+It now answers `501` when nothing is wired behind it, and the `perms` flag
+in the capability report is true exactly when it will answer.
+
 ## Exporting what was decided
 
 An adjudication is worth more than a log line. *"A human looked at

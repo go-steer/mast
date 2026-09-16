@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **`GET /perms` stops describing every mast daemon as one that gates
+  nothing.** ([#375](https://github.com/go-steer/mast/issues/375)) The route
+  answered `200` with `{"mode":""}` on every release since it was ported. That
+  is not an empty answer — it is a well-formed description of a daemon that
+  permits everything and has adjudicated nothing, which is the opposite of the
+  `require_approval` default, and a client cannot tell it from the truth.
+
+  It now **refuses** when nothing is wired behind it, gated on a new `perms`
+  capability flag (separate from `perms_stream`: a daemon can report its rules
+  without streaming a live question, and mast is that daemon). The advertised
+  bit and the route's behaviour are the same computation, so they cannot
+  disagree.
+
+  On a mast daemon it now answers, and carries more than it used to:
+
+  - **`mode` and `on_mutation` are separate axes.** `on_mutation` is the
+    bundle's `hitl.on_mutation`; `mode` describes the permissions gate that
+    adjudicates an unparked call, and is **absent** under `apply` and
+    `dry_run`, where mast builds no gate. Absent means "no gate", not
+    "permissive". Reporting the write-gate policy as a permissions mode would
+    have been the same class of lie this fixes.
+  - **`approvals` is the session's durable decision log**, which until now no
+    HTTP surface exposed at all — only `mast sessions export-decisions`, which
+    a UI cannot reach. It is read per session and survives a restart.
+  - Each row's `decision` follows what the gate **did**, not what the operator
+    answered, because those come apart on a verdict mast refuses and on a call
+    that fires under an earlier change-set grant. `refusal` keeps "a person
+    said no" distinct from "mast refused the person's answer"; `change_set`
+    marks a row nobody was asked about; `approver` names who answered; and
+    `key` is the call that ran, which on an edit is the operator's version.
+
+  **Breaking, narrowly:** a client that treated `200 {"mode":""}` as a valid
+  answer from a mast daemon now gets `501`. There is no such client that was
+  right.
+
 - **An AG-UI client can watch the model think — if the workload says so.**
   ([#98](https://github.com/go-steer/mast/issues/98), resolving
   `docs/ag-ui-design.md` OQ 5) `agui.emit_reasoning: true` on a bundle streams

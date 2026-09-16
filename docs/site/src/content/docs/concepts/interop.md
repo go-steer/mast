@@ -171,6 +171,7 @@ carry the answer back without leaving the attach protocol:
 |---|---|
 | `GET /sessions/{app}/{id}/perms/stream` | SSE; one `prompt` event per open approval park |
 | `POST /sessions/{app}/{id}/perms/respond` | `{"id": "<interrupt id>", "decision": "allow-once"}` |
+| `GET /sessions/{app}/{id}/perms` | the rules this session runs under, and what it has already decided |
 
 This is a **second door onto `POST /resume`**, not a second approval model.
 A press resolves the same durable park, is attributed to the same
@@ -195,6 +196,18 @@ came with a ported package built for a synchronous prompt at a keyboard,
 and mast has no keyboard. They now sit on the mechanism mast does have.
 A park carries `kind: control_plane_write`, which is the field a client
 should switch its button set on.
+
+The **read** beside them, `GET /perms`, has its own capability flag —
+`perms`, not `perms_stream` — because they are separate wirings. A daemon
+can say what its rules are and what it has adjudicated without ever
+streaming a live question, and mast is that daemon. The read answers
+`mode` (the permissions gate, absent when there is none), `on_mutation`
+(the bundle's write-gate policy, on its own axis), and the session's
+durable approval log. Through v0.8 it answered `200` with the zero value
+on every mast daemon, which is a description of something that gates
+nothing; it now refuses instead, and
+[the write-gate reference](/reference/write-gate/#reading-what-governs-a-session-over-http)
+spells out the fields.
 
 `GET /sessions/{id}/tools` lists the tools the daemon actually holds, each
 with a `source`, the MCP `server` it came from if it has one, and a

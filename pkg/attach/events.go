@@ -209,6 +209,14 @@ const (
 	// PromptBrokerProvider capability — clients gate the
 	// /perms/stream + /perms/respond wiring on it.
 	featurePermsStream = "perms_stream"
+	// featurePerms is true when GET /perms answers from a real
+	// permissions source — clients gate their "/permissions" view on
+	// it rather than rendering the zero value as a configured-nothing
+	// daemon (#375). Distinct from perms_stream, which is about the
+	// live ask-the-operator channel: a daemon can answer what the
+	// rules are and what was decided without ever streaming a prompt,
+	// and mast is exactly that daemon.
+	featurePerms = "perms"
 	// featureCostCeiling is true when the session has a budget ceiling
 	// in force — cost, tokens, or model calls — and can therefore be
 	// halted for spend. Sourced from the guardrail capability

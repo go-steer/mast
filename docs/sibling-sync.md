@@ -1367,3 +1367,17 @@ upstream commit on `PromptBroker` is a port candidate for `pkg/attach` and says 
 `cmd/mast/permsource.go`. What *would* be drift is a change to the frame shape, the SSE event name
 or the decision vocabulary; `pkg/attach/permswire_test.go` pins all three as literals, so such a
 commit will arrive as a failing test rather than as a silent divergence.
+
+**A deliberate divergence from a ported convention, #375 (2026-09-16).** `pkg/attach`'s PR A2
+handler block carries a rule mast inherited verbatim: *reads answer 200 with empty data if no
+provider; writes 501.* `GET /perms` is now the one exception, and the reason is specific rather
+than a change of taste. The convention is safe for a read whose zero value is visibly nothing — an
+empty tool list, a blank model name. `PermsInfo`'s zero value is not: `{"mode":""}` is a
+well-formed description of a daemon that permits everything and has decided nothing, and a client
+cannot tell it from a true answer. Upstream is unaffected in practice, because a core-agent
+registrant that implements `PermsProvider` still gets its 200 — the refusal only reaches
+registrants that never had an answer. **Not owed upstream as a port**, but worth an issue there if
+core-agent ever registers an adapter-shaped agent behind this route, since `pkg/attachadapter`'s
+structural satisfaction is exactly the case the new `perms` capability flag exists for. The flag is
+deliberately separate from `perms_stream`: the two are separate wirings, and mast is the proof —
+it can report its rules and its adjudications without ever streaming a live question.

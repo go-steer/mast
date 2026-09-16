@@ -82,11 +82,33 @@ type WriteGateConfig struct {
 	Logger *slog.Logger
 }
 
+// WriteGateResult is what WriteGate built: the plugin to register,
+// and the permissions gate behind it when there is one.
+type WriteGateResult struct {
+	// Plugin is the pre-call write gate, or nil when there is no
+	// bundle. Register it on the runner.
+	Plugin *plugin.Plugin
+
+	// Gate is the permissions gate the plugin consults, or nil when
+	// the policy builds none. Returned rather than kept private so a
+	// caller reporting its state to an operator (cmd/mast's GET
+	// /perms, #375) describes the gate actually in force instead of
+	// re-deriving from the policy whether one exists — that second
+	// derivation is a copy of the condition below, and a copy is what
+	// goes stale.
+	//
+	// Nil is meaningful and must be reported as "no gate", not as a
+	// gate in some default mode: under `apply` or `dry_run` nothing
+	// consults a mode at all, and naming one would describe a
+	// mechanism that is not running.
+	Gate *permissions.Gate
+}
+
 // WriteGate builds the pre-call write gate for a workload
 // (docs/v0.3-plan.md W2.1/W2.2; docs/orchestration-design.md
 // hitl_policy.on_mutation).
 //
-// It returns (nil, nil) when there is no bundle. The gate's whole
+// It returns a zero result when there is no bundle. The gate's whole
 // mechanism is parking a call until an operator answers, and the
 // default place an operator's answer arrives is the daemon's resume
 // path against a durable session. A library embed that constructs its
@@ -100,13 +122,13 @@ type WriteGateConfig struct {
 // gated. Registration order matters and is settled — the effects outbox
 // runs first, so a call whose result is being replayed from the log is
 // never re-approved (resolved-decision row 144).
-func WriteGate(cfg WriteGateConfig) (*plugin.Plugin, error) {
+func WriteGate(cfg WriteGateConfig) (WriteGateResult, error) {
 	if cfg.Bundle == nil {
-		return nil, nil
+		return WriteGateResult{}, nil
 	}
 	policy, err := onMutation(cfg.Bundle.HITL.EffectiveOnMutation())
 	if err != nil {
-		return nil, err
+		return WriteGateResult{}, err
 	}
 	pred := cfg.Predicate
 	if pred == nil {
@@ -124,11 +146,11 @@ func WriteGate(cfg WriteGateConfig) (*plugin.Plugin, error) {
 	}
 	grants, err := changeSetGrants(cfg, pred)
 	if err != nil {
-		return nil, err
+		return WriteGateResult{}, err
 	}
 	captures, err := priorStateCaptures(cfg, pred)
 	if err != nil {
-		return nil, err
+		return WriteGateResult{}, err
 	}
 	p, err := approval.New(approval.Config{
 		Policy:    policy,
@@ -141,9 +163,9 @@ func WriteGate(cfg WriteGateConfig) (*plugin.Plugin, error) {
 		Logger:    cfg.Logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("compose: build write gate: %w", err)
+		return WriteGateResult{}, fmt.Errorf("compose: build write gate: %w", err)
 	}
-	return p, nil
+	return WriteGateResult{Plugin: p, Gate: gate}, nil
 }
 
 // changeSetGrants builds the freshness rules for change-set approvals
