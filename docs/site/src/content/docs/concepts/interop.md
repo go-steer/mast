@@ -619,6 +619,16 @@ recomputed from the bundle — a capability claim that restates a config
 instead of reading what it describes is how `/tools` and `/perms` each spent
 releases advertising something untrue.
 
+A third frame family, the `StepStarted`/`StepFinished` bracket, has **no**
+key and no capability bit, and the contrast is the useful part. A step is
+named after the agent that authored that stretch of the run, so it tells a
+client where a coordinator handed off to a specialist — and that is
+something a caller permitted to run already sees, because the handoff also
+arrives as a `transfer_to_agent` tool call naming the same agent. State and
+reasoning are gated because they disclose something new; steps describe
+what is already on the wire, so gating them would be a switch with nothing
+behind it.
+
 ## Federation — calling out
 
 The surfaces above are inbound. `invoke_remote_agent` is the outbound
