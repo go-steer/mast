@@ -461,6 +461,7 @@ agui:
   description: Investigate GKE pod-failure incidents.
   session_model: per_thread               # or per_run
   state_projection: [plan, phase]         # empty (default) publishes no state
+  emit_reasoning: false                   # default — no reasoning frame at all
   auth:
     scopes: [incident-triage.run]
 ```
@@ -502,6 +503,24 @@ the run put there, approval grants and captured change sets included. The
 daemon logs the enabled list at startup, so what a workload publishes can
 be read off the log rather than off the bundle you believe is mounted; an
 empty or duplicated entry is refused before the listener binds.
+
+**Reasoning.** By default a client sees none of the model's thinking, and
+`agui.emit_reasoning: true` publishes it as the spec's phase bracket around
+a message triad: `ReasoningStart`, then `ReasoningMessageStart`/`Content`/`End`
+carrying one message per model response, then `ReasoningEnd` — emitted before
+the answer's `TextMessage` triad, because that is the order the provider
+streamed the parts in. **Off emits nothing at all**, not an empty bracket:
+the existence of a thought is itself a disclosure. The opt-in is per workload
+and the daemon logs a **warning** at startup rather than the projection's
+informational line, because a state allowlist is a list someone curated and
+this is an unbounded channel from the model's private working-out. Two things
+it never publishes under either setting: the provider's thought **signature**,
+which is a replay credential rather than a thought (so AG-UI's
+`ReasoningEncryptedValue` event is deliberately not implemented, and a
+signature-only block produces no frame), and the answer stream — a thought
+never becomes `TextMessage` content or `RunFinished.result`. Expect an
+opted-in workload to be quiet for now: under the request mast sends today
+`claude-opus-5` returns a thinking block whose body is empty.
 
 **HITL.** A turn that parks for human input closes the stream with a
 terminal `RunFinished` whose `outcome.type` is `interrupt`, listing each

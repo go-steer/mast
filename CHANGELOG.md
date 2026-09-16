@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- **An AG-UI client can watch the model think — if the workload says so.**
+  ([#98](https://github.com/go-steer/mast/issues/98), resolving
+  `docs/ag-ui-design.md` OQ 5) `agui.emit_reasoning: true` on a bundle streams
+  that workload's reasoning as AG-UI's `REASONING_START` /
+  `REASONING_MESSAGE_START` / `…CONTENT` / `…END` / `REASONING_END` frames,
+  emitted before the answer's `TextMessage` triad because that is the order the
+  provider streamed the parts in. It copies `agui.state_projection`'s shape
+  deliberately — per bundle, off by default, logged at startup — so there is
+  one scheme to learn rather than two.
+
+  **Three things are not inherited:**
+
+  - **Off emits nothing at all**, not an empty phase bracket and not a
+    redaction marker. The existence of a thought is itself a disclosure: a
+    bracket with no content tells a client the model deliberated and was
+    censored.
+  - **The opt-in is a named read, not a removed filter.** Publication calls a
+    new `modeltext.Thought` predicate beside `modeltext.Text`, and the two are
+    disjoint — so the eight surfaces
+    [#370](https://github.com/go-steer/mast/issues/370) fixed are unchanged
+    whether this is on or off. A thought still never becomes answer text and
+    never becomes `RunFinished.result`, and *"reasoning reached a browser"*
+    stays a grep for one symbol rather than an audit of every place a part's
+    `Text` field is read.
+  - **The thought signature has no frame under any setting.** It is a provider
+    replay credential — Anthropic wants it back verbatim on the assistant turn
+    before a `tool_result` — not a thought, so handing it to a browser
+    publishes a token. AG-UI's sixth reasoning event,
+    `ReasoningEncryptedValue`, is therefore deliberately unmodeled, and a
+    thinking block with a signature and no prose emits nothing.
+
+  The startup line is `WARN` where the projection's is `INFO`: a state
+  allowlist is a list someone curated, and this is an unbounded channel from
+  the model's private working-out.
+
+  **Expect an opted-in workload to be quiet for now.** Under the request mast
+  sends today `claude-opus-5` returns a thinking block whose body is empty and
+  whose payload is all signature — #370's finding read from the other side.
+  The key is real; the stream fills when the request asks for
+  `display: summarized`.
+
+  Activity events (`StepStarted`, `ActivitySnapshot`) were coupled with
+  reasoning in #98's issue text and are **not** in this change. They are a
+  different vocabulary with no sensitivity argument attached, and their
+  planner-step half needs a seam the emitter does not have yet.
+
 - **Approving a parked mutation from a chat button works, and the parity
   scoreboard reads 19 of 19.**
   ([#364](https://github.com/go-steer/mast/issues/364)) switchboard forwards a

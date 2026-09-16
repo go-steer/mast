@@ -40,6 +40,28 @@ func TestAGUIStateProjectionParses(t *testing.T) {
 	}
 }
 
+// TestAGUIEmitReasoningParses pins the reasoning opt-in and, as with the
+// projection above, pins what its ABSENCE means: false, publishing nothing
+// (#98, docs/ag-ui-design.md OQ 5). A publication surface whose default came
+// from a zero value nobody asserted is one refactor away from inverting.
+func TestAGUIEmitReasoningParses(t *testing.T) {
+	b, err := loadYAML(t, "agui:\n  expose: true\n  emit_reasoning: true\n"+minimal)
+	if err != nil {
+		t.Fatalf("emit_reasoning must load: %v", err)
+	}
+	if !b.AGUI.EmitReasoning {
+		t.Error("emit_reasoning: true did not reach the bundle")
+	}
+
+	b, err = loadYAML(t, "agui:\n  expose: true\n"+minimal)
+	if err != nil {
+		t.Fatalf("an agui section with no emit_reasoning must load: %v", err)
+	}
+	if b.AGUI.EmitReasoning {
+		t.Error("absent emit_reasoning = true, want false — the default publishes no reasoning")
+	}
+}
+
 // TestAGUIDocumentedButUnimplementedKeysAreRefused is the measurement behind
 // the 2026-09-14 correction in docs/ag-ui-design.md: that doc's bundle example
 // carried `streaming:` and `activity_events:` under `agui:`, neither of which

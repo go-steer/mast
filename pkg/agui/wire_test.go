@@ -111,6 +111,11 @@ func TestEventTypeDiscriminators(t *testing.T) {
 		{"tool-end", NewToolCallEnd("c1"), EventToolCallEnd},
 		{"tool-result", NewToolCallResult("c1", "42"), EventToolCallResult},
 		{"state-snapshot", NewStateSnapshot(json.RawMessage(`{}`)), EventStateSnapshot},
+		{"reasoning-start", NewReasoningStart(), EventReasoningStart},
+		{"reasoning-message-start", NewReasoningMessageStart("r1"), EventReasoningMessageStart},
+		{"reasoning-message-content", NewReasoningMessageContent("r1", "thinking"), EventReasoningMessageContent},
+		{"reasoning-message-end", NewReasoningMessageEnd("r1"), EventReasoningMessageEnd},
+		{"reasoning-end", NewReasoningEnd(), EventReasoningEnd},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -157,6 +162,11 @@ func TestEventTypeStringValues(t *testing.T) {
 		{EventToolCallResult, "TOOL_CALL_RESULT"},
 		{EventStateSnapshot, "STATE_SNAPSHOT"},
 		{EventStateDelta, "STATE_DELTA"},
+		{EventReasoningStart, "REASONING_START"},
+		{EventReasoningMessageStart, "REASONING_MESSAGE_START"},
+		{EventReasoningMessageContent, "REASONING_MESSAGE_CONTENT"},
+		{EventReasoningMessageEnd, "REASONING_MESSAGE_END"},
+		{EventReasoningEnd, "REASONING_END"},
 	}
 	for _, c := range cases {
 		if string(c.got) != c.want {
@@ -206,6 +216,11 @@ func TestEventWireKeys(t *testing.T) {
 		{"tool-end", NewToolCallEnd("c1"), []string{"type", "toolCallId"}},
 		{"tool-result", NewToolCallResult("c1", "42"), []string{"type", "toolCallId", "content"}},
 		{"state-snapshot", NewStateSnapshot(json.RawMessage(`{}`)), []string{"type", "snapshot"}},
+		{"reasoning-start", NewReasoningStart(), []string{"type"}},
+		{"reasoning-message-start", NewReasoningMessageStart("r1"), []string{"type", "messageId"}},
+		{"reasoning-message-content", NewReasoningMessageContent("r1", "thinking"), []string{"type", "messageId", "delta"}},
+		{"reasoning-message-end", NewReasoningMessageEnd("r1"), []string{"type", "messageId"}},
+		{"reasoning-end", NewReasoningEnd(), []string{"type"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

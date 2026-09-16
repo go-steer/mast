@@ -76,6 +76,7 @@ agui:
   description: Investigate GKE pod-failure incidents.
   session_model: per_thread
   state_projection: [plan, phase]
+  emit_reasoning: false
   auth:
     scopes: [incident-triage.run]
 ```
@@ -140,6 +141,7 @@ agui:
 | `agui.session_model` | string | How a run maps to a mast session: `per_thread` (default — one continuing session per AG-UI `threadId`, matching chat UX) or `per_run` (a fresh session per `runId`, for stateless one-shots). The daemon always derives and namespaces the session id; a client never supplies a raw one. |
 | `agui.input_schema` | map | A **mast-side** convention only: an optional JSON-Schema-shaped hint surfaced in the discovery descriptor so a client can render an input form. AG-UI's `RunAgentInput` has no schema field, so it does **not** constrain the wire input. |
 | `agui.state_projection` | list of strings | Allowlist of runtime state keys published to the client as `StateDelta` patches. **Empty (the default) publishes nothing.** A key on the list is emitted as an RFC 6902 `{"op": "add", "path": "/<key>", "value": …}` whenever the run writes it; a key not on the list produces no operation at all, so a client cannot tell that it changed. Treat this as a publication decision, not a display preference: session state holds whatever the runtime put there, including approval grants and captured change sets, and the AG-UI client is a browser. An empty or duplicated entry is refused at startup; a key the workload never happens to write is accepted. |
+| `agui.emit_reasoning` | bool | Whether this workload streams the model's *thinking* to its AG-UI clients, as the spec's `REASONING_START` / `REASONING_MESSAGE_*` / `REASONING_END` frames. **Defaults to `false`, and false emits nothing at all** — not an empty phase bracket, not a redaction marker, so a client cannot learn that the model deliberated. A chain of thought is not a draft of the answer: it is where the model talks itself out of things, and where a prompt injection shows its working. The answer is addressed to the user; the reasoning is addressed to nobody. Turning it on is a decision about a browser-reachable surface, and the daemon logs a **warning** at startup naming the workload. The provider's thought *signature* is never published under either setting — it is a replay credential, not a thought — so a thinking block with a signature and no prose produces no frame. |
 | `agui.auth.required`, `agui.auth.scopes` | bool, list of strings | Per-endpoint auth policy. `scopes` are enforced per run when a token validator is configured (`MAST_AGUI_TOKEN`): a caller whose token lacks a scope is refused `403`. |
 
 ## `schema_version:` — and why an unknown key is refused

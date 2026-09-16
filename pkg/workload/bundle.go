@@ -1038,6 +1038,26 @@ type AGUI struct {
 	// whoever added it, which is the placement docs/threat-model.md refuses.
 	StateProjection []string `yaml:"state_projection,omitempty"`
 
+	// EmitReasoning publishes the model's reasoning to this workload's AG-UI
+	// clients as REASONING_* frames (docs/ag-ui-design.md OQ 5). False — the
+	// default — emits no reasoning frame of any kind, not an empty bracket
+	// and not a redaction marker, so a client cannot tell whether the model
+	// reasoned at all.
+	//
+	// It is off by default because a chain of thought is not a draft of the
+	// answer. It is where a prompt injection shows its working, where a
+	// retrieved document's contents get restated before being judged, and
+	// where a model reasons about tool output the user was never shown. The
+	// answer is addressed to the user; the reasoning is addressed to nobody.
+	// Publishing it to a browser is a call an operator can make per workload,
+	// with the tradeoff visible, rather than one mast makes for them.
+	//
+	// It turns on a deliberate read of thinking parts at the emitter
+	// (internal/modeltext.Thought), never the removal of a filter — and it
+	// never publishes a thinking block's provider signature, which has no
+	// frame at all (see pkg/agui's wire vocabulary).
+	EmitReasoning bool `yaml:"emit_reasoning,omitempty"`
+
 	// Auth is the per-endpoint auth policy.
 	Auth AGUIAuth `yaml:"auth,omitempty"`
 }

@@ -34,10 +34,11 @@
 // away from being a disclosure, and a predicate everyone calls is worth
 // more than eight comments nobody has to read.
 //
-// Reasoning is not permanently unreachable — docs/ag-ui-design.md OQ 5
-// plans an opt-in per bundle. This is the floor that opt-in opts in FROM,
-// and a surface that decides to publish reasoning should read Thought
-// parts deliberately rather than by not filtering them.
+// Reasoning is not permanently unreachable. docs/ag-ui-design.md OQ 5 is
+// resolved (#98, 2026-09-16) as an opt-in per bundle, agui.emit_reasoning,
+// and it is built the way this package's existence implies: the AG-UI
+// emitter reads Thought parts through Thought below, deliberately and by
+// name. Nothing in this repo publishes reasoning by not filtering it.
 package modeltext
 
 import "google.golang.org/genai"
@@ -53,6 +54,33 @@ import "google.golang.org/genai"
 // something I must not repeat" stay distinguishable at the call site.
 func Text(p *genai.Part) (string, bool) {
 	if p == nil || p.Thought || p.Text == "" {
+		return "", false
+	}
+	return p.Text, true
+}
+
+// Thought reports the reasoning text carried by one part of a model's
+// content, and whether there is any. It is Text's deliberate counterpart:
+// the AG-UI emitter's agui.emit_reasoning opt-in (#98, ag-ui-design.md OQ 5)
+// publishes reasoning by CALLING THIS, not by declining to call Text. A
+// publication surface should have to name what it publishes, so that
+// "reasoning reached a browser" is a grep for one symbol rather than an
+// audit of every place a part's Text field is read.
+//
+// ok is false for a nil part, a part that is not a thinking block, and a
+// thinking block that carries no prose — which today is the common case:
+// claude-opus-5 under the request mast sends returns a thinking block whose
+// body is empty and whose payload rides in ThoughtSignature. That signature
+// is never returned here and has no AG-UI frame. It is a provider replay
+// credential — Anthropic requires it back, verbatim and intact, on the
+// assistant turn preceding a tool_result — and handing it to a browser
+// publishes a token rather than a thought.
+//
+// Text and Thought are disjoint: no part satisfies both, so a caller that
+// wants everything the model emitted must call both, and a caller that
+// calls neither publishes nothing.
+func Thought(p *genai.Part) (string, bool) {
+	if p == nil || !p.Thought || p.Text == "" {
 		return "", false
 	}
 	return p.Text, true
