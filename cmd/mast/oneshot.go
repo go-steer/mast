@@ -157,8 +157,8 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	if err != nil {
 		return fmt.Errorf("construct write gate: %w", err)
 	}
-	if writeGate != nil {
-		oneShotPlugins = append(oneShotPlugins, writeGate)
+	if writeGate.Plugin != nil {
+		oneShotPlugins = append(oneShotPlugins, writeGate.Plugin)
 	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,

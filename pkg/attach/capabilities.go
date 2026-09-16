@@ -70,6 +70,12 @@ type CapabilityReport struct {
 	// PermsStream: GET /perms/stream + POST /perms/respond are
 	// serviceable (a prompt broker is wired).
 	PermsStream bool
+	// Perms: GET /perms answers from a real permissions source. False
+	// makes that route 501 rather than 200 with the zero PermsInfo
+	// (#375) — the two are indistinguishable to a client, and the
+	// zero value reads as a daemon with no rules configured, which is
+	// the opposite of what an ungoverned registrant means.
+	Perms bool
 	// MCP: GET /mcp returns real data (an MCP snapshot fn is wired).
 	MCP bool
 	// Specialists: POST /slash/subagent can spawn (a background
@@ -117,6 +123,7 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 	out[featureCostCeiling] = false
 	out[featureGuardrails] = false
 	out[featureObserverMode] = false
+	out[featurePerms] = false
 	if entry == nil || entry.Agent == nil {
 		return out
 	}
@@ -124,6 +131,9 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		r := rep.AttachCapabilities()
 		if r.PermsStream {
 			out[featurePermsStream] = true
+		}
+		if r.Perms {
+			out[featurePerms] = true
 		}
 		if r.MCP {
 			out[featureMCP] = true
@@ -146,6 +156,9 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		if permsSourceFor(entry) != nil {
 			out[featurePermsStream] = true
 		}
+		if _, ok := entry.Agent.(PermsProvider); ok {
+			out[featurePerms] = true
+		}
 		if _, ok := entry.Agent.(MCPProvider); ok {
 			out[featureMCP] = true
 		}
@@ -163,6 +176,20 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		}
 	}
 	return out
+}
+
+// entryFeature answers whether one entry-scoped feature key is raised
+// for this registrant, by the same computation that fills the
+// capabilities boot frame.
+//
+// Handlers that refuse an unwired route call this rather than
+// re-deriving the condition, so a client cannot be told a feature is
+// on by one code path and 501'd by another. That divergence is what
+// #490 was, and re-deriving it per handler is how it would come back.
+// Server-level keys are not passed in — a handler guarding an
+// entry-scoped route has no business consulting them.
+func entryFeature(entry *Entry, key string) bool {
+	return buildFeatures(entry, nil)[key]
 }
 
 // buildSlashCommands returns the sorted set of slash names the agent

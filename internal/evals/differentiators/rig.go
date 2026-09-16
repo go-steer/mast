@@ -292,8 +292,8 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rig: %w", err)
 	}
-	if writeGate != nil {
-		plugins = append(plugins, writeGate)
+	if writeGate.Plugin != nil {
+		plugins = append(plugins, writeGate.Plugin)
 	}
 	r.runner, err = runner.New(runner.Config{
 		AppName:           appName,

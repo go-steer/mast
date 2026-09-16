@@ -828,8 +828,8 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		logger.Error("failed to construct write gate", "error", err.Error())
 		return err
 	}
-	if writeGate != nil {
-		plugins = append(plugins, writeGate)
+	if writeGate.Plugin != nil {
+		plugins = append(plugins, writeGate.Plugin)
 		logger.Info("write gate registered", "on_mutation", bundle.HITL.EffectiveOnMutation())
 	}
 
@@ -1014,6 +1014,15 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 			// for every release the attach surface has existed (#313).
 			store:  store,
 			logger: logger,
+			// GET /perms, which answered 200 with the zero value — a
+			// daemon that gates nothing — on every release since the
+			// route was ported (#375). The gate comes back from
+			// compose.WriteGate rather than being rebuilt here, so what
+			// an operator reads is the object the write gate consults;
+			// it is nil exactly when the policy builds none, and the
+			// projection omits mode rather than inventing one.
+			gate:       writeGate.Gate,
+			onMutation: string(bundle.HITL.EffectiveOnMutation()),
 			// GET /perms/stream + POST /perms/respond, answered from
 			// the durable park instead of 501 (#364). Same resume path
 			// POST /resume takes, so the approver is the authenticated

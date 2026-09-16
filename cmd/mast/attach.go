@@ -27,6 +27,7 @@ import (
 	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/inject"
+	"github.com/go-steer/mast/pkg/permissions"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -80,6 +81,20 @@ type attachWiring struct {
 	// through v0.8.
 	resume func(ctx context.Context, req inject.ResumeRequest) error
 
+	// gate is the permissions gate the write gate consults, straight
+	// from compose.WriteGate so GET /perms reports the object in force
+	// rather than a description of it (#375). Nil is the honest answer
+	// for a workload whose on_mutation is apply or dry_run, where
+	// compose builds no gate: the projection omits mode entirely
+	// instead of naming one nothing reads.
+	gate *permissions.Gate
+
+	// onMutation is the workload's write-gate policy, verbatim from
+	// the bundle. It rides beside gate rather than being derived from
+	// it because the two answer different questions and only one of
+	// them survives a nil gate — see attach.PermsInfo.
+	onMutation string
+
 	// logger backs the perms stream's read diagnostics. Optional.
 	logger *slog.Logger
 }
@@ -110,6 +125,7 @@ func (w attachWiring) config(sid string) attachadapter.Config {
 		SubagentsFn:  func() []attach.SubagentCatalogInfo { return w.subagents },
 		TurnStateFn:  func() string { return w.turnState(sid) },
 		PermsSource:  newParkPerms(w.store, sid, w.resume, w.logger),
+		PermsFn:      func() attach.PermsInfo { return w.perms(sid) },
 		GuardrailsFn: func() attach.GuardrailInfo { return w.guardrails(sid) },
 		ResetGuardrailFn: func(req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
 			return w.resetGuardrail(sid, req)

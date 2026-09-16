@@ -660,20 +660,78 @@ func (o *OperatorView) AttachReload(ctx context.Context) ReloadResponse {
 // the remote TUI's /permissions slash. Mirrors permissions.Snapshot
 // plus the per-session approval log so the operator can review
 // what was approved this session.
+//
+// The route answers 501 when no registrant is wired behind it, rather
+// than 200 with the zero value (#375). A read whose honest answer and
+// whose broken answer are the same bytes is worse than a refusal: a
+// client rendering this view would otherwise show "no rules configured"
+// about a daemon whose write gate is in fact gating every mutation.
 type PermsInfo struct {
-	Mode      string         `json:"mode"`
+	// Mode is the permissions gate's mode — "ask", "allow", "yolo",
+	// "plan", "acceptEdits". Omitted, rather than empty, when the
+	// reporter has no permissions gate to describe. mast's daemon is
+	// such a reporter whenever its workload's write-gate policy is not
+	// require_approval: compose builds no gate at all there, and a
+	// mode string invented for the occasion would be the thing this
+	// route is being fixed for.
+	Mode string `json:"mode,omitempty"`
+
+	// OnMutation is the write-gate policy a mast daemon runs under —
+	// "require_approval", "apply" or "dry_run" — from the workload
+	// bundle's hitl.on_mutation. It is a second axis rather than a
+	// spelling of Mode: Mode answers "what does the permissions gate
+	// do when asked", and this answers "does a mutating call get
+	// parked for a human at all". Empty from a reporter that has no
+	// write gate, which is every core-agent-shaped one.
+	OnMutation string `json:"on_mutation,omitempty"`
+
 	Allow     []string       `json:"allow,omitempty"`
 	Deny      []string       `json:"deny,omitempty"`
 	Approvals []ApprovalInfo `json:"approvals,omitempty"`
 }
 
 // ApprovalInfo is one row in the per-session approval log. Mirrors
-// permissions.ApprovalLog in a JSON-friendly shape.
+// permissions.ApprovalLog in a JSON-friendly shape, plus the three
+// fields a durable adjudication carries and an in-process prompt
+// does not (#375).
 type ApprovalInfo struct {
-	Tool     string    `json:"tool"`
-	Key      string    `json:"key,omitempty"`
-	Decision string    `json:"decision"` // "allow-once" | "allow-session" | etc.
-	At       time.Time `json:"at"`
+	Tool string `json:"tool"`
+	Key  string `json:"key,omitempty"`
+
+	// Decision is the permissions vocabulary — "allow-once",
+	// "allow-session", "deny" and so on — and stays that vocabulary
+	// even for a reporter whose own record uses another one, because
+	// this is the field a ported client switches on. A mast daemon
+	// derives it from what the gate DID with the call rather than
+	// from what the operator answered: the two come apart, and a row
+	// labelled by the answer would say "allow-once" about a call the
+	// gate then refused.
+	Decision string `json:"decision"`
+
+	At time.Time `json:"at"`
+
+	// Approver is who answered, when the reporter recorded anybody
+	// (#194). Empty is a real answer, not a missing one: an
+	// in-process prompt honestly records no identity, and a machine
+	// approver is spelled with a "mast:" prefix rather than left
+	// blank.
+	Approver string `json:"approver,omitempty"`
+
+	// Refusal is the machine-readable code the agent was told when the
+	// call did not run — "denied_by_operator", "edit_refused",
+	// "denied_by_policy". Set only alongside a deny Decision, and it
+	// is what keeps "a person said no" distinguishable from "the
+	// daemon refused the person's answer", which Decision alone
+	// flattens.
+	Refusal string `json:"refusal,omitempty"`
+
+	// ChangeSet names the approved set this call fired under, when it
+	// ran on an answer somebody gave earlier about a DIFFERENT call.
+	// Present means nobody was asked about this row. Omitting it would
+	// let a client present a granted call as an individually approved
+	// one, which is a quietly false description of what the operator
+	// authorized.
+	ChangeSet string `json:"change_set,omitempty"`
 }
 
 // PatternsRequest is the POST body for /perms/allow + /perms/deny.

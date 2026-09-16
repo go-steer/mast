@@ -154,6 +154,20 @@ type Config struct {
 	// the projection; this package stays free of pkg/transcript.
 	PermsSource attach.PermsSource
 
+	// PermsFn, when set, services GET /sessions/.../perms and is what
+	// raises the perms capability (#375): the rules the session runs
+	// under, plus the approvals already adjudicated in it. Nil leaves
+	// the route at 501 rather than answering the zero PermsInfo, which
+	// is what every mast entrypoint did through v0.8 and which reads
+	// to a client as a daemon that gates nothing.
+	//
+	// A hook for the same reason as TurnStateFn and PermsSource: the
+	// decided half of the answer is durable, read back out of the
+	// session's event log rather than held by a gate in this process.
+	// The caller projects it and absorbs the read cost; this package
+	// stays free of pkg/transcript.
+	PermsFn func() attach.PermsInfo
+
 	// ResetGuardrailFn, when set, services POST
 	// /sessions/.../guardrails/reset. Nil is a 501 rather than a
 	// silent no-op: a session wedged past its ceiling stays wedged for
@@ -166,7 +180,7 @@ type Config struct {
 // interfaces mast's daemon can honestly serve: StatusProvider,
 // TurnStateProvider, UsageProvider, ToolsProvider, SubagentCatalogProvider,
 // GuardrailProvider, GuardrailResetter, InterruptProvider,
-// DescriptionProvider, and OperatorEventTarget.
+// DescriptionProvider, PermsProvider, and OperatorEventTarget.
 //
 // It also implements CapabilityReporter, because satisfying an
 // interface is not the same as being wired: the guardrail methods
@@ -532,7 +546,23 @@ func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
 		rep.CostCeiling = ad.cfg.GuardrailsFn().CostCeiling.Configured()
 	}
 	rep.PermsStream = ad.cfg.PermsSource != nil
+	rep.Perms = ad.cfg.PermsFn != nil
 	return rep
+}
+
+// AttachPerms implements attach.PermsProvider: the rules in force for
+// this session and the approvals decided in it.
+//
+// Returns the zero value when unwired, which the caller never sees —
+// the route consults the capability report first and answers 501. The
+// zero value is deliberately not a fallback here: "mode unset, no
+// rules, no approvals" describes an ungoverned daemon rather than an
+// unknown one (#375).
+func (ad *Adapter) AttachPerms() attach.PermsInfo {
+	if ad.cfg.PermsFn == nil {
+		return attach.PermsInfo{}
+	}
+	return ad.cfg.PermsFn()
 }
 
 // AttachPermsSource implements attach.PermsSourceProvider. Nil when
