@@ -142,6 +142,18 @@ type Config struct {
 	// reports the same turn_state as a finished one.
 	TurnStateFn func() string
 
+	// PermsSource, when set, services GET /sessions/.../perms/stream
+	// and POST /sessions/.../perms/respond, and is what raises the
+	// perms_stream capability (#364). Nil leaves both routes at 501,
+	// which is what every mast entrypoint did through v0.8.
+	//
+	// Like TurnStateFn this is a hook rather than adapter state, and
+	// for the same reason: mast's approvals are durable parks, so the
+	// question a subscriber sees comes out of the session store rather
+	// than out of a gate blocked in this process. The caller supplies
+	// the projection; this package stays free of pkg/transcript.
+	PermsSource attach.PermsSource
+
 	// ResetGuardrailFn, when set, services POST
 	// /sessions/.../guardrails/reset. Nil is a 501 rather than a
 	// silent no-op: a session wedged past its ceiling stays wedged for
@@ -508,14 +520,25 @@ func (ad *Adapter) AttachResetGuardrail(req attach.GuardrailResetRequest) (attac
 // serving a bundle with no `budget:` block has the guardrail surface
 // wired and no ceiling to trip, and advertising a spend cap there
 // would have a client render a limit that does not exist.
+// PermsStream follows the source rather than the method set, which is
+// the whole reason this reporter exists: *Adapter satisfies
+// attach.PermsSourceProvider unconditionally, so capability probing by
+// type assertion would advertise the routes on every daemon and 501
+// them on most.
 func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
 	rep := attach.CapabilityReport{Interrupt: true}
 	if ad.cfg.GuardrailsFn != nil {
 		rep.Guardrails = ad.cfg.ResetGuardrailFn != nil
 		rep.CostCeiling = ad.cfg.GuardrailsFn().CostCeiling.Configured()
 	}
+	rep.PermsStream = ad.cfg.PermsSource != nil
 	return rep
 }
+
+// AttachPermsSource implements attach.PermsSourceProvider. Nil when
+// unwired, which the attach server reads as "capability not
+// registered" and answers 501.
+func (ad *Adapter) AttachPermsSource() attach.PermsSource { return ad.cfg.PermsSource }
 
 // Description implements attach.DescriptionProvider.
 func (ad *Adapter) Description() string { return ad.cfg.Description }

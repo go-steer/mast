@@ -29,14 +29,27 @@ import (
 // tests can assert the full-population path. Kept minimal — the
 // return values don't matter for capability detection; the interface
 // implementation itself is the signal.
+//
+// With one exception, and it is deliberate (#364): perms_stream
+// follows the broker rather than the method set, because a registrant
+// whose broker is nil gets 501 on both prompt routes and advertising
+// them would be the capability frame lying about the same surface the
+// issue was filed over. So this fixture carries a real broker, and
+// TestBuildFeatures_PermsStreamFollowsTheSource pins the nil case.
 type featureRichRegistrant struct {
 	stubRegistrant
 	statusInfo StatusInfo
 	descText   string
+	broker     *PromptBroker
 }
 
-func (f *featureRichRegistrant) AttachPromptBroker() *PromptBroker { return nil }
-func (f *featureRichRegistrant) AttachMCP() MCPInfo                { return MCPInfo{} }
+func (f *featureRichRegistrant) AttachPromptBroker() *PromptBroker {
+	if f.broker == nil {
+		f.broker = NewPromptBroker()
+	}
+	return f.broker
+}
+func (f *featureRichRegistrant) AttachMCP() MCPInfo { return MCPInfo{} }
 func (f *featureRichRegistrant) AttachSpawnSubagent(_ context.Context, _ SubagentSpec) (SubagentSpawnResponse, error) {
 	return SubagentSpawnResponse{}, nil
 }

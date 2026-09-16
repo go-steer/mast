@@ -156,6 +156,42 @@ does not approve the session. It is refused, audited as
 single call. Silently narrowing it would leave someone believing they had
 a standing grant they did not have.
 
+### Answering from a chat client
+
+`POST /resume` is the operator's endpoint. A **gateway** — a chat bot
+rendering Approve/Reject buttons — can instead use the attach server's
+prompt routes, which speak the same protocol every other attach client
+already speaks:
+
+```
+GET  /sessions/<app>/<session>/perms/stream    # SSE; one `prompt` event per open park
+POST /sessions/<app>/<session>/perms/respond   # {"id": "<interrupt id>", "decision": "allow-once"}
+```
+
+Underneath, a press resolves the same durable park by the same rules —
+this is a second door onto `POST /resume`, not a second approval model.
+Four things follow, and a client should be written to expect them:
+
+- **`decision` accepts `deny` and `allow-once`, and nothing else.** The
+  protocol defines four broader values (`allow-session`,
+  `allow-session-verb`, `allow-session-tool`, `allow-always`); mast
+  refuses them with a `400` naming the one you sent, for the same reason
+  `scope: session` is refused above. Offer two buttons.
+- **The question is durable.** It survives a restart, and it can be
+  answered by a process that did not ask it. Answering one that has
+  already been resolved — by another operator, or by a `change_set` grant
+  — is a `404`, not a lost press.
+- **The ack names the approver.** A `200` carries
+  `{"acknowledged": true, "approver": "<identity>"}`, resolved from the
+  authenticated caller exactly as `/resume` resolves it. If `approver` is
+  absent, mast recorded nobody, and a client should not claim otherwise.
+- **Check the capability first.** `perms_stream` in the capability report
+  is true exactly when these routes will answer; a daemon that cannot
+  serve them returns `501` and says so up front.
+
+The `kind` on a frame is `control_plane_write`. It is not display text —
+it is what tells a client which buttons this question takes.
+
 ## Approving a whole change set
 
 When the parked call is one of several the specialist proposed together,

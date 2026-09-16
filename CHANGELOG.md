@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+- **Approving a parked mutation from a chat button works, and the parity
+  scoreboard reads 19 of 19.**
+  ([#364](https://github.com/go-steer/mast/issues/364)) switchboard forwards a
+  button press as `POST /sessions/<app>/<id>/perms/respond`. Every mast daemon
+  answered that **501**, so the last red parity row was mast's — re-attributed
+  on 2026-09-14 after both repos had spent five weeks each passing its own
+  tests against a different endpoint.
+
+  **The issue offered three options and the answer is a fourth.** "Wire it" —
+  `gate.SetPrompter(broker)`, which is what core-agent does — is inert here:
+  mast's live gate entry point is `CheckMutatingToolCall`, which never prompts,
+  it returns `ErrApprovalRequired` and the write gate parks the call. Nothing
+  in this module reaches `AskApproval`, so a broker behind it would have had no
+  callers rather than no subscribers. "Retire it" was wrong for a simpler
+  reason: mast is not un-interactive, and its interactive surface already
+  exists — the operator listener, where `POST /resume` answers a durable park.
+  The route was not missing a mechanism; it was pointed at the wrong one.
+
+  So the two prompt handlers now depend on an interface, `attach.PermsSource`.
+  `PromptBroker` is one implementation — core-agent's blocking in-process
+  prompt, unchanged, still available to an embedder with a terminal — and
+  `cmd/mast` supplies the other, which projects open write-gate parks onto
+  `/perms/stream` and answers a press by taking the same resume path an
+  operator takes. **A client cannot tell which is underneath**, which is the
+  deliverable.
+
+  Three things a client sees:
+
+  - **`decision` admits `deny` and `allow-once` only.** The four broader values
+    are refused **400, by name**, rather than narrowed. This is not new policy
+    — it is `RecordMutationVerdict`'s existing rule moved to where the operator
+    can see it — and it is 400 rather than 403 because the operator *is*
+    allowed to answer; the fix belongs in the client's button set.
+  - **The ack names the approver.** `RespondPrompt` returns the identity the
+    source recorded and the route echoes it, omitted when the source recorded
+    nobody. A `PromptBroker` honestly records no one; a durable answer records
+    the authenticated caller ([#194](https://github.com/go-steer/mast/issues/194)).
+  - **`perms_stream` became exact.** The capability probe was a type assertion,
+    so a registrant whose method returned nil advertised routes it 501s — and
+    that frame is what a client reads to decide whether to render an approval
+    UI at all.
+
+  The frame's `kind` is `control_plane_write`, and that string is load-bearing
+  rather than descriptive: switchboard derives the offered buttons from it,
+  mapping that kind to exactly deny/allow-once and an **unrecognised** kind to
+  all six. An invented kind would have put four buttons in front of an operator
+  that this daemon answers 400.
+
+  **The reusable lesson is about the test, not the route.**
+  [#248](https://github.com/go-steer/mast/pull/248) filed a wire-contract test
+  as this repo's accountability for the row and pinned the verdict vocabulary
+  on `POST /resume` — which switchboard's approval client never calls.
+  `pkg/attach/permswire_test.go` is the same discipline aimed at
+  `/perms/{stream,respond}`: route paths, the `prompt` SSE event name, the
+  frame and ack JSON keys, and the decision and kind vocabularies, every one a
+  literal. A contract pin is worth what the other side actually calls.
+
+  Stated rather than rounded off: **no live switchboard→mast press has been
+  executed.** Agreement was established by reading the counterpart's call
+  sites. The first real press is the confirmation.
+
 - **The only thinking config mast could send was rejected by its own default
   model.** ([#369](https://github.com/go-steer/mast/issues/369)) A caller who
   asked `claude-opus-5` for a thinking budget got a **400, not a degraded

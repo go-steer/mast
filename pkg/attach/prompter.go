@@ -42,8 +42,23 @@ import (
 // AskApproval would block subsequent tool calls.
 //
 // One broker per daemon process. Wire via
-// agent.WithAttachPromptBroker so the agent surfaces it through the
-// PromptBrokerProvider capability the attach server consults.
+// attachadapter.WithPromptBroker so the registrant surfaces it through
+// the PromptBrokerProvider capability the attach server consults.
+//
+// No mast entrypoint wires one, and that is a decision rather than a
+// gap: mast's approvals are durable parks and its gate never prompts,
+// so this bridge would have nothing to bridge. cmd/mast answers the
+// same two routes from a park-backed PermsSource instead — see
+// permsource.go. The type stays because a library embedder that
+// supplies its own configured gate with a Prompter can still use it,
+// and because divergence in a ported file has a sync-ledger price.
+//
+// (The option this comment named through v0.8 —
+// agent.WithAttachPromptBroker — never existed in this repo. It does
+// not exist upstream either: core-agent renamed it to
+// attachadapter.WithPromptBroker when it split pkg/agent, and four of
+// its own comments still name the old one. Inherited drift, logged in
+// docs/sibling-sync.md.)
 type PromptBroker struct {
 	mu      sync.Mutex
 	pending map[string]*pendingPrompt
