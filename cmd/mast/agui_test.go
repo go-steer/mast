@@ -1086,19 +1086,34 @@ func TestBuildAGUIServerRejectsBadStateProjection(t *testing.T) {
 // seam a unit test on the emitter alone cannot reach: a backend whose bundle
 // declares no projection must build an emitter that publishes nothing.
 func TestAGUIBackendStateProjection(t *testing.T) {
-	if got := (&aguiBackend{}).stateProjection(); got != nil {
+	if got := (&aguiBackend{}).publication().stateSet; got != nil {
 		t.Fatalf("nil bundle: projection = %v, want nil", got)
 	}
-	if got := (&aguiBackend{bundle: &workload.Bundle{Name: "w"}}).stateProjection(); got != nil {
+	if got := (&aguiBackend{bundle: &workload.Bundle{Name: "w"}}).publication().stateSet; got != nil {
 		t.Fatalf("no state_projection declared: projection = %v, want nil", got)
 	}
 	b := &aguiBackend{bundle: &workload.Bundle{
 		Name: "w",
 		AGUI: workload.AGUI{Expose: true, StateProjection: []string{"plan", "phase"}},
 	}}
-	got := b.stateProjection()
-	if len(got) != 2 || !got["plan"] || !got["phase"] {
-		t.Fatalf("projection = %v, want the two declared keys", got)
+	pub := b.publication()
+	if len(pub.stateSet) != 2 || !pub.stateSet["plan"] || !pub.stateSet["phase"] {
+		t.Fatalf("projection = %v, want the two declared keys", pub.stateSet)
+	}
+	// The ordered list and the lookup set are two renderings of one
+	// declaration and are read by two different consumers — the descriptor
+	// and the emitter. If they can disagree, the descriptor advertises keys
+	// no patch will ever name (#377).
+	if !slices.Equal(pub.stateKeys, []string{"plan", "phase"}) {
+		t.Fatalf("stateKeys = %v, want the declared order", pub.stateKeys)
+	}
+	if len(pub.stateKeys) != len(pub.stateSet) {
+		t.Fatalf("stateKeys %v and stateSet %v describe different key sets", pub.stateKeys, pub.stateSet)
+	}
+	for _, k := range pub.stateKeys {
+		if !pub.stateSet[k] {
+			t.Fatalf("advertised key %q is not in the set the emitter consults", k)
+		}
 	}
 }
 
@@ -1279,17 +1294,17 @@ func TestAGUIEmitterSkipsUserThinking(t *testing.T) {
 // for a bundle that simply does not mention the key, so a workload only
 // publishes reasoning by saying so.
 func TestAGUIBackendReasoningEnabled(t *testing.T) {
-	if (&aguiBackend{}).reasoningEnabled() {
-		t.Error("nil bundle: reasoningEnabled = true, want false")
+	if (&aguiBackend{}).publication().reasoning {
+		t.Error("nil bundle: reasoning = true, want false")
 	}
-	if (&aguiBackend{bundle: &workload.Bundle{Name: "w"}}).reasoningEnabled() {
-		t.Error("no emit_reasoning declared: reasoningEnabled = true, want false")
+	if (&aguiBackend{bundle: &workload.Bundle{Name: "w"}}).publication().reasoning {
+		t.Error("no emit_reasoning declared: reasoning = true, want false")
 	}
 	b := &aguiBackend{bundle: &workload.Bundle{
 		Name: "w",
 		AGUI: workload.AGUI{Expose: true, EmitReasoning: true},
 	}}
-	if !b.reasoningEnabled() {
+	if !b.publication().reasoning {
 		t.Error("emit_reasoning: true did not reach the backend")
 	}
 }
@@ -1300,7 +1315,7 @@ func TestAGUIBackendReasoningEnabled(t *testing.T) {
 // tests construct the emitter by hand and so would stay green if RunAgent
 // stopped passing the flag.
 //
-// Neutralize check: drop `reasoning: b.reasoningEnabled()` from RunAgent's
+// Neutralize check: drop `reasoning: pub.reasoning` from RunAgent's
 // emitter construction and the opted-in leg fails; the default leg stays green,
 // which is why both legs are here.
 func TestAGUIBackendEmitsReasoningEndToEnd(t *testing.T) {

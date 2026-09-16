@@ -121,8 +121,11 @@ const testEndpoint = "/agui/triage"
 // and Exposed default to a single "triage" workload if unset.
 func testServer(t *testing.T, cfg Config) (*httptest.Server, *fakeBackend) {
 	t.Helper()
+	// Keyed on cfg.Backend being nil, not on be being nil: a caller that
+	// supplies some other Backend keeps it and gets a nil *fakeBackend back.
+	// Overwriting it instead would silently swap the object under test.
 	be, _ := cfg.Backend.(*fakeBackend)
-	if be == nil {
+	if cfg.Backend == nil {
 		be = newFakeBackend()
 		cfg.Backend = be
 	}

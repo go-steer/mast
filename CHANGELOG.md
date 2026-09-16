@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **`/agui/agents.json` now says what a run on each workload will actually
+  publish.** ([#377](https://github.com/go-steer/mast/issues/377)) Every
+  descriptor carries a `capabilities` object:
+
+  ```json
+  "capabilities": {
+    "state_delta": true,
+    "state_keys": ["plan", "phase"],
+    "reasoning": false
+  }
+  ```
+
+  The two v0.9 bundle keys that opt a workload into publishing —
+  `agui.state_projection` and `agui.emit_reasoning` — left a client with no way
+  to know either one before starting a run, and no reliable way after: a stream
+  with no reasoning in it looks the same whether the workload publishes none or
+  the model didn't think. They are per-bundle, so `protocol_version` cannot
+  carry them.
+
+  - The bools are **never elided when `false`**. An absent key means a server
+    older than this object; an explicit `false` is a promise that the frame
+    family will not appear, and a client has to tell those apart.
+  - `state_keys` is in the order the bundle declares, so a client can lay out
+    panels before the first patch, and is omitted whenever `state_delta` is
+    `false` rather than describing a channel that cannot open.
+  - The values come from the same value the run's emitter is built from, via a
+    new optional `agui.CapabilityReporter` on the `Backend`, rather than from a
+    second read of the bundle beside the first. A capability claim that
+    restates a config instead of reading what it describes is how `/tools`
+    ([#364](https://github.com/go-steer/mast/issues/364)) and `/perms`
+    ([#375](https://github.com/go-steer/mast/issues/375)) each spent releases
+    advertising something untrue.
+  - The endpoint **stays unauthenticated**, now as a decision rather than an
+    inherited default: the descriptor may state what a client permitted to run
+    would observe in the stream anyway, and may not state a property of the
+    governance around the stream. That is why there is no HITL bit.
+
 - **`GET /perms` stops describing every mast daemon as one that gates
   nothing.** ([#375](https://github.com/go-steer/mast/issues/375)) The route
   answered `200` with `{"mode":""}` on every release since it was ported. That
