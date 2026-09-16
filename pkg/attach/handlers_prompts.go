@@ -33,10 +33,13 @@ import (
 // The remote TUI's adapter subscribes to /perms/stream; each frame
 // becomes a coretui.PermissionRequest displayed in the host TUI's
 // modal. When the operator picks a decision, the adapter POSTs to
-// /perms/respond and the daemon's blocked AskApproval call unblocks.
+// /perms/respond.
 //
-// Both routes only register when the agent satisfies
-// PromptBrokerProvider. Agents without a broker get 501 for both —
+// What is on the other end is a PermsSource, not necessarily a
+// PromptBroker (#364): in core-agent the answer unblocks a gate
+// sitting inside AskApproval, and in mast it resolves a durable
+// write-gate park. permsource.go carries the reason the seam is an
+// interface. Agents offering neither capability get 501 for both —
 // matching the "capability not registered" convention used by the
 // other PR A2 mutators.
 
@@ -46,12 +49,11 @@ func (h *handlers) registerPrompts(mux *http.ServeMux) {
 }
 
 func (h *handlers) doPermsStream(w http.ResponseWriter, r *http.Request, entry *Entry) {
-	provider, ok := entry.Agent.(PromptBrokerProvider)
-	if !ok || provider.AttachPromptBroker() == nil {
+	source := permsSourceFor(entry)
+	if source == nil {
 		http.Error(w, "perms/stream capability not registered", http.StatusNotImplemented)
 		return
 	}
-	broker := provider.AttachPromptBroker()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -65,7 +67,7 @@ func (h *handlers) doPermsStream(w http.ResponseWriter, r *http.Request, entry *
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	frames, cleanup := broker.Subscribe(r.Context())
+	frames, cleanup := source.SubscribePrompts(r.Context())
 	defer cleanup()
 
 	for {
@@ -95,12 +97,11 @@ func (h *handlers) doPermsStream(w http.ResponseWriter, r *http.Request, entry *
 }
 
 func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry *Entry) {
-	provider, ok := entry.Agent.(PromptBrokerProvider)
-	if !ok || provider.AttachPromptBroker() == nil {
+	source := permsSourceFor(entry)
+	if source == nil {
 		http.Error(w, "perms/respond capability not registered", http.StatusNotImplemented)
 		return
 	}
-	broker := provider.AttachPromptBroker()
 
 	var req PromptResponse
 	if err := readJSON(r, &req, operatorPostMaxBytes); err != nil {
@@ -116,13 +117,29 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		http.Error(w, fmt.Sprintf("perms/respond: unknown decision %q (want deny|allow-once|allow-session|allow-session-verb|allow-session-tool|allow-always)", req.Decision), http.StatusBadRequest)
 		return
 	}
-	if err := broker.Respond(req.ID, decision); err != nil {
-		if errors.Is(err, ErrPromptNotFound) {
+	approver, err := source.RespondPrompt(r.Context(), req.ID, decision)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrPromptNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)
-			return
+		case errors.Is(err, ErrDecisionNotAdmissible):
+			// 400, not 403: the operator is allowed to answer, and the
+			// answer they sent is one this question does not take. The
+			// fix is in the client's button set.
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"acknowledged": true})
+	// approver is omitted when the source recorded nobody, which is the
+	// honest answer for a PromptBroker: it releases a blocked call and
+	// writes down no identity. A durable source reports the identity the
+	// decision was stamped with, so a client can name who approved
+	// instead of asserting that somebody did.
+	out := map[string]any{"acknowledged": true}
+	if approver != "" {
+		out["approver"] = approver
+	}
+	writeJSON(w, http.StatusOK, out)
 }

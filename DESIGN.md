@@ -599,27 +599,36 @@ callers before the prompt is even located.
 
 The **in-chat Approve/Reject surface** was recorded here as
 switchboard's too, and that was wrong — corrected 2026-09-14 while
-closing [#242](https://github.com/go-steer/mast/issues/242).
-switchboard shipped its half; it answers `POST
-/sessions/<app>/<sid>/perms/respond`, and on a mast daemon that route
-is a **501**. Every `/perms` route in `pkg/attach` gates on a
-capability no type in this module implements outside a test, because
-`internal/compose` builds the write gate with no `Prompter` — there is
-no human on stdin in an unattended daemon, so the synchronous prompt
-path is never reached. That is the right posture and it is not a
-defect; what is a defect is the corpus counting the resulting red row
-against a sibling repo. mast's approval model is the durable
-write-gate park, and making *that* answerable from a thread is
-switchboard's #84 over mast's
-[#313](https://github.com/go-steer/mast/issues/313), **which shipped
-2026-09-14** — a parked session now reports `awaiting_permission`
-rather than `idle`, at the transition and in the boot snapshot, so the
-gateway half is unblocked and the row's remaining mast-side work is the
-`/perms` fork. What mast does
-with the dead `/perms` fork it inherited is
-[#364](https://github.com/go-steer/mast/issues/364). mast's existing
-side is a wire-contract test that the resume shape and
-`X-Asserted-Caller` do not move underneath either of them.
+closing [#242](https://github.com/go-steer/mast/issues/242). It is no
+longer deferred: **it shipped 2026-09-16 as
+[#364](https://github.com/go-steer/mast/issues/364)**, and what it
+resolved is worth stating because the issue offered three options and
+the answer was a fourth.
+
+The two prompt routes stay, and the durable park answers them. The
+seam is `attach.PermsSource` (`pkg/attach/permsource.go`): `GET
+/perms/stream` publishes a session's open approval parks read off the
+transcript, and `POST /perms/respond` takes the same resume path `POST
+/resume` takes, verdict shape and authenticated attribution included.
+The ported `PromptBroker` is one implementation of that seam and stays
+exactly as ported for embedders with a terminal; a mast daemon wires
+the other. What was *not* built is the thing the issue called "wire
+it": `gate.SetPrompter(broker)` would fan out nothing here, because
+mast's live gate entry point is `CheckMutatingToolCall`, which never
+prompts — it returns `ErrApprovalRequired` and the write gate parks the
+call. Nothing in this module reaches `AskApproval`, so the broker
+behind it would have no callers rather than no subscribers.
+
+Three consequences a client should know. The durability runs mast's
+way — a broker loses every pending prompt when the process dies and a
+park does not, so a subscriber attaching after a restart is still shown
+the question. A mutating call admits exactly `deny` and `allow-once`;
+the four broader decisions are refused **400 at the door** rather than
+narrowed, because `RecordMutationVerdict` was never going to honour
+them and a button that grants less than its label is worse than an
+absent one. And the frame's `kind` is `control_plane_write`, chosen for
+the button set it induces in a client rather than for taxonomy: it is
+the one kind whose client-side rule already matches mast's gate.
 
 Settled rather than deferred, as of 2026-08-31: **the write gate does
 not reach inside a planner dispatch, and will not** — the combination

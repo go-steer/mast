@@ -153,6 +153,40 @@ queried, or does not catch up within two seconds, the terminal frame is
 released anyway and the delay is logged — a late frame is a correctness
 bug, a missing one is worse.
 
+### Answering a park over attach
+
+`awaiting_permission` tells a client there is a question; two routes let it
+carry the answer back without leaving the attach protocol:
+
+| route | does |
+|---|---|
+| `GET /sessions/{app}/{id}/perms/stream` | SSE; one `prompt` event per open approval park |
+| `POST /sessions/{app}/{id}/perms/respond` | `{"id": "<interrupt id>", "decision": "allow-once"}` |
+
+This is a **second door onto `POST /resume`**, not a second approval model.
+A press resolves the same durable park, is attributed to the same
+authenticated caller, and is subject to the same rules — including the ones
+that make this surface narrower than the protocol it inherited:
+
+- `decision` takes `deny` and `allow-once`. The four wider values the
+  protocol defines are refused **400 by name** rather than narrowed to
+  allow-once, the same refusal `scope: session` gets on `/resume`. A button
+  that means less than it says is a bad button; one that means more is
+  worse.
+- Answering a park that is already resolved is a **404**. Durability cuts
+  both ways: a question that outlives the process can also be answered by
+  someone else first.
+- A `200` is `{"acknowledged": true, "approver": "<identity>"}`. When
+  `approver` is absent, mast recorded nobody — do not render a name.
+- `perms_stream` in the capability report is true exactly when these routes
+  will answer. A daemon that cannot serve them answers `501`.
+
+Before v0.9 the routes existed and every mast daemon answered `501`: they
+came with a ported package built for a synchronous prompt at a keyboard,
+and mast has no keyboard. They now sit on the mechanism mast does have.
+A park carries `kind: control_plane_write`, which is the field a client
+should switch its button set on.
+
 `GET /sessions/{id}/tools` lists the tools the daemon actually holds, each
 with a `source`, the MCP `server` it came from if it has one, and a
 `gate_state` — what the [write gate](/concepts/approvals/) would do to a

@@ -26,6 +26,7 @@ import (
 	"github.com/go-steer/mast/pkg/attachadapter"
 	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/eventlog"
+	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -70,6 +71,17 @@ type attachWiring struct {
 	guardrails     func(sid string) attach.GuardrailInfo
 	resetGuardrail func(sid string, req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error)
 	runTurn        func(ctx context.Context, sid, message string) error
+
+	// resume delivers an operator verdict to a parked call, and is the
+	// same closure POST /resume runs (#364). Held here so the attach
+	// server's /perms routes answer the durable park rather than 501 —
+	// without it, and without store above, newParkPerms returns nil and
+	// the daemon advertises perms_stream false, which is what it did
+	// through v0.8.
+	resume func(ctx context.Context, req inject.ResumeRequest) error
+
+	// logger backs the perms stream's read diagnostics. Optional.
+	logger *slog.Logger
 }
 
 // config renders the wiring for one session.
@@ -97,6 +109,7 @@ func (w attachWiring) config(sid string) attachadapter.Config {
 		},
 		SubagentsFn:  func() []attach.SubagentCatalogInfo { return w.subagents },
 		TurnStateFn:  func() string { return w.turnState(sid) },
+		PermsSource:  newParkPerms(w.store, sid, w.resume, w.logger),
 		GuardrailsFn: func() attach.GuardrailInfo { return w.guardrails(sid) },
 		ResetGuardrailFn: func(req attach.GuardrailResetRequest) (attach.GuardrailResetResponse, error) {
 			return w.resetGuardrail(sid, req)

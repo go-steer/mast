@@ -978,6 +978,20 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// endpoint drives. Bound here (fail-fast), served after the inject
 	// server is up.
 	var att *attachDeps
+
+	// resumeForPerms is assigned once the resume path below exists.
+	//
+	// The indirection is a real cycle, not an ordering accident: the
+	// attach surface's /perms routes answer a park by resuming it
+	// (#364), and the resume path registers the resumed session with
+	// the attach surface (att.ensure). One variable breaks it; the
+	// alternative is a second copy of one side's job. Nothing reaches
+	// it before the assignment — it is called from a per-session
+	// adapter, and no session registers until serve is listening — but
+	// the nil check is kept because that ordering is a fact about a
+	// hundred lines of this function rather than about this line.
+	var resumeForPerms func(context.Context, inject.ResumeRequest) error
+
 	if listeners.attach != "" {
 		grView := &guardrailView{meters: meters, wds: wds, logger: logger}
 		wiring := attachWiring{
@@ -998,7 +1012,19 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 			// The turn_state projection: a session parked on the write
 			// gate reported `idle` — the string a finished turn gets —
 			// for every release the attach surface has existed (#313).
-			store: store,
+			store:  store,
+			logger: logger,
+			// GET /perms/stream + POST /perms/respond, answered from
+			// the durable park instead of 501 (#364). Same resume path
+			// POST /resume takes, so the approver is the authenticated
+			// caller and the audit row is the one an operator gets from
+			// the CLI.
+			resume: func(ctx context.Context, req inject.ResumeRequest) error {
+				if resumeForPerms == nil {
+					return errors.New("resume path is not wired yet")
+				}
+				return resumeForPerms(ctx, req)
+			},
 			usage: func(sid string) attach.UsageInfo {
 				_, cost, calls := meters.meter(sid).Snapshot()
 				return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}
@@ -1154,6 +1180,10 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		}
 		return resumeByInterrupt(reqCtx, req)
 	}
+	// Close the cycle declared above: the attach /perms routes now have
+	// the same resume path POST /resume uses, draining check included.
+	resumeForPerms = resumeHandler
+
 	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
 		if transcript.IsReservedSessionID(req.SessionID) {
 			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not an abortable session: %w", req.SessionID, inject.ErrBadPayload)

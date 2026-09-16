@@ -141,7 +141,9 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 			out[featureCostCeiling] = true
 		}
 	} else {
-		if _, ok := entry.Agent.(PromptBrokerProvider); ok {
+		// Either source raises it: the routes take a PermsSource, and
+		// a broker is one of two ways to be one (permsource.go).
+		if permsSourceFor(entry) != nil {
 			out[featurePermsStream] = true
 		}
 		if _, ok := entry.Agent.(MCPProvider); ok {

@@ -923,29 +923,47 @@ the daemon logs the enabled list at startup so you can check what a running
 workload publishes without trusting the bundle you think is mounted.
 
 Also in v0.9: **the parity scoreboard was re-measured rather than re-asserted**,
-and it had one row attributed to the wrong repo. The board reads **18 of 19**.
-The **approver allowlist** is green — switchboard shipped it on 2026-09-03, and
-it is stricter than the env var it was matched against: the list is per channel,
-the "anyone here may answer" posture is a value somebody wrote rather than an
-empty setting, and a list that would match nobody is refused at startup instead
-of discovered from a thread.
+it had one row attributed to the wrong repo, and that row is now green. The
+board reads **19 of 19**. The **approver allowlist** is green — switchboard
+shipped it on 2026-09-03, and it is stricter than the env var it was matched
+against: the list is per channel, the "anyone here may answer" posture is a
+value somebody wrote rather than an empty setting, and a list that would match
+nobody is refused at startup instead of discovered from a thread.
 
-**In-chat Approve/Reject is the last red row, and it is mast's, not
-switchboard's.** switchboard wrote its half too; it answers a mast daemon at
-`POST /sessions/<app>/<id>/perms/respond`, and **mast returns 501 there**. That
-is not a bug in the sense of something broken by accident: the whole `/perms`
-family is a synchronous ask-the-human-at-the-keyboard surface that mast
-inherited with a ported package, and mast builds its write gate with no
-prompter on purpose, because the premise of the product is that nobody is
-watching. mast is honest about it on the wire — the capability report says
-`perms_stream: false` — so a client reading capabilities never tries. What
-this means for you: **approving a parked mutation from a chat button does not
-work today**, and the path that will make it work is mast's durable approval
-park being visible to a gateway, not this route being revived. Tracked as
-[#364](https://github.com/go-steer/mast/issues/364) (what mast does with the
-dead surface) over [#313](https://github.com/go-steer/mast/issues/313), and
-**#313 is now done** — see below. Approvals continue to work as they always
-have: `mast sessions` plus an authenticated `POST /resume`.
+**You can now approve a parked mutation from a chat button.** This was the last
+red row, and it was mast's, not switchboard's: switchboard had written its half
+and answers a mast daemon at `POST /sessions/<app>/<id>/perms/respond`, where
+**mast returned 501** for five weeks. Both repos built a coherent half against
+a different endpoint and each half passed its own tests.
+
+The reason the route was dead is worth knowing, because the fix is not the
+obvious one. The `/perms` family is a synchronous ask-the-human-at-the-keyboard
+surface mast inherited with a ported package, and mast builds its write gate
+with no prompter on purpose — the premise of the product is that nobody is
+watching. Reviving the inherited wiring would have connected the route to a
+code path that, in this daemon, nothing reaches. But mast is not un-interactive;
+its interactive surface is the operator listener, where a parked mutation is
+answered by an authenticated `POST /resume`. So the route was not missing a
+mechanism, it was pointed at the wrong one. The two prompt endpoints now take
+a source, and mast supplies one backed by its **durable approval park** — the
+same questions `mast sessions` shows you, projected onto the stream, answered
+through the same resume path. A client cannot tell which mechanism is
+underneath, which is the point.
+
+Three things to know if you are writing that client. The capability report is
+now **exact**: `perms_stream` is true when the routes will actually answer, and
+false when they will not. Only **deny** and **allow-once** are accepted — the
+four broader decisions the protocol defines are refused with a `400` naming the
+reason rather than quietly narrowed, because a durable mutation approval has
+never been grantable for a whole session and a button that means more than it
+says is worse than an absent one. And the ack tells you **who** approved when
+mast recorded an identity, rather than only that somebody did.
+
+What has not changed: `mast sessions` plus an authenticated `POST /resume`
+still works exactly as before, and is still the path for an operator without a
+chat client. Shipped as
+[#364](https://github.com/go-steer/mast/issues/364), on top of
+[#313](https://github.com/go-steer/mast/issues/313) — see below.
 
 Which brings the other half of v0.9's attach work: **a session waiting on a
 human now says so.** Until this release a parked session reported

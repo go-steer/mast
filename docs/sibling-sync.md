@@ -1338,3 +1338,32 @@ before then.
 Nothing new is owed **upstream** this pass. The carry-forwards there are unchanged: the peer-lease
 clamp, the `ef9b9b5` port, and the content-level sync check of core-agent's #542 / #545 / #546 /
 #547 / #549.
+
+## Found while shipping [#364](https://github.com/go-steer/mast/issues/364), 2026-09-16
+
+**Inherited doc drift, and the one thing owed upstream from this PR.** `pkg/attach/prompter.go`
+told a reader to "wire via `agent.WithAttachPromptBroker`". **That function does not exist in
+core-agent either** — it was renamed to `attachadapter.WithPromptBroker` when core-agent's #388
+split the adapter out, and the comments were not walked. Four comments upstream plus
+`CHANGELOG.md:680` still name the old one. mast inherited the stale text with the port and then
+carried it for eight releases past the point where anyone could have followed it.
+
+mast's copy is corrected in #364 and now names the function that exists, records the decision, and
+points at `pkg/attach/permsource.go`. **Owed upstream: a core-agent issue for the four comments and
+the changelog line.** No trailer bumps — the correction is mast's own prose about mast's own wiring,
+not a re-port.
+
+Worth naming as a class, because this is the second time this ledger has hit it: **a doc comment
+naming a symbol is a claim the compiler does not check.** `pkg/eventlog`'s `LatestSeq` named a
+caller it never had (#327), `pkg/attach/prompter.go` named a function no repo has, and #300 found a
+marker the corpus had promised for seven releases and never written once. All three survived because
+prose is not on the build.
+
+**Not drift, recorded so the next pass does not re-derive it.** core-agent's `PromptBroker` and
+mast's park-backed source are different mechanisms serving the same two routes, and that is
+deliberate — core-agent has a human at a keyboard and a blocking `AskApproval`; mast has neither and
+has a durable park instead. The convergence is at the wire, not in the implementation, so a future
+upstream commit on `PromptBroker` is a port candidate for `pkg/attach` and says nothing about
+`cmd/mast/permsource.go`. What *would* be drift is a change to the frame shape, the SSE event name
+or the decision vocabulary; `pkg/attach/permswire_test.go` pins all three as literals, so such a
+commit will arrive as a failing test rather than as a silent divergence.
