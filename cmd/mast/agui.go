@@ -32,8 +32,12 @@ package main
 // mast's durable pause/resume (docs/durable-execution-design.md), and per-key
 // state deltas: a runtime state write whose key the bundle's
 // agui.state_projection allowlist names is published as an RFC 6902 patch, and
-// a workload that declares no allowlist publishes nothing. The agui://
-// federation client remains a follow-on stage.
+// a workload that declares no allowlist publishes nothing. Reasoning is the
+// second per-bundle publication surface and follows the same shape: a workload
+// setting agui.emit_reasoning streams the model's thinking as a REASONING_*
+// phase ahead of its answer, and one that does not emits no reasoning frame at
+// all. Activity events and the agui:// federation client remain follow-on
+// stages.
 
 import (
 	"context"
@@ -111,6 +115,14 @@ func (b *aguiBackend) stateProjection() map[string]bool {
 		keys[k] = true
 	}
 	return keys
+}
+
+// reasoningEnabled reports whether this workload publishes the model's
+// reasoning to its AG-UI clients. False for a nil bundle and for a bundle that
+// does not set agui.emit_reasoning, which is the default and means no
+// REASONING_* frame is ever emitted.
+func (b *aguiBackend) reasoningEnabled() bool {
+	return b.bundle != nil && b.bundle.AGUI.EmitReasoning
 }
 
 // sessionIDFor derives the mast session id for a run from the client-supplied
@@ -216,7 +228,12 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 		defer cancel()
 	}
 
-	em := &aguiEmitter{emit: emit, projection: b.stateProjection(), logger: b.logger}
+	em := &aguiEmitter{
+		emit:       emit,
+		projection: b.stateProjection(),
+		reasoning:  b.reasoningEnabled(),
+		logger:     b.logger,
+	}
 	err := runTurnPre(ctx, b.turnDeps, sessionID, msg, label, nil, em.onEvent)
 
 	return b.classifyRun(ctx, sessionID, em, err)
@@ -402,6 +419,10 @@ type aguiEmitter struct {
 	// state delta at all.
 	projection map[string]bool
 
+	// reasoning is the workload's agui.emit_reasoning opt-in. False — the
+	// default — means onEvent never reads a thinking part at all.
+	reasoning bool
+
 	// logger records a state value that will not marshal. Optional: the
 	// emitter is constructed in tests without one.
 	logger *slog.Logger
@@ -426,6 +447,8 @@ func (e *aguiEmitter) nextID(kind string) string {
 // becomes a ToolCall start/args/end triple parented to that message; each
 // FunctionResponse (which arrives on non-model events) becomes a ToolCallResult.
 // A RequestedInput or an unanswered long-running tool marks the run interrupted.
+// A model event's thinking parts become a REASONING_* bracket ahead of the
+// answer, but only for a workload that opted in (see emitReasoning).
 func (e *aguiEmitter) onEvent(ev *session.Event) {
 	if ev == nil {
 		return
@@ -441,6 +464,13 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 		return
 	}
 	model := ev.Content.Role == genai.RoleModel
+
+	// Reasoning before the answer, because that is the order the model
+	// produced them in (a thinking part precedes the text part in the same
+	// content) and a client renders the stream in arrival order.
+	if model {
+		e.emitReasoning(ev.Content.Parts)
+	}
 
 	// Assistant text: one whole message per model event. User/tool echoes on
 	// the stream are not re-emitted as assistant text.
@@ -472,6 +502,56 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 			e.emitToolResult(part.FunctionResponse)
 		}
 	}
+}
+
+// emitReasoning publishes one model event's thinking parts as a REASONING_*
+// phase, for a workload whose bundle sets agui.emit_reasoning (#98, resolving
+// docs/ag-ui-design.md OQ 5). It is the second publication surface governed
+// per bundle, and it follows the state-projection precedent deliberately:
+// off by default, nothing at all when off, and said out loud at startup.
+//
+// Four properties are the substance of the opt-in.
+//
+// It is a **deliberate read, not an unfiltered one**. The text comes from
+// internal/modeltext.Thought — the named counterpart to the Text predicate
+// every other surface reads through (#370) — so publishing reasoning is a
+// call to a function whose name says so, and an audit of what can reach a
+// browser is a grep rather than a review of every part.Text in the tree.
+//
+// When off it emits **nothing**, not an empty bracket and not a marker, so a
+// client cannot learn that the model reasoned. That is the same filter-not-
+// redaction rule the state projection follows, and for the same reason: the
+// existence of a thought can itself be the disclosure.
+//
+// A thinking block with **no prose is not a phase**. Under the request mast
+// sends today claude-opus-5 returns a signed block with an empty body, so the
+// common case for an opted-in workload is that this emits nothing — correctly.
+// A bracket around no content would tell a client a thought is being withheld,
+// and the signature that block does carry has no AG-UI frame at all.
+//
+// The parts of one event are **concatenated into one reasoning message**,
+// mirroring the answer path directly above: mast runs StreamingModeNone, so
+// an event is a whole message, and splitting one model turn's thinking across
+// several messages would invent a structure the provider did not send.
+func (e *aguiEmitter) emitReasoning(parts []*genai.Part) {
+	if !e.reasoning {
+		return
+	}
+	var sb strings.Builder
+	for _, p := range parts {
+		if thought, ok := modeltext.Thought(p); ok {
+			sb.WriteString(thought)
+		}
+	}
+	if sb.Len() == 0 {
+		return
+	}
+	id := e.nextID("reasoning")
+	e.emit(agui.NewReasoningStart())
+	e.emit(agui.NewReasoningMessageStart(id))
+	e.emit(agui.NewReasoningMessageContent(id, sb.String()))
+	e.emit(agui.NewReasoningMessageEnd(id))
+	e.emit(agui.NewReasoningEnd())
 }
 
 // emitStateDelta publishes the allowlisted subset of one event's runtime state
@@ -688,6 +768,18 @@ func buildAGUIServer(
 		// rather than off the bundle they think is mounted.
 		logger.Info("AG-UI state projection enabled",
 			"workload", bundle.Name, "keys", bundle.AGUI.StateProjection)
+	}
+	if bundle.AGUI.EmitReasoning {
+		// Warn, where the state-projection line above is Info, and the
+		// difference is deliberate rather than an inconsistency. A projection
+		// publishes keys the operator chose one at a time; emit_reasoning
+		// publishes whatever the model happened to think, which is the one
+		// text on this surface nobody wrote for an audience — including,
+		// when a turn is injected, the injection's own working. It is a
+		// legitimate setting and not a misconfiguration, but an operator
+		// scanning a running daemon should not have to already suspect it.
+		logger.Warn("AG-UI reasoning publication enabled: this workload streams the model's thinking to its AG-UI clients",
+			"workload", bundle.Name)
 	}
 	validator, err := aguiValidator(logger, exposed)
 	if err != nil {

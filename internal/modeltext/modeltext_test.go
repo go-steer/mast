@@ -57,3 +57,69 @@ func TestText(t *testing.T) {
 		})
 	}
 }
+
+// TestThought is the publication predicate's table. The case that carries the
+// decision is "signature-only": a thinking block whose whole payload is the
+// signature must read as "nothing to publish" and never as "here is the
+// signature", because that value is a provider replay credential and the one
+// consumer of this function hands what it returns to a browser.
+func TestThought(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		part *genai.Part
+		want string
+		ok   bool
+	}{
+		{"nil part", nil, "", false},
+		{"thinking block", &genai.Part{Text: "let me check the registry", Thought: true}, "let me check the registry", true},
+		{"plain text", &genai.Part{Text: "the pod is crashlooping"}, "", false},
+		{
+			// Today's common case: claude-opus-5 under the request mast sends
+			// returns a signed block with an empty body. An opted-in workload
+			// publishes nothing for it — and above all not the signature.
+			"signature-only thinking", &genai.Part{Thought: true, ThoughtSignature: []byte("opaque")}, "", false,
+		},
+		{
+			// Signed answer text is an answer, not a thought. Keying on the
+			// signature rather than the flag would publish the answer twice
+			// and label half of it reasoning.
+			"signed answer", &genai.Part{Text: "restarted it", ThoughtSignature: []byte("sig")}, "", false,
+		},
+		{"function call", &genai.Part{FunctionCall: &genai.FunctionCall{Name: "scale"}}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := Thought(tc.part)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("Thought() = (%q, %t), want (%q, %t)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestTextAndThoughtAreDisjoint pins the property the two predicates are only
+// safe as a pair if they have: no part is both an answer and a thought.
+//
+// It is worth its own test because the failure it guards is not a crash. If
+// the two ever overlapped, a workload with agui.emit_reasoning on would
+// publish the same text twice — once as the answer and once as reasoning —
+// and a workload with it OFF could have reasoning reach the answer stream,
+// which is the exact leak internal/modeltext exists to have already closed.
+// Mutation-checked: dropping the Thought guard from Text() fails this.
+func TestTextAndThoughtAreDisjoint(t *testing.T) {
+	for _, p := range []*genai.Part{
+		nil,
+		{},
+		{Text: "answer"},
+		{Text: "reasoning", Thought: true},
+		{Thought: true, ThoughtSignature: []byte("opaque")},
+		{Text: "signed answer", ThoughtSignature: []byte("sig")},
+		{Text: "signed reasoning", Thought: true, ThoughtSignature: []byte("sig")},
+		{FunctionCall: &genai.FunctionCall{Name: "scale"}},
+	} {
+		_, answer := Text(p)
+		_, thought := Thought(p)
+		if answer && thought {
+			t.Errorf("part %+v reads as both an answer and a thought", p)
+		}
+	}
+}

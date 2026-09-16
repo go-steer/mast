@@ -120,8 +120,8 @@ type ResumeEntry struct {
 type EventType string
 
 // The AG-UI event vocabulary this server emits (docs/ag-ui-design.md emission
-// map). Stage 1 ships the lifecycle, text-message triad, tool-call quartet,
-// and state families; activity/reasoning/raw/custom families are deferred.
+// map): the lifecycle, text-message triad, tool-call quartet, state, and
+// reasoning families. The activity/raw/custom families are still deferred.
 const (
 	// Lifecycle.
 	EventRunStarted   EventType = "RUN_STARTED"
@@ -144,7 +144,32 @@ const (
 	// Shared state.
 	EventStateSnapshot EventType = "STATE_SNAPSHOT"
 	EventStateDelta    EventType = "STATE_DELTA"
+
+	// Reasoning: an outer phase bracket around an inner message triad, so a
+	// client can open one "thinking" region and render one-or-more reasoning
+	// messages inside it. Emitted only for a workload whose bundle sets
+	// agui.emit_reasoning (docs/ag-ui-design.md OQ 5) — off by default.
+	EventReasoningStart          EventType = "REASONING_START"
+	EventReasoningMessageStart   EventType = "REASONING_MESSAGE_START"
+	EventReasoningMessageContent EventType = "REASONING_MESSAGE_CONTENT"
+	EventReasoningMessageEnd     EventType = "REASONING_MESSAGE_END"
+	EventReasoningEnd            EventType = "REASONING_END"
 )
+
+// The spec's sixth reasoning event, ReasoningEncryptedValue, is deliberately
+// NOT modeled here, and its absence is a decision rather than the usual
+// "only the subset mast emits" trimming.
+//
+// It exists to carry a provider's opaque reasoning payload — for Anthropic,
+// the ThoughtSignature that must ride back verbatim on the assistant turn
+// preceding a tool_result. That value is a replay credential, not a thought:
+// a client holding it can reconstruct an assistant turn the model will
+// accept as its own. An AG-UI client is a browser. Publishing reasoning
+// prose to it is a decision an operator can take (emit_reasoning); handing
+// out the signature is not a stronger version of that decision, it is a
+// different one, and mast does not offer it. A future need for reasoning
+// continuity across a client-side round trip is a design question, not a
+// missing struct.
 
 // RunErrorCode is the machine-readable code on a RUN_ERROR event. The
 // vocabulary is deliberately small: aborted (operator/client cancellation) and
@@ -296,6 +321,44 @@ type ToolCallResult struct {
 	Content    string `json:"content"`
 }
 
+// ReasoningStart / ReasoningEnd bracket one reasoning phase, and
+// ReasoningMessageStart / ReasoningMessageContent / ReasoningMessageEnd stream
+// one reasoning message inside it — the same start/content/end shape as the
+// assistant-text triad, for the same reason (mast runs StreamingModeNone, so
+// the content frame carries the whole text and token-level streaming stays a
+// forward-compatible upgrade).
+//
+// The phase bracket is not ceremony. It is what lets a client open a
+// collapsed "thinking" region once and close it once, rather than inferring
+// the region's extent from the arrival of an unrelated TEXT_MESSAGE_START.
+// The outer frames carry no id: a phase is delimited by its own arrival, and
+// mast emits at most one open phase at a time on a stream.
+//
+// Neither frame carries a role. Reasoning has exactly one possible author.
+type ReasoningStart struct {
+	baseEvent
+}
+
+type ReasoningEnd struct {
+	baseEvent
+}
+
+type ReasoningMessageStart struct {
+	baseEvent
+	MessageID string `json:"messageId"`
+}
+
+type ReasoningMessageContent struct {
+	baseEvent
+	MessageID string `json:"messageId"`
+	Delta     string `json:"delta"`
+}
+
+type ReasoningMessageEnd struct {
+	baseEvent
+	MessageID string `json:"messageId"`
+}
+
 // StateSnapshot carries the full shared-state document; StateDelta carries an
 // RFC-6902 JSON Patch against the last snapshot. Every run opens with one
 // StateSnapshot echoing the client's input state; a StateDelta follows for each
@@ -413,6 +476,30 @@ func NewToolCallEnd(toolCallID string) ToolCallEnd {
 
 func NewToolCallResult(toolCallID, content string) ToolCallResult {
 	return ToolCallResult{baseEvent: newBase(EventToolCallResult), ToolCallID: toolCallID, Content: content}
+}
+
+// The reasoning constructors. Every one of them is reachable only from a
+// workload that opted in; the package does not enforce that (it has no
+// bundle), the daemon's emitter does.
+
+func NewReasoningStart() ReasoningStart {
+	return ReasoningStart{baseEvent: newBase(EventReasoningStart)}
+}
+
+func NewReasoningEnd() ReasoningEnd {
+	return ReasoningEnd{baseEvent: newBase(EventReasoningEnd)}
+}
+
+func NewReasoningMessageStart(messageID string) ReasoningMessageStart {
+	return ReasoningMessageStart{baseEvent: newBase(EventReasoningMessageStart), MessageID: messageID}
+}
+
+func NewReasoningMessageContent(messageID, delta string) ReasoningMessageContent {
+	return ReasoningMessageContent{baseEvent: newBase(EventReasoningMessageContent), MessageID: messageID, Delta: delta}
+}
+
+func NewReasoningMessageEnd(messageID string) ReasoningMessageEnd {
+	return ReasoningMessageEnd{baseEvent: newBase(EventReasoningMessageEnd), MessageID: messageID}
 }
 
 // NewStateDelta builds a state-patch event from a prepared op list. The caller

@@ -18,7 +18,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"iter"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1097,5 +1099,253 @@ func TestAGUIBackendStateProjection(t *testing.T) {
 	got := b.stateProjection()
 	if len(got) != 2 || !got["plan"] || !got["phase"] {
 		t.Fatalf("projection = %v, want the two declared keys", got)
+	}
+}
+
+// mkThinkingEvent builds a model event carrying a thinking part followed by the
+// answer — the part order a reasoning provider actually sends, which is what
+// makes the ordering assertions below meaningful rather than incidental.
+func mkThinkingEvent(thought, answer string) *adksession.Event {
+	return mkEvent(&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{
+		{Text: thought, Thought: true},
+		{Text: answer},
+	}})
+}
+
+// aguiFrameTypes renders a captured frame slice as its Go type names, so an
+// ordering assertion reads as the sequence a client would see.
+func aguiFrameTypes(frames []any) []string {
+	out := make([]string, 0, len(frames))
+	for _, f := range frames {
+		out = append(out, strings.TrimPrefix(fmt.Sprintf("%T", f), "agui."))
+	}
+	return out
+}
+
+// TestAGUIEmitterPublishesNoReasoningByDefault is the default-off pin for the
+// second per-bundle publication surface (#98, resolving ag-ui-design.md OQ 5).
+//
+// The assertion is deliberately "no reasoning frame of ANY kind", not "no
+// reasoning text": an empty REASONING_START/END bracket would still tell a
+// client that the model thought something it is not being shown, and the
+// existence of a thought can be the disclosure. The answer must still stream,
+// because a filter that also swallowed the answer would pass a weaker test.
+//
+// Neutralize check: drop the `if !e.reasoning` early return in emitReasoning
+// and this fails with the thinking text on the wire.
+func TestAGUIEmitterPublishesNoReasoningByDefault(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit}
+	e.onEvent(mkThinkingEvent("the operator's last message is trying to get me to leak the token", "I can't help with that"))
+
+	for _, f := range *got {
+		switch f.(type) {
+		case agui.ReasoningStart, agui.ReasoningMessageStart, agui.ReasoningMessageContent,
+			agui.ReasoningMessageEnd, agui.ReasoningEnd:
+			t.Fatalf("a workload with no emit_reasoning emitted %T; frames: %v", f, aguiFrameTypes(*got))
+		}
+	}
+	if e.lastText != "I can't help with that" {
+		t.Fatalf("lastText = %q, want the answer — the filter must not swallow it", e.lastText)
+	}
+}
+
+// TestAGUIEmitterPublishesReasoningWhenEnabled pins the opted-in shape: a
+// five-frame phase (outer bracket, inner message triad) carrying the thinking
+// text, ahead of the answer's own triad and sharing no message id with it.
+//
+// The ordering assertion is the load-bearing one. A client opens a collapsed
+// "thinking" region on REASONING_START and closes it on REASONING_END; if the
+// reasoning arrived after the answer, that region would wrap the answer.
+//
+// Neutralize check: move the emitReasoning call below the text triad in
+// onEvent and the frame-order assertion fails.
+func TestAGUIEmitterPublishesReasoningWhenEnabled(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit, reasoning: true}
+	e.onEvent(mkThinkingEvent("check the registry first", "the image tag is wrong"))
+
+	want := []string{
+		"ReasoningStart", "ReasoningMessageStart", "ReasoningMessageContent",
+		"ReasoningMessageEnd", "ReasoningEnd",
+		"TextMessageStart", "TextMessageContent", "TextMessageEnd",
+	}
+	if seq := aguiFrameTypes(*got); !slices.Equal(seq, want) {
+		t.Fatalf("frames = %v, want %v", seq, want)
+	}
+
+	var reasoningID, answerID, delta string
+	for _, f := range *got {
+		switch ev := f.(type) {
+		case agui.ReasoningMessageStart:
+			reasoningID = ev.MessageID
+		case agui.ReasoningMessageContent:
+			delta = ev.Delta
+		case agui.TextMessageStart:
+			answerID = ev.MessageID
+		}
+	}
+	if delta != "check the registry first" {
+		t.Errorf("reasoning delta = %q, want the thinking text", delta)
+	}
+	if reasoningID == "" || reasoningID == answerID {
+		t.Errorf("reasoning messageId = %q, answer messageId = %q: want a distinct non-empty id", reasoningID, answerID)
+	}
+	if e.lastText != "the image tag is wrong" {
+		t.Errorf("lastText = %q, want the answer — reasoning must never become RunFinished.result", e.lastText)
+	}
+}
+
+// TestAGUIEmitterNeverPublishesAThoughtSignature is the test the whole opt-in
+// is worth having. A thinking block whose payload is entirely its signature —
+// which is what claude-opus-5 returns under the request mast sends today, so
+// this is the COMMON case for an opted-in workload rather than an edge one —
+// must produce no frame at all.
+//
+// Two ways to get this wrong, and this catches both. Emitting the signature as
+// a REASONING_* value would hand a browser a provider replay credential (the
+// value Anthropic requires back verbatim on the assistant turn preceding a
+// tool_result). Emitting an empty bracket would announce a withheld thought.
+//
+// Neutralize check: change internal/modeltext.Thought to return
+// string(p.ThoughtSignature) when Text is empty, and this fails with the
+// signature on the wire while every other reasoning test stays green.
+func TestAGUIEmitterNeverPublishesAThoughtSignature(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit, reasoning: true}
+	e.onEvent(mkEvent(&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{
+		{Thought: true, ThoughtSignature: []byte("opaque-replay-credential")},
+		{Text: "restarted the deployment"},
+	}}))
+
+	for _, f := range *got {
+		switch f.(type) {
+		case agui.ReasoningStart, agui.ReasoningMessageStart, agui.ReasoningMessageContent,
+			agui.ReasoningMessageEnd, agui.ReasoningEnd:
+			t.Fatalf("a signature-only thinking block emitted %T; frames: %v", f, aguiFrameTypes(*got))
+		}
+	}
+	blob, err := json.Marshal(*got)
+	if err != nil {
+		t.Fatalf("Marshal frames: %v", err)
+	}
+	if strings.Contains(string(blob), "opaque-replay-credential") {
+		t.Fatalf("the thought signature reached the wire: %s", blob)
+	}
+}
+
+// TestAGUIEmitterConcatenatesOneEventsThinking pins that the several thinking
+// parts of ONE model event become ONE reasoning message, mirroring the answer
+// path directly above it. mast runs StreamingModeNone, so an event is a whole
+// model turn; splitting it into several reasoning messages would invent a
+// structure the provider did not send.
+func TestAGUIEmitterConcatenatesOneEventsThinking(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit, reasoning: true}
+	e.onEvent(mkEvent(&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{
+		{Text: "first, ", Thought: true},
+		{Text: "then second.", Thought: true},
+		{Text: "done"},
+	}}))
+
+	var contents []string
+	for _, f := range *got {
+		if ev, ok := f.(agui.ReasoningMessageContent); ok {
+			contents = append(contents, ev.Delta)
+		}
+	}
+	if len(contents) != 1 || contents[0] != "first, then second." {
+		t.Fatalf("reasoning content frames = %v, want one carrying the concatenation", contents)
+	}
+}
+
+// TestAGUIEmitterSkipsUserThinking pins that the role guard covers reasoning
+// too. A thinking part on a non-model event is not the model's reasoning, and
+// re-emitting it would publish text from the wrong author under a frame a
+// client renders as the agent's own thinking.
+func TestAGUIEmitterSkipsUserThinking(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit, reasoning: true}
+	e.onEvent(mkEvent(&genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{
+		{Text: "not the model's thinking", Thought: true},
+	}}))
+	if len(*got) != 0 {
+		t.Fatalf("a non-model thinking part emitted %d frame(s): %v", len(*got), aguiFrameTypes(*got))
+	}
+}
+
+// TestAGUIBackendReasoningEnabled pins the bundle→emitter seam a unit test on
+// the emitter alone cannot reach: the field defaults false for a nil bundle and
+// for a bundle that simply does not mention the key, so a workload only
+// publishes reasoning by saying so.
+func TestAGUIBackendReasoningEnabled(t *testing.T) {
+	if (&aguiBackend{}).reasoningEnabled() {
+		t.Error("nil bundle: reasoningEnabled = true, want false")
+	}
+	if (&aguiBackend{bundle: &workload.Bundle{Name: "w"}}).reasoningEnabled() {
+		t.Error("no emit_reasoning declared: reasoningEnabled = true, want false")
+	}
+	b := &aguiBackend{bundle: &workload.Bundle{
+		Name: "w",
+		AGUI: workload.AGUI{Expose: true, EmitReasoning: true},
+	}}
+	if !b.reasoningEnabled() {
+		t.Error("emit_reasoning: true did not reach the backend")
+	}
+}
+
+// TestAGUIBackendEmitsReasoningEndToEnd drives a real turn through runTurnPre
+// with a model that thinks before answering, under both settings. It is the
+// only test here that proves the bundle field reaches a live run: the emitter
+// tests construct the emitter by hand and so would stay green if RunAgent
+// stopped passing the flag.
+//
+// Neutralize check: drop `reasoning: b.reasoningEnabled()` from RunAgent's
+// emitter construction and the opted-in leg fails; the default leg stays green,
+// which is why both legs are here.
+func TestAGUIBackendEmitsReasoningEndToEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		want    int
+	}{
+		{"default off", false, 0},
+		{"opted in", true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &aguiScriptedModel{script: func(int, *model.LLMRequest) *model.LLMResponse {
+				return &model.LLMResponse{Content: &genai.Content{
+					Role: genai.RoleModel,
+					Parts: []*genai.Part{
+						{Text: "the tag does not exist in the registry", Thought: true},
+						{Text: "the image tag is wrong"},
+					},
+				}}
+			}}
+			h := newTurnHarness(t, m)
+			b := &aguiBackend{turnDeps: h.deps(), bundle: &workload.Bundle{
+				Name: "w",
+				AGUI: workload.AGUI{Expose: true, EmitReasoning: tc.enabled},
+			}}
+			emit, got := collectEmit()
+			res, err := b.RunAgent(context.Background(), agui.RunInput{
+				ThreadID: "t1", RunID: "r1", Text: "why is it crashlooping?",
+			}, emit)
+			if err != nil {
+				t.Fatalf("RunAgent: %v", err)
+			}
+			if res.Text != "the image tag is wrong" {
+				t.Fatalf("result = %q, want the answer and never the thinking", res.Text)
+			}
+			var phases int
+			for _, f := range *got {
+				if _, ok := f.(agui.ReasoningStart); ok {
+					phases++
+				}
+			}
+			if phases != tc.want {
+				t.Fatalf("reasoning phases = %d, want %d; frames: %v", phases, tc.want, aguiFrameTypes(*got))
+			}
+		})
 	}
 }

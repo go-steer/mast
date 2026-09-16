@@ -61,6 +61,11 @@ func thinkingPart(text string) *genai.Part {
 // AG-UI client, neither as a TextMessage frame nor through RunFinished.result
 // (which the server reads off lastText).
 //
+// agui.emit_reasoning (#98) does not weaken this and is not an exception to
+// it. That opt-in publishes reasoning as its own REASONING_* frames; a thought
+// still never becomes answer text and still never becomes the run's result,
+// whether the opt-in is on or off. This emitter has it off.
+//
 // Neutralize check: restore `part.Text != ""` in aguiEmitter.onEvent and the
 // content frame reads "<reasoning>…the answer", failing both assertions.
 func TestAGUIEmitterSkipsThinking(t *testing.T) {

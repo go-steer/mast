@@ -922,6 +922,21 @@ that it changed. Adding a key is a decision about a browser-reachable surface;
 the daemon logs the enabled list at startup so you can check what a running
 workload publishes without trusting the bundle you think is mounted.
 
+**And a workload can now publish the model's reasoning — if you say so.**
+[`agui.emit_reasoning`](/reference/workload-bundle/) streams the thinking as
+AG-UI's `REASONING_*` frames, and it copies the projection's shape on purpose:
+per bundle, off by default, logged at startup. Three things are its own. Off
+emits **nothing at all**, not an empty phase bracket, because the existence of
+a thought is itself a disclosure. The opt-in is a *deliberate read* of the
+thought parts rather than the removal of a filter, so the answer stream is
+identical either way and reasoning cannot reach a client by omission — which
+is the standing floor v0.9 built one release earlier. And the provider's
+thought **signature** has no frame under any setting: it is a replay
+credential rather than a thought, so AG-UI's `ReasoningEncryptedValue` is
+deliberately not implemented and a signature-only block publishes nothing.
+Expect quiet at first — the request mast sends `claude-opus-5` today comes
+back with the thinking block's body empty.
+
 Also in v0.9: **the parity scoreboard was re-measured rather than re-asserted**,
 it had one row attributed to the wrong repo, and that row is now green. The
 board reads **19 of 19**. The **approver allowlist** is green — switchboard
@@ -1000,11 +1015,14 @@ daemon logs why. A late frame is a correctness bug; a missing one is worse.
 
 ## Further out
 
-- **AG-UI remaining slices** — the `agui://` federation client,
-  activity/reasoning events, webhook push, client-declared tool acceptance
-  (`RunAgentInput.tools` is parsed today and then dropped), and
-  client-disconnect reconnect. Per-key `StateDelta` emission left this list
-  in v0.9.
+- **AG-UI remaining slices** — the `agui://` federation client, activity
+  events (`StepStarted`, `ActivitySnapshot`), webhook push, client-declared
+  tool acceptance (`RunAgentInput.tools` is parsed today and then dropped),
+  and client-disconnect reconnect. Per-key `StateDelta` emission and the
+  reasoning events both left this list in v0.9; activity events stayed
+  because they are a different vocabulary with no sensitivity argument
+  attached, and their planner-step half needs a seam the emitter does not
+  have yet.
 - **Planner shapes** — the `run_shape_*` vocabulary tools wired to the
   reference-graph library (they return `not_implemented` in the v0.2
   scaffold), plus more starters: supervisor+workers, sequential pipeline,

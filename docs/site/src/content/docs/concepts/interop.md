@@ -27,10 +27,19 @@ not into the A2A result artifact, not into an AG-UI `TextMessage` frame or
 `RunFinished.result`, not into the `/parks` projection, not into a specialist
 result the planner reads, and not into the daemon's own operator log.
 
-This is a floor, not a policy. A surface that should publish reasoning — the
-activity/reasoning events AG-UI clients want — will do it by asking for it,
-per workload and off by default. What is ruled out is publishing it by
-forgetting to check.
+This is a floor, not a policy, and one surface has already asked: an AG-UI
+workload that sets [`agui.emit_reasoning`](/reference/workload-bundle/)
+streams the thinking as its own `REASONING_*` frames. That does not weaken
+the floor — it is a *deliberate read* of the thought parts, by name, rather
+than the removal of a filter, so the answer stream is unchanged whether the
+opt-in is on or off and "reasoning reached a browser" stays a grep for one
+symbol. Off by default, and off publishes nothing at all rather than an
+empty placeholder. What is ruled out is publishing reasoning by forgetting
+to check.
+
+The one thing no opt-in reaches is the **thought signature** — the opaque
+blob a provider wants back to continue. It is a replay credential, not a
+thought, so it is replayed to the provider and modeled nowhere on any wire.
 
 ## Inject — the machine trigger
 
@@ -577,6 +586,14 @@ The one concept worth deciding up front is `agui.session_model`:
 thread, which is what chat UX expects; `per_run` gives every run a fresh
 session, which is right for stateless one-shots. Either way the daemon
 derives and namespaces the session id — a client never supplies a raw one.
+
+Two publication surfaces sit behind their own bundle keys, both empty-or-off
+by default and both silent rather than redacted when off:
+`agui.state_projection` names the session-state keys a run may publish as
+`StateDelta` patches, and `agui.emit_reasoning` lets the workload stream the
+model's thinking as `REASONING_*` frames. Neither is a display preference —
+the client on the other end is a browser — which is why the defaults publish
+nothing and the daemon logs what a running workload has enabled.
 
 ## Federation — calling out
 
