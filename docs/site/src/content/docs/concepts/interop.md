@@ -608,6 +608,17 @@ model's thinking as `REASONING_*` frames. Neither is a display preference —
 the client on the other end is a browser — which is why the defaults publish
 nothing and the daemon logs what a running workload has enabled.
 
+Because both are per-bundle, a client cannot infer either from the protocol
+version, and inferring them from a finished run is hopeless: a stream with no
+reasoning in it looks the same whether the workload publishes none or the
+model simply didn't think. So the public discovery descriptor states them up
+front, as a
+[`capabilities` object](/reference/cli/#ag-ui-server) per workload. It is
+read from the same value the run's emitter is built from rather than
+recomputed from the bundle — a capability claim that restates a config
+instead of reading what it describes is how `/tools` and `/perms` each spent
+releases advertising something untrue.
+
 ## Federation — calling out
 
 The surfaces above are inbound. `invoke_remote_agent` is the outbound

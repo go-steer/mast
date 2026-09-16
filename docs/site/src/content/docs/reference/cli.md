@@ -467,10 +467,49 @@ agui:
 ```
 
 **Discovery** is public: `GET /agui/agents.json` lists every exposed
-workload as `{name, endpoint, description, input_schema, auth: {scopes}}`.
-AG-UI has no standardized well-known path (unlike A2A's agent card), so
-this descriptor is a mast convention for clients that want to
-discover-then-connect.
+workload as `{name, endpoint, description, input_schema, protocol_version,
+auth: {required, scopes}, capabilities: {…}}`. AG-UI has no standardized
+well-known path (unlike A2A's agent card), so this descriptor is a mast
+convention for clients that want to discover-then-connect.
+
+`capabilities` says which of the optional frame families a run on **that
+workload** can contain, which the protocol version cannot: these are
+per-bundle publication decisions, so two workloads on one daemon can
+differ on every field.
+
+```json
+{
+  "name": "incident-triage",
+  "endpoint": "/agui/incident-triage",
+  "protocol_version": "0.1",
+  "auth": { "required": true, "scopes": ["incident-triage.run"] },
+  "capabilities": {
+    "state_delta": true,
+    "state_keys": ["plan", "phase"],
+    "reasoning": false
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `state_delta` | Whether a run can emit `StateDelta` frames beyond the opening `StateSnapshot`. `false` (the default) means a client never sees a patch and can skip wiring a reducer. Reflects `agui.state_projection`. |
+| `state_keys` | The top-level keys those patches may touch, in the order the bundle declares them, so a client can lay out panels before the first patch. Omitted when `state_delta` is `false`. Not a promise every key is written — a key the run never sets produces no patch. |
+| `reasoning` | Whether a run can emit the `REASONING_*` phase bracket. `false` means no reasoning frame of any kind, so don't render a "thinking" affordance at all. Reflects `agui.emit_reasoning`. |
+
+The two booleans are always present, never elided when `false`: an absent
+key means a server older than this object, an explicit `false` is a live
+promise that the frame family will not appear, and a client needs to tell
+those apart.
+
+Adding `capabilities` did not move the document behind the token. The rule
+it follows is that this descriptor may state what a client permitted to run
+would observe in the stream anyway — reasoning from the first
+`ReasoningStart`, the key names from the paths in the first `StateDelta` —
+and may not state a property of the *governance around* the stream. That is
+why there is no HITL bit: an unauthenticated "this workload does not park
+mutations for a human" describes what fires unattended here, and a caller
+who never gets a run to park would never observe it.
 
 **Invocation** is a `POST` to each workload's `endpoint_path`. The body
 is an AG-UI `RunAgentInput`; the response is the run streamed as SSE

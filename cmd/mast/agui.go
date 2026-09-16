@@ -101,28 +101,74 @@ func (b *aguiBackend) sessionModel() string {
 	return workload.AGUISessionPerThread
 }
 
-// stateProjection returns the set of runtime state keys this workload
-// publishes to its AG-UI clients as StateDelta patches. Nil when the bundle
-// declares none, which is the default and means no StateDelta is ever emitted
-// — the set is built once per run rather than consulted as a slice per event,
-// because a state write arrives on the hot event path.
-func (b *aguiBackend) stateProjection() map[string]bool {
-	if b.bundle == nil || len(b.bundle.AGUI.StateProjection) == 0 {
-		return nil
-	}
-	keys := make(map[string]bool, len(b.bundle.AGUI.StateProjection))
-	for _, k := range b.bundle.AGUI.StateProjection {
-		keys[k] = true
-	}
-	return keys
+// aguiPublication is everything a run on this workload publishes beyond its
+// message text: which runtime state keys reach the client as StateDelta
+// patches, and whether the model's reasoning is streamed at all. Both are
+// per-bundle opt-ins that default to publishing nothing.
+//
+// It is one value with one reader because it has two consumers whose
+// disagreement is invisible from either side: the emitter, which decides
+// what a run actually publishes, and the discovery descriptor, which tells a
+// client what to expect before it runs anything (#377). Letting the second
+// recompute from bundle.AGUI is the shape #364 and #375 were both about — a
+// capability claim that restates the config instead of reading the thing it
+// describes, and that therefore stays green while the two drift.
+type aguiPublication struct {
+	// stateKeys is the operator's list in the operator's order, which is
+	// what the descriptor advertises: a client laying out panels should
+	// get them in the order someone chose, not in map order.
+	stateKeys []string
+	// stateSet is the same list as a lookup, because a state write
+	// arrives on the hot event path and the emitter consults it per key.
+	// Nil when the bundle declares no projection, which is the default
+	// and means no StateDelta is ever emitted.
+	stateSet map[string]bool
+	// reasoning is agui.emit_reasoning. False for a nil bundle and by
+	// default, and false means no REASONING_* frame of any kind.
+	reasoning bool
 }
 
-// reasoningEnabled reports whether this workload publishes the model's
-// reasoning to its AG-UI clients. False for a nil bundle and for a bundle that
-// does not set agui.emit_reasoning, which is the default and means no
-// REASONING_* frame is ever emitted.
-func (b *aguiBackend) reasoningEnabled() bool {
-	return b.bundle != nil && b.bundle.AGUI.EmitReasoning
+// publication reads the bundle's two publication switches. The only place in
+// the daemon that reads them; see aguiPublication for why that matters.
+func (b *aguiBackend) publication() aguiPublication {
+	if b.bundle == nil {
+		return aguiPublication{}
+	}
+	pub := aguiPublication{reasoning: b.bundle.AGUI.EmitReasoning}
+	if len(b.bundle.AGUI.StateProjection) == 0 {
+		return pub
+	}
+	pub.stateKeys = b.bundle.AGUI.StateProjection
+	pub.stateSet = make(map[string]bool, len(pub.stateKeys))
+	for _, k := range pub.stateKeys {
+		pub.stateSet[k] = true
+	}
+	return pub
+}
+
+// AGUICapabilities implements agui.CapabilityReporter: it tells a discovery
+// client which optional frame families a run on this workload can contain.
+//
+// Every field is derived from the same aguiPublication the emitter is built
+// from, and StateDelta specifically reads len(stateSet) — the map the
+// emitter consults per state write — rather than the bundle list, so the
+// advertised bit is a reading of the emitter's own input and not a second
+// opinion about it.
+//
+// A name this backend does not serve gets the zero value rather than this
+// workload's answer. The daemon runs one bundle today, so the mismatch
+// cannot happen; answering anyway for whatever name is asked is how it would
+// silently start lying the day that changes.
+func (b *aguiBackend) AGUICapabilities(workloadName string) agui.AgentCapabilities {
+	if b.bundle == nil || workloadName != b.bundle.Name {
+		return agui.AgentCapabilities{}
+	}
+	pub := b.publication()
+	return agui.AgentCapabilities{
+		StateDelta: len(pub.stateSet) > 0,
+		StateKeys:  pub.stateKeys,
+		Reasoning:  pub.reasoning,
+	}
 }
 
 // sessionIDFor derives the mast session id for a run from the client-supplied
@@ -228,10 +274,11 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 		defer cancel()
 	}
 
+	pub := b.publication()
 	em := &aguiEmitter{
 		emit:       emit,
-		projection: b.stateProjection(),
-		reasoning:  b.reasoningEnabled(),
+		projection: pub.stateSet,
+		reasoning:  pub.reasoning,
 		logger:     b.logger,
 	}
 	err := runTurnPre(ctx, b.turnDeps, sessionID, msg, label, nil, em.onEvent)
