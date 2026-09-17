@@ -652,3 +652,13 @@ A refused run returns HTTP `429` with an advisory `Retry-After` header
 (AG-UI has no JSON-RPC error envelope, so refusals ride HTTP status).
 `MAST_AGUI_RATE` unset means no rate limiting; a set-but-malformed value
 fails startup.
+
+**Concurrent runs.** Rate limiting bounds arrivals, not what is already
+running: one caller can hold N runs open on a thread as long as they arrive
+slowly enough. A thread runs one turn at a time and queues the rest, bounded
+by
+[`agui.run_queue.depth`](/reference/workload-bundle/#run_queue--bounding-concurrent-runs-on-one-thread)
+(default 3 waiting plus the one executing). The run past that is refused
+`409` with a `Retry-After`, before the stream opens — a distinct status from
+the rate limiter's `429` on purpose, since "this thread is busy" and "you are
+calling too fast" have different remedies.

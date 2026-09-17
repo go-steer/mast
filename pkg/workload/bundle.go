@@ -1058,8 +1058,55 @@ type AGUI struct {
 	// frame at all (see pkg/agui's wire vocabulary).
 	EmitReasoning bool `yaml:"emit_reasoning,omitempty"`
 
+	// RunQueue bounds how many runs may be in flight on one AG-UI thread
+	// (docs/ag-ui-design.md OQ 4). Absent takes AGUIDefaultRunQueueDepth.
+	RunQueue AGUIRunQueue `yaml:"run_queue,omitempty"`
+
 	// Auth is the per-endpoint auth policy.
 	Auth AGUIAuth `yaml:"auth,omitempty"`
+}
+
+// AGUIRunQueue is the per-thread concurrency policy within a workload's agui:
+// section. Two concurrent runs on one thread cannot execute together — they
+// reach the same mast session, and the daemon serializes turns per session —
+// so the second one waits. This bounds that wait queue.
+//
+// It is nested rather than a flat agui.run_queue_depth because adding a key to
+// a block is free after v1.0 while changing a key's SHAPE is a schema_version
+// bump, and a queue policy has obvious future neighbours (a wait ceiling, a
+// per-caller bound) that a scalar could not grow into.
+type AGUIRunQueue struct {
+	// Depth is how many runs may WAIT behind the one executing, so the
+	// admitted total per thread is Depth+1. Absent takes
+	// AGUIDefaultRunQueueDepth; 0 is a meaningful value meaning no queueing
+	// at all (a second concurrent run on the thread is refused immediately).
+	//
+	// A pointer because 0 and absent must differ: a plain int could not tell
+	// "queue nothing" from "the operator said nothing".
+	//
+	// There is deliberately no way to say "unbounded". Unbounded is what this
+	// key exists to end: an unbounded queue turns a caller that arrived behind
+	// a slow turn into one that waits out the workload's whole wallclock
+	// budget and then fails with a timeout carrying no information about why.
+	// A refusal a client can act on is strictly better than that wait.
+	Depth *int `yaml:"depth,omitempty"`
+}
+
+// AGUIDefaultRunQueueDepth is the per-thread wait-queue depth a workload gets
+// when its bundle names none: three runs may queue behind the executing one.
+//
+// Three is small enough that a client stacking work on one thread learns so
+// while it can still do something about it, and large enough to absorb the
+// ordinary burst — a user sending a follow-up before the answer lands, or a
+// UI retrying a request it believes was dropped.
+const AGUIDefaultRunQueueDepth = 3
+
+// RunQueueDepth returns the workload's effective per-thread wait-queue depth.
+func (a AGUI) RunQueueDepth() int {
+	if a.RunQueue.Depth != nil {
+		return *a.RunQueue.Depth
+	}
+	return AGUIDefaultRunQueueDepth
 }
 
 // AGUIAuth is the per-endpoint auth policy within a workload's agui: section.

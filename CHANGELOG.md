@@ -49,6 +49,39 @@
   `--session-db-path` that already defaulted
   ([#329](https://github.com/go-steer/mast/issues/329)).
 
+- **An AG-UI thread now bounds how many runs may queue on it, and refuses the
+  rest with `409`.** A thread has always run one turn at a time — a mast
+  session is a single-writer store — but the queue behind it was unbounded and
+  invisible: a second run blocked on the per-session turn lock with the
+  workload's `budget.max_wallclock_seconds` as its only ceiling, so a client
+  that stacked runs could not tell waiting from wedged and what it eventually
+  got was a timeout carrying nothing about why it waited. The new
+  `agui.run_queue.depth` counts runs that may **wait**, defaulting to 3, so a
+  thread admits four at once and the fifth is refused with `409` and a
+  `Retry-After` **before the SSE upgrade** — a status a client can branch on
+  rather than a stream opened for the sole purpose of carrying an error frame.
+  Three choices are worth naming. **409, not 429**, because `MAST_AGUI_RATE`
+  already returns 429 and means *arrival rate*: a client that cannot tell
+  "back off everywhere" from "this one conversation is busy" picks the wrong
+  remedy, and the rate limiter never saw this case anyway — one caller can
+  hold any number of runs open on a thread as long as they arrive slowly
+  enough. **`depth` counts waiters rather than runs**, which is what makes
+  `depth: 0` mean the useful thing (no concurrency on a thread) instead of the
+  absurd one (refuse everything). And **there is deliberately no way to spell
+  "unbounded"** — unbounded is what the key exists to end — so a negative
+  depth is refused at startup rather than read as `-1`. Refusals are counted
+  as `mast_agui_runs_total{outcome="queue_full"}`, kept distinct from the
+  `rejected` the credential-shaped refusals share, because one is answered
+  with capacity and the other with a token. The bound is per derived session,
+  so a busy thread never refuses a run addressed to another one, and
+  `sessionTurnLocks` stays unbounded underneath it: inject, resume, scheduled
+  fires and auto-resume have no client standing there to be refused. Landed
+  before the freeze rather than after, because bounding a queue that is
+  unbounded today changes what an existing bundle does — the breaking
+  category `docs/compatibility-policy.md` calls invisible to any signature,
+  and the one that would have cost two released minors and 90 days on the
+  other side of v1.0 ([#384](https://github.com/go-steer/mast/issues/384)).
+
 ### Bug or Regression
 
 - **An unauthenticated inject listener no longer binds a non-loopback

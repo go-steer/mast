@@ -691,13 +691,22 @@ root agent only, not by its specialists.
 ### One run at a time, per thread
 
 A thread runs one turn at a time. Send a second run while the first is still
-going and it **waits** — for as long as the first one takes, with only the
-workload's `budget.max_wallclock_seconds` as a ceiling. There is no queue
-depth and no refusal yet, so a client that stacks runs behind a slow turn
-cannot tell waiting from wedged, and what it eventually gets is a timeout
-rather than an answer it could act on. A bounded queue that refuses with a
-`409` is the planned fix. Until then, wait for `RunFinished` before sending
-the next run on the same thread.
+going and it **waits** — a mast session is a single-writer store, so every
+turn-driving surface serializes on the same per-session lock.
+
+The wait is bounded. A thread admits
+[`agui.run_queue.depth`](/reference/workload-bundle/#run_queue--bounding-concurrent-runs-on-one-thread)
+waiting runs on top of the executing one — three by default, so four in all —
+and the next one is refused with **`409` and a `Retry-After`** before the
+stream opens. That is a different answer from the `429` the rate limiter
+gives: `429` is your arrival rate and means slow down everywhere, `409` means
+*this conversation* is busy and you can retry it or use another thread. Set
+`depth: 0` if you want no concurrency on a thread at all.
+
+So a client that stacks runs behind a slow turn gets told so. It is still
+better manners to wait for `RunFinished` before sending the next run on the
+same thread: a queued run is a turn you have committed to, and until the
+`409` there is nothing distinguishing a deep queue from a fast one.
 
 ## Federation — calling out
 
