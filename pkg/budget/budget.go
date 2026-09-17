@@ -90,6 +90,7 @@ import (
 	"sync"
 
 	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
 // ErrExceeded is returned by Observe once cumulative usage crosses a
@@ -419,7 +420,7 @@ func (m *Meter) Observe(ev *session.Event) error {
 	if ev == nil || ev.UsageMetadata == nil {
 		return nil
 	}
-	s, err := m.fold(ev)
+	s, err := m.fold(ev, flooredUsage(ev.UsageMetadata))
 	// Outside the lock, and unconditional: a call that crossed a ceiling
 	// still cost what it cost, and a ledger that dropped exactly the
 	// calls that tripped the guardrail would understate every session
@@ -431,12 +432,14 @@ func (m *Meter) Observe(ev *session.Event) error {
 }
 
 // fold is Observe's locked half: it accumulates the event and reports
-// both what it added and whether that crossed a ceiling.
-func (m *Meter) fold(ev *session.Event) (Spend, error) {
+// both what it added and whether that crossed a ceiling. u is the
+// event's usage metadata as flooredUsage read it — every count in this
+// path comes from there and none from ev.UsageMetadata.
+func (m *Meter) fold(ev *session.Event, u genai.GenerateContentResponseUsageMetadata) (Spend, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	tokens := int64(ev.UsageMetadata.TotalTokenCount)
+	tokens := int64(u.TotalTokenCount)
 	rate := m.limits.RatePer1K
 	pricer := m.limits.Pricer
 	backend, model := m.limits.Backend, m.limits.Model
@@ -460,14 +463,14 @@ func (m *Meter) fold(ev *session.Event) (Spend, error) {
 	// running token total: with per-scope rates and per-model exact
 	// pricing the session total is a sum of differently-priced calls,
 	// not one multiplication.
-	spend, unpriced := m.priceOf(ev, pricer, backend, model, rate)
+	spend, unpriced := m.priceOf(ev, u, pricer, backend, model, rate)
 	s := Spend{Author: ev.Author, Tokens: tokens, CostUSD: spend, Unpriced: unpriced}
 
 	m.total.add(tokens, spend)
 	if scoped {
-		u := m.spent[ev.Author]
-		u.add(tokens, spend)
-		if err := check(scope, u); err != nil {
+		su := m.spent[ev.Author]
+		su.add(tokens, spend)
+		if err := check(scope, su); err != nil {
 			return s, scopedTo(ev.Author, fmt.Errorf("%w: specialist %q: %s", ErrExceeded, ev.Author, err))
 		}
 	}
@@ -516,10 +519,9 @@ func crossed(scope string, l Limits, u *usage) []Trip {
 // priceOf costs one model call, through the pricer where it can and at
 // the flat rate where it cannot, and reports whether it had to fall
 // back. Caller holds m.mu.
-func (m *Meter) priceOf(ev *session.Event, p Pricer, backend, model string, rate float64) (cost float64, unpriced bool) {
-	u := ev.UsageMetadata
+func (m *Meter) priceOf(ev *session.Event, u genai.GenerateContentResponseUsageMetadata, p Pricer, backend, model string, rate float64) (cost float64, unpriced bool) {
 	if p != nil {
-		if usd, ok := priceFirst(p, backend, callOf(ev), ev.ModelVersion, model); ok {
+		if usd, ok := priceFirst(p, backend, callOf(ev, u), ev.ModelVersion, model); ok {
 			return usd, false
 		}
 		m.unpriced++
@@ -560,7 +562,8 @@ func priceFirst(p Pricer, backend string, c Call, ids ...string) (float64, bool)
 // Two sources, in that order of authority: the provider's own sidecar
 // (Detailer, when the adapter attached one) and genai's usage metadata.
 // A sidecar refines the split of a prompt whose total the genai record
-// still owns — it never restates the total.
+// still owns — it never restates the total. u is that record as
+// flooredUsage read it; the sidecar's own counts are clipped below.
 //
 // Cached input is separated because it bills at the cache-read rate,
 // typically a tenth of fresh input; on a cache-warm agent that subset is
@@ -568,8 +571,7 @@ func priceFirst(p Pricer, backend string, c Call, ids ...string) (float64, bool)
 // single largest source of error in a flat-rate figure. Cache writes are
 // separated for the mirror-image reason: they bill at a premium, and
 // folding them in undercounts every turn that warms a cache.
-func callOf(ev *session.Event) Call {
-	u := ev.UsageMetadata
+func callOf(ev *session.Event, u genai.GenerateContentResponseUsageMetadata) Call {
 	b := bucketsOf(ev)
 
 	prompt := int(u.PromptTokenCount)

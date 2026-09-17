@@ -68,6 +68,32 @@ func TestObserveCountsModelCallsAndTokens(t *testing.T) {
 	}
 }
 
+// A monotonic counter cannot take a negative delta back, so a provider
+// miscount that reaches it is worse than one that reaches an invoice.
+// This registry has always dropped negative counts — the `> 0` guards
+// in Observe predate #332 — and this test is here to say that on
+// purpose rather than by luck: it is the third of the four readers
+// #332 names, and the only one that was already safe. It passes before
+// and after the pkg/budget fix. The other three are covered in
+// pkg/budget/floor_test.go and pkg/planner/subusage_test.go.
+func TestNegativeTokenCountsNeverReachTheCounter(t *testing.T) {
+	r := New()
+	const wl = "gke-triage"
+
+	r.Observe(usageEvent(100, 16), wl)
+	r.Observe(usageEvent(-400, -80), wl)
+
+	if got := testutil.ToFloat64(r.modelCalls.WithLabelValues(wl)); got != 2 {
+		t.Errorf("mast_model_calls_total = %v, want 2 — the miscounted call still happened", got)
+	}
+	if got := testutil.ToFloat64(r.tokens.WithLabelValues(wl, TokenKindPrompt)); got != 100 {
+		t.Errorf("mast_tokens_total{kind=prompt} = %v, want 100", got)
+	}
+	if got := testutil.ToFloat64(r.tokens.WithLabelValues(wl, TokenKindCandidates)); got != 16 {
+		t.Errorf("mast_tokens_total{kind=candidates} = %v, want 16", got)
+	}
+}
+
 func TestObserveCountsHITLPauses(t *testing.T) {
 	r := New()
 	const wl = "gke-triage"

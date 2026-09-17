@@ -250,7 +250,7 @@ func TestCallOf(t *testing.T) {
 			if tc.detail != nil {
 				ev.CustomMetadata = map[string]any{DetailKey: tc.detail}
 			}
-			got := callOf(ev)
+			got := callOf(ev, flooredUsage(ev.UsageMetadata))
 			want := Call{
 				UncachedInputTokens: tc.uncached,
 				CachedInputTokens:   tc.read,

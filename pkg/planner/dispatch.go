@@ -324,7 +324,19 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 			}
 			if ev.UsageMetadata != nil {
 				modelCalls++
-				totalTokens += int64(ev.UsageMetadata.TotalTokenCount)
+				// Floored, for the same reason pkg/budget floors what it
+				// reads (#332): a negative count is a provider miscount,
+				// and this total is handed to the model as the price of a
+				// dispatch. A credit here tells the planner the cheapest
+				// specialist is the one whose provider miscounted. The
+				// clamp is spelled out rather than shared because
+				// pkg/budget deliberately imports nothing else in this
+				// module (#338/#339) and cannot export it either — a
+				// frozen package (#300) should not carry a helper this
+				// small forever.
+				if n := ev.UsageMetadata.TotalTokenCount; n > 0 {
+					totalTokens += int64(n)
+				}
 			}
 			if ev.Output != nil {
 				output = ev.Output
