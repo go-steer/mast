@@ -1,6 +1,6 @@
-# mast — architecture (v0.8)
+# mast — architecture (v0.9)
 
-**Status:** current as of v0.8.0 (2026-09-13). This is the map of what
+**Status:** current as of v0.9.0 (2026-09-17). This is the map of what
 actually ships — the working architecture for contributors and
 embedders. The *why* behind each subsystem lives in the design corpus
 under [`docs/`](./docs/README.md) (start with
