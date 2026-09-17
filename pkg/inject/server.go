@@ -411,6 +411,11 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Handler == nil {
 		return nil, errors.New("inject: Handler is required")
 	}
+	// Before the default is applied, so an explicitly requested bind is
+	// judged and an omitted one is not. See CheckBindPolicy.
+	if err := CheckBindPolicy(cfg.Listen, cfg.BearerToken != ""); err != nil {
+		return nil, err
+	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":7777"
 	}

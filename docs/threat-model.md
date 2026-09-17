@@ -447,33 +447,48 @@ ceiling or a human intervenes — and the default budget is unlimited
 Open governance call: whether `enforce` should be the default for
 unattended deployments. Not settled here.
 
-### 5.3 The inject listener does not refuse an unauthenticated non-loopback bind
+### 5.3 The inject listener's bind policy — closed
 
-**[measured]** mast has a policy for this and it is applied to three of
-its four HTTP surfaces:
+**[measured, and fixed]** mast had a policy for this and applied it to
+three of its four HTTP surfaces. All four now refuse:
 
 | Surface | Default bind | Unauthenticated non-loopback bind |
 |---|---|---|
 | attach | disabled | **refused** — the origin of the policy ([core-agent#376](https://github.com/go-steer/core-agent/issues/376)) |
 | A2A | disabled | **refused** — `tasks/cancel` is destructive |
 | AG-UI | disabled | **refused** — a run drives a budgeted turn |
-| **inject** | **`:7777` — all interfaces** | **allowed, with a warning** |
+| inject | `:7777` — all interfaces | **refused** ([#361](https://github.com/go-steer/mast/issues/361)) |
 
 The inject listener is the oldest and the most powerful of the four: it
 starts turns, resumes sessions, releases parked mutating calls, and
-aborts and stops the daemon. `pkg/inject.New` has no bind guard, and
-with `MAST_INJECT_TOKEN` unset `authOK` returns true for every request.
-The policy was written for the surfaces added after it and never
-retrofitted to the one that predates it.
+aborts and stops the daemon. It had no bind guard at all, and with
+`MAST_INJECT_TOKEN` unset `authOK` returns true for every request. The
+policy was written for the surfaces added after it and was never
+retrofitted to the one that predates it — not a judgement that inject
+was safer, which is why closing it needed no new argument.
 
-**Mitigated in practice, not by the binary:** every shipped deployment
-topology sets the token — the GKE StatefulSet and the Cloud Run service
-from a Secret, and `mast.env.example` marks it required. The exposure is
-a bare `mast serve` on a reachable host.
+**The exposure was never live in a shipped topology:** every deployment
+mast ships sets the token — the GKE StatefulSet and the Cloud Run
+service from a Secret, and `mast.env.example` marks it required. What
+was exposed is a bare `mast serve` on a reachable host, which is the
+local-dev shape the warning was written for, except that the default
+bind is `:7777` rather than loopback, so "local dev" was on every
+interface.
 
-Filed as [#361](https://github.com/go-steer/mast/issues/361). Changing
-the default is a breaking change to a covered CLI surface, so it is a
-decision with a release attached rather than a docs edit.
+**Only the refusal moved; the default bind did not.** `--listen` still
+defaults to `:7777`, because changing it to loopback would silently make
+every container that binds the default unreachable, and silent
+unreachability is a worse failure than a refusal that names its own fix.
+The consequence is that a bare unauthenticated `mast serve` now exits at
+startup instead of serving: set `MAST_INJECT_TOKEN`, or bind
+`--listen=127.0.0.1:7777`.
+
+An `MAST_INJECT_USERS_FILE` table does **not** satisfy the check, and
+that restraint is load-bearing. The table gates `/resume` and
+`/monitor-ack` only; `/inject`, `/abort` and `/stop` still read the
+shared token, so a daemon with a table and no token has the listener
+open. Counting it would let an attribution feature satisfy an
+authentication check — see §5.4.
 
 ### 5.4 Attribution is opt-in
 
@@ -565,7 +580,8 @@ prerequisite, not a follow-up.
 | **An identity does not belong in a bearer token**; attribution comes from a user table or is honestly recorded as shared | §3.5 |
 | **mast gates on verb and nothing gates on scope.** Accepted, measured by `changed_count_eq` in the outcome tier, not filed as planned work | §4.3 |
 | **On GKE, IAM and not RBAC is the enforcement boundary for the MCP write path** — the manifests' RBAC split is defence in depth for the in-cluster path | §4.2 |
-| **The inject listener's bind policy is out of step with the other three surfaces**, mitigated by every shipped manifest but not by the binary | §5.3 |
+| **All four HTTP surfaces refuse an unauthenticated non-loopback bind.** The refusal moved; `--listen`'s default did not, because a default quietly relocated to loopback makes a container unreachable instead of telling it why | §5.3 |
+| **A user table is not a credential gate for the listener it sits on**, because it gates two routes and the rest read the shared token | §5.3, §5.4 |
 | **Classifier-first's mandatory constraints are unimplemented because the path is unshipped**, and the allowlist is a prerequisite if it is ever built | §5.8 |
 
 ---

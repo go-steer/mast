@@ -172,6 +172,40 @@ from the write gate, takes `ack_by` from the credential rather than the
 body, and refuses a body naming a different actor with a 400 rather than
 dropping it quietly.
 
+## Exposing a listener on a network
+
+All four of mast's HTTP surfaces — inject, attach, A2A and AG-UI —
+**refuse to bind a non-loopback address without a credential gate.**
+This is a startup refusal, not a warning: the daemon exits and names the
+fix. Three of the four are disabled by default, so the one you will meet
+is inject.
+
+```
+mast: inject: refusing to bind non-loopback address ":7777" without
+authentication: any host that can reach this port could start turns
+(/inject), release parked mutating calls (/resume), and stop the daemon
+(/stop). Set MAST_INJECT_TOKEN, or bind a loopback address
+(e.g. --listen=127.0.0.1:7777)
+```
+
+Two ways out, and they mean different things. `MAST_INJECT_TOKEN` gates
+the listener and the bind is yours again — this is what every shipped
+deployment manifest does. `--listen=127.0.0.1:7777` says the listener is
+for this host only, which is the local-dev shape.
+
+**`--listen` still defaults to `:7777`, on all interfaces.** Moving the
+default to loopback would have made every container that binds the
+default quietly unreachable, and silent unreachability is a worse
+failure than a refusal that explains itself. So the cost of this
+lands in exactly one place: a bare unauthenticated `mast serve` that
+used to work now exits, and pays one flag or one env var to keep working.
+
+**A users file does not count as the credential gate.**
+`MAST_INJECT_USERS_FILE` gates `/resume` and `/monitor-ack` — it says
+who approved. `/inject`, `/abort` and `/stop` still read the shared
+token, so a daemon with a table and no token has an open listener. mast
+refuses that bind too.
+
 ## Blast radius
 
 **What bounds it:** the tool catalog (an unwired tool cannot be called),
@@ -243,15 +277,6 @@ declare the roster it is claiming.
 bundle means no policy and no resume surface, and parking a call in a
 process that cannot un-park it is a hang, not a safety property. Pass a
 bundle to opt in.
-
-**The inject endpoint does not refuse an unauthenticated non-loopback
-bind.** The attach, A2A and AG-UI surfaces all refuse that shape; the
-inject surface — which starts turns, releases parked calls and stops the
-daemon — predates the policy, defaults to `:7777` on all interfaces, and
-only warns. Every shipped deployment manifest sets `MAST_INJECT_TOKEN`,
-so the exposure is a bare `mast serve` on a reachable host. Tracked as
-[#361](https://github.com/go-steer/mast/issues/361); changing it is a
-breaking CLI change, so it needs a release rather than a patch.
 
 **The session database and decision exports carry tool arguments
 verbatim**, including any namespaces, hostnames or credentials they

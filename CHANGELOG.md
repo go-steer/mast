@@ -4,6 +4,35 @@
 
 ### Bug or Regression
 
+- **An unauthenticated inject listener no longer binds a non-loopback
+  address.** Attach, A2A and AG-UI have each refused this shape since they
+  were added; inject is the surface the policy was never retrofitted to,
+  because the policy was written for the listeners that came after it. That
+  left the refusal missing from the one port that is on by default and the
+  most powerful of the four: `/inject` starts a turn, `/resume` releases a
+  parked mutating call, `/stop` ends the daemon. Each of the three surfaces
+  that already refuse justify it with a capability inject also has, and mostly
+  had first — A2A cites `tasks/cancel` being destructive, AG-UI cites a run
+  spending budget; `/resume` releasing a write gate is a stronger case than
+  either. `mast` now exits at startup, before provider detection and workload
+  resolution, naming both ways out: set `MAST_INJECT_TOKEN`, or bind
+  `127.0.0.1:7777`. **A users file does not satisfy it.**
+  `MAST_INJECT_USERS_FILE` gates `/resume` and `/monitor-ack` only — the
+  remaining routes still read the shared token alone, so a daemon with a table
+  and no token has `/inject` and `/abort` wide open, and counting the table
+  would let an attribution feature quietly stand in for an authentication one.
+  That is the single point where inject's policy differs from attach's, where
+  enforced multi-session auth *does* count. **`--listen`'s default stays
+  `:7777`.** Quietly relocating it to loopback would make every container
+  deployment unreachable with no message saying why, which is the failure the
+  refusal exists to prevent; the two shipped example deployments both already
+  set a token, and the one repo script that bound `:PORT` ungated now binds
+  loopback. What breaks is a deployment that was already serving `/resume` to
+  its whole network ([#361](https://github.com/go-steer/mast/issues/361)).
+  Landed before v1.0 deliberately: after the freeze, a startup that begins
+  refusing a configuration it used to accept costs two released minors and 90
+  days under `docs/compatibility-policy.md`.
+
 - **A `users.json` Secret mounted into mast's own StatefulSet was refused at
   boot, and the recipe that arms it is the one mast ships.** `LoadUsersFile`
   rejected any group or other permission bit. Kubernetes `fsGroup` is the

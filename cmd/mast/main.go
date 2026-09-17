@@ -587,8 +587,16 @@ func newResumeByToken(
 func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listenOpts, sessions sessionOpts, resumes resumeOpts, watchdogFlag string, mcpDigest bool) error {
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
+	// Checked here rather than left to inject.New, which does not run
+	// until provider detection, MCP loading and workload resolution are
+	// all behind us. A bind that is going to be refused should be
+	// refused before the operator pays for a boot that cannot finish.
+	if err := inject.CheckBindPolicy(listeners.inject, bearer != ""); err != nil {
+		logger.Error(err.Error())
+		return err
+	}
 	if bearer == "" {
-		logger.Warn("MAST_INJECT_TOKEN not set; inject endpoint is unauthenticated (dev only)")
+		logger.Warn("MAST_INJECT_TOKEN not set; inject endpoint is unauthenticated (loopback only)")
 	}
 	// Who an approval names (#198). Nil unless the operator configured a
 	// user table, in which case a resume records the person rather than
