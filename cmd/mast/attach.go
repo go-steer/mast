@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -304,8 +303,6 @@ func (z *storeResumer) Resume(ctx context.Context, app, sid string) (attach.Regi
 	}
 	return ad, auth.SessionACL{}, nil, nil
 }
-
-var errAttachNeedsSessionDB = errors.New("--attach-listen requires --session-db: attach live-tail pumps from the eventlog overlay, which needs a durable session database (in-memory sessions have no overlay to tail)")
 
 // attachDescription summarizes the daemon for the agent card +
 // session list: the workload's own description when it has one, its

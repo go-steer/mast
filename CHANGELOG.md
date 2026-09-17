@@ -25,6 +25,30 @@
   freezes flag names at the tag — this was the last window in which the rename
   was free ([#337](https://github.com/go-steer/mast/issues/337)).
 
+- **`--attach-listen` now implies a durable session database instead of
+  refusing to start without one.** With no `--session-db` of your own, an
+  attach daemon opens `~/.mast/sessions.db` and logs the path it chose plus
+  the flag that relocates it. The old behaviour was a startup error telling
+  you to pass a flag that had exactly one sensible value — attach live-tails
+  from the eventlog overlay, which an in-memory store does not have, so
+  there was never a second answer to give. Naming a path still wins and
+  nobody's database moves. Two shapes are **refused rather than papered
+  over**: `--session-db=` (explicitly empty) with `--attach-listen`, because
+  asking for no store and asking for the attach surface are contradictory
+  requests and silently honouring one of them is worse than saying so; and
+  `--session-db-driver=postgres` without a DSN, because a DSN carries a
+  host, a database and credentials, none of which can be invented — that
+  error now says the implication does not apply rather than repeating
+  "requires `--session-db`". The explicitly-empty case is why this reads
+  whether the flag was *given* rather than what it holds: mast's
+  `--session-db` is a string, so an explicit empty one is indistinguishable
+  downstream from an absent one. **The new cost is a file appearing in a home
+  directory nobody named**, which is why the path is on the startup line
+  rather than only in the docs. Ported from `core-agent@164365c`, which had
+  no path for mast to copy — upstream's `--session-db` is a bool beside a
+  `--session-db-path` that already defaulted
+  ([#329](https://github.com/go-steer/mast/issues/329)).
+
 ### Bug or Regression
 
 - **An unauthenticated inject listener no longer binds a non-loopback

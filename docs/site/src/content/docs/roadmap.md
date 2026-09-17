@@ -70,7 +70,7 @@ trigger in
   replay + live tail, inject/wake/interrupt, capabilities frames, agent
   card) plus `pkg/auth` and the eventlog overlay, pinned at
   `core-agent@25d8531c`. Serve mode's `--attach-listen` binds the surface
-  (requires `--session-db`; bearer auth via `MAST_ATTACH_TOKEN`;
+  (implies `--session-db`; bearer auth via `MAST_ATTACH_TOKEN`;
   loopback-only without auth), and the
   [mast-web](https://github.com/go-steer/mast-web) operator UI connects
   to it — verified end-to-end in a real browser session. Attach runs

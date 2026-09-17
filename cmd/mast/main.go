@@ -210,6 +210,12 @@ type listenOpts struct {
 type sessionOpts struct {
 	db     string // --session-db: a SQLite path or a Postgres DSN
 	driver string // --session-db-driver: sqlite or postgres
+	// implied reports that db is mast's doing rather than the
+	// operator's — attach mode cannot run without one, so it gets one
+	// (#329). It exists so the startup line can say where the file
+	// came from and how to move it: a database appearing in a home
+	// directory nobody named is worth one sentence.
+	implied bool
 }
 
 // resumeOpts is the boot-time auto-resume policy: whether to scan for
@@ -229,11 +235,11 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		provider:         fs.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `vertex`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. The alias also picks the backend within a family: `vertex` runs gemini-* against Vertex AI (GOOGLE_CLOUD_PROJECT, ADC) without GOOGLE_GENAI_USE_VERTEXAI, and `anthropic` / `anthropic-vertex` pick first-party or Vertex for claude-*"),
 		task:             fs.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)"),
 		listen:           fs.String("listen", ":7777", "HTTP inject endpoint bind address"),
-		attachListen:     fs.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Requires --session-db (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN"),
+		attachListen:     fs.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Implies a durable --session-db at ~/.mast/sessions.db when you name none (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN"),
 		a2aListen:        fs.String("a2a-listen", "", "A2A server bind address (e.g. `127.0.0.1:7780`); empty disables the surface. Publishes an agent card and a JSON-RPC endpoint for workloads that opt in via the bundle's a2a.expose. Authenticated when MAST_A2A_TOKEN is set. Non-loopback binds are refused without auth (tasks/cancel is destructive) — set MAST_A2A_TOKEN or bind loopback"),
 		aguiListen:       fs.String("agui-listen", "", "AG-UI server bind address (e.g. `127.0.0.1:7781`); empty disables the surface. Serves an HTTP+SSE run endpoint and a /agui/agents.json discovery doc for workloads that opt in via the bundle's agui.expose. Authenticated when MAST_AGUI_TOKEN is set (rate limits via MAST_AGUI_RATE/MAST_AGUI_BURST). Non-loopback binds are refused without auth (a run drives a budgeted turn) — set MAST_AGUI_TOKEN or bind loopback"),
 		notifyURL:        fs.String("notify-url", "", "serve mode: switchboard's outbound message ingress (e.g. `http://switchboard:8080`), where a monitoring cycle posts what it found. Required by any workload whose bundle declares a `monitor.notify` block; the bearer comes from MAST_NOTIFY_TOKEN, which must not be one of this daemon's own inbound tokens"),
-		sessionDB:        fs.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability)"),
+		sessionDB:        fs.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability), except under --attach-listen, which implies ~/.mast/sessions.db"),
 		sessionDrv:       fs.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)"),
 		timeout:          fs.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets"),
 		logLevel:         fs.String("log-level", "info", "log level: debug|info|warn|error"),
@@ -395,6 +401,19 @@ func run() {
 		logger.Warn("--timeout is a one-shot flag; ignored in serve mode (workload budgets own serve-mode ceilings)")
 	}
 
+	// Attach mode implies a durable store (#329). Resolved here rather
+	// than inside serve because "was the flag given?" is a property of
+	// the command line, not of the value — mast's --session-db is a
+	// string, so an explicit empty one is indistinguishable downstream
+	// from an absent one, and that is the case the refusal is for.
+	sessions, err := resolveSessionDB(
+		sessionOpts{db: *sessionDB, driver: *sessionDrv},
+		explicit["session-db"], *attachListen != "", defaultSessionDBPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mast:", err)
+		os.Exit(exitUsage)
+	}
+
 	if err := serve(logger,
 		workloadOpts{arg: *workloadFlag, dispatch: *dispatchMode},
 		modelOpts{provider: *providerFlag, name: *modelName},
@@ -405,7 +424,7 @@ func run() {
 			agui:   *aguiListen,
 			notify: *notifyURL,
 		},
-		sessionOpts{db: *sessionDB, driver: *sessionDrv},
+		sessions,
 		resumeOpts{auto: *autoResume, window: *autoResumeWindow},
 		*watchdogFlag, *mcpDigest); err != nil {
 		// serve already logged the failure with context; the error
@@ -697,12 +716,31 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		durableDB *gorm.DB
 	)
 	if listeners.attach != "" {
-		if sessions.db == "" {
-			logger.Error(errAttachNeedsSessionDB.Error())
-			return errAttachNeedsSessionDB
+		// No "requires --session-db" gate here any more: resolveSessionDB
+		// implies one for attach mode before serve is entered (#329), and
+		// refuses by name the two shapes it cannot imply — an explicitly
+		// empty --session-db, and a Postgres driver with no DSN. This
+		// branch is unreachable with an empty sessions.db, which is why
+		// the checks below are on elHandle rather than on the string.
+		if sessions.implied {
+			// Said before the file is created, not after: a database
+			// appearing under a home directory the operator never named
+			// is the surprise, and the line that prevents it has to name
+			// both the cause and the way out.
+			logger.Info("session db implied by --attach-listen (attach live-tail pumps from the eventlog overlay)",
+				"path", sessions.db, "relocate_with", "--session-db=PATH")
 		}
 		dial, err := sessionDialector(sessions.driver, sessions.db)
 		if err != nil {
+			if sessions.implied {
+				// The bare "create session-db directory ...: permission
+				// denied" is true and useless to someone who never asked
+				// for a session db. The fix has to be in the error.
+				logger.Error("attach mode needs a durable session db and the implied location is not usable",
+					"path", sessions.db, "error", err.Error(),
+					"fix", "pass --session-db=/some/writable/path/sessions.db")
+				return err
+			}
 			logger.Error("failed to construct session service", "error", err.Error())
 			return err
 		}
@@ -891,8 +929,8 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// /guardrails/reset is attach-only, so persisting a halt on a daemon
 	// with no attach surface would leave an operator no way to clear it
 	// short of deleting a row. Don't durably latch what nobody can
-	// unlatch. --attach-listen already requires --session-db, so the
-	// store exists exactly when the reset that clears it does.
+	// unlatch. --attach-listen implies --session-db (#329), so the store
+	// exists exactly when the reset that clears it does.
 	if elHandle != nil {
 		wds.durable(gstore, logger)
 	} else if wdRes.Mode.Enforces() {
@@ -2234,8 +2272,8 @@ func (mp *meterPool) meter(sessionID string) *budget.Meter {
 // and POST /guardrails/reset is the only thing that clears one. Without
 // an attach listener the operator's recourse would be editing
 // max_cost_usd in the bundle and restarting — real, but a different
-// promise than the endpoint makes. --attach-listen already requires
-// --session-db, so the store exists exactly when the reset does.
+// promise than the endpoint makes. --attach-listen implies --session-db
+// (#329), so the store exists exactly when the reset does.
 func (mp *meterPool) durable(spend *eventlog.SpendStore, guards *eventlog.GuardrailStore, logger *slog.Logger) {
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
@@ -2517,8 +2555,8 @@ func newWatchdogPool(mode watchdog.Mode) *watchdogPool {
 // Wired only when the daemon has an attach listener, which is the only
 // surface with a reset endpoint. A persisted halt with no way to clear
 // it is not a backstop, it is a brick: the operator's recourse would be
-// deleting a database row. --attach-listen already requires
-// --session-db, so the store exists exactly when the reset does.
+// deleting a database row. --attach-listen implies --session-db
+// (#329), so the store exists exactly when the reset does.
 // The (app, user) the rows are keyed on are the daemon's own constants,
 // the same pair the attach wiring and the transcript store use: a
 // single-workload process has exactly one of each, and threading them

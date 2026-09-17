@@ -18,6 +18,12 @@ tool call, tool result, and approval pause is appended and fsynced as it
 happens. Nothing important lives only in process memory, so a process that
 dies loses at most the turn in flight — never the session.
 
+Both flags are optional, and omitting them means in-memory sessions with no
+durability at all. The one exception is `--attach-listen`: an operator live
+tail reads the event log, so attach mode implies a store rather than
+refusing to start, opening `~/.mast/sessions.db` and logging the path it
+chose. Every other mode makes you ask.
+
 That is also why the operator surface is honest about state: `mast sessions
 list` derives `paused` / `interrupted` / `aborted` / `idle` from what the
 log *proves*, not from a status field someone remembered to update.
