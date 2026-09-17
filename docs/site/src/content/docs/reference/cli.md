@@ -186,8 +186,30 @@ behind it:
 }
 ```
 
-It holds bearer tokens, so it must be mode `0600` or stricter; the daemon
-refuses to start otherwise. `MAST_INJECT_PROXY_IDENTITIES` is a
+It holds bearer tokens, so it must be mode `0600` or stricter — or `0640`
+/ `0440` when the owning group is one the daemon process belongs to. Any
+other-bit, and group **write** or **execute** in every case, is refused,
+and the daemon refuses to start rather than warning.
+
+The group-read carve-out exists because Kubernetes leaves no alternative.
+`fsGroup` is the standard way to give a non-root pod read access to a
+Secret volume, and it sets group-read on every file in that volume
+unconditionally — so a Secret mounted at `defaultMode: 0400` arrives as
+`0440`, and mast's own StatefulSet sets `fsGroup: 65532`. The membership
+test is the whole security argument: group-read widens access to members
+of the owning group and to nobody else, so when the daemon is already one
+of them the bit grants no read it did not already hold. Supplementary
+groups count, because `fsGroup` without `runAsGroup` lands the gid there
+rather than on the primary. When the daemon is *not* a member, the load
+still fails, and the error names the gid on both sides:
+
+```
+auth: users file "/etc/mast/users.json" has mode 0440 and is group-owned by
+gid 2000, which this process (gid 65532) is not a member of; use 0600, or
+set the Kubernetes fsGroup to a group the container runs as
+```
+
+`MAST_INJECT_PROXY_IDENTITIES` is a
 comma-separated list of identities in that table allowed to answer on
 someone else's behalf via `X-Asserted-Caller` — a chat relay with an
 approve button is the case it exists for. Both are checked at startup: a

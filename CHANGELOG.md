@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### Bug or Regression
+
+- **A `users.json` Secret mounted into mast's own StatefulSet was refused at
+  boot, and the recipe that arms it is the one mast ships.** `LoadUsersFile`
+  rejected any group or other permission bit. Kubernetes `fsGroup` is the
+  standard way to give a non-root pod read access to a Secret volume and it
+  sets group-read on every file in that volume unconditionally, so a Secret
+  mounted at `defaultMode: 0400` arrives as `0440` —
+  and `deploy/base/50-statefulset-daemon.yaml` sets `fsGroup: 65532` because
+  the PVC needs it. Nobody was hitting this, because the shipped recipe uses
+  single-bearer auth and mounts no users file; the person who hits it is the
+  next one to add per-person attribution to that manifest, and what they get
+  is a boot loop blaming file permissions they did not set and cannot unset
+  without removing the `fsGroup` the volume depends on. Group-read is now
+  accepted **when the process is a member of the owning group**, and that
+  equality is the whole security argument: group-read widens access to
+  members of that group and to nobody else, so when the daemon is already one
+  of them the bit grants no read it did not already hold. **Supplementary
+  groups count, and that is the fix rather than a widening of it** — a pod
+  that sets `fsGroup` without `runAsGroup` carries the gid supplementally and
+  runs with a primary gid of 0, so a primary-only test would reject the most
+  common manifest shape and change nothing. Everything else stays strict,
+  including the bits that look harmless beside group-read: any other-bit is
+  rejected because "other" is unbounded by definition, and group-**write** and
+  group-**execute** are rejected even for our own group, because neither is
+  needed to read a credential and a co-member who can write the file can swap
+  the daemon's entire user table. A refusal now names the gid on both sides
+  instead of dumping a mode, since "0440 is wrong" does not tell an operator
+  which of the two numbers to change. The policy is a pure function over
+  (mode, gid, membership oracle), so the cases that cannot be staged on disk —
+  a foreign gid needs privileges CI does not have, an unreportable one cannot
+  be produced at all — are tested rather than reasoned about; the gid lookup
+  is the only platform-split part and reports "unknown" off POSIX, so the
+  permissive branch cannot open where membership cannot be established.
+  `deploy/` grows the multi-user recipe as a commented-out **direct** Secret
+  mount: upstream kept the `chmod` initContainers in its recipes because their
+  manifests pin tags that predate the fix, but mast never had one, so the
+  thing to copy is the correct shape rather than a workaround with a note
+  saying to delete it. Ported from
+  [`go-steer/core-agent@1423bb1`](https://github.com/go-steer/core-agent);
+  landed before v1.0 deliberately, because after the freeze a change to what a
+  loader accepts is indistinguishable in shape from one that costs two minors
+  and 90 days ([#328](https://github.com/go-steer/mast/issues/328)).
+
 ### Documentation
 
 - The pre-v1.0 decision sweep is settled and written down: AG-UI's

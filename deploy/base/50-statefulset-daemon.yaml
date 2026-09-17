@@ -12,8 +12,10 @@
 # v0.2 row and means Postgres, not a shared PVC.
 #
 # Simplified for the mast spike vs. the core-agent recipe:
-#   - No users.json Secret + initContainer shuffle (single-bearer auth
-#     via MAST_INJECT_TOKEN env from a Secret).
+#   - Single-bearer auth via MAST_INJECT_TOKEN env from a Secret. A
+#     users.json Secret is an optional add-on for per-person
+#     attribution, commented in below; since #328 it mounts directly
+#     and needs no initContainer to re-chmod it.
 #   - No X-Asserted-Caller / proxy-identity / admin_identities config.
 #   - No -c ambient-config plumbing — mast reads --workload=<dir>
 #     directly; no config.json in the ConfigMap.
@@ -88,6 +90,30 @@ spec:
                 secretKeyRef:
                   name: mast-inject-token
                   key: token
+            # OPTIONAL — per-person attribution on /resume and
+            # /monitor-ack. Without it every approval is recorded as
+            # `shared-bearer-token`, which is what a shared credential
+            # can honestly prove. With it, the row's identity is
+            # recorded instead. Adding a users file does not open a
+            # second way in: only those two routes read it, and
+            # /inject, /abort and the rest still take MAST_INJECT_TOKEN
+            # alone. See docs/site reference/cli.md, "Naming people on
+            # the daemon".
+            #
+            # Mount the Secret directly. The fsGroup above makes the
+            # projected file arrive as 0440 group-owned by 65532, which
+            # is the gid this container runs as, and mast accepts that
+            # (#328). Do NOT stage it through a root initContainer to
+            # re-chmod it — that was the pre-#328 workaround, and it
+            # adds a privileged container to a hardened pod to satisfy
+            # a check about a risk that is not present. It is also
+            # version-sensitive: a daemon image older than v0.10 still
+            # rejects any group bit and will abort at boot.
+            #
+            # - name: MAST_INJECT_USERS_FILE
+            #   value: /etc/mast/users.json
+            # - name: MAST_INJECT_PROXY_IDENTITIES
+            #   value: "sa:switchboard"
           envFrom:
             # GCP project + location for the Vertex AI client. Expected
             # keys: GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION. Set via
@@ -112,6 +138,10 @@ spec:
               readOnly: true
             - name: state
               mountPath: /var/lib/mast
+            # Uncomment with the MAST_INJECT_USERS_FILE env above.
+            # - name: users
+            #   mountPath: /etc/mast
+            #   readOnly: true
           readinessProbe:
             # HTTP probe on GET / (mast's inject server serves 200 on
             # the health path unauthenticated) — safe to poll from the
@@ -128,6 +158,18 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
+        # Uncomment with the MAST_INJECT_USERS_FILE env above. A
+        # defaultMode of 0400 is what you ask for; fsGroup turns it
+        # into 0440, and that is the mode mast reads.
+        #
+        # - name: users
+        #   secret:
+        #     secretName: mast-users
+        #     defaultMode: 0400
+        #     items:
+        #       - key: users.json
+        #         path: users.json
+        #
         # The workload dir (workload.yaml + mcp.json + schemas/*.json +
         # specialists/*.specialist.md) is projected from a flat ConfigMap;
         # ConfigMap keys can't contain "/", so the generator flattens
