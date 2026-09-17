@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+- **The AG-UI surface's remaining open calls are settled, and two of them were
+  settled against the code rather than for it.**
+  ([#98](https://github.com/go-steer/mast/issues/98)) Docs and decisions only —
+  no behaviour changes in this entry. Six deferred slices were triaged against
+  one question: *does this need a `workload.Bundle` key, and does it hold a
+  defect today?* A key is exposed by the v1.0 freeze; a defect is not a feature
+  and does not wait for one.
+
+  Two recorded promises turned out to describe something the code does not do,
+  and both are corrected in place rather than quietly dropped:
+
+  - **A client disconnect does not resume a run — it destroys one.** The design
+    text said mast reconnects via the same `threadID` + `runID` and resumes
+    from the last durable event. In fact the stream context descends from the
+    request, so a TCP reset cancels the turn; if that lands while a mutating
+    tool is running, the session keeps no trace of the call and a well-behaved
+    retry re-applies the change. Filed as
+    [#383](https://github.com/go-steer/mast/issues/383) and scheduled **before
+    v1.0**, because it is a correctness fix, not the reconnect feature it was
+    filed under. Reconnect proper — a replay cursor plus re-subscription — is
+    v1.1, and is cheap to defer *because* #383 lands first.
+  - **There is no concurrent-run policy.** The doc records a bounded queue of
+    depth 3 with a `RunError` refusal and a metric; none of it exists. A second
+    run blocks on the per-session turn lock, unbounded, and the only ceiling is
+    `budget.max_wallclock_seconds` — so a caller queued behind a long turn gets
+    a timeout that says nothing about why it waited. Filed as
+    [#384](https://github.com/go-steer/mast/issues/384). The **key shape** is
+    due before v1.0 even though the implementation may slip.
+
+  **Client-declared tools (`RunAgentInput.tools`) were re-biased rather than
+  implemented.** The recorded plan was to intersect them with the bundle's
+  `tool_catalog` allowlist. That object is not an allowlist — it is a per-tool
+  policy-override table (mutation class, capture/revert) that grants nothing —
+  and the real per-specialist allowlist narrows *wired* toolsets: built-in tools
+  the daemon constructed and MCP servers it dialed. A browser-executed tool is
+  in neither and never can be, so the intersection is the empty set for every
+  input and a bundle that opted in would have found no client tool callable. The
+  question underneath is the one worth answering — what does it mean to allow a
+  tool whose behaviour lives on the other side of the wire, when the mutation
+  predicate, write gate, effect outbox and capture/revert all read a tool mast
+  can describe? The gate gets designed and its key shape decided before v1.0;
+  the implementation ships in v1.1. `tools` stays parsed-and-dropped until then.
+
+  Also settled: **the protocol-version-pinning open question is struck, not
+  answered** — every clause of it names an SDK that the hand-rolled,
+  zero-dependency decision removed, so the `pkg/agui/VERSION.md` it called for
+  would record the version of a dependency mast does not have. The **`agui://`
+  federation client is deferred past v1.0** for want of a consumer. And the
+  doc's version-keyed phasing table is **struck through rather than re-dated**,
+  since a lapsed schedule read as a commitment is the failure shape
+  [#300](https://github.com/go-steer/mast/issues/300) and
+  [#291](https://github.com/go-steer/mast/issues/291) each already corrected.
+
 - **An AG-UI thread now belongs to the caller who opened it.**
   ([#382](https://github.com/go-steer/mast/issues/382)) On an authenticated
   endpoint, any principal carrying the workload's scopes could previously
