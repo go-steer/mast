@@ -93,7 +93,7 @@ type sessionsCmd struct {
 	message     string
 	resumeAt    string // RFC3339
 	resumeAfter string // Go duration, converted client-side
-	hardPause   bool   // --interrupt on pause: cancel the in-flight turn
+	cancelTurn  bool   // --cancel-turn on pause: cancel the in-flight turn
 	ttl         string // Go duration
 }
 
@@ -105,7 +105,7 @@ commands:
   resume <session-id>     resume a paused session via a running daemon
                           (--interrupt keying, or --token for v0.2 pauses)
   pause  <session-id>     gate-pause a session: every turn refuses until the
-                          returned token resumes it (--interrupt also cancels
+                          returned token resumes it (--cancel-turn also stops
                           the in-flight turn)
   extend-token <token>    lengthen a resume token's lifetime (audited)
   abort  <session-id>     mark a session aborted via a running daemon
@@ -186,7 +186,7 @@ func sessionsFlagSet(verb string) (*flag.FlagSet, *sessionsCmd, error) {
 		fs.StringVar(&cmd.message, "message", "", "human-readable context, surfaced by list/show")
 		fs.StringVar(&cmd.resumeAt, "resume-at", "", "RFC3339 time to auto-resume (arms the timed-pause scheduler)")
 		fs.StringVar(&cmd.resumeAfter, "resume-after", "", "duration until auto-resume (e.g. 15m) — convenience for --resume-at")
-		fs.BoolVar(&cmd.hardPause, "interrupt", false, "hard pause: also cancel the session's in-flight turn (the pause record is the durable truth; the cancelled turn may leave dangling intents for the effects outbox to guard)")
+		fs.BoolVar(&cmd.cancelTurn, "cancel-turn", false, "hard pause: also cancel the session's in-flight turn (the pause record is the durable truth; the cancelled turn may leave dangling intents for the effects outbox to guard)")
 		fs.StringVar(&cmd.ttl, "ttl", "", "shorten the resume token's default 7-day lifetime (e.g. 48h); lengthening is extend-token's job")
 	case "extend-token":
 		fs.StringVar(&cmd.addr, "addr", "http://127.0.0.1:7777", "base URL of the running mast daemon")
@@ -205,6 +205,39 @@ func sessionsFlagSet(verb string) (*flag.FlagSet, *sessionsCmd, error) {
 	return fs, cmd, nil
 }
 
+// renamedPauseInterrupt turns the one rename in this CLI's history into a
+// sentence instead of a flag-package default (#337).
+//
+// `pause --interrupt` was a bool meaning "cancel the in-flight turn" while
+// `resume --interrupt` is a string naming an InterruptID: one name, two
+// types, two unrelated meanings, on sibling subcommands. v1.0 freezes flag
+// names, so the bool was renamed to --cancel-turn while that was still
+// free. What a caller scripted on the old spelling would otherwise get is
+// "flag provided but not defined: -interrupt", which is true of a typo and
+// of a rename alike and distinguishes neither.
+//
+// This is a refusal, not an alias. Accepting both spellings would carry the
+// ambiguity past the freeze, which is the whole thing #337 was about, and a
+// pause that silently did not cancel the turn is the one misreading with a
+// cost — so the old spelling stops working, loudly, and says where it went.
+func renamedPauseInterrupt(verb string, args []string) error {
+	if verb != "pause" {
+		return nil
+	}
+	for _, a := range args {
+		if a == "--" {
+			return nil
+		}
+		if a == "-interrupt" || a == "--interrupt" ||
+			strings.HasPrefix(a, "-interrupt=") || strings.HasPrefix(a, "--interrupt=") {
+			return errors.New("mast sessions pause: --interrupt was renamed to --cancel-turn " +
+				"(it cancels the in-flight turn; the --interrupt on `sessions resume` is an " +
+				"unrelated flag naming an InterruptID, which is why this one moved)")
+		}
+	}
+	return nil
+}
+
 // parseSessionsArgs parses the argument vector after "sessions".
 func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 	if len(args) == 0 {
@@ -221,6 +254,9 @@ func parseSessionsArgs(args []string) (*sessionsCmd, error) {
 	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
 		cmd.sessionID = rest[0]
 		rest = rest[1:]
+	}
+	if err := renamedPauseInterrupt(cmd.verb, rest); err != nil {
+		return nil, err
 	}
 	if err := fs.Parse(rest); err != nil {
 		return nil, err
@@ -406,7 +442,11 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 			Reason:    c.reason,
 			Message:   c.message,
 			ResumeAt:  c.resumeAt,
-			Interrupt: c.hardPause,
+			// The wire field keeps its name: PauseRequest.Interrupt sits
+			// beside ResumeRequest.InterruptID, so it never collided the
+			// way the two CLI flags did, and pkg/inject's JSON is not
+			// what #337 was about.
+			Interrupt: c.cancelTurn,
 			TTL:       c.ttl,
 		})
 	case "extend-token":

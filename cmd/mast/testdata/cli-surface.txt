@@ -77,7 +77,7 @@ mast sessions <verb>
 
   mast sessions pause
     --addr                 string    "http://127.0.0.1:7777"
-    --interrupt            bool      "false"
+    --cancel-turn          bool      "false"
     --message              string    ""
     --reason               string    ""
     --resume-after         string    ""

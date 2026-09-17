@@ -90,7 +90,7 @@ mast sessions show   <session-id> --session-db=...
 mast sessions resume <session-id> --interrupt=<iid> --response='{"approved":true}' [--ack-effects] [--addr=...]
 mast sessions resume --token=<mrt_...> [--response='<json>'] [--ack-effects] [--addr=... | --session-db=...]
 mast sessions pause  <session-id> --reason=<enum> [--message=...] [--resume-at=RFC3339 | --resume-after=15m]
-                     [--interrupt] [--ttl=48h] [--addr=...]
+                     [--cancel-turn] [--ttl=48h] [--addr=...]
 mast sessions extend-token <mrt_...> --ttl=<duration> [--addr=...]
 mast sessions abort  <session-id> [--reason=...] [--addr=...]
 mast sessions ack-effects <session-id> [--reason=...] [--addr=... | --session-db=...]
@@ -136,8 +136,12 @@ resumed, and prints a **resume token** (`mrt_...`). Token possession is
 the resume capability: `resume --token=...` needs nothing else (the
 daemon resolves the session), works for gate pauses and for the
 planner's own `pause_session` parks alike, and consumes the token —
-a replay is a no-op. Add `--interrupt` to a pause to also cancel the
-session's in-flight turn (hard pause).
+a replay is a no-op. Add `--cancel-turn` to a pause to also cancel the
+session's in-flight turn (hard pause). That flag was spelled
+`--interrupt` before v0.10; the old spelling is refused, and the
+refusal names the new one. It moved because `resume --interrupt` is an
+unrelated flag that takes an *InterruptID* — one name, two types, two
+meanings, on sibling subcommands — and v1.0 freezes flag names.
 
 `--resume-at` / `--resume-after` arm the daemon's timed-pause
 scheduler: the session auto-resumes at that time through the same
