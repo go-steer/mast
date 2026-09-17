@@ -439,6 +439,12 @@ disabled.
 a capability). The `/a2a` endpoint is authenticated when `MAST_A2A_TOKEN`
 is set — a request without a valid bearer is refused `401`, and a call
 whose token lacks a skill's declared `auth.scopes` is refused `403`.
+**One token means one principal**: `MAST_A2A_TOKEN` resolves to a single
+subject holding the union of every exposed skill's scopes, so the `403`
+above is unreachable on a daemon configured this way. Per-skill scopes
+start discriminating when the embedding host supplies its own
+[`serverauth.TokenValidator`](/reference/stability/) — see
+[scopes and the shared token](#scopes-and-the-shared-token) below.
 Unset means unauthenticated (dev only, warned at startup) — and because
 `tasks/cancel` is destructive, a **non-loopback** `--a2a-listen` bind
 (anything but `127.0.0.1`/`localhost`/`::1`) is *refused at startup*
@@ -634,7 +640,9 @@ client are follow-on stages.
 **Auth.** The discovery descriptor is always public. Each run endpoint is
 authenticated when `MAST_AGUI_TOKEN` is set — a request without a valid
 bearer is refused `401`, and a token lacking a workload's declared
-`auth.scopes` is refused `403`. Unset means unauthenticated (dev only,
+`auth.scopes` is refused `403`, which on a daemon holding one shared token
+is unreachable — see [scopes and the shared
+token](#scopes-and-the-shared-token). Unset means unauthenticated (dev only,
 warned at startup) — and because a run drives a budgeted turn, a
 **non-loopback** `--agui-listen` bind is *refused at startup* without a
 token; bind loopback or set `MAST_AGUI_TOKEN`.
@@ -662,3 +670,42 @@ by
 `409` with a `Retry-After`, before the stream opens — a distinct status from
 the rate limiter's `429` on purpose, since "this thread is busy" and "you are
 calling too fast" have different remedies.
+
+## Scopes and the shared token
+
+Both token-authenticated surfaces check scopes per workload, and under the
+validator the daemon builds for itself, neither check can fail. This is worth
+knowing before you design a scope scheme around it.
+
+`MAST_A2A_TOKEN` and `MAST_AGUI_TOKEN` are each **one token**. Each resolves
+to **one principal**, carrying the **union of every exposed workload's
+declared scopes** — necessarily so, because that one token has to be able to
+drive all of them. The scope loop still runs on every call; it has no
+reachable failing branch. So on a daemon configured this way:
+
+- **You cannot express "this token runs the reporting workload but not the
+  deploying one."** There is one token, and it carries both scopes.
+- **`auth.scopes` in `/agui/agents.json` states the workload's requirement**,
+  not a property of any token mast hands out. The sentence is true; the
+  natural reading of a published per-workload scope list — that tokens differ
+  per workload — is not.
+- **AG-UI thread ownership separates deployments, not users.** The caller tag
+  folded into a derived session id hashes the principal's tenant and subject,
+  and here those are constants. Two browsers sharing the token share the
+  thread.
+- **Rate-limit buckets are per workload, not per caller**, for the same
+  reason: every request arrives as the same subject.
+
+What changes all four at once is a **host-supplied token validator**. The
+`serverauth.TokenValidator` seam is real and needs no change to either
+server: an embedding host that validates its own users' tokens gets
+discriminating scopes, per-user thread ownership, per-caller rate limiting
+and a meaningful subject in the audit trail, immediately.
+
+A single shared bearer token remains a defensible default for a
+single-tenant daemon, which is why it is the default. A daemon-side
+multi-token form — a token→`{subject, scopes}` map instead of one
+environment variable — is tracked as
+[#389](https://github.com/go-steer/mast/issues/389) and is not blocked by the
+[v1.0 freeze](/reference/stability/): these are environment variables, which
+the promise does not cover.
