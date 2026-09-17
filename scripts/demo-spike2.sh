@@ -44,7 +44,11 @@ trap cleanup EXIT
 
 start() { # start <logfile> <extra flags...>
   local log="$1"; shift
-  "${BIN}" --workload="$1" --dispatch=graph --listen=":${PORT}" "${@:2}" >"${log}" 2>&1 &
+  # Loopback, not ":${PORT}". This demo sets no MAST_INJECT_TOKEN, and
+  # an unauthenticated inject listener no longer binds past loopback
+  # (#361) — the doors behind it include /resume, which releases a
+  # parked mutating call.
+  "${BIN}" --workload="$1" --dispatch=graph --listen="127.0.0.1:${PORT}" "${@:2}" >"${log}" 2>&1 &
   PID=$!
   for _ in $(seq 1 50); do
     curl -sf -m 1 "${BASE}/" >/dev/null 2>&1 && return 0

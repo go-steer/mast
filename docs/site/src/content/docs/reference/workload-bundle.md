@@ -1020,7 +1020,7 @@ The daemon supplies the other half — which ingress, and with what
 credential:
 
 ```bash
-MAST_NOTIFY_TOKEN=… mast --workload=cluster-watch \
+MAST_INJECT_TOKEN=… MAST_NOTIFY_TOKEN=… mast --workload=cluster-watch \
   --notify-url=http://switchboard:8080 --listen=:7777 --session-db=…
 ```
 

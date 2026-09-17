@@ -32,9 +32,15 @@ Start it with the triage workload, graph dispatch, and a SQLite session DB
   --workload=examples/workloads/gke-triage \
   --dispatch=graph \
   --model=echo \
-  --listen=:7777 \
+  --listen=127.0.0.1:7777 \
   --session-db=/tmp/mast-demo/sessions.db
 ```
+
+`127.0.0.1` rather than `:7777` because this demo sets no
+`MAST_INJECT_TOKEN`, and mast will not put an ungated inject listener on
+a network — `/resume` behind that port releases parked mutating calls.
+For a real deployment, set the token and bind where you like; see
+[Exposing a listener on a network](/reference/threat-model/#exposing-a-listener-on-a-network).
 
 Leave this running and open a second terminal.
 
@@ -82,7 +88,7 @@ kill -9 $(pgrep -f 'mast-demo/mast --workload')
   --workload=examples/workloads/gke-triage \
   --dispatch=graph \
   --model=echo \
-  --listen=:7777 \
+  --listen=127.0.0.1:7777 \
   --session-db=/tmp/mast-demo/sessions.db
 ```
 
