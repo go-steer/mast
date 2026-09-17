@@ -600,6 +600,17 @@ thread, which is what chat UX expects; `per_run` gives every run a fresh
 session, which is right for stateless one-shots. Either way the daemon
 derives and namespaces the session id — a client never supplies a raw one.
 
+A `threadId` is the client's own correlation string, not a secret, so on an
+authenticated endpoint the derivation folds in the caller: two principals
+naming the same `threadId` get two different sessions. Holding the
+endpoint's scopes answers "may this caller run this workload", which is a
+different question from "is this conversation yours" — without the caller
+in the id, any authorized principal could continue, and read back, another
+one's thread. The separation is structural rather than a verdict: a second
+caller is not refused, they simply address a thread of their own and never
+reach the first. An endpoint with no validator has no subject to own
+anything, so its session ids are unchanged.
+
 Two publication surfaces sit behind their own bundle keys, both empty-or-off
 by default and both silent rather than redacted when off:
 `agui.state_projection` names the session-state keys a run may publish as

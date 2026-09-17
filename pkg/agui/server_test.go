@@ -712,6 +712,52 @@ func TestRunScopeForbidden(t *testing.T) {
 	}
 }
 
+// TestRunCarriesPrincipalToBackend: the authenticated caller reaches the
+// backend on RunInput, and is nil when no validator is configured.
+//
+// The server used to authenticate, scope-check and then discard the principal,
+// which left the backend unable to bind a thread to a subject — so any caller
+// holding the endpoint's scopes could continue (and read) another caller's
+// thread by naming its threadId (#382). Scope-checking answers "may this caller
+// run this workload"; it does not answer "is this conversation yours".
+//
+// Neutralize check: drop the Principal assignment in handleRun and the backend
+// sees nil for an authenticated run.
+func TestRunCarriesPrincipalToBackend(t *testing.T) {
+	v, _ := serverauth.NewStaticBearerValidator(map[string]*serverauth.Principal{
+		"good": {Subject: "svc", Tenant: "acme"},
+	})
+	ts, be := testServer(t, Config{Validator: v})
+	if status, _, _ := runCall(t, ts, "good", testEndpoint, runBody("t", "r", "hi")); status != http.StatusOK {
+		t.Fatalf("authenticated run: status = %d, want 200", status)
+	}
+	be.mu.Lock()
+	runs := be.runs
+	be.mu.Unlock()
+	if len(runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(runs))
+	}
+	if p := runs[0].Principal; p == nil {
+		t.Fatal("backend saw a nil Principal for an authenticated run")
+	} else if p.Subject != "svc" || p.Tenant != "acme" {
+		t.Errorf("Principal = %+v, want subject svc / tenant acme", p)
+	}
+
+	// No validator: there is no subject, so there is nothing to carry.
+	tsOpen, beOpen := testServer(t, Config{})
+	if status, _, _ := runCall(t, tsOpen, "", testEndpoint, runBody("t", "r", "hi")); status != http.StatusOK {
+		t.Fatalf("unauthenticated run: status = %d, want 200", status)
+	}
+	beOpen.mu.Lock()
+	defer beOpen.mu.Unlock()
+	if len(beOpen.runs) != 1 {
+		t.Fatalf("open-endpoint runs = %d, want 1", len(beOpen.runs))
+	}
+	if p := beOpen.runs[0].Principal; p != nil {
+		t.Errorf("Principal = %+v on an endpoint with no validator, want nil", p)
+	}
+}
+
 // TestRunRateLimited: a refusing limiter turns a run into HTTP 429 with an
 // advisory Retry-After (NOT an SSE stream), records a "rejected" outcome, and
 // never reaches the backend — the refusal precedes the SSE upgrade. The
