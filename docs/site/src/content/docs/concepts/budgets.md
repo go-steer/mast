@@ -85,6 +85,17 @@ bills separately — uncached input, cache reads at a tenth of it, and
 cache *writes* at 1.25x — rather than charging every cached token the
 read rate, which under-reports a cache-heavy turn.
 
+A provider that reports an impossible count — a negative number of prompt,
+output or thinking tokens — is read as having reported nothing for that
+bucket. The call still counts as a call and is still priced; what it cannot
+do is credit the budget back. Without that floor a miscounted turn walks a
+session's running total *backwards*, so a workload already at its ceiling
+buys itself more room by being metered wrong, and the same negative lands in
+the durable spend ledger, where a monotonic total cannot take it back. A
+count that is too *high* is a different failure and is handled separately:
+cache buckets are clipped into the room the prompt has left rather than
+being trusted past it.
+
 :::note[Cache writes were under-billed before v0.9]
 The rate table has carried a cache-write rate since v0.4, but nothing
 counted the bucket: mast reads usage through a Google GenAI record that

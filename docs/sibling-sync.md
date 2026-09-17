@@ -1064,6 +1064,20 @@ the ledger, `/usage` and the OTel counter alike. mast's own comment on the clamp
 longer true of the neighbouring one. Filed as
 [#332](https://github.com/go-steer/mast/issues/332).
 
+**Absorbed 2026-09-17.** The placement argument transferred; the line numbers did not, and two of
+the four readers the filing named turned out not to need the fix. `pkg/budget`'s cap had already
+moved into `fitBucket`, which floors *and* clips both cache buckets, so the snippet quoted in the
+issue was a read of code that no longer existed; and `pkg/observability`'s registry has always
+guarded its two counts with `> 0`, so the OTel counter was never reachable. What was actually
+unfloored was the top-line total on its way to the ledger and the ceiling comparison, the prompt and
+output terms on their way to a `Pricer`, and — a reader upstream does not have —
+`pkg/planner/dispatch.go`'s `sub_total_tokens`, which is handed to the planner *model* as the price
+of a dispatch. mast's `Clamped` equivalent is `flooredUsage`, called once in `Meter.Observe` and
+threaded down, with an AST test pinning that the package reads `UsageMetadata` in exactly one
+function. It is deliberately not shared with `pkg/planner`: `pkg/budget` imports nothing else in
+this module (#338/#339) and v1.0 freezes what it exports (#300), so a six-line clamp is spelled
+twice rather than made permanent.
+
 The 1h cache-write half remains what 2026-08-21 recorded under `181327c`: a rate mast would carry
 unused until it ships a prompt-cache TTL knob. Unchanged.
 
@@ -1311,11 +1325,13 @@ Carried forward from 2026-09-09, in the order they are worth doing:
    3.7's. No trailer bumps: this is mast's own regen and mast's own call, not a re-port.
    `dd2007f`'s pin belongs in the same
    neighbourhood of the tree but not the same PR ([#331](https://github.com/go-steer/mast/issues/331)).
-7. **[#332](https://github.com/go-steer/mast/issues/332) (`e385fb0`'s clamp) — floor the token
+7. ~~**[#332](https://github.com/go-steer/mast/issues/332) (`e385fb0`'s clamp) — floor the token
    buckets, and floor them on the usage type.** The smallest
    row here and the one most likely to be done wrong: guarding the thoughts term inside `priceOf`
    would keep a negative out of the invoice and leave it in every other reader. Take upstream's
-   placement argument, not just its outcome.
+   placement argument, not just its outcome.~~ **Shipped 2026-09-17.** The placement argument was
+   the whole value of the row, and it found a reader upstream does not have. See the `e385fb0`
+   subsection above for what the filing got wrong about mast's own code.
 
 Three open questions that are not ports and need an owner. The first two are carried from 2026-08-20
 and unchanged; the third is new:

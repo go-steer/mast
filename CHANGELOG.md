@@ -84,6 +84,26 @@
 
 ### Bug or Regression
 
+- **A token count a provider reports as negative is now read as zero, before
+  anything reads it.** A miscount used to reach the durable spend ledger, the
+  session totals behind `GET /usage`, the buckets handed to the pricer, and
+  the `sub_total_tokens` a planner dispatch reports back to the model as the
+  price of a specialist. The consequence is not a wrong invoice — it is a
+  guardrail that opens: a credit walks the running total *backwards*, so a
+  session already at its ceiling buys itself more room by being metered
+  wrong, and on the durable ledger a negative delta cannot be corrected after
+  the fact. **The placement is the fix, not the clamp.** Guarding the term
+  inside the pricing call would have kept the negative out of the invoice and
+  left it in all three of the other readers, which is the argument
+  `core-agent@e385fb0` makes and the reason this was a port candidate at all;
+  mast floors once, where the metadata enters the meter, and an AST test pins
+  that the package reads a provider's usage record in exactly one function. A
+  count that is too *high* is unaffected — that is `fitBucket`'s job and it
+  moves in the other direction. Two of the four readers the filing named
+  needed nothing: the snippet it quoted had already moved, and the OTel
+  registry had guarded itself since it was written
+  ([#332](https://github.com/go-steer/mast/issues/332)).
+
 - **An unauthenticated inject listener no longer binds a non-loopback
   address.** Attach, A2A and AG-UI have each refused this shape since they
   were added; inject is the surface the policy was never retrofitted to,

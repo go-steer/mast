@@ -35,6 +35,12 @@ exports. What is written below is what a `curl /metrics` returns.
 The session eventlog is the source of truth; these metrics are a real-time
 *view* folded from the same event stream the budget meter observes.
 
+A token count a provider reports as negative is read as zero everywhere —
+these counters, the budget meter's totals, the durable spend ledger and
+`GET /usage`. A counter that only goes up cannot take a bad delta back, so
+an impossible count is dropped rather than subtracted; the call itself
+still counts in `mast_model_calls_total`.
+
 ### Durable-execution families (v0.2)
 
 The v0.2 durable-execution surface — pause/abort, planned stop, boot-time
