@@ -23,6 +23,7 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
+	"github.com/go-steer/mast/internal/modeltext"
 	"github.com/go-steer/mast/pkg/approval"
 )
 
@@ -407,7 +408,16 @@ func reqWithResponseSchema(s *genai.Schema) *model.LLMRequest {
 	}
 }
 
-// fakeText drives a fake and returns the text it replied with.
+// fakeReplyText drives a fake and returns the caller-facing text it replied
+// with — the answer, never a thinking block.
+//
+// The filter is here because concatenating every p.Text was the ninth
+// instance of #370's omission, living in test code (#372). Nothing leaks
+// today: neither shipped fake emits a thinking block, and #372 decided they
+// should not start. What the filter buys is that the helper cannot quietly
+// splice reasoning into an assertion the day a fake — or an embedder's model,
+// since this signature takes any model.LLM — hands it one. See
+// thoughtfilter_test.go.
 func fakeReplyText(t *testing.T, m model.LLM, req *model.LLMRequest) string {
 	t.Helper()
 	var text string
@@ -416,7 +426,9 @@ func fakeReplyText(t *testing.T, m model.LLM, req *model.LLMRequest) string {
 			t.Fatalf("GenerateContent: %v", err)
 		}
 		for _, p := range resp.Content.Parts {
-			text += p.Text
+			if s, ok := modeltext.Text(p); ok {
+				text += s
+			}
 		}
 	}
 	return text
