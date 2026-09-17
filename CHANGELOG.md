@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **`agent.NewEchoModel` and `agent.NewToolActorModel` keep emitting plain
+  text, and that is now a decision rather than an oversight.**
+  ([#372](https://github.com/go-steer/mast/issues/372)) Neither offline fake
+  produces a thinking block, which is a shape every live frontier model
+  produces. Teaching them to was measured twice and detects nothing the
+  per-site tests added in #370 do not already detect, so an embedder's fixtures
+  that pin the current replies keep working. A test that needs a reasoning
+  model should script a local double, the way `cmd/mast` already does to drive
+  `agui.emit_reasoning` end to end. Recorded alongside it: **the v1.0 API
+  freeze covers a fake's signature, not the content it emits** — a double
+  stands in for a real model, and real models change what they return.
+
 - **An AG-UI run now shows which agent is working.**
   ([#98](https://github.com/go-steer/mast/issues/98)) The stream brackets each
   stretch of a run in `STEP_STARTED` / `STEP_FINISHED` frames, and **the step
