@@ -114,8 +114,10 @@ prompt in front of somebody with nothing to say back.
 `--attach-listen` serves the mast-native attach protocol (HTTP + SSE) that
 [mast-web](https://github.com/go-steer/mast-web) speaks: live-tail a
 running turn, read a session's transcript, inject an operator message,
-answer a parked approval. It needs `--session-db`, since the live tail
-pumps from the event log.
+answer a parked approval. It needs a durable session store, since the live
+tail pumps from the event log — so it **implies one**: with no
+`--session-db` of your own, the daemon opens `~/.mast/sessions.db` and says
+so at startup. Name a path to put it anywhere else.
 
 ### What `turn_state` says
 
@@ -479,7 +481,8 @@ row records who cleared it and what runway they added.
 
 Two things to know about it:
 
-- **It needs `--attach-listen`** (which already requires `--session-db`).
+- **It needs `--attach-listen`** (which implies `--session-db`, so the
+  store the halt is written to exists exactly when the reset does).
   The reset endpoint is attach-only, so persisting a halt on a daemon with
   no attach surface would leave an operator no way to clear it. Starting
   with `--watchdog=enforce` and no attach listener logs a warning saying
