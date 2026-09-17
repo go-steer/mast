@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### API Change
+
+- **`mast sessions pause --interrupt` is now `--cancel-turn`, and the old
+  spelling is refused.** `--interrupt` meant a bool on `pause` ("also cancel
+  the in-flight turn") and a string on `resume` (the InterruptID being
+  answered): one name, two types, two unrelated meanings, on sibling
+  subcommands of the same verb family. `resume` keeps it, because the *noun*
+  sense is the one the approval records, the resume-by-token path, and the
+  rest of the corpus already use. The cost of the ambiguity was paid before
+  the rename rather than hypothetically: three v0.9 docs were drafted saying
+  `mast sessions --interrupt` before correction. **It is a refusal, not an
+  alias** — accepting both spellings would carry the ambiguity past v1.0,
+  which is the thing the rename exists to prevent, and a pause that silently
+  did not cancel the turn is the misreading with a cost. What a caller gets
+  instead of `flag provided but not defined: -interrupt` (which reads the same
+  for a typo as for a rename) is a sentence naming the new flag and why it
+  moved. The wire field is unchanged: `PauseRequest.Interrupt` sits beside
+  `ResumeRequest.InterruptID` and so never collided, and `pkg/inject`'s JSON
+  was not what this was about. Landed now because `cmd/mast` is inside the
+  v1.0 promise ([#336](https://github.com/go-steer/mast/issues/336)), which
+  freezes flag names at the tag — this was the last window in which the rename
+  was free ([#337](https://github.com/go-steer/mast/issues/337)).
+
 ### Bug or Regression
 
 - **An unauthenticated inject listener no longer binds a non-loopback
@@ -83,9 +106,8 @@
   envelope that bounds the class rather than naming tools, mutating by
   default, root agent only, with an effect record marked as attested rather
   than observed). Two CLI decisions go with them —
-  `mast sessions pause --interrupt` becomes `--cancel-turn`, and
-  `--attach-listen` will imply `~/.mast/sessions.db`. Neither the behaviour
-  nor the flags have changed yet; this release records the calls.
+  `mast sessions pause --interrupt` becomes `--cancel-turn` (shipped, above),
+  and `--attach-listen` will imply `~/.mast/sessions.db`.
   `docs/ag-ui-design.md` open questions 4 and 6 are resolved, and the docs
   site now states both current limitations plainly rather than leaving a
   reader to discover them ([#98](https://github.com/go-steer/mast/issues/98),

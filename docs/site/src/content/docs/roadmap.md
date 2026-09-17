@@ -1076,7 +1076,7 @@ v0.5, and that half was separable and shipped in v0.6.0 — see above.
 the disconnect fix: closing the tab no longer cancels anything, because a
 transport dropping is not a decision to abandon work. A run with no reader
 left is bounded by its wallclock budget, the watchdog, and an explicit
-`mast sessions pause <id> --interrupt`. A client that needs to *mean* stop
+`mast sessions pause <id> --cancel-turn`. A client that needs to *mean* stop
 needs a verb for it, and AG-UI has none on mast yet — `pkg/attach` already
 holds the shape (`POST /interrupt`), so this is a wiring decision waiting on a
 consumer rather than an open question. **Rejoin a stream you dropped** is the
@@ -1186,7 +1186,7 @@ key lands on the frozen `Bundle`.
   One consequence is worth stating rather than discovering: **hanging up no
   longer stops anything.** A run whose client vanished is bounded by the
   workload's wallclock budget, the watchdog, and an explicit
-  `mast sessions pause <id> --interrupt`, exactly as a run the daemon started
+  `mast sessions pause <id> --cancel-turn`, exactly as a run the daemon started
   on a schedule with no client at all. A browser that means "stop" needs a verb
   for it; AG-UI has no such endpoint on mast yet.
 

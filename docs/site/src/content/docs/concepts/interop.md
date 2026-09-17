@@ -655,10 +655,10 @@ The consequence runs the other way too, and it is the part to plan for.
 Closing the tab stops nothing. A run with no reader left is bounded by the
 workload's `budget.max_wallclock_seconds`, by the
 [watchdog](/concepts/budgets/#getting-unstuck-after-a-trip), and by an explicit
-`mast sessions pause <id> --interrupt` — the same three that bound a run the
+`mast sessions pause <id> --cancel-turn` — the same three that bound a run the
 daemon started on a schedule with nobody watching it. There is no AG-UI
 verb for "stop" yet; if a client needs to mean that, it means
-`pause --interrupt`.
+`pause --cancel-turn`.
 
 Rejoining the stream is a different feature and is not built: reconnecting
 with the same `threadId` starts a new run rather than resuming the view of

@@ -104,6 +104,8 @@ func TestParseSessionsArgs(t *testing.T) {
 			wantErr: "<session-id> is required",
 		},
 		{
+			// Also the scoping test for #337's rename: --interrupt on
+			// resume is the string naming an InterruptID, and keeps it.
 			name: "resume",
 			args: []string{"resume", "incident-123", "--interrupt=approve-x", `--response={"approved":true}`},
 			want: sessionsCmd{
@@ -132,13 +134,25 @@ func TestParseSessionsArgs(t *testing.T) {
 		},
 		{
 			name: "pause",
-			args: []string{"pause", "incident-123", "--reason=maintenance_window", "--message=deploy", "--interrupt", "--ttl=48h"},
+			args: []string{"pause", "incident-123", "--reason=maintenance_window", "--message=deploy", "--cancel-turn", "--ttl=48h"},
 			want: sessionsCmd{
 				verb: "pause", sessionID: "incident-123",
 				reason: "maintenance_window", message: "deploy",
-				hardPause: true, ttl: "48h",
+				cancelTurn: true, ttl: "48h",
 				addr: "http://127.0.0.1:7777",
 			},
+		},
+		{
+			// #337: the old spelling names the rename rather than
+			// reporting an undefined flag.
+			name:    "pause --interrupt names its replacement",
+			args:    []string{"pause", "incident-123", "--reason=maintenance_window", "--interrupt"},
+			wantErr: "renamed to --cancel-turn",
+		},
+		{
+			name:    "pause -interrupt=true names its replacement too",
+			args:    []string{"pause", "incident-123", "--reason=maintenance_window", "-interrupt=true"},
+			wantErr: "renamed to --cancel-turn",
 		},
 		{
 			name:    "pause requires reason",
