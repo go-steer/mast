@@ -157,6 +157,33 @@
 
 ### Documentation
 
+- **The corpus now says that the daemon's own bearer token is one principal
+  holding every configured scope, so its per-workload scope check cannot
+  fail.** `MAST_A2A_TOKEN` and `MAST_AGUI_TOKEN` are each a single token
+  resolving to a single subject carrying the union of every exposed
+  workload's declared scopes — necessarily, since one token has to drive all
+  of them. Everything written about the check was *true* and read as
+  something stronger: "a token lacking the scope is refused `403`" is a fact
+  about the check and not about any deployment mast ships, and
+  `/agui/agents.json` publishing per-workload scopes invites the reading that
+  tokens differ per workload, when there is only one. So an operator cannot
+  express "this token runs the reporting workload and not the deploying one",
+  AG-UI thread ownership separates *deployments* rather than users (which is
+  [#382](https://github.com/go-steer/mast/issues/382) behaving correctly on a
+  constant input, not a defect in it), and rate-limit buckets are per
+  workload rather than per caller. What changes all of that at once is a
+  host-supplied `serverauth.TokenValidator` — an existing seam needing no
+  change to either server — which is why this ships as a correction rather
+  than a redesign; a shared token is a defensible default for a
+  single-tenant daemon, and what was missing was anywhere to find that out.
+  A new "Scopes and the shared token" section on the CLI page states it once
+  and the other pages point at it, and a tripwire test
+  (`cmd/mast/shared_token_test.go`) fails the day the daemon learns to issue
+  discriminating tokens, naming the pages that must change with it. The
+  multi-token daemon-side form is still open and is not freeze-exposed:
+  these are environment variables, which the v1.0 promise does not cover
+  ([#389](https://github.com/go-steer/mast/issues/389)).
+
 - The pre-v1.0 decision sweep is settled and written down: AG-UI's
   concurrent-run policy (`agui.run_queue: {depth: 3}`, refused with a `409`
   before the stream opens) and the client-declared-tool gate (a bundle

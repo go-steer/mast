@@ -614,6 +614,16 @@ caller is not refused, they simply address a thread of their own and never
 reach the first. An endpoint with no validator has no subject to own
 anything, so its session ids are unchanged.
 
+Read that at the grain it actually has. `MAST_AGUI_TOKEN` is a single token
+resolving to a single principal, so on a daemon holding one the caller folded
+into the id is a constant: the separation is between **deployments**, not
+between the people using one. Two browsers sharing the token share the
+thread, and the per-workload scopes published on the descriptor state what
+the workload requires rather than anything that distinguishes one token from
+another — there is only one. Supply your own
+[token validator](/reference/cli/#scopes-and-the-shared-token) and the same
+machinery separates users, with no change to the server.
+
 Two publication surfaces sit behind their own bundle keys, both empty-or-off
 by default and both silent rather than redacted when off:
 `agui.state_projection` names the session-state keys a run may publish as
