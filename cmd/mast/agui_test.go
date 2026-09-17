@@ -156,7 +156,7 @@ func TestAGUIBackendRunAborted(t *testing.T) {
 	if _, err := b.RunAgent(ctx, agui.RunInput{ThreadID: "t1", RunID: "r1", Text: "hi"}, emit); err != nil {
 		t.Fatalf("first RunAgent: %v", err)
 	}
-	sid := b.sessionIDFor("t1", "r1")
+	sid := b.sessionIDFor("t1", "r1", nil)
 	if err := b.store.Abort(ctx, "", sid, "operator abort"); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestAGUIClassifyRunAbortedMidFlight(t *testing.T) {
 	if _, err := b.RunAgent(context.Background(), agui.RunInput{ThreadID: "t1", RunID: "r1", Text: "hi"}, emit); err != nil {
 		t.Fatalf("seed RunAgent: %v", err)
 	}
-	sid := b.sessionIDFor("t1", "r1")
+	sid := b.sessionIDFor("t1", "r1", nil)
 	if err := b.store.Abort(context.Background(), "", sid, "operator abort mid-flight"); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestAGUIBackendRejectsForeignSession(t *testing.T) {
 // derived id keys on the wrong field.
 func TestAGUIBackendSessionModel(t *testing.T) {
 	perThread := &aguiBackend{} // nil bundle → default per_thread
-	if got := perThread.sessionIDFor("t1", "r1"); got != "agui-thread-t1" {
+	if got := perThread.sessionIDFor("t1", "r1", nil); got != "agui-thread-t1" {
 		t.Fatalf("per_thread session = %q, want agui-thread-t1", got)
 	}
 	if !isAGUISessionID("agui-thread-t1") {
@@ -291,13 +291,13 @@ func TestAGUIBackendSessionModel(t *testing.T) {
 	}
 
 	perRun := &aguiBackend{bundle: &workload.Bundle{AGUI: workload.AGUI{SessionModel: workload.AGUISessionPerRun}}}
-	if got := perRun.sessionIDFor("t1", "r1"); got != "agui-run-r1" {
+	if got := perRun.sessionIDFor("t1", "r1", nil); got != "agui-run-r1" {
 		t.Fatalf("per_run session = %q, want agui-run-r1", got)
 	}
 
 	// An absent correlation id mints a fresh owned session rather than
 	// colliding id-less callers onto one shared session.
-	minted := perThread.sessionIDFor("", "")
+	minted := perThread.sessionIDFor("", "", nil)
 	if !isAGUISessionID(minted) || minted == "agui-thread-" {
 		t.Fatalf("id-less run session = %q, want a fresh minted agui- id", minted)
 	}

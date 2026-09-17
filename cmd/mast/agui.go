@@ -43,6 +43,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -180,18 +182,48 @@ func (b *aguiBackend) AGUICapabilities(workloadName string) agui.AgentCapabiliti
 // separation, stronger than a runtime check). When the correlation id the
 // session model keys on is absent, a fresh owned session is minted rather than
 // colliding every id-less caller onto one shared session.
-func (b *aguiBackend) sessionIDFor(threadID, runID string) string {
+//
+// The authenticated caller is part of the derivation, which is what makes a
+// thread belong to whoever opened it (#382). Scope-checking answers "may this
+// caller run this workload"; it does not answer "is this conversation yours",
+// and without the caller in the id a second principal holding the same scope
+// read and continued the first's thread by naming its threadId. Folding the
+// identity in rather than recording an owner and comparing is the same choice
+// the paragraph above makes for surface separation: a foreign caller does not
+// get refused, they address a different session and never reach this one.
+//
+// The caller is hashed to a fixed-width tag, not interpolated raw: a
+// variable-width identity next to an attacker-chosen threadId is a delimiter
+// ambiguity, and two callers must never be able to construct the same id.
+func (b *aguiBackend) sessionIDFor(threadID, runID string, p *serverauth.Principal) string {
+	owner := callerTag(p)
 	switch b.sessionModel() {
 	case workload.AGUISessionPerRun:
 		if runID != "" {
-			return aguiSessionPrefix + "run-" + runID
+			return aguiSessionPrefix + "run-" + owner + runID
 		}
 	default:
 		if threadID != "" {
-			return aguiSessionPrefix + "thread-" + threadID
+			return aguiSessionPrefix + "thread-" + owner + threadID
 		}
 	}
 	return mintID(aguiSessionPrefix)
+}
+
+// callerTag renders an authenticated caller as a fixed-width session-id
+// segment, or the empty string when the endpoint has no validator.
+//
+// Empty for an unauthenticated endpoint is deliberate and mirrors attach's
+// enforceACL posture: with no validator there is no subject, so there is no
+// identity to own anything, and a single-operator deployment keeps exactly the
+// session ids it had. Tenant is hashed alongside subject because two tenants
+// may legitimately issue the same subject string.
+func callerTag(p *serverauth.Principal) string {
+	if p == nil || (p.Subject == "" && p.Tenant == "") {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(p.Tenant + "\x00" + p.Subject))
+	return hex.EncodeToString(sum[:6]) + "-"
 }
 
 // isAGUISessionID reports whether id names a session this AG-UI surface owns.
@@ -229,7 +261,7 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 	if len(in.Resume) > 0 && in.ParentRunID != "" {
 		runID = in.ParentRunID
 	}
-	sessionID := b.sessionIDFor(in.ThreadID, runID)
+	sessionID := b.sessionIDFor(in.ThreadID, runID, in.Principal)
 	if !isAGUISessionID(sessionID) {
 		// A crafted threadId/runId collided with the reserved ops-row
 		// namespace; refuse before any emit rather than drive a turn into a

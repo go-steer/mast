@@ -143,6 +143,13 @@ type RunInput struct {
 	// entry answers one open interrupt (by id) rather than driving a fresh user
 	// turn. The daemon translates the answers into the runtime's resume input.
 	Resume []ResumeEntry
+
+	// Principal is the authenticated caller, nil on an endpoint with no
+	// validator configured. The daemon folds its identity into the derived
+	// session id so a thread belongs to the caller who opened it: authenticating
+	// proves you may run the workload, which is a different question from
+	// whether this conversation is yours (#382).
+	Principal *serverauth.Principal
 }
 
 // RunResult is the terminal outcome of a run, returned by the Backend after
@@ -411,6 +418,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 		Text:         text,
 		State:        in.State,
 		Resume:       in.Resume,
+		Principal:    principal,
 	}, emit)
 	if err != nil {
 		if !started {

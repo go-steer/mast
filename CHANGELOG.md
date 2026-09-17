@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **An AG-UI thread now belongs to the caller who opened it.**
+  ([#382](https://github.com/go-steer/mast/issues/382)) On an authenticated
+  endpoint, any principal carrying the workload's scopes could previously
+  continue — and read back — another principal's conversation by naming its
+  `threadId`. Nothing had to be guessed: `threadId` is the client's own
+  correlation string, not a secret, and under the default `per_thread` session
+  model the thread *is* the durable session. The measured probe had a second
+  authenticated caller recover the first one's secret verbatim over SSE.
+
+  The cause was a gap between two questions that look like one. The server
+  authenticated a caller and scope-checked it, then discarded it: `RunInput`
+  carried no principal, so nothing downstream could bind a thread to a subject.
+  Scope-checking answers *may this caller run this workload*. It is not an
+  answer to *is this conversation yours*.
+
+  **The fix is structural rather than a refusal.** The caller's tenant and
+  subject are hashed to a fixed-width tag and folded into the derived session
+  id, so two principals naming the same `threadId` address two different
+  sessions. A foreign caller is not denied — they get a thread of their own and
+  never reach the first. That is the same choice that already makes the session
+  id daemon-derived instead of client-supplied, and it means there is no owner
+  record to store or migrate, and no 403-vs-404 disclosure question to settle.
+  The identity is hashed and not interpolated so a variable-width subject next
+  to an attacker-chosen `threadId` cannot be made to collide across the
+  delimiter.
+
+  **Upgrade note.** Session ids on an authenticated AG-UI endpoint change
+  shape, so a thread opened before this release is not reachable after it: its
+  history stays durable but a new one starts. Endpoints with **no** validator
+  have no subject to own anything and keep exactly the ids they had — their
+  sessions carry over unchanged.
+
 - **`agent.NewEchoModel` and `agent.NewToolActorModel` keep emitting plain
   text, and that is now a decision rather than an oversight.**
   ([#372](https://github.com/go-steer/mast/issues/372)) Neither offline fake
