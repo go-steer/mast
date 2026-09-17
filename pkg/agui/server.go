@@ -381,18 +381,45 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 	// same keep-alive connection.
 	defer func() { _ = http.NewResponseController(w).SetWriteDeadline(time.Time{}) }()
 
-	// A stalled or vanished consumer must not pin the turn: emit runs inside
+	// The turn does not belong to the request that started it (#383).
+	//
+	// A stalled or vanished consumer must not pin the turn — emit runs inside
 	// runTurnPre on the turn goroutine, holding the per-session lock and the
-	// drain in-flight bracket. Cancel the turn ctx when a frame write fails so
-	// the turn aborts and releases those instead of blocking.
-	streamCtx, cancelStream := context.WithCancel(ctx)
+	// drain in-flight bracket — but "this consumer is gone" is not "this work
+	// should stop", and deriving the turn ctx from r.Context() conflated them:
+	// a TCP reset cancelled the turn. That is destructive, not merely untidy.
+	// A disconnect landing while a mutating tool runs — after the effect,
+	// before its FunctionResponse persists — leaves the session with no trace
+	// of the call, so a well-behaved client retry re-applies the change.
+	//
+	// So the turn runs on a ctx that keeps the request's VALUES (the extracted
+	// trace context above, so the span tree still parents correctly) and drops
+	// its cancellation. The stalled-consumer hazard is handled where it
+	// belongs, at the writer: writeSSEEvent arms a per-frame deadline, so a
+	// consumer that never drains produces a write error rather than a blocked
+	// goroutine, and emit then retires the stream instead of the turn. This is
+	// pkg/attach's posture — a slow subscriber is dropped, not the publisher.
+	//
+	// Nothing transport-side cancels a turn now, by design. What bounds it is
+	// what bounds every other turn kind: the budget's wallclock cap, the
+	// watchdog, and an explicit operator abort.
+	streamCtx, cancelStream := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelStream()
 
 	// Upgrade to SSE lazily, on the first emitted frame: a backend that
 	// refuses before any emit (drain race) is then reported as a clean HTTP
 	// error rather than an empty event stream.
-	var started bool
+	//
+	// A write failure retires the stream rather than the turn: every later
+	// frame, terminal frame included, is dropped on the floor. Retiring it
+	// matters beyond tidiness — without the flag each subsequent frame would
+	// re-arm a write deadline and block on a socket that will never drain, and
+	// the turn's own goroutine is what pays for that.
+	var started, retired bool
 	emit := func(ev any) {
+		if retired {
+			return
+		}
 		if !started {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
@@ -402,7 +429,9 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 			started = true
 		}
 		if err := s.writeSSEEvent(w, flusher, ev); err != nil {
-			cancelStream()
+			s.logger.Info("agui stream retired; the turn continues",
+				"workload", ew.WorkloadName, "thread_id", in.ThreadID, "run_id", in.RunID)
+			retired = true
 		}
 	}
 
@@ -553,8 +582,12 @@ const sseWriteTimeout = 30 * time.Second
 // JSON-RPC envelope — AG-UI events are the payload), then flushes. A marshal
 // failure is logged and the frame skipped (returning nil) rather than killing
 // the stream. A write failure — client disconnected, or the per-frame deadline
-// lapsed on a stalled consumer — is returned so the caller can cancel the turn
-// instead of blocking further emits on a socket that will never drain.
+// lapsed on a stalled consumer — is returned so the caller can retire the
+// stream instead of blocking further emits on a socket that will never drain.
+// Retiring the stream is all it does: the turn itself runs on, because the
+// consumer going away is not a reason to abandon work already in flight
+// (#383). The per-frame deadline is what makes that safe — it is the reason a
+// stalled reader costs one deadline rather than a pinned turn goroutine.
 func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, ev any) error {
 	buf, err := json.Marshal(ev)
 	if err != nil {
