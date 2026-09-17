@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Documentation
+
+- The pre-v1.0 decision sweep is settled and written down: AG-UI's
+  concurrent-run policy (`agui.run_queue: {depth: 3}`, refused with a `409`
+  before the stream opens) and the client-declared-tool gate (a bundle
+  envelope that bounds the class rather than naming tools, mutating by
+  default, root agent only, with an effect record marked as attested rather
+  than observed). Two CLI decisions go with them —
+  `mast sessions pause --interrupt` becomes `--cancel-turn`, and
+  `--attach-listen` will imply `~/.mast/sessions.db`. Neither the behaviour
+  nor the flags have changed yet; this release records the calls.
+  `docs/ag-ui-design.md` open questions 4 and 6 are resolved, and the docs
+  site now states both current limitations plainly rather than leaving a
+  reader to discover them ([#98](https://github.com/go-steer/mast/issues/98),
+  [#329](https://github.com/go-steer/mast/issues/329),
+  [#337](https://github.com/go-steer/mast/issues/337),
+  [#384](https://github.com/go-steer/mast/issues/384)).
+
 ## v0.9.0 (2026-09-17)
 
 *The surfaces stop answering a question nobody asked.*

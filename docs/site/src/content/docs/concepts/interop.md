@@ -665,6 +665,37 @@ with the same `threadId` starts a new run rather than resuming the view of
 the old one. What a disconnect costs today is the tail of the event stream,
 not the work.
 
+### Tools the client brings
+
+AG-UI lets a client declare tools of its own in `RunAgentInput.tools` —
+things the browser will execute and report back on, like highlighting a
+range in an editor or filling a form the user is looking at. **mast parses
+that field and ignores it.** No workload can call a client-declared tool
+today.
+
+That is deliberate rather than unfinished. Everywhere else in mast the
+operator decides what an agent may call and the caller decides only what to
+ask for; a tool declared per run inverts that, and the tool's *name and
+description* go into the model's context, so an unguarded version is an
+injection surface before it is a feature. The gate is designed and lands in
+a later release: a workload opts in through its bundle, the opt-in bounds
+the class rather than listing names — an operator cannot know what a
+frontend will ship next week — and client tools count as **mutating** by
+default, so a workload with human approval configured parks for one before
+the browser is asked to do anything. They will be callable by the workload's
+root agent only, not by its specialists.
+
+### One run at a time, per thread
+
+A thread runs one turn at a time. Send a second run while the first is still
+going and it **waits** — for as long as the first one takes, with only the
+workload's `budget.max_wallclock_seconds` as a ceiling. There is no queue
+depth and no refusal yet, so a client that stacks runs behind a slow turn
+cannot tell waiting from wedged, and what it eventually gets is a timeout
+rather than an answer it could act on. A bounded queue that refuses with a
+`409` is the planned fix. Until then, wait for `RunFinished` before sending
+the next run on the same thread.
+
 ## Federation — calling out
 
 The surfaces above are inbound. `invoke_remote_agent` is the outbound

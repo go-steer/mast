@@ -1084,6 +1084,31 @@ other half and is also unbuilt: reconnecting with the same `threadId` starts a
 new run rather than resuming the view of the old one, so a blip costs the tail
 of the event stream.
 
+**Let an AG-UI client bring its own tools.** AG-UI's `RunAgentInput.tools`
+declares tools the *browser* will execute — highlight a range, fill a form,
+confirm a step. mast parses the field and ignores it, and no workload can call
+one. The gate for it was designed on 2026-09-17 and the implementation is
+v1.1: a bundle opts in, the opt-in bounds the class rather than naming tools
+(an operator cannot know what a frontend ships next week), client tools count
+as **mutating** by default so an approval-gated workload parks before the
+browser is asked to act, and only the root agent may call them — not
+specialists, which is the limit most likely to send this back for another
+pass. Designing it turned up
+[#389](https://github.com/go-steer/mast/issues/389): the daemon's AG-UI and
+A2A endpoints each hold a single shared bearer token, so per-workload scopes
+are checked and cannot refuse, and any gate hung on *who is calling* would
+have been decoration.
+
+**Queue a second run on a busy thread and get an answer.** One turn runs per
+thread; a second run waits for the first, unbounded, with the workload's
+wallclock budget the only ceiling — so a caller cannot tell waiting from
+wedged, and the eventual failure is a timeout rather than a refusal it could
+act on. The fix is a bounded queue (`agui.run_queue`, default depth 3)
+refusing with a `409` before the stream opens, and it has to land before the
+v1.0 freeze: bounding a queue that is unbounded today changes what an existing
+bundle does, which after v1.0 costs a deprecation cycle rather than a release
+note — [#384](https://github.com/go-steer/mast/issues/384).
+
 ## What installing it costs you today
 
 mast is built to be a thing **you** install, not a service someone runs for
