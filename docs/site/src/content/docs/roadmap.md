@@ -1099,15 +1099,18 @@ A2A endpoints each hold a single shared bearer token, so per-workload scopes
 are checked and cannot refuse, and any gate hung on *who is calling* would
 have been decoration.
 
-**Queue a second run on a busy thread and get an answer.** One turn runs per
-thread; a second run waits for the first, unbounded, with the workload's
-wallclock budget the only ceiling — so a caller cannot tell waiting from
-wedged, and the eventual failure is a timeout rather than a refusal it could
-act on. The fix is a bounded queue (`agui.run_queue`, default depth 3)
-refusing with a `409` before the stream opens, and it has to land before the
-v1.0 freeze: bounding a queue that is unbounded today changes what an existing
-bundle does, which after v1.0 costs a deprecation cycle rather than a release
-note — [#384](https://github.com/go-steer/mast/issues/384).
+**Stack runs on a busy thread without an answer.** Through v0.9.0, one turn
+ran per thread and a second run waited for the first, unbounded, with the
+workload's wallclock budget the only ceiling — so a caller could not tell
+waiting from wedged, and the eventual failure was a timeout rather than a
+refusal it could act on. **Fixed after v0.9.0** and listed here because it is
+the last release you can still hit it on: the thread now has a bounded queue
+([`agui.run_queue.depth`](/reference/workload-bundle/#run_queue--bounding-concurrent-runs-on-one-thread),
+default 3 waiting plus the one executing), and the run past it is refused with
+a `409` and a `Retry-After` before the stream opens. It had to land before the
+v1.0 freeze rather than after: bounding a queue that was unbounded changes
+what an existing bundle does, which after v1.0 costs a deprecation cycle
+rather than a release note — [#384](https://github.com/go-steer/mast/issues/384).
 
 ## What installing it costs you today
 

@@ -902,6 +902,7 @@ func TestOutcomeConstantLiterals(t *testing.T) {
 		outcomeAborted:     "aborted",
 		outcomeRejected:    "rejected",
 		outcomeInterrupted: "interrupted",
+		outcomeQueueFull:   "queue_full",
 	}
 	for got, want := range pairs {
 		if got != want {

@@ -249,7 +249,8 @@ var a2aTaskOutcomes = []string{
 // dispositions the server reports (docs/ag-ui-design.md): a completed run, a
 // run that paused for human input (a clean interrupt, resumable via
 // RunAgentInput.Resume), an errored run, an operator/client abort, and a
-// pre-stream refusal (auth/scope/rate-limit/drain/not-resumable). The string
+// pre-stream refusal (auth/scope/rate-limit/drain/not-resumable), and a run
+// shed because its thread's queue was full. The string
 // VALUES match pkg/agui's internal outcome constants — the server passes them
 // through, so these two lists must not drift. Both sides are pinned to the same
 // literals: pkg/agui's own test locks its unexported constants, and a cmd/mast
@@ -260,6 +261,11 @@ const (
 	AGUIRunError       = "error"
 	AGUIRunAborted     = "aborted"
 	AGUIRunRejected    = "rejected"
+	// AGUIRunQueueFull counts runs refused because the addressed thread
+	// already had agui.run_queue.depth+1 runs in flight. Separate from
+	// Rejected because it is the refusal an operator answers with capacity or
+	// a bundle key rather than with a caller's credentials.
+	AGUIRunQueueFull = "queue_full"
 )
 
 // aguiRunOutcomes is the fixed label set primed for
@@ -271,6 +277,7 @@ var aguiRunOutcomes = []string{
 	AGUIRunError,
 	AGUIRunAborted,
 	AGUIRunRejected,
+	AGUIRunQueueFull,
 }
 
 // Registry is the fixed set of mast metric families. Construct one per

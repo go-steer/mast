@@ -77,6 +77,8 @@ agui:
   session_model: per_thread
   state_projection: [plan, phase]
   emit_reasoning: false
+  run_queue:
+    depth: 3
   auth:
     scopes: [incident-triage.run]
 ```
@@ -142,6 +144,7 @@ agui:
 | `agui.input_schema` | map | A **mast-side** convention only: an optional JSON-Schema-shaped hint surfaced in the discovery descriptor so a client can render an input form. AG-UI's `RunAgentInput` has no schema field, so it does **not** constrain the wire input. |
 | `agui.state_projection` | list of strings | Allowlist of runtime state keys published to the client as `StateDelta` patches. **Empty (the default) publishes nothing.** A key on the list is emitted as an RFC 6902 `{"op": "add", "path": "/<key>", "value": …}` whenever the run writes it; a key not on the list produces no operation at all, so a client cannot tell that it changed. Treat this as a publication decision, not a display preference: session state holds whatever the runtime put there, including approval grants and captured change sets, and the AG-UI client is a browser. An empty or duplicated entry is refused at startup; a key the workload never happens to write is accepted. The enabled list is advertised on the public [discovery descriptor](/reference/cli/#ag-ui-server) as `capabilities.state_keys`, so a client can lay out its panels before the first patch. |
 | `agui.emit_reasoning` | bool | Whether this workload streams the model's *thinking* to its AG-UI clients, as the spec's `REASONING_START` / `REASONING_MESSAGE_*` / `REASONING_END` frames. **Defaults to `false`, and false emits nothing at all** — not an empty phase bracket, not a redaction marker, so a client cannot learn that the model deliberated. A chain of thought is not a draft of the answer: it is where the model talks itself out of things, and where a prompt injection shows its working. The answer is addressed to the user; the reasoning is addressed to nobody. Turning it on is a decision about a browser-reachable surface, and the daemon logs a **warning** at startup naming the workload. The provider's thought *signature* is never published under either setting — it is a replay credential, not a thought — so a thinking block with a signature and no prose produces no frame. The setting is advertised on the public [discovery descriptor](/reference/cli/#ag-ui-server) as `capabilities.reasoning`, so a client knows before a run whether to render a "thinking" affordance at all. |
+| `agui.run_queue.depth` | int | How many runs may **wait** on one AG-UI thread while another is executing. **Defaults to 3**, so a thread admits four at once and the fifth is refused with `409` and a `Retry-After` before the stream opens — see [`run_queue:`](#run_queue--bounding-concurrent-runs-on-one-thread) below. `0` is legal and means no concurrency: one run at a time per thread, the rest refused. A negative value is refused at startup. |
 | `agui.auth.required`, `agui.auth.scopes` | bool, list of strings | Per-endpoint auth policy. `scopes` are enforced per run when a token validator is configured (`MAST_AGUI_TOKEN`): a caller whose token lacks a scope is refused `403`. |
 
 ## `schema_version:` — and why an unknown key is refused
@@ -1309,6 +1312,52 @@ resolves through the same gate the root does — a workload that turned web
 search off cannot have it handed back by an analyst that names a different
 tier. If a roster ever needs one analyst grounded and the rest not, that is
 a change to make then; until it exists, the missing axis fails closed.
+
+## `run_queue:` — bounding concurrent runs on one thread
+
+One AG-UI thread runs one turn at a time. That is not an AG-UI decision: a
+mast session is a single-writer store, so every turn-driving surface
+serializes on the same per-session lock. What `run_queue:` decides is what
+happens to the **second** run.
+
+```yaml
+agui:
+  expose: true
+  run_queue:
+    depth: 3        # runs that may WAIT. Omit for this default.
+```
+
+`depth` counts runs that may wait, not runs that may exist, so the admitted
+total is `depth + 1` — one executing plus `depth` queued. That is why `0` is a
+useful setting rather than an absurd one: it means *no concurrency on a
+thread*, one run at a time and the rest refused immediately. Omitting the key
+gives you 3.
+
+The run that arrives at a full thread is refused with **`409 Conflict` and a
+`Retry-After`**, decided before the SSE stream opens, so a client gets an HTTP
+status it can branch on rather than a stream that opens and immediately
+carries an error frame. `Retry-After` is a fixed backoff floor, not a
+prediction: mast does not know how long the turn ahead of you will take.
+
+Three things worth knowing before you tune it:
+
+- **409, not 429.** A `429` from this endpoint means the [rate
+  limiter](/reference/cli/#ag-ui-server) refused your *arrival rate*, and the
+  remedy is to slow down everywhere. A `409` means this one conversation is
+  busy, and the remedy is to retry it or start a different thread. Collapsing
+  them would leave a client unable to tell which it is.
+- **The bound is per thread**, so a busy thread never refuses a run addressed
+  to another one, and under `session_model: per_run` — a fresh session per run
+  — it effectively never fires at all.
+- **There is no way to say "unbounded".** Unbounded is what this key exists to
+  end, so a negative depth is refused at daemon start rather than read as
+  `-1 means no limit`.
+
+Refusals are counted as
+[`mast_agui_runs_total{outcome="queue_full"}`](/reference/metrics/), kept
+separate from the `rejected` the credential-shaped refusals share: a climbing
+`queue_full` is answered with capacity or with this key, not with a caller's
+token.
 
 ## Budget fields
 

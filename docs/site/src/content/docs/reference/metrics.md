@@ -75,7 +75,7 @@ vocabulary.
 
 | Family | Labels | Meaning |
 |---|---|---|
-| `mast_agui_runs_total` | `workload`, `outcome` | AG-UI runs by terminal disposition. Outcomes: `success`, `error`, `aborted`, `interrupted`, `rejected`. |
+| `mast_agui_runs_total` | `workload`, `outcome` | AG-UI runs by terminal disposition. Outcomes: `success`, `error`, `aborted`, `interrupted`, `rejected`, `queue_full`. `rejected` is a pre-stream refusal of the caller (auth, scope, rate limit, drain, a resume with nothing to resume); `queue_full` is a run shed because its thread already had `agui.run_queue.depth` + 1 runs in flight, which is the one refusal an operator answers with capacity or a bundle key rather than with a caller's credentials. |
 | `mast_agui_run_duration_seconds` | `workload` | Histogram of executed-run wallclock (a `_bucket`/`_sum`/`_count` triple). |
 
 ### Scheduled-trigger family (v0.4)

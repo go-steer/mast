@@ -87,6 +87,36 @@ var ErrUnavailable = errors.New("agui: backend temporarily unavailable")
 // rather than a fabricated stream.
 var ErrNotResumable = errors.New("agui: session is not awaiting input (nothing to resume)")
 
+// ErrRunQueueFull marks a run refused because the thread it addresses already
+// has as many runs in flight as the workload's agui.run_queue policy admits.
+// When a Backend returns it before emitting any frame, the server reports HTTP
+// 409 (Conflict) with an advisory Retry-After.
+//
+// 409 rather than 429, and the distinction is the point. `Server.rateLimit`
+// already owns 429 and means ARRIVAL RATE: back off globally, you are asking
+// too often. This means the opposite — one thread is busy and the rest of the
+// surface is fine — and collapsing the two would leave a client unable to tell
+// "slow down everywhere" from "this conversation is busy, try another or wait
+// for its answer". A queue-full refusal is a conflict with the addressed
+// resource's current state, which is what 409 is for.
+//
+// And a refusal rather than an unbounded wait: a caller queued behind a long
+// turn cannot distinguish "still waiting" from "wedged", and the wait's only
+// ceiling is the workload's wallclock budget, so what it eventually gets is a
+// timeout that says nothing about why it waited.
+var ErrRunQueueFull = errors.New("agui: too many runs in flight on this thread")
+
+// queueFullRetryAfter is the advisory hint on a queue-full refusal.
+//
+// It is a fixed backoff floor, not a prediction: the server cannot know when
+// the run ahead finishes — that is a model turn, possibly parked on a human —
+// and inventing a number from the wallclock budget would tell a client to wait
+// out a ceiling almost no turn reaches. Short on purpose: Retry-After is
+// advisory, a client will re-poll, and one retry too early costs a 409 while
+// one retry too late costs a user staring at a thread that freed up minutes
+// ago.
+const queueFullRetryAfter = 5
+
 // ExposedWorkload is one workload's AG-UI exposure, projected by the daemon
 // from the bundle's agui: section (this package does not import pkg/workload).
 type ExposedWorkload struct {
@@ -182,7 +212,7 @@ type Backend interface {
 // RunMetric records AG-UI run outcomes. The daemon backs it with
 // observability.Registry.AGUIRun; nil disables. The outcome is one of a fixed
 // vocabulary (see observability.Prime): success, interrupted, error, aborted,
-// rejected.
+// rejected, queue_full.
 type RunMetric interface {
 	AGUIRun(workload, outcome string)
 }
@@ -194,6 +224,12 @@ const (
 	outcomeError       = "error"
 	outcomeAborted     = "aborted"
 	outcomeRejected    = "rejected"
+	// outcomeQueueFull is its own label rather than a kind of "rejected"
+	// because it is the one refusal an operator answers by changing capacity
+	// or a bundle key, not by fixing a caller's credentials. Folded into
+	// rejected it would be invisible underneath auth failures, which is the
+	// shape the run queue existed only in the docs to begin with.
+	outcomeQueueFull = "queue_full"
 )
 
 // Config configures the AG-UI server.
@@ -455,6 +491,15 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request, ew ExposedWor
 			if errors.Is(err, ErrUnavailable) {
 				s.recordRun(ew.WorkloadName, outcomeRejected)
 				http.Error(w, "server temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if errors.Is(err, ErrRunQueueFull) {
+				// The thread is busy; the surface is not. Advisory hint, then a
+				// 409 — see ErrRunQueueFull for why this is not the 429
+				// rateLimit owns.
+				s.recordRun(ew.WorkloadName, outcomeQueueFull)
+				w.Header().Set("Retry-After", strconv.Itoa(queueFullRetryAfter))
+				http.Error(w, "conflict: too many runs in flight on this thread; retry when one finishes", http.StatusConflict)
 				return
 			}
 			if errors.Is(err, ErrNotResumable) {

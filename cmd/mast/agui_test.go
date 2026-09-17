@@ -501,6 +501,7 @@ func TestAGUIOutcomeVocabulary(t *testing.T) {
 		observability.AGUIRunAborted:     "aborted",
 		observability.AGUIRunRejected:    "rejected",
 		observability.AGUIRunInterrupted: "interrupted",
+		observability.AGUIRunQueueFull:   "queue_full",
 	}
 	for got, want := range pairs {
 		if got != want {

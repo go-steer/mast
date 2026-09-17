@@ -54,6 +54,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -80,6 +81,73 @@ type aguiBackend struct {
 	// unchanged.
 	turnDeps
 	bundle *workload.Bundle
+
+	// queue bounds concurrent runs per derived session (#384). A value, not
+	// a pointer, so a zero-value aguiBackend is usable and admission is never
+	// silently absent because a constructor forgot a field.
+	queue aguiRunQueue
+}
+
+// aguiRunQueue counts the runs in flight against each derived session so the
+// backend can shed the ones past the workload's agui.run_queue depth.
+//
+// It is NOT the turn lock and does not replace it. sessionTurnLocks
+// (cmd/mast/shutdown.go) is what actually serializes turns on a session, and
+// it is unbounded by design: an inject, a scheduled fire and an operator
+// resume all wait there, and none of them has a client to refuse. This counts
+// only the runs arriving over AG-UI, which is the one surface with a caller
+// holding a socket open waiting for an answer — so it is the one surface where
+// shedding beats queueing.
+//
+// Entries are deleted at zero, unlike the turn-lock map beside it. That map is
+// bounded by the number of distinct sessions a daemon lifetime sees; this one
+// would be bounded by the number of distinct thread ids a CLIENT chooses, and
+// under session_model: per_run that is one per run forever.
+type aguiRunQueue struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// admit reserves a slot for a run on sessionID, allowing at most limit runs in
+// flight. It returns the release func and true on success, or (nil, false)
+// when the queue is full. release is idempotent-safe to call exactly once.
+func (q *aguiRunQueue) admit(sessionID string, limit int) (func(), bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.n[sessionID] >= limit {
+		return nil, false
+	}
+	if q.n == nil {
+		q.n = map[string]int{}
+	}
+	q.n[sessionID]++
+	return func() {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		if q.n[sessionID] <= 1 {
+			delete(q.n, sessionID)
+			return
+		}
+		q.n[sessionID]--
+	}, true
+}
+
+// inFlight reports how many runs currently hold a slot on sessionID. For tests
+// and the refusal's log line; no admission decision reads it, because a count
+// read outside the lock that guards it is a race by construction.
+func (q *aguiRunQueue) inFlight(sessionID string) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.n[sessionID]
+}
+
+// runQueueLimit is how many runs may be in flight on one thread at once: the
+// workload's wait-queue depth plus the one actually executing.
+func (b *aguiBackend) runQueueLimit() int {
+	if b.bundle == nil {
+		return workload.AGUIDefaultRunQueueDepth + 1
+	}
+	return b.bundle.AGUI.RunQueueDepth() + 1
 }
 
 // aguiSessionPrefix namespaces every AG-UI-derived session id. Like the
@@ -268,6 +336,25 @@ func (b *aguiBackend) RunAgent(ctx context.Context, in agui.RunInput, emit func(
 		// reserved row (which would corrupt its marker storage).
 		return agui.RunResult{}, fmt.Errorf("agui: derived session id %q is not addressable", sessionID)
 	}
+
+	// Bounded per-thread admission (#384), taken BEFORE the resume's store read
+	// so every unit of work this run can cause is inside the bound, and before
+	// any emit so a refusal is a clean HTTP 409 rather than an opened stream.
+	//
+	// What it replaces is an unbounded wait on the session turn lock inside
+	// runTurnPre: a run arriving behind a long turn used to block there with no
+	// depth limit and no signal, and the only thing that ever ended the wait
+	// was the workload's wallclock budget — so the caller's answer was a
+	// timeout that said nothing about why it waited.
+	limit := b.runQueueLimit()
+	release, ok := b.queue.admit(sessionID, limit)
+	if !ok {
+		b.logger.Info("agui run refused: thread queue full",
+			"workload", b.workloadName, "thread_id", in.ThreadID, "run_id", in.RunID,
+			"in_flight", b.queue.inFlight(sessionID), "limit", limit)
+		return agui.RunResult{}, fmt.Errorf("agui: %d runs already in flight on this thread: %w", limit, agui.ErrRunQueueFull)
+	}
+	defer release()
 
 	// Build the turn message. A resume (RunAgentInput.Resume present) answers the
 	// session's open interrupts with FunctionResponses; a fresh run carries the
@@ -915,6 +1002,19 @@ func buildAGUIServer(
 	}
 	if err := checkStateProjection(bundle); err != nil {
 		return nil, err
+	}
+	// A negative depth is refused rather than clamped: it can only be a typo
+	// or a misremembered "-1 means unbounded", and unbounded is the thing this
+	// key exists to end (see workload.AGUIRunQueue). Clamping would silently
+	// give that author a queue of three.
+	if d := bundle.AGUI.RunQueueDepth(); d < 0 {
+		return nil, fmt.Errorf("agui: run_queue.depth for workload %q is %d: depth counts runs that may wait, so it cannot be negative (0 refuses any concurrent run; omit the key for the default of %d)",
+			bundle.Name, d, workload.AGUIDefaultRunQueueDepth)
+	} else if bundle.AGUI.RunQueue.Depth != nil {
+		// Only when the operator set it. The default needs no line; a value
+		// someone chose is one they should be able to confirm off the log.
+		logger.Info("AG-UI per-thread run queue configured",
+			"workload", bundle.Name, "queued_runs", d, "concurrent_runs", d+1)
 	}
 	if n := len(bundle.AGUI.StateProjection); n > 0 {
 		// Said out loud at startup for the same reason the builtin-tools summary
