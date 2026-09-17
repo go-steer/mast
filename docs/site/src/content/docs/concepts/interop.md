@@ -640,6 +640,31 @@ reasoning are gated because they disclose something new; steps describe
 what is already on the wire, so gating them would be a switch with nothing
 behind it.
 
+### Hanging up is not an interrupt
+
+If the SSE connection drops — a closed laptop, a proxy timeout, a reload —
+**the run keeps going.** It finishes, and everything it did lands in the
+session transcript. Earlier releases cancelled the turn along with the
+request, which reads like the polite thing to do and is not: a drop that
+lands while a tool is mid-flight leaves the side effect done and no record
+of it, so the retry the client naturally makes applies the change a second
+time. A turn is work, and a browser going away is not a decision to abandon
+work.
+
+The consequence runs the other way too, and it is the part to plan for.
+Closing the tab stops nothing. A run with no reader left is bounded by the
+workload's `budget.max_wallclock_seconds`, by the
+[watchdog](/concepts/budgets/#getting-unstuck-after-a-trip), and by an explicit
+`mast sessions pause <id> --interrupt` — the same three that bound a run the
+daemon started on a schedule with nobody watching it. There is no AG-UI
+verb for "stop" yet; if a client needs to mean that, it means
+`pause --interrupt`.
+
+Rejoining the stream is a different feature and is not built: reconnecting
+with the same `threadId` starts a new run rather than resuming the view of
+the old one. What a disconnect costs today is the tail of the event stream,
+not the work.
+
 ## Federation — calling out
 
 The surfaces above are inbound. `invoke_remote_agent` is the outbound

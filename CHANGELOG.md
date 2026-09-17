@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **An AG-UI client hanging up no longer destroys the run it was watching.**
+  ([#383](https://github.com/go-steer/mast/issues/383)) The turn ran on the
+  HTTP request's context, so a TCP reset, a closed laptop or a proxy timeout
+  cancelled it. That is worse than losing the output: if the drop landed while
+  a mutating tool was executing — after the effect, before its
+  `FunctionResponse` was persisted — the session kept no record of the call,
+  so the retry a *well-behaved* client makes re-applied the change. Measured
+  at 1 call versus 2 on harnesses differing only in cancel timing.
+
+  The turn now runs on `context.WithoutCancel` of the request: it keeps the
+  request's values, including trace context, and loses only its cancellation.
+  A frame that cannot be written **retires the stream** and the turn carries
+  on to completion and to the transcript, which is `pkg/attach`'s posture for
+  the same hazard — drop the subscriber, not the publisher. The stalled-reader
+  case the old coupling was reaching for is handled where it belongs, at the
+  per-frame write deadline, and a retired stream stops arming new ones instead
+  of blocking each subsequent emit on a dead socket.
+
+  **Behaviour change worth planning for: nothing transport-side cancels a turn
+  any more.** A run whose client vanished is bounded by
+  `budget.max_wallclock_seconds`, the watchdog, and an explicit
+  `mast sessions pause <id> --interrupt` — the same three that bound a
+  scheduled run with no client at all. AG-UI has no "stop" verb on mast yet;
+  when a client needs to mean that, that is the shape to add. Reconnecting to
+  a stream you dropped is still unbuilt and still v1.1; what a disconnect
+  costs today is the tail of the event stream, not the work.
+
 - **The AG-UI surface's remaining open calls are settled, and two of them were
   settled against the code rather than for it.**
   ([#98](https://github.com/go-steer/mast/issues/98)) Docs and decisions only —
@@ -19,10 +46,11 @@
     request, so a TCP reset cancels the turn; if that lands while a mutating
     tool is running, the session keeps no trace of the call and a well-behaved
     retry re-applies the change. Filed as
-    [#383](https://github.com/go-steer/mast/issues/383) and scheduled **before
-    v1.0**, because it is a correctness fix, not the reconnect feature it was
-    filed under. Reconnect proper — a replay cursor plus re-subscription — is
-    v1.1, and is cheap to defer *because* #383 lands first.
+    [#383](https://github.com/go-steer/mast/issues/383) and **fixed in this
+    release** (entry above), because it is a correctness fix, not the reconnect
+    feature it was filed under. Reconnect proper — a replay cursor plus
+    re-subscription — is v1.1, and is cheap to defer *because* #383 landed
+    first.
   - **There is no concurrent-run policy.** The doc records a bounded queue of
     depth 3 with a `RunError` refusal and a metric; none of it exists. A second
     run blocks on the per-session turn lock, unbounded, and the only ceiling is

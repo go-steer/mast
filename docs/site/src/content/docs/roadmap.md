@@ -1022,17 +1022,26 @@ daemon logs why. A late frame is a correctness bug; a missing one is worse.
   events and the `STEP_STARTED`/`STEP_FINISHED` bracket all left this list in
   v0.9.
 
-  Two of these are ahead of the rest, for the same reason. **A client
-  disconnect currently cancels the run** rather than leaving it to finish —
-  the turn rides the request's context — and if the drop lands while a
-  mutating tool is executing, the session keeps no record of the call, so a
-  retry re-applies the change. That is a correctness fix and it lands before
-  v1.0, separately from reconnect proper (a replay cursor, so a client can
-  rejoin a stream it dropped), which is the actual feature and is easier to
-  defer once a blip costs only the tail of a stream. And **there is no
-  concurrent-run policy**: a second run on a thread waits on the session's
-  turn lock with no depth limit and no refusal, so a caller queued behind a
-  long turn learns nothing until its own wallclock budget expires.
+  One of those two is now closed. **A client disconnect used to cancel the
+  run** rather than leave it to finish — the turn rode the request's context
+  — and if the drop landed while a mutating tool was executing, the session
+  kept no record of the call, so a retry re-applied the change. Fixed in
+  v0.9: the turn now outlives its reader, and a frame that cannot be written
+  retires the stream instead of the run. Reconnect proper — a replay cursor,
+  so a client can rejoin a stream it dropped — is the actual feature, and it
+  was easy to defer once a blip costs only the tail of a stream.
+
+  One consequence is worth stating rather than discovering: **hanging up no
+  longer stops anything.** A run whose client vanished is bounded by the
+  workload's wallclock budget, the watchdog, and an explicit
+  `mast sessions pause --interrupt`, exactly as a run the daemon started on a
+  schedule with no client at all. A browser that means "stop" needs a verb
+  for it; AG-UI has no such endpoint on mast yet.
+
+  Still ahead of the rest: **there is no concurrent-run policy**. A second
+  run on a thread waits on the session's turn lock with no depth limit and
+  no refusal, so a caller queued behind a long turn learns nothing until its
+  own wallclock budget expires.
 
   **Client-declared tools need a gate that does not exist yet.** The plan was
   to intersect what the browser declares against the bundle's tool catalog,
