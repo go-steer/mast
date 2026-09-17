@@ -1,13 +1,15 @@
 ---
 title: Roadmap
-description: What v0.8 ships, and what lands after it — honestly.
+description: What v0.9 ships, and what lands after it — honestly.
 ---
 
-mast is at **v0.8.0** — what was quietly not true is now refused. On the
-v0.7.0 route-back pass, the v0.6.0 enforcement pass, the v0.5.0 monitoring
-cycle, the v0.4.0 change set, the v0.3.0 write gate and the v0.2.0
-durable-execution spine. See [Shipped in
-v0.8.0](#shipped-in-v080--what-was-quietly-not-true-is-now-refused) below.
+mast is at **v0.9.0** — the surfaces stop answering a question nobody asked.
+On the v0.8.0 correctness pass, the v0.7.0 route-back pass, the v0.6.0
+enforcement pass, the v0.5.0 monitoring cycle, the v0.4.0 change set, the
+v0.3.0 write gate and the v0.2.0 durable-execution spine. See [Shipped in
+v0.9.0](#shipped-in-v090--the-surfaces-stop-answering-a-question-nobody-asked)
+below. v0.9 is the last release before v1.0, which is the API freeze and
+nothing else.
 
 **All eleven v0.1 exit criteria from the fork design are green.** The
 `--task` profile criterion cleared with the P1.3a/P1.3b adapter ports and
@@ -559,6 +561,231 @@ shown it either way — a fix worth having moves `intent_coverage` by a fraction
 of one row's mean. The competing hypothesis is that the models reason past the
 tool rather than fail to find it, and the same experiment separates the two.
 
+## Shipped in v0.9.0 — the surfaces stop answering a question nobody asked
+
+v0.8 closed a run of claims that turned out not to hold. v0.9 is the
+consequence, and it has one shape. Almost everything below is a surface that
+was reachable, authenticated and green, and that could not tell a caller the
+one thing the caller needed: `GET /perms` returned 200 and an empty body on
+every mast daemon; a session parked on a human approval reported `idle`, the
+same string an idle session reports; nothing outside the CLI could show the
+change an operator was being asked to approve. None of those were outages, and
+that is what took so long — **a surface that answers confidently with nothing
+in it is worse than one that refuses**, because nothing upstream can tell the
+difference. Where a route cannot honour its contract it now refuses.
+
+Underneath that, three defects that had never once misbehaved. Every outward
+text path concatenated the model's thinking into its answer and leaked nothing
+only because the default model returns a signed thinking block with an empty
+body. The only thinking config mast could send was rejected by that same model
+— and the unit test that let it ship asserted what mast *sends* rather than
+what the model *accepts*, so it passed for exactly as long as every live call
+failed. An AG-UI thread had no owner, so any authenticated principal could read
+and continue someone else's conversation. Each was one vendor's implementation
+detail away from being real.
+
+**v0.9 is also the run-up to the freeze**, and two of its issues were gates on
+v1.0 rather than features. Both are now written. The [compatibility and deprecation
+policy](/reference/compatibility/) is a stability promise's other half — a
+promise with no process for breaking things is not a promise — and it lands
+with the one rule in it that a test can hold: a `// Deprecated:` marker must
+name the release that removes it.
+
+The [threat model](/reference/threat-model/) is the document a security review
+asks for, and the corpus had gone 29 docs without one for a product whose whole
+thesis is that an agent acts while nobody is watching. It is mostly collection —
+the boundaries, the controls and the accepted risks were all reasoned out
+already, just scattered across a YAML comment, five startup checks and half a
+dozen issues. What it adds is the sentence none of those said out loud: **mast
+does not defend against prompt injection, and the write gate is the defence.**
+The boundary is placed after the model rather than before it, which makes the
+gate's coverage a security property and every accepted gap in it worth naming.
+
+Alongside them: `.tmpl` specialist files [stop
+loading](https://github.com/go-steer/mast/issues/349), and the second of the
+two exported-API leaks that writing down the v1.0 promise turned up
+[closes](https://github.com/go-steer/mast/issues/338).
+
+**An AG-UI client can now watch a run's state change — if you say which keys.**
+Until v0.9 the only state frame a client ever saw was the opening snapshot of
+its own input echoed back; `StateDelta` was an exported wire type mast never
+emitted. A workload now declares
+[`agui.state_projection`](/reference/workload-bundle/) and a write to a named
+key arrives as an RFC 6902 patch. **The list is empty by default and that is
+the point.** Session state is not a view someone designed for display — it is
+whatever the run put there, graph node results and judge verdicts and approval
+grants and captured change sets alike — and the client on the other end is a
+browser. So publication is an allowlist, and a key you did not name emits
+nothing at all rather than a redacted placeholder: a client cannot even learn
+that it changed. Adding a key is a decision about a browser-reachable surface;
+the daemon logs the enabled list at startup so you can check what a running
+workload publishes without trusting the bundle you think is mounted.
+
+**And a workload can now publish the model's reasoning — if you say so.**
+[`agui.emit_reasoning`](/reference/workload-bundle/) streams the thinking as
+AG-UI's `REASONING_*` frames, and it copies the projection's shape on purpose:
+per bundle, off by default, logged at startup. Three things are its own. Off
+emits **nothing at all**, not an empty phase bracket, because the existence of
+a thought is itself a disclosure. The opt-in is a *deliberate read* of the
+thought parts rather than the removal of a filter, so the answer stream is
+identical either way and reasoning cannot reach a client by omission — which
+is the standing floor v0.9 built one release earlier. And the provider's
+thought **signature** has no frame under any setting: it is a replay
+credential rather than a thought, so AG-UI's `ReasoningEncryptedValue` is
+deliberately not implemented and a signature-only block publishes nothing.
+Expect quiet at first — the request mast sends `claude-opus-5` today comes
+back with the thinking block's body empty.
+
+Also in v0.9: **the parity scoreboard was re-measured rather than re-asserted**,
+it had one row attributed to the wrong repo, and that row is now green. The
+board reads **19 of 19**. The **approver allowlist** is green — switchboard
+shipped it on 2026-09-03, and it is stricter than the env var it was matched
+against: the list is per channel, the "anyone here may answer" posture is a
+value somebody wrote rather than an empty setting, and a list that would match
+nobody is refused at startup instead of discovered from a thread.
+
+**You can now approve a parked mutation from a chat button.** This was the last
+red row, and it was mast's, not switchboard's: switchboard had written its half
+and answers a mast daemon at `POST /sessions/<app>/<id>/perms/respond`, where
+**mast returned 501** for five weeks. Both repos built a coherent half against
+a different endpoint and each half passed its own tests.
+
+The reason the route was dead is worth knowing, because the fix is not the
+obvious one. The `/perms` family is a synchronous ask-the-human-at-the-keyboard
+surface mast inherited with a ported package, and mast builds its write gate
+with no prompter on purpose — the premise of the product is that nobody is
+watching. Reviving the inherited wiring would have connected the route to a
+code path that, in this daemon, nothing reaches. But mast is not un-interactive;
+its interactive surface is the operator listener, where a parked mutation is
+answered by an authenticated `POST /resume`. So the route was not missing a
+mechanism, it was pointed at the wrong one. The two prompt endpoints now take
+a source, and mast supplies one backed by its **durable approval park** — the
+same questions `mast sessions` shows you, projected onto the stream, answered
+through the same resume path. A client cannot tell which mechanism is
+underneath, which is the point.
+
+Three things to know if you are writing that client. The capability report is
+now **exact**: `perms_stream` is true when the routes will actually answer, and
+false when they will not. Only **deny** and **allow-once** are accepted — the
+four broader decisions the protocol defines are refused with a `400` naming the
+reason rather than quietly narrowed, because a durable mutation approval has
+never been grantable for a whole session and a button that means more than it
+says is worse than an absent one. And the ack tells you **who** approved when
+mast recorded an identity, rather than only that somebody did.
+
+What has not changed: `mast sessions` plus an authenticated `POST /resume`
+still works exactly as before, and is still the path for an operator without a
+chat client. Shipped as
+[#364](https://github.com/go-steer/mast/issues/364), on top of
+[#313](https://github.com/go-steer/mast/issues/313) — see below.
+
+Which brings the other half of v0.9's attach work: **a session waiting on a
+human now says so.** Until this release a parked session reported
+`turn_state: "idle"` — the same string a session that finished its work
+reports — so nothing watching the stream could tell the difference between
+"done" and "blocked on you". It now reports `awaiting_permission` when the
+write gate has parked a mutating call, and `awaiting_elicit` when the session
+asked you a question. Both values were declared in the protocol from the
+beginning and neither had ever been sent.
+
+The reason it took this long is worth knowing if you write a client: **a
+parked session really is finished**, from the daemon's point of view. The
+gate does not block inside the call waiting for you; it writes the question
+down and lets the turn return. So the answer is read from the transcript, not
+from whatever the process happens to be doing, and two useful properties
+follow. It survives a restart — a session parked yesterday still reports
+`awaiting_permission` today. And it is in the snapshot every client gets on
+connect, so attaching an hour after the park still shows you the park.
+
+Two pauses deliberately stay `idle`. A `pause_session` hold is something an
+operator placed, not a question anyone owes an answer to. And a session
+resuming from a park reports `streaming` for the whole resume turn, even
+though the interrupt it is answering stays open on the transcript until
+mid-turn — otherwise the session would look frozen on your screen while it
+works.
+
+One ordering fix ships with it: **`turn-complete` no longer arrives before the
+answer it terminates**. The terminal frame went straight out the moment a turn
+returned while the turn's final text travelled through the event log, so a
+client that finalized its render on `turn-complete` could drop the last
+message. The frame now waits for the log to catch up — and if the log cannot
+be read, or takes longer than two seconds, the frame goes out anyway and the
+daemon logs why. A late frame is a correctness bug; a missing one is worse.
+
+**And an out-of-process caller can finally read the change it is asking
+someone to approve.** `POST /resume` has been able to *answer* a parked
+approval since v0.2; until v0.9 nothing could find out what it was answering,
+because the projection that renders a park lived in `pkg/transcript` and was
+CLI-only. So a chat bot or a web UI wiring up an Approve button could offer
+"approve the thing, whatever it is" — uninformed consent with an audit trail,
+which is worse than the CLI it replaces because it looks like the opposite.
+Two read-only routes close it: `GET /parks` for every parked session and
+`GET /parks/{session}` for one, the latter answering 200 with an empty list
+when the session is not parked and 404 only when there is no such session,
+because "nothing to approve" and "I cannot see parks" are different answers
+and only one of them means it is safe to stop looking. What the projection
+carries is written out field by field, so a field added to the transcript
+cannot reach that wire without someone deciding it should: no model output, no
+tool results, and — for a capture — the read's name and digest but never its
+values, because those are cluster state and can be anything.
+
+**A client can now tell in advance what a run will publish**, and it matters
+precisely because the two publication keys above are per bundle. A stream with
+no reasoning in it looks identical whether the workload publishes none or the
+model simply did not think, so inferring the setting from a finished run is
+hopeless. `/agui/agents.json` now states it up front as a `capabilities`
+object per workload, read from the same value the run's emitter is built from
+rather than recomputed from the bundle — a capability claim that restates a
+config instead of reading what it describes is how `/tools` and `/perms` each
+spent releases advertising something untrue.
+
+A third frame family ships with **no** key and no capability bit, and the
+contrast is the useful part. `STEP_STARTED`/`STEP_FINISHED` now bracket each
+stretch of a run by the agent that authored it, so a client can see where a
+coordinator handed off to a specialist. State and reasoning are gated because
+they disclose something new; a handoff already arrives on the wire as a
+`transfer_to_agent` tool call naming the same agent, so gating steps would be
+a switch with nothing behind it.
+
+**An AG-UI thread now belongs to the caller who opened it.** A `threadId` is
+the client's own correlation string, not a secret, and under the default
+`per_thread` model the thread *is* the durable session — so carrying the
+endpoint's scopes let any authorized principal continue and read back another
+one's conversation. The two questions look like one and are not: *may this
+caller run this workload* was answered; *is this conversation yours* was
+answered by nobody. The fix folds a hashed tenant and subject into the derived
+session id rather than recording an owner and checking against it, which makes
+the separation structural — a foreign caller is not refused, they address a
+session of their own and never reach the first. No owner record to store or
+clear, and no 403-versus-404 disclosure question, because nothing is refused.
+**Upgrading:** authenticated threads opened before this release are not
+reachable after it. An endpoint with no validator has no subject to own
+anything and is unchanged.
+
+**And a client hanging up no longer destroys the run it was watching** — see
+[Further out](#further-out) for why that was filed as half of "reconnect" and
+shipped as a correctness fix instead.
+
+**The model's thinking is not its answer, and now nothing treats it as one.**
+Frontier models return reasoning in the same field as the answer, marked
+rather than separated, and eight outward paths read model text with a
+predicate a thinking block satisfies. Nothing leaked, for one reason: the
+default model returns a signed thinking block with an empty body. Part order
+decided which sites would have leaked first. The predicate now lives in one
+place, and a ninth site closed a release later.
+
+The companion defect is the more instructive one. **The only thinking config
+mast could send was rejected by its own default model.** Anthropic has two
+mutually exclusive request shapes and they split *inside* one provider, by
+model — so a provider-grained capability flag would have been the wrong grain
+— and a zero budget, which read like "off", disabled nothing. The test that
+let it ship asserted the request shape mast *builds*; it passed for exactly as
+long as every live call 400'd.
+
+**Anthropic cache writes are billed at their own rate.** A long-running
+session was undercounted because the count had nowhere to live — the fix is a
+usage-detail sidecar, landed before `pkg/budget` freezes rather than after.
+
 ## Shipped in v0.8.0 — what was quietly not true is now refused
 
 v0.7 added capability. This release adds very little, and instead closes a run
@@ -808,7 +1035,7 @@ believed it did.
   scheduled monitoring ships. It remains available to any caller that
   builds its own signal set and knows its workload does not poll.
 
-## What v0.8.0 will not let you do
+## What v0.9.0 will not let you do
 
 **Restore.** A change now carries a recorded route back — the prior state and
 the exact call that undoes it — and mast will not fire that call. Rendering the
@@ -844,6 +1071,18 @@ those three is covered by a test that builds it.
 Under `on_mutation: apply` the refusal does not fire, because there was no
 gate for a dispatch to bypass. The **record** was missing there too through
 v0.5, and that half was separable and shipped in v0.6.0 — see above.
+
+**Stop an AG-UI run from the browser.** New in v0.9, and the direct cost of
+the disconnect fix: closing the tab no longer cancels anything, because a
+transport dropping is not a decision to abandon work. A run with no reader
+left is bounded by its wallclock budget, the watchdog, and an explicit
+`mast sessions pause <id> --interrupt`. A client that needs to *mean* stop
+needs a verb for it, and AG-UI has none on mast yet — `pkg/attach` already
+holds the shape (`POST /interrupt`), so this is a wiring decision waiting on a
+consumer rather than an open question. **Rejoin a stream you dropped** is the
+other half and is also unbuilt: reconnecting with the same `threadId` starts a
+new run rather than resuming the view of the old one, so a blip costs the tail
+of the event stream.
 
 ## What installing it costs you today
 
@@ -885,145 +1124,33 @@ which is why it is spelled out rather than left to inference.
 
 ## Next
 
-**v0.9 is the run-up to the freeze**, and two of its issues were gates on v1.0
-rather than features. Both are now written. The [compatibility and deprecation
-policy](/reference/compatibility/) is a stability promise's other half — a
-promise with no process for breaking things is not a promise — and it lands
-with the one rule in it that a test can hold: a `// Deprecated:` marker must
-name the release that removes it.
+**v1.0 is the API freeze and carries no other claim.** What it covers is
+[published now](/reference/stability/) so you can decide what to depend on
+today: six import paths plus `cmd/mast`'s flags, verbs and exit codes, with
+every other importable package named individually as unsupported. It is not a
+production-readiness badge, and saying so is the point — the version number
+stops being a proxy for a judgement nobody made.
 
-The [threat model](/reference/threat-model/) is the document a security review
-asks for, and the corpus had gone 29 docs without one for a product whose whole
-thesis is that an agent acts while nobody is watching. It is mostly collection —
-the boundaries, the controls and the accepted risks were all reasoned out
-already, just scattered across a YAML comment, five startup checks and half a
-dozen issues. What it adds is the sentence none of those said out loud: **mast
-does not defend against prompt injection, and the write gate is the defence.**
-The boundary is placed after the model rather than before it, which makes the
-gate's coverage a security property and every accepted gap in it worth naming.
-
-Alongside them: `.tmpl` specialist files [stop
-loading](https://github.com/go-steer/mast/issues/349), and the second of the
-two exported-API leaks that writing down the v1.0 promise turned up
-[closes](https://github.com/go-steer/mast/issues/338).
-
-**An AG-UI client can now watch a run's state change — if you say which keys.**
-Until v0.9 the only state frame a client ever saw was the opening snapshot of
-its own input echoed back; `StateDelta` was an exported wire type mast never
-emitted. A workload now declares
-[`agui.state_projection`](/reference/workload-bundle/) and a write to a named
-key arrives as an RFC 6902 patch. **The list is empty by default and that is
-the point.** Session state is not a view someone designed for display — it is
-whatever the run put there, graph node results and judge verdicts and approval
-grants and captured change sets alike — and the client on the other end is a
-browser. So publication is an allowlist, and a key you did not name emits
-nothing at all rather than a redacted placeholder: a client cannot even learn
-that it changed. Adding a key is a decision about a browser-reachable surface;
-the daemon logs the enabled list at startup so you can check what a running
-workload publishes without trusting the bundle you think is mounted.
-
-**And a workload can now publish the model's reasoning — if you say so.**
-[`agui.emit_reasoning`](/reference/workload-bundle/) streams the thinking as
-AG-UI's `REASONING_*` frames, and it copies the projection's shape on purpose:
-per bundle, off by default, logged at startup. Three things are its own. Off
-emits **nothing at all**, not an empty phase bracket, because the existence of
-a thought is itself a disclosure. The opt-in is a *deliberate read* of the
-thought parts rather than the removal of a filter, so the answer stream is
-identical either way and reasoning cannot reach a client by omission — which
-is the standing floor v0.9 built one release earlier. And the provider's
-thought **signature** has no frame under any setting: it is a replay
-credential rather than a thought, so AG-UI's `ReasoningEncryptedValue` is
-deliberately not implemented and a signature-only block publishes nothing.
-Expect quiet at first — the request mast sends `claude-opus-5` today comes
-back with the thinking block's body empty.
-
-Also in v0.9: **the parity scoreboard was re-measured rather than re-asserted**,
-it had one row attributed to the wrong repo, and that row is now green. The
-board reads **19 of 19**. The **approver allowlist** is green — switchboard
-shipped it on 2026-09-03, and it is stricter than the env var it was matched
-against: the list is per channel, the "anyone here may answer" posture is a
-value somebody wrote rather than an empty setting, and a list that would match
-nobody is refused at startup instead of discovered from a thread.
-
-**You can now approve a parked mutation from a chat button.** This was the last
-red row, and it was mast's, not switchboard's: switchboard had written its half
-and answers a mast daemon at `POST /sessions/<app>/<id>/perms/respond`, where
-**mast returned 501** for five weeks. Both repos built a coherent half against
-a different endpoint and each half passed its own tests.
-
-The reason the route was dead is worth knowing, because the fix is not the
-obvious one. The `/perms` family is a synchronous ask-the-human-at-the-keyboard
-surface mast inherited with a ported package, and mast builds its write gate
-with no prompter on purpose — the premise of the product is that nobody is
-watching. Reviving the inherited wiring would have connected the route to a
-code path that, in this daemon, nothing reaches. But mast is not un-interactive;
-its interactive surface is the operator listener, where a parked mutation is
-answered by an authenticated `POST /resume`. So the route was not missing a
-mechanism, it was pointed at the wrong one. The two prompt endpoints now take
-a source, and mast supplies one backed by its **durable approval park** — the
-same questions `mast sessions` shows you, projected onto the stream, answered
-through the same resume path. A client cannot tell which mechanism is
-underneath, which is the point.
-
-Three things to know if you are writing that client. The capability report is
-now **exact**: `perms_stream` is true when the routes will actually answer, and
-false when they will not. Only **deny** and **allow-once** are accepted — the
-four broader decisions the protocol defines are refused with a `400` naming the
-reason rather than quietly narrowed, because a durable mutation approval has
-never been grantable for a whole session and a button that means more than it
-says is worse than an absent one. And the ack tells you **who** approved when
-mast recorded an identity, rather than only that somebody did.
-
-What has not changed: `mast sessions` plus an authenticated `POST /resume`
-still works exactly as before, and is still the path for an operator without a
-chat client. Shipped as
-[#364](https://github.com/go-steer/mast/issues/364), on top of
-[#313](https://github.com/go-steer/mast/issues/313) — see below.
-
-Which brings the other half of v0.9's attach work: **a session waiting on a
-human now says so.** Until this release a parked session reported
-`turn_state: "idle"` — the same string a session that finished its work
-reports — so nothing watching the stream could tell the difference between
-"done" and "blocked on you". It now reports `awaiting_permission` when the
-write gate has parked a mutating call, and `awaiting_elicit` when the session
-asked you a question. Both values were declared in the protocol from the
-beginning and neither had ever been sent.
-
-The reason it took this long is worth knowing if you write a client: **a
-parked session really is finished**, from the daemon's point of view. The
-gate does not block inside the call waiting for you; it writes the question
-down and lets the turn return. So the answer is read from the transcript, not
-from whatever the process happens to be doing, and two useful properties
-follow. It survives a restart — a session parked yesterday still reports
-`awaiting_permission` today. And it is in the snapshot every client gets on
-connect, so attaching an hour after the park still shows you the park.
-
-Two pauses deliberately stay `idle`. A `pause_session` hold is something an
-operator placed, not a question anyone owes an answer to. And a session
-resuming from a park reports `streaming` for the whole resume turn, even
-though the interrupt it is answering stays open on the transcript until
-mid-turn — otherwise the session would look frozen on your screen while it
-works.
-
-One ordering fix ships with it: **`turn-complete` no longer arrives before the
-answer it terminates**. The terminal frame went straight out the moment a turn
-returned while the turn's final text travelled through the event log, so a
-client that finalized its render on `turn-complete` could drop the last
-message. The frame now waits for the log to catch up — and if the log cannot
-be read, or takes longer than two seconds, the frame goes out anyway and the
-daemon logs why. A late frame is a correctness bug; a missing one is worse.
+Two things have to land before it, because both get harder the day the freeze
+starts. The exported surface wants **shrinking**: runtime glue belongs under
+`internal/`, and moving a package after v1.0 is itself a breaking change
+([#301](https://github.com/go-steer/mast/issues/301)). And the AG-UI bundle
+keys still owed a shape — the concurrent-run policy
+([#384](https://github.com/go-steer/mast/issues/384)) and the client-tool
+gate — need their *key* decided even where the implementation slips, since a
+key lands on the frozen `Bundle`.
 
 ## Further out
 
 - **AG-UI remaining slices** — the `agui://` federation client, the
   `ACTIVITY_*` frames, webhook push, client-declared tool acceptance
   (`RunAgentInput.tools` is parsed today and then dropped), and
-  client-disconnect reconnect. Per-key `StateDelta` emission, the reasoning
-  events and the `STEP_STARTED`/`STEP_FINISHED` bracket all left this list in
-  v0.9.
+  reconnect proper. Per-key `StateDelta` emission, the reasoning events, the
+  `STEP_STARTED`/`STEP_FINISHED` bracket and the discovery `capabilities`
+  object all left this list in v0.9.
 
-  One of those two is now closed. **A client disconnect used to cancel the
-  run** rather than leave it to finish — the turn rode the request's context
+  Reconnect was filed as one thing and was two, and the correctness half
+  shipped in v0.9. **A client disconnect used to cancel the run** rather than leave it to finish — the turn rode the request's context
   — and if the drop landed while a mutating tool was executing, the session
   kept no record of the call, so a retry re-applied the change. Fixed in
   v0.9: the turn now outlives its reader, and a frame that cannot be written
@@ -1034,8 +1161,8 @@ daemon logs why. A late frame is a correctness bug; a missing one is worse.
   One consequence is worth stating rather than discovering: **hanging up no
   longer stops anything.** A run whose client vanished is bounded by the
   workload's wallclock budget, the watchdog, and an explicit
-  `mast sessions pause --interrupt`, exactly as a run the daemon started on a
-  schedule with no client at all. A browser that means "stop" needs a verb
+  `mast sessions pause <id> --interrupt`, exactly as a run the daemon started
+  on a schedule with no client at all. A browser that means "stop" needs a verb
   for it; AG-UI has no such endpoint on mast yet.
 
   Still ahead of the rest: **there is no concurrent-run policy**. A second

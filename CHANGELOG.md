@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+## v0.9.0 (2026-09-17)
+
+*The surfaces stop answering a question nobody asked.*
+
+v0.8 was the release where claims the project had been making turned out not
+to hold. v0.9 is the consequence: almost every entry below is a surface that
+was reachable, authenticated and green, and that could not tell a caller the
+one thing the caller needed. `GET /perms` returned 200 and an empty body on
+every mast daemon. A session parked on a human approval reported `idle`, the
+same string an idle session reports. `/agui/agents.json` advertised no
+capabilities, so a client could not tell a workload that publishes no
+reasoning from a model that did not think. No HTTP surface could show the
+change an operator was being asked to approve — so a chat bot could offer
+"approve the thing, whatever it is", which is uninformed consent with an audit
+trail.
+
+None of those were outages, and that is the point: **a surface that answers
+confidently with nothing in it is worse than one that refuses**, because
+nothing upstream can tell the difference. Where a route could not honour its
+contract it now refuses rather than shrugs.
+
+The second thread is latent correctness — three defects that had never once
+misbehaved in production. Every outward text path concatenated the model's
+thinking into its answer, and leaked nothing only because the default model
+returns a signed thinking block with an empty body. The only thinking config
+mast could send was rejected by that same model, and the unit test that let it
+ship asserted what mast *sends* rather than what the model *accepts*, so it
+passed for exactly as long as every live call failed. An AG-UI thread had no
+owner, so any authenticated principal could read and continue another's
+conversation. Each of these was one vendor's implementation detail away from
+being real.
+
+**Two behaviour changes to plan for, neither of them an API break.** An
+authenticated AG-UI thread now folds the caller's identity into its session
+id, so threads opened before this release are not reachable after it. And a
+client disconnect no longer cancels the run it was watching — which is the fix
+to a defect that re-fired mutating tool calls, and which also means hanging up
+now stops nothing: a run with no reader is bounded by its wallclock budget,
+the watchdog, and an explicit `mast sessions pause <id> --interrupt`.
+
+**One breaking change, scheduled a release in advance.** `.tmpl` specialist
+files no longer load; v0.8 renamed them to `<name>.specialist.md` and accepted
+the old extension for one release with a startup warning. A bundle that
+renamed its files in v0.8 needs nothing.
+
+This is the last release before v1.0, which is the API freeze and carries no
+other claim. `pkg/transcript`'s coverage of `pkg/approval` and the
+compatibility policy below are both freeze preparation: what is frozen is now
+checked by a test rather than asserted by a document.
+
 - **An AG-UI client hanging up no longer destroys the run it was watching.**
   ([#383](https://github.com/go-steer/mast/issues/383)) The turn ran on the
   HTTP request's context, so a TCP reset, a closed laptop or a proxy timeout
