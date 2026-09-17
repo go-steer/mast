@@ -1022,6 +1022,27 @@ daemon logs why. A late frame is a correctness bug; a missing one is worse.
   events and the `STEP_STARTED`/`STEP_FINISHED` bracket all left this list in
   v0.9.
 
+  Two of these are ahead of the rest, for the same reason. **A client
+  disconnect currently cancels the run** rather than leaving it to finish —
+  the turn rides the request's context — and if the drop lands while a
+  mutating tool is executing, the session keeps no record of the call, so a
+  retry re-applies the change. That is a correctness fix and it lands before
+  v1.0, separately from reconnect proper (a replay cursor, so a client can
+  rejoin a stream it dropped), which is the actual feature and is easier to
+  defer once a blip costs only the tail of a stream. And **there is no
+  concurrent-run policy**: a second run on a thread waits on the session's
+  turn lock with no depth limit and no refusal, so a caller queued behind a
+  long turn learns nothing until its own wallclock budget expires.
+
+  **Client-declared tools need a gate that does not exist yet.** The plan was
+  to intersect what the browser declares against the bundle's tool catalog,
+  but that catalog is a policy table rather than a permission list, and the
+  allowlist that *is* one covers tools mast itself wired — which a
+  browser-executed tool never is. So the honest question is what allowing one
+  even means: everything mast does to a tool call reads a tool it can
+  describe, and a client tool is a name and a schema supplied per run.
+  Parsed-and-dropped stays the behaviour until that has an answer.
+
   What is left of the activity family is the **planner** half, and it is
   blocked rather than unscheduled. A planner dispatch runs each specialist
   under a private runner, so none of its events reach the stream the AG-UI
