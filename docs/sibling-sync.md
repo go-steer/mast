@@ -1033,6 +1033,43 @@ aggregator's non-streaming-args path appends the *same part pointer* it already 
 is one line; the value is the test that pins it** — [#331](https://github.com/go-steer/mast/issues/331), because the day someone turns SSE on, a
 single tool call becomes N repeats and the watchdog halts a turn that did nothing wrong.
 
+**Absorbed 2026-09-18, and reading the dependency corrected the mechanism this row states.** The
+double count described above is on the aggregator's *non-streaming-args* path, and mast does not
+have it: that path appends the same `*genai.Part` pointer it already yielded, so the partial and the
+aggregate produce an identical ID and identical args, and the per-turn `seen` set mast has carried
+since the original port ([#363](https://github.com/go-steer/mast/issues/363)) collapses them. The
+row — and the filing taken from it — asserted a defect from upstream's code shape without checking
+that mast's dedup already covered it. `TestObserveEvent_TheWholeCallPathWasAlreadyDeduped` pins that
+it does, and passes pre-fix on purpose.
+
+What *is* reachable is the **streaming-args** path (`FunctionCall.PartialArgs`), which yields chunks
+naming the function with no `Args` at all and assembles them only at `Close`. With no call ID that
+is a genuine double count whose first copy reads `{}`. With a call ID it is worse than a double
+count: `seen` collapses the pair onto the *first* observation, so the watchdog records `{}` for
+every call to that tool, and the literal-compare detector then reads two genuinely different calls
+as a repeat — a false halt rather than a miscount, and the one the row would not have predicted.
+Both are fixed by the same `ev.Partial` guard, now in `ObserveEvent` and (belt-and-braces, since
+`handleFunctionCalls` runs only past ADK's own partial guard) `ObserveToolResults`.
+
+The pin the row asks for is `TestEveryRunnerSiteIsNonStreaming` in the module root: an AST scan of
+every `RunConfig` composite literal in non-test code — 14 of them — failing on any that sets
+`StreamingMode` to anything the parser cannot read as `StreamingModeNone`, including a variable,
+which is the shape a `--stream` flag would arrive in. It is vacuity-guarded on the literal count and
+exercised on fixtures, because a tree walk that finds nothing is not evidence that it would find
+something. Its failure message is the audit list rather than an assertion, and the list is
+re-derivable: the consumers that are safe are exactly the non-test files that name `.Partial`.
+The row's three line numbers are stale (the sites are `mast.go:796`, `cmd/mast/oneshot.go:240`,
+`cmd/mast/main.go:3261`, plus zero-value literals in `pkg/planner/dispatch.go` and
+`internal/toolcatalog`), which is itself the argument for scanning rather than enumerating.
+
+**The audit turned up a second consumer, filed as [#400](https://github.com/go-steer/mast/issues/400).**
+`cmd/mast/agui.go`'s emitter mints a fresh id per event and has no dedup set of any kind, so under
+SSE it emits a complete `TEXT_MESSAGE_*` triad per chunk and a complete `TOOL_CALL_*` triple per
+chunk with empty arguments. It is the worst-affected consumer and also the one most likely to be
+triggered deliberately, because AG-UI is a streaming protocol with delta frames for exactly this —
+so the trap's trigger is a feature somebody ships, not a mistake somebody makes. Nothing owed
+upstream.
+
 ### Port candidates on packages mast has — 3 commits
 
 | SHA | Upstream | Why it is a candidate and not a finding |

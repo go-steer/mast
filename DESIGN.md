@@ -209,6 +209,22 @@ when somebody reads their chat.
 - **Budgets act by cancellation.** The meter folds usage from the
   event stream and trips by canceling the run context — subsystems
   must tolerate mid-turn cancellation.
+- **One runner event is one whole model response, because every
+  runner site passes `StreamingModeNone`.** Readers across the tree
+  rest on that — the AG-UI emitter, the A2A bridge, the transcript, the
+  watchdog, the budget meter — emitting a frame, counting a call or
+  rendering a message per event. Under `StreamingModeSSE` ADK yields
+  each provider chunk as a partial event *before* the guard that
+  decides whether to act on it, and every one of those readers sees the
+  same call again. Seven non-test files say "mast runs
+  `StreamingModeNone`" in a comment; exactly two check it
+  (`grep -rn '\.Partial' --include='*.go'`): `pkg/watchdog/bridge.go`
+  and `pkg/agent/stall.go`. The
+  assumption is pinned by `TestEveryRunnerSiteIsNonStreaming` (module
+  root), whose failure message is the audit list; the pin exists to be
+  deleted by whoever finishes that audit, not to forbid streaming
+  ([#331](https://github.com/go-steer/mast/issues/331),
+  [#400](https://github.com/go-steer/mast/issues/400)).
 - **Two runner plugins bracket every tool call, in this order.**
   `pkg/effects` (the outbox) registers first, `pkg/approval` (the
   write gate) second, so a call replayed after a crash is answered

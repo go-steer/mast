@@ -59,8 +59,29 @@ import (
 // observations.
 // Reports whether any observation actually landed, which is what
 // gates Tap's in-turn drain: a signal cannot newly trip without one.
+//
+// Partial events are skipped, so a call is counted once, on the event
+// ADK actually runs it from (#331). Under StreamingModeSSE every
+// response a consumer sees is Partial except the aggregate the model
+// yields at Close — ADK's flow yields the partial *before* the
+// `if resp.Partial { continue }` that guards handleFunctionCalls
+// (v2.2.0 internal/llminternal/base_flow.go:630-636), so the same
+// function call reaches this bridge from both. The seen set below
+// collapses that only when the two spellings agree: the aggregator's
+// non-streaming-args path appends the *same part pointer* it already
+// yielded, so ID and args match and the dedup holds — but its
+// streaming-args path (FunctionCall.PartialArgs) yields chunks whose
+// Args are empty and whose Name may be, then assembles the real Args
+// at Close. That is a different key when the provider sends no call
+// ID, and even when it does send one the *first* observation wins the
+// dedup and records `{}` for arguments — which is worse than a double
+// count, because the literal-compare detector then reads two different
+// calls to one tool as a repeat. Neither is reachable today (mast runs
+// StreamingModeNone at every runner site, pinned by
+// TestEveryRunnerSiteIsNonStreaming in the module root), and the guard
+// is a no-op there: nothing sets Partial outside a streaming model.
 func ObserveEvent(w Watchdog, ev *session.Event, seen map[string]struct{}) bool {
-	if w == nil || ev == nil || ev.Content == nil {
+	if w == nil || ev == nil || ev.Content == nil || ev.Partial {
 		return false
 	}
 	observed := false
@@ -104,8 +125,15 @@ func ObserveEvent(w Watchdog, ev *session.Event, seen map[string]struct{}) bool 
 // collapses same-error parallel calls within one turn; that is the
 // safe direction to be wrong in, since undercounting delays an
 // advisory alert while overcounting fires it on work that was fine.
+//
+// Skips partial events for the same reason ObserveEvent does (#331).
+// Belt and braces here rather than load-bearing: a FunctionResponse is
+// produced by handleFunctionCalls, which ADK reaches only *after* the
+// partial guard, so no partial event should carry one. "Should" is the
+// operative word — the cost of the check is a field read, and the cost
+// of being wrong is a streak signal firing at half its threshold.
 func ObserveToolResults(w Watchdog, ev *session.Event, seen map[string]struct{}) bool {
-	if w == nil || ev == nil || ev.Content == nil {
+	if w == nil || ev == nil || ev.Content == nil || ev.Partial {
 		return false
 	}
 	obs, ok := w.(ToolResultObserver)
