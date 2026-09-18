@@ -44,7 +44,7 @@ thought, so it is replayed to the provider and modeled nowhere on any wire.
 ## Inject — the machine trigger
 
 The daemon's own HTTP endpoint (`--listen`, default `:7777`): `/inject`,
-`/resume`, `/abort`, `/parks`, `/metrics`. This is how an incident gets in — an
+`/resume`, `/abort`, `/parks`, `/metrics`, `/healthz`. This is how an incident gets in — an
 Alertmanager webhook, a Cloud Scheduler job, a CI step, a `curl` in a
 runbook. Bearer auth via `MAST_INJECT_TOKEN`; unset means unauthenticated,
 which is a dev-only posture and is warned about at startup.
@@ -57,6 +57,44 @@ it remains the right answer when you already run one — your schedules live
 in one place and mast is just another target. What changed in v0.4 is that
 you no longer need one to run something periodically: see [no caller at
 all](#no-caller-at-all--the-workloads-own-clock) below.
+
+### Asking whether it is ready
+
+Two routes answer that, and they answer different questions.
+
+| route | asks | can it go red? |
+|---|---|---|
+| `GET /` | is this process still accepting connections? | no — it consults nothing and is a static 200 |
+| `GET /healthz` | can it still do the job it accepts work for? | yes — 503 when a dependency is down |
+
+`GET /healthz` runs the daemon's registered checks and answers `200
+{"ok":true,"checks":{"session_db":"ready"}}` or `503` with that check
+`failed`. Today the one check is the session database, registered when
+`--session-db` is set: a real read against the table ADK writes events to,
+not a pool ping, so it catches a dropped table, a lock that outlasts the
+busy timeout, a closed pool, a Postgres that went away, and a volume
+that was unmounted out from under a running pod. It does not catch a
+filesystem that went read-only — a read still succeeds there.
+
+A daemon with no session store reports `200 {"ok":true,"checks":{}}`. The
+empty object is the point: "the process is up and has nothing durable to
+vouch for" is a different statement from "the database is fine", and an
+in-memory daemon that answered 503 would never join its Service.
+
+The route is unauthenticated, because a kubelet has no bearer token and
+`readinessProbe` has nowhere to put one. So the body carries only `ready`
+or `failed` per check — never the error, which routinely names a
+filesystem path or a DSN host. The error goes to the daemon's log, once
+per *transition* rather than once per probe.
+
+Point `readinessProbe` at `/healthz` and leave `livenessProbe` on `/`.
+That split is deliberate. The action behind a failed liveness probe is a
+restart, and a restart does not fix a deleted volume or an unreachable
+database — it turns one unready pod into a crash loop that also kills
+every in-flight turn. Readiness is the probe that should be able to go
+red: it takes the pod out of the Service, which stops it being handed
+injects it cannot durably record. `deploy/base/50-statefulset-daemon.yaml`
+ships wired that way.
 
 ### Reading what is parked
 

@@ -82,6 +82,37 @@
   and the one that would have cost two released minors and 90 days on the
   other side of v1.0 ([#384](https://github.com/go-steer/mast/issues/384)).
 
+### Feature
+
+- **`GET /healthz` is a readiness probe that can actually go red.** The
+  daemon's health check was `GET /`, which consults nothing and answers a
+  static `200 ok`. A daemon whose session database had been deleted, whose
+  volume was unmounted under it, or whose Postgres had gone away stayed 1/1
+  Ready and kept accepting injects it could not durably record — and because
+  the route is *named* the health check, that looked like a readiness signal
+  rather than the absence of one. `/healthz` runs the registered checks and
+  answers `200 {"ok":true,"checks":{"session_db":"ready"}}` or `503` with the
+  check `failed`. The one check today is the session store, registered when
+  `--session-db` is set: a real bounded read against ADK's `events` table —
+  the one table both the attach and the plain durable path create, which
+  mast's own `agent_eventlog` overlay is not — rather than a pool ping, so it
+  catches a dropped table, a lock past the busy timeout, a closed pool, a
+  database that went away and (verified on mast's SQLite driver, not assumed)
+  an unlinked file. It does not catch a read-only filesystem; a read still
+  succeeds there. A daemon with no session store answers `200` and an **empty**
+  `checks` object, because "up, with nothing durable to vouch for" is a
+  different statement from "the database is fine" and an in-memory daemon
+  answering 503 would never join its Service. The route is unauthenticated by
+  construction — a kubelet has no bearer token — so the body carries only
+  `ready`/`failed` per check and never the error, which routinely names a path
+  or a DSN host; that goes to the log, once per health *transition* rather
+  than once per probe, a distinction worth ~8,600 lines a day per pod at
+  kubelet's default cadence. `deploy/base/50-statefulset-daemon.yaml` moves
+  `readinessProbe` to `/healthz` and **leaves `livenessProbe` on `/`**: the
+  action behind a liveness failure is a restart, and a restart does not fix a
+  deleted volume — it turns one unready pod into a crash loop that also kills
+  every in-flight turn ([#326](https://github.com/go-steer/mast/issues/326)).
+
 ### Bug or Regression
 
 - **A Vertex context cache whose TTL has elapsed is now recognised as gone.**
