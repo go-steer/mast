@@ -29,6 +29,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/mast/internal/vertexcacheerr"
 	providerusage "github.com/go-steer/mast/pkg/providers/usage"
 )
 
@@ -450,7 +451,7 @@ func (l *builtinsLLM) wrapCachedContentEvictionRetry(
 				}
 				continue
 			}
-			if isCachedContentNotFound(err) {
+			if isCachedContentGone(err) {
 				// Cache is gone server-side. Invalidate the manager
 				// so this-turn retry + next-turn Init both do the
 				// right thing.
@@ -510,28 +511,28 @@ func (l *builtinsLLM) wrapCachedContentEvictionRetry(
 	}
 }
 
-// isCachedContentNotFound reports whether err carries the specific
-// Vertex signature for "the cached content ID you stamped no longer
-// exists" — the shape observed when a long-lived daemon holds a cache
-// handle whose server-side TTL has elapsed. Matched via substring
-// because the genai SDK doesn't expose a typed error for this case;
-// the "cached content" clause is specific enough to avoid false
-// positives on generic NOT_FOUND errors (missing model, wrong region,
-// etc.).
+// isCachedContentGone reports whether err carries a Vertex signature
+// for "the cached content ID you stamped no longer exists" — the shape
+// a long-lived daemon meets when its cache handle outlives the cache.
 //
-// The exact string Vertex returns:
+// Two spellings, and this wrapper used to know only one. A reaped
+// handle arrives as
 //
 //	Error 404, Message: Not found: cached content metadata for <id>.,
 //	Status: NOT_FOUND
 //
-// so we look for the "cached content" substring plus NOT_FOUND.
-func isCachedContentNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "NOT_FOUND") &&
-		strings.Contains(strings.ToLower(s), "cached content")
+// but an elapsed TTL arrives as a 400 INVALID_ARGUMENT naming "cache
+// content" without the "d", as "expired" — neither substring of the
+// first shape — so the retry-once path below never fired for the case
+// it was written for, and the error reached the operator classified as
+// a config problem (#325).
+//
+// The predicate lives in internal/vertexcacheerr because
+// pkg/providers/vertexcache has to reach the same verdict about a
+// Caches.Update failure, and the two packages answering it separately
+// is the bug.
+func isCachedContentGone(err error) bool {
+	return vertexcacheerr.Gone(err)
 }
 
 // builtinsCompatible reports whether injecting the server-side

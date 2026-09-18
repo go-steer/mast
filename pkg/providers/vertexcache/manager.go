@@ -36,6 +36,8 @@ import (
 	"time"
 
 	"google.golang.org/genai"
+
+	"github.com/go-steer/mast/internal/vertexcacheerr"
 )
 
 // CachesClient is the subset of *genai.Client's Caches field that
@@ -352,12 +354,28 @@ func (m *Manager) doRefresh(ctx context.Context, name string) {
 		TTL: m.opts.ttl(),
 	})
 	if err != nil {
-		m.opts.logger().Printf("mast-vertexcache: Caches.Update failed (cache will expire; agent falls back to uncached): %v", err)
-		// Don't flip to stateFailed on refresh error — the cache is
-		// still valid until it expires. Let Name() return the name
-		// until Vertex actually reaps it, then degradation is
-		// automatic on the next cache-not-found response from
-		// GenerateContent (handled by the caller's retry-once path).
+		// An Update that says the cache is gone is Vertex answering the
+		// question this manager exists to track, and the answer is not
+		// "later". Handing the name out after that costs every
+		// subsequent turn a 400 that names the wrong cause, and it does
+		// not self-heal (#325).
+		//
+		// This branch used to reason that the cache is still valid
+		// until it expires and that degradation is automatic on the
+		// next cache-not-found from GenerateContent. Both premises were
+		// false: a NOT_FOUND here means the cache is *already* gone,
+		// and the automatic degradation depended on a retry-once path
+		// that could not recognise the error Vertex actually sends when
+		// a TTL elapses.
+		if vertexcacheerr.Gone(err) {
+			m.markEvicted(name, fmt.Sprintf("Caches.Update reports the cache is gone: %v", err))
+			return
+		}
+		// Anything else — throttled, transient, a context deadline — is
+		// not evidence about whether the cache exists, so the handle
+		// stays. Not stateFailed either: that is for a Create that has
+		// spent its whole retry budget.
+		m.opts.logger().Printf("mast-vertexcache: Caches.Update failed, keeping the cache handle (it is still valid until it expires): %v", err)
 		return
 	}
 	m.mu.Lock()
@@ -390,12 +408,24 @@ func (m *Manager) doRefresh(ctx context.Context, name string) {
 //
 // Idempotent + safe against races with in-flight Refresh: a refresh
 // that lands after MarkEvicted just sees state != active and no-ops.
-func (m *Manager) MarkEvicted(reason string) {
+func (m *Manager) MarkEvicted(reason string) { m.markEvicted("", reason) }
+
+// markEvicted is MarkEvicted with an optional staleness guard: a
+// non-empty want only evicts while that cache is still the active one.
+//
+// doRefresh needs the guard for the reason the success path below
+// already states — MarkEvicted or Delete may have landed while the
+// Update RPC was in flight, and a verdict about the old cache must not
+// be applied to the one that replaced it. The exported form has no
+// name to check against: its caller saw the eviction on a
+// GenerateContent that was stamped with whatever Name() returned, and
+// by the time the error arrives that is the cache it is talking about.
+func (m *Manager) markEvicted(want, reason string) {
 	m.mu.Lock()
 	// Only meaningful when we currently think we hold a cache.
 	// stateFailed / stateDeleted / stateStart-with-init-in-flight all
 	// have nothing to invalidate.
-	if m.state != stateActive {
+	if m.state != stateActive || (want != "" && m.cacheName != want) {
 		m.mu.Unlock()
 		return
 	}

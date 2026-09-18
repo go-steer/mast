@@ -84,6 +84,30 @@
 
 ### Bug or Regression
 
+- **A Vertex context cache whose TTL has elapsed is now recognised as gone.**
+  Vertex has two ways of saying the cache you hold a handle to is not there:
+  `404` / `NOT_FOUND` naming "cached content" when the handle has been reaped,
+  and `400` / `INVALID_ARGUMENT` naming "cache content" — no "d" — as
+  *expired* when the TTL simply ran out. Nothing in mast matched the second.
+  The consequence was not a lost cache but a wedged agent: the manager kept
+  handing the dead name to every later turn, each one came back a `400` that
+  reads like a configuration error, and nothing in the process ever
+  reconsidered, so the session stayed down until a restart. The same verdict
+  is now reached in one place, `internal/vertexcacheerr`, because the two
+  packages that need it — the cache manager, which meets the error on a TTL
+  refresh, and the Gemini wrapper, which meets it on a stamped
+  `GenerateContent` — deliberately do not import each other, and their
+  disagreeing is what the bug *was*. A refresh that is told the cache is gone
+  now drops the handle rather than logging and keeping it; the two premises
+  that branch used to state (that the handle is valid until it expires, and
+  that recovery happens automatically on the next turn) were both false, and
+  are deleted rather than softened. Transient refresh failures — a throttle, a
+  deadline — still keep the handle, because they are not evidence about
+  whether the cache exists. **Scope:** `cmd/mast` never wires the cache
+  manager, so the daemon was never exposed; this is a fix for embedders that
+  wire `ContextCacheName` / `ContextCacheInvalidate` themselves
+  ([#325](https://github.com/go-steer/mast/issues/325)).
+
 - **A token count a provider reports as negative is now read as zero, before
   anything reads it.** A miscount used to reach the durable spend ledger, the
   session totals behind `GET /usage`, the buckets handed to the pricer, and
