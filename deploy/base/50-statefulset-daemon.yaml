@@ -143,15 +143,27 @@ spec:
             #   mountPath: /etc/mast
             #   readOnly: true
           readinessProbe:
-            # HTTP probe on GET / (mast's inject server serves 200 on
-            # the health path unauthenticated) — safe to poll from the
-            # kubelet without a bearer token.
+            # GET /healthz reads the session database and answers 503
+            # when it cannot. Unauthenticated by construction, so the
+            # kubelet needs no bearer token, and the body carries only
+            # per-check "ready"/"failed" — the error goes to the log.
+            #
+            # This is the probe that must be able to go red: a daemon
+            # whose store is gone can still accept injects it cannot
+            # durably record, and 503 is what takes it out of the
+            # Service so it stops being handed them.
             httpGet:
-              path: /
+              path: /healthz
               port: inject
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
+            # Stays on GET /, which consults nothing. Deliberate: the
+            # action behind a liveness failure is a restart, and a
+            # restart does not fix a deleted volume or an unreachable
+            # Postgres — it converts one unready pod into a crash loop
+            # that also kills every in-flight turn. Liveness asks only
+            # whether this process is still accepting.
             httpGet:
               path: /
               port: inject

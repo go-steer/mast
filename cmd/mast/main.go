@@ -1536,8 +1536,21 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		return inject.StopResult{DrainBound: drain.String()}, nil
 	}
 
+	// Readiness, as opposed to "the process is accepting connections",
+	// which is what GET / says and all a liveness probe should ask
+	// (#326). An in-memory daemon has no durable store to vouch for, so
+	// it reports no checks rather than a check that cannot fail.
+	healthChecks := map[string]inject.HealthCheck{}
+	if durableDB != nil {
+		db := durableDB
+		healthChecks["session_db"] = func(ctx context.Context) error {
+			return eventlog.CheckSessionDB(ctx, db)
+		}
+	}
+
 	srv, err := inject.New(inject.Config{
 		Listen:             listeners.inject,
+		HealthChecks:       healthChecks,
 		BearerToken:        bearer,
 		Authenticator:      injectAuthn,
 		Handler:            handler,

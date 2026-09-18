@@ -392,6 +392,23 @@ type Config struct {
 	// only. Nil leaves the route unregistered.
 	Metrics http.Handler
 
+	// HealthChecks are the readiness checks behind GET /healthz, keyed
+	// by the name that appears in the response. Each is run on the
+	// probe's own request context. Nil or empty means the route still
+	// answers 200, with an empty `checks` object — that is the
+	// in-memory daemon, which has nothing durable to vouch for, and
+	// "nothing to check" is a different answer from "the database is
+	// fine".
+	//
+	// Three things are deliberately kept out. No outbound provider
+	// call: a probe that fails when the model endpoint rate-limits
+	// would pull a pod that is perfectly able to serve out of its
+	// Service. No `auth` key: the route is unauthenticated, and
+	// reporting whether a credential is configured tells an
+	// unauthenticated caller something about the deployment. And no
+	// check error in the body — see HealthCheck.
+	HealthChecks map[string]HealthCheck
+
 	// BaseContext, when non-nil, is the context every request context
 	// derives from. The daemon passes its turn-lifetime context so
 	// that when the shutdown drain window elapses, in-flight handler
@@ -404,6 +421,7 @@ type Server struct {
 	cfg    Config
 	logger *slog.Logger
 	srv    *http.Server
+	health healthState
 }
 
 // New constructs a Server. It does not start listening; call ListenAndServe.
@@ -428,6 +446,7 @@ func New(cfg Config) (*Server, error) {
 	// Not `GET /`: that pattern claims every unmatched path for GET
 	// only, which turns a POST to an unknown path into 405 (#277).
 	mux.HandleFunc("/", s.handleRoot)
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /inject", s.handleInject)
 	mux.HandleFunc("POST /resume", s.handleResume)
 	mux.HandleFunc("POST /abort", s.handleAbort)
@@ -471,6 +490,7 @@ type route struct{ method, path string }
 
 var routes = []route{
 	{"GET", "/"},
+	{"GET", "/healthz"},
 	{"POST", "/inject"},
 	{"POST", "/resume"},
 	{"POST", "/abort"},
@@ -542,9 +562,15 @@ func (s *Server) routeList() []route {
 // answer that points at the bundle and one that points anywhere else.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
+		// `/` is the liveness answer: it consults nothing and says only
+		// that this process is still accepting connections. The
+		// question "can it still do the job it accepts work for" is
+		// `GET /healthz`, which reads (#326). Keeping them apart is
+		// deliberate — a restart is the action behind a liveness
+		// failure, and a restart does not fix a deleted volume.
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
-			http.Error(w, "mast inject server: / is the health check; use GET", http.StatusMethodNotAllowed)
+			http.Error(w, "mast inject server: / is the liveness check; use GET (readiness is GET /healthz)", http.StatusMethodNotAllowed)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
