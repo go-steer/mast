@@ -58,13 +58,18 @@ func (p *perCallLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest
 	return seqOf(s)
 }
 
-// TestIsCachedContentNotFound pins the classifier that decides which
-// error text signals TTL-eviction of a Vertex explicit cache. Two
+// TestIsCachedContentGone pins the classifier that decides which
+// error text signals eviction of a Vertex explicit cache. Two
 // false negatives here would send the wrong recovery path — a
 // generic NOT_FOUND (missing model, wrong region) would trigger a
 // pointless invalidate + retry; a real cache eviction would surface
 // as a hard turn error the operator has to restart around.
-func TestIsCachedContentNotFound(t *testing.T) {
+//
+// The verdict itself lives in internal/vertexcacheerr, which pins the
+// substrings for both spellings; this table is the wrapper's own check
+// that it asks the right question, and it keeps the expired shape
+// (#325) because that is the one this call site used to miss.
+func TestIsCachedContentGone(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
@@ -77,15 +82,21 @@ func TestIsCachedContentNotFound(t *testing.T) {
 			true},
 		{"NOT_FOUND on missing model", errors.New("Error 404, Message: publisher model not found, Status: NOT_FOUND"), false},
 		{"NOT_FOUND on wrong region", errors.New("resource not found: NOT_FOUND"), false},
-		{"cached content but not NOT_FOUND", errors.New("cached content quota exceeded"), false},
+		{"cached content, neither gone nor expired", errors.New("cached content quota exceeded"), false},
 		{"case-insensitive cached content match",
 			errors.New("Error 404, Message: Cached Content missing, Status: NOT_FOUND"),
 			true},
+		{"elapsed TTL — the shape this call site used to miss (#325)",
+			errors.New("Error 400, Message: The cache content projects/p/locations/l/cachedContents/123 has expired., Status: INVALID_ARGUMENT, Details: []"),
+			true},
+		{"a bare INVALID_ARGUMENT is a config error, not an eviction",
+			errors.New("Error 400, Message: The input token count exceeds the maximum, Status: INVALID_ARGUMENT"),
+			false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isCachedContentNotFound(tc.err); got != tc.want {
-				t.Errorf("isCachedContentNotFound(%v) = %v, want %v", tc.err, got, tc.want)
+			if got := isCachedContentGone(tc.err); got != tc.want {
+				t.Errorf("isCachedContentGone(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}
@@ -179,6 +190,61 @@ func TestBuiltinsLLM_CacheEviction_RetriesUncachedAndInvalidates(t *testing.T) {
 	}
 	if out[0].err != nil {
 		t.Errorf("retry chunk should be error-free, got err=%v", out[0].err)
+	}
+	if out[0].resp == nil || out[0].resp.Content == nil || len(out[0].resp.Content.Parts) == 0 ||
+		out[0].resp.Content.Parts[0].Text != "hi from uncached retry" {
+		t.Errorf("retry response text mismatch: %+v", out[0].resp)
+	}
+}
+
+// TestBuiltinsLLM_ExpiredCache_RecoversLikeAReapedOne walks the same
+// recovery path as the test above with the error Vertex sends when the
+// TTL simply elapsed — the case #325 reported.
+//
+// The shapes differ in code and in wording, and until the predicate
+// covered both this turn ended as a hard error: the wrapper did not
+// recognise the 400, so it neither invalidated the manager's handle nor
+// retried uncached, and the same dead cache name went out on every turn
+// after it. Nothing recovered short of a process restart, which is why
+// this is worth a second end-to-end walk rather than only a table row.
+func TestBuiltinsLLM_ExpiredCache_RecoversLikeAReapedOne(t *testing.T) {
+	captureLogf(t)
+
+	expiredErr := errors.New("Error 400, Message: The cache content projects/p/locations/l/cachedContents/dead has expired., Status: INVALID_ARGUMENT, Details: []")
+	fake := &perCallLLM{
+		perCall: [][]pair{
+			{{err: expiredErr}},
+			{{resp: mkResponse("hi from uncached retry")}},
+		},
+	}
+
+	invalidateReasons := []string{}
+	wrapped := &builtinsLLM{
+		inner:     fake,
+		cacheName: func(_ context.Context) string { return "projects/p/locations/l/cachedContents/dead" },
+		cacheInvalidate: func(reason string) {
+			invalidateReasons = append(invalidateReasons, reason)
+		},
+	}
+
+	sysInstr := &genai.Content{Parts: []*genai.Part{{Text: "system prompt"}}}
+	req := &adkmodel.LLMRequest{
+		Config: &genai.GenerateContentConfig{SystemInstruction: sysInstr},
+	}
+	out := collect(wrapped.GenerateContent(context.Background(), req, false))
+
+	if len(invalidateReasons) != 1 {
+		t.Errorf("cacheInvalidate calls = %d, want 1 — an expired cache must invalidate the manager's handle just like a reaped one (%v)",
+			len(invalidateReasons), invalidateReasons)
+	}
+	if fake.calls.Load() != 2 {
+		t.Fatalf("inner GenerateContent calls = %d, want 2 (initial + uncached retry)", fake.calls.Load())
+	}
+	if turn2 := fake.lastReqs[1]; turn2.Config.CachedContent != "" || turn2.Config.SystemInstruction != sysInstr {
+		t.Errorf("retry should drop the cache reference and restore the system instruction, got %+v", turn2.Config)
+	}
+	if len(out) != 1 || out[0].err != nil {
+		t.Fatalf("caller should see exactly the retry's success, got %+v", out)
 	}
 	if out[0].resp == nil || out[0].resp.Content == nil || len(out[0].resp.Content.Parts) == 0 ||
 		out[0].resp.Content.Parts[0].Text != "hi from uncached retry" {

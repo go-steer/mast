@@ -268,6 +268,23 @@ beside the usual one, distinguishing *reported zero* from *not
 reported*. That is what closed the cache-write under-billing described
 in [budgets](/concepts/budgets/#where-the-dollar-figure-comes-from).
 
+## Vertex context caching is an embedder feature, not a daemon one
+
+`pkg/providers/vertexcache` manages an explicit Vertex context cache —
+create it, extend its TTL, drop it when Vertex reaps it — and
+`pkg/providers/gemini` will stamp the cache onto each request. **The
+`mast` binary wires neither.** A daemon you start from the CLI runs
+uncached; the manager is reachable only from Go code that constructs it
+and passes the two hooks itself. Nothing about it is configurable from a
+flag or a bundle, on purpose: the cache is scoped to one system
+instruction and tool set, and deciding when that is stable enough to
+cache is the embedding program's call, not ours.
+
+If you do wire it: an evicted or expired cache is recovered
+transparently — the turn that meets it retries uncached and the manager
+creates a fresh cache on the next one. There is no state you have to
+clear and no error your code sees.
+
 ## Reference
 
 - [CLI](/reference/cli/) — `--model`, `--provider`, and the environment
