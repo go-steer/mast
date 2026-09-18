@@ -118,7 +118,7 @@ So a contested boot polls for `InstanceLeaseStaleAfter` plus two seconds (10s) b
 
 **The passive replica's timers still fire.** A `mast sessions pause --resume-at` can land on any replica, and the record is durable wherever it lands — but the scheduler that would arm it is the leader's. The leader therefore rescans the pause table every minute in addition to its boot scan, which bounds the lateness of a timer minted elsewhere at a minute instead of at the leader's next restart. The rescan is idempotent by construction: pending timers are keyed by token and the fire path re-fetches the record, so re-arming a consumed token is a silent drop rather than a second fire.
 
-**Still open.** Session-ownership handoff, the per-pause claim described above (which would let *every* replica fire *some* timers rather than one replica fire all of them), leader takeover, and autonomous-loop assignment.
+**Still open.** Leader takeover — a healthy passive replica picking up the cadence when the leader dies, rather than waiting for the leader's own pod to come back — is **[#403](https://github.com/go-steer/mast/issues/403)**, and it is filed rather than listed because the interesting part is the dependency: it cannot be built before session-ownership handoff, or a promoted replica runs turns against sessions the old leader still believes it owns and kills them with `stale session error`. Also open, and on the other axis: the per-pause claim described above, which would let *every* replica fire *some* timers rather than one replica fire all of them, and autonomous-loop assignment.
 
 ### Autonomous-loop assignment
 

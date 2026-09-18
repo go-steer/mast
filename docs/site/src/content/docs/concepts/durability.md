@@ -114,6 +114,12 @@ for anything that acts on its own:
 - Running N replicas does not distribute scheduled work across them. One
   does all of it.
 
+Making a healthy passive replica pick up the cadence instead of waiting for
+the dead pod to come back is [#403](https://github.com/go-steer/mast/issues/403),
+and it is a bigger change than it sounds: a replica that promoted itself
+would start running turns against sessions the old instance still believes it
+owns, so session ownership has to move first.
+
 Scale out for **request** throughput — inject, AG-UI, A2A. Do not scale out
 expecting scheduled work to go faster or to survive a pod loss without a
 restart. See [what installing mast costs you
