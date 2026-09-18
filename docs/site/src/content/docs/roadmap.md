@@ -1132,12 +1132,17 @@ deploy rather than after.
   scan, and the rest log at `ERROR` that they are not — but they do not
   *share* it either. A passive replica stays passive for its whole life and
   does not take over when the driving one dies; a Kubernetes restart of the
-  dead pod is what brings the cadence back, after the 30-second lease
-  staleness window. So scale out for request throughput if you want to;
+  dead pod is what brings the cadence back, and it is the *restarted* pod
+  that reclaims the lease — a crashed daemon's replacement waits out the
+  8-second staleness window at boot and takes its own abandoned lease, which
+  is also why a genuine second replica takes about ten seconds to announce
+  that it is second. So scale out for request throughput if you want to;
   scheduled work still runs on exactly one pod and still pauses while that
   pod is being replaced. Session-ownership handoff and per-pause claims — the
   parts that would make a real fleet — are designed and not built. Closed as
-  far as it goes in [#345](https://github.com/go-steer/mast/issues/345); see
+  far as it goes in [#345](https://github.com/go-steer/mast/issues/345), with
+  the takeover half open as
+  [#403](https://github.com/go-steer/mast/issues/403); see
   [scaling a scheduled
   workload](/concepts/durability/#scaling-a-scheduled-workload-one-replica-acts-the-others-say-so).
 - **One mast, one tenant.** A bundle carries no `isolation.scope`. The design
