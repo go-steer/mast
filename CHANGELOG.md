@@ -115,6 +115,37 @@
 
 ### Bug or Regression
 
+- **The watchdog no longer counts a streamed tool call twice, and the
+  assumption that let it get away with that is now a test rather than a
+  comment.** `ObserveEvent` and `ObserveToolResults` skip partial events, so a
+  call is counted once, on the event ADK actually runs it from. Nothing
+  observable changes today: mast passes `StreamingModeNone` at every runner
+  site, so no partial event exists to skip. What changes is what happens the
+  day one of those sites passes `StreamingModeSSE` — previously, one tool call
+  would have reached the watchdog once per provider chunk plus once more on the
+  aggregate, and the repeat detectors would have halted a turn that did nothing
+  wrong, three files away from the symptom. The subtler half is the one the
+  upstream report did not predict: mast's per-turn dedup set already collapsed
+  the calls the provider sends whole, but a provider that *streams* the
+  argument object sends chunks naming the function with no arguments yet, and
+  when those chunks carry a call ID the dedup collapses onto the **first** one
+  — recording `{}` for every call to that tool, so the literal-compare detector
+  reads two genuinely different calls as a repeat. A wrong halt, not a
+  miscount. Partials still reach every other consumer of the stream untouched;
+  they are not counted, not swallowed. Ported from `core-agent@dd2007f`
+  ([#331](https://github.com/go-steer/mast/issues/331)).
+
+  The pin is `TestEveryRunnerSiteIsNonStreaming`, which reads every `RunConfig`
+  literal in non-test code and fails on any that sets `StreamingMode` to
+  anything it cannot prove is `StreamingModeNone` — including a variable, which
+  is the shape a `--stream` flag would arrive in. It does not forbid SSE; it
+  forbids turning SSE on silently, and its failure message is the audit list
+  for doing it properly, naming the consumers already safe and the one that is
+  worst. That last one is now written up separately: `cmd/mast/agui.go`'s
+  emitter has no dedup of any kind and would emit a complete message triad and
+  a complete tool-call triple per chunk
+  ([#400](https://github.com/go-steer/mast/issues/400)).
+
 - **A Vertex context cache whose TTL has elapsed is now recognised as gone.**
   Vertex has two ways of saying the cache you hold a handle to is not there:
   `404` / `NOT_FOUND` naming "cached content" when the handle has been reaped,
