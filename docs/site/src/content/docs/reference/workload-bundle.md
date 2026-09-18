@@ -856,11 +856,17 @@ Four things to know before declaring one:
   for a real approver under `hitl.on_mutation` — unattended is not
   unsupervised — and the run is bounded by the same `budget:` block as
   everything else.
-- **One daemon per session store.** As everywhere else in mast, there is no
-  leader election: two replicas of a scheduled workload each keep their own
-  cadence and both fire. `jitter` staggers those duplicate fires; it does not
-  deduplicate them. Making that trap loud — and then closing it — is
-  [#345](https://github.com/go-steer/mast/issues/345).
+- **One replica fires the cadence; the others say they are not.** Two
+  replicas sharing a session store no longer both fire: the first to start
+  takes a lease and drives the schedule, and every other one logs at `ERROR`
+  that it will not, naming the instance that does. This is a refusal, not
+  leader election — a passive replica stays passive for its whole life and
+  does not take over if the driving one dies; your orchestrator restarting
+  the dead pod is what restores the cadence. `jitter` still staggers fires
+  within one instance and was never a deduplication mechanism. See [scaling
+  a scheduled
+  workload](/concepts/durability/#scaling-a-scheduled-workload-one-replica-acts-the-others-say-so)
+  and [#345](https://github.com/go-steer/mast/issues/345).
 
 Fires are counted by `mast_scheduled_fires_total{workload,outcome}` —
 `ran`, `skipped` (a tick that came due during a drain), `error`, and
