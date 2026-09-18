@@ -1126,13 +1126,20 @@ deploy rather than after.
   `scripts/setup-wif.sh`, applied by you. There is no chart, no Terraform
   module, no Homebrew tap, and release tarballs are not signed —
   [#342](https://github.com/go-steer/mast/issues/342).
-- **Run one replica.** The scheduler is single-instance by design: two
-  replicas of a scheduled workload each keep their own cadence and **both
-  fire**, with nothing warning you. `ScheduledTrigger.Jitter` staggers those
-  duplicate fires, it does not deduplicate them, and the heartbeat lease in
-  the event log guards a *session* rather than a fleet. The first fix here is
-  making the trap loud, which needs no coordination mechanism at all —
-  [#345](https://github.com/go-steer/mast/issues/345).
+- **Run one replica for anything scheduled.** Extra replicas no longer
+  duplicate work — a lease over the session store means one instance fires
+  the scheduled trigger, the timed-pause resumes and the boot auto-resume
+  scan, and the rest log at `ERROR` that they are not — but they do not
+  *share* it either. A passive replica stays passive for its whole life and
+  does not take over when the driving one dies; a Kubernetes restart of the
+  dead pod is what brings the cadence back, after the 30-second lease
+  staleness window. So scale out for request throughput if you want to;
+  scheduled work still runs on exactly one pod and still pauses while that
+  pod is being replaced. Session-ownership handoff and per-pause claims — the
+  parts that would make a real fleet — are designed and not built. Closed as
+  far as it goes in [#345](https://github.com/go-steer/mast/issues/345); see
+  [scaling a scheduled
+  workload](/concepts/durability/#scaling-a-scheduled-workload-one-replica-acts-the-others-say-so).
 - **One mast, one tenant.** A bundle carries no `isolation.scope`. The design
   for `per_request` / `per_tenant` / `global` exists in
   `deployment-design.md` and none of it is built, so the second team to

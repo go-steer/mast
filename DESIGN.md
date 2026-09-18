@@ -373,6 +373,26 @@ when somebody reads their chat.
   number does not name the same feature set on both. Feature-detect
   against the capabilities frame's `event_types` / `features`, never
   against the version alone.
+- **Exactly one replica starts turns nobody asked for, and the others
+  say so.** Three loops in `serve` act on their own: the scheduled
+  trigger, the timed-pause scheduler, and the boot auto-resume scan.
+  All three sit behind one lease (`scheduling/<workload>`, taken with
+  `eventlog.AcquireInstanceLease` over the session store), because "is
+  this replica the one that acts on its own?" is one question and three
+  leases would let a deployment be half-leader. A replica that loses
+  the race serves inject / AG-UI / A2A normally and logs at ERROR what
+  it will not do. This is **not** leader election: the loser stays
+  passive for its whole life, and Kubernetes restores the leader when
+  the holder stops heartbeating. A contested boot first waits out the
+  8s staleness window (plus slack) before deciding it lost, so a
+  SIGKILLed daemon's own restart reclaims the lease its corpse is
+  holding rather than being locked out by it. Two consequences to
+  respect before adding a fourth self-starting loop — put it behind the
+  same lease, and if it can be *triggered* on a passive replica the way
+  a `--resume-at` pause can, give the leader a rescan for it too
+  ([#345](https://github.com/go-steer/mast/issues/345),
+  [`docs/deployment-design.md`](./docs/deployment-design.md) §
+  "The scheduling lease").
 - **Ports carry provenance.** Adapter packages derive from
   core-agent at per-stage pinned SHAs (`83ec0713` / `b8dd225e` /
   `25d8531c`), one derivation header per file. Shared-infrastructure

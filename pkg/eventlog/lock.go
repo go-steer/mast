@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // agentRunLockRow is the persistent lease that prevents two
@@ -61,6 +62,45 @@ const (
 	defaultStaleAfter        = 30 * time.Second
 	defaultHeartbeatTimeout  = 10 * time.Second
 )
+
+// An instance lease beats faster and goes stale sooner than a session
+// lock, because the two get the trade-off from opposite ends.
+//
+// Stealing a session lock too eagerly means two processes running one
+// session — the split-brain the lock exists to prevent — so 30s of
+// tolerance for a GC pause is cheap. Stealing an *instance* lease too
+// eagerly costs a few seconds of two daemons both scheduling, which is
+// merely the state mast was in before the lease existed. Waiting too
+// long costs much more: a daemon that was SIGKILLed (OOM, node
+// eviction) leaves a lease nothing released, and until that lease goes
+// stale its own replacement is refused — and a refused replacement
+// stays passive for life, so a 30s window would mean an OOM kill
+// silently ends scheduled work until someone restarts the pod a second
+// time. Eight seconds bounds that recovery; it also bounds how long a
+// genuinely-second replica spends waiting at boot before concluding it
+// is second (see cmd/mast/schedlease.go).
+const (
+	instanceHeartbeatInterval = 2 * time.Second
+	// InstanceLeaseStaleAfter is how long an instance lease survives its
+	// holder's last heartbeat. Exported because a caller retrying an
+	// acquisition has to size its retry window against it.
+	InstanceLeaseStaleAfter = 8 * time.Second
+)
+
+// leaseTiming is the heartbeat/staleness triple a lease runs on.
+type leaseTiming struct {
+	heartbeat time.Duration
+	stale     time.Duration
+	timeout   time.Duration
+}
+
+func sessionTiming() leaseTiming {
+	return leaseTiming{defaultHeartbeatInterval, defaultStaleAfter, defaultHeartbeatTimeout}
+}
+
+func instanceTiming() leaseTiming {
+	return leaseTiming{instanceHeartbeatInterval, InstanceLeaseStaleAfter, defaultHeartbeatTimeout}
+}
 
 // ErrSessionLocked is returned by AcquireLock when another live
 // process already holds the lease. The error message includes the
@@ -104,7 +144,59 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 	if h == nil || h.db == nil {
 		return nil, errors.New("eventlog: AcquireLock called on nil Handle")
 	}
-	if err := h.db.WithContext(ctx).AutoMigrate(&agentRunLockRow{}); err != nil {
+	return acquireLock(ctx, h.db, app, user, session, sessionTiming())
+}
+
+// InstanceLease is a SessionLock held at the fleet grain rather than
+// the session grain — same row, same heartbeat, same steal-on-stale
+// rule, different question. A SessionLock answers "may this process run
+// *this session* right now"; an InstanceLease answers "is this process
+// the one that drives unrequested work against this store".
+type InstanceLease = SessionLock
+
+// The sentinel (app, user) an instance lease occupies. Colons are the
+// same guard `mast:scheduler` uses for a caller identity: no ADK app
+// name or user id mast mints can take this form, so a fleet-grain row
+// can never collide with a session-grain one even though they share the
+// table. Sharing the table is deliberate — one row shape, one heartbeat
+// implementation, one set of staleness semantics to reason about.
+const (
+	instanceLeaseApp  = "mast:instance"
+	instanceLeaseUser = "mast:lease"
+)
+
+// AcquireInstanceLease takes the named fleet-grain lease on db, so that
+// exactly one live process at a time considers itself responsible for
+// work nobody asked for — scheduled triggers, timed-pause resumes, any
+// cadence that would otherwise run once per replica.
+//
+// Returns ErrSessionLocked, naming the holder, when another live
+// process has it. Steals a lease whose holder stopped heartbeating more
+// than staleAfter ago, which is what makes a crashed leader recoverable
+// without an operator.
+//
+// It takes a *gorm.DB rather than a *Handle because the leases that
+// matter are held by daemons that never opened the attach overlay —
+// same reason NewGuardrailStore and NewSpendStore take one.
+//
+// This does NOT make mast multi-replica. It makes the second replica
+// *quiet*: it stops that replica duplicating timed work, and it does
+// not hand over the work if the leader goes away and a passive replica
+// is already running (see cmd/mast/schedlease.go for what the daemon
+// does with the refusal, and docs/deployment-design.md for the part
+// that is still designed and not built).
+func AcquireInstanceLease(ctx context.Context, db *gorm.DB, name string) (*InstanceLease, error) {
+	if db == nil {
+		return nil, errors.New("eventlog: AcquireInstanceLease called with no database")
+	}
+	if name == "" {
+		return nil, errors.New("eventlog: AcquireInstanceLease needs a lease name")
+	}
+	return acquireLock(ctx, db, instanceLeaseApp, instanceLeaseUser, name, instanceTiming())
+}
+
+func acquireLock(ctx context.Context, db *gorm.DB, app, user, session string, t leaseTiming) (*SessionLock, error) {
+	if err := db.WithContext(ctx).AutoMigrate(&agentRunLockRow{}); err != nil {
 		return nil, fmt.Errorf("eventlog: AutoMigrate agent_run_lock: %w", err)
 	}
 	holder := newHolderID()
@@ -120,18 +212,27 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 
 	// Try to insert. If the row already exists, GORM surfaces the
 	// unique-constraint violation; we then check for staleness.
-	err := h.db.WithContext(ctx).Create(row).Error
+	//
+	// The insert runs with GORM's own logger silenced because for an
+	// instance lease the collision is the *expected* outcome on every
+	// replica but one (#345), and GORM would print the raw constraint
+	// failure and the INSERT above the caller's explanation of it —
+	// making a correctly-configured passive replica look like it hit a
+	// database fault at boot. Nothing is lost: the error is still
+	// returned here, and every path below either classifies it
+	// (ErrSessionLocked) or wraps and surfaces it.
+	err := db.WithContext(ctx).Session(&gorm.Session{Logger: gormlogger.Discard}).Create(row).Error
 	if err != nil {
 		// Slow path: existing row. Check whether it's stale.
 		var existing agentRunLockRow
-		if lookupErr := h.db.WithContext(ctx).
+		if lookupErr := db.WithContext(ctx).
 			Where("app_name = ? AND user_id = ? AND session_id = ?", app, user, session).
 			First(&existing).Error; lookupErr != nil {
 			// Couldn't even read the row; surface the original
 			// insert error.
-			return nil, fmt.Errorf("eventlog: AcquireLock: %w", err)
+			return nil, fmt.Errorf("eventlog: acquire lease: %w", err)
 		}
-		if time.Since(existing.HeartbeatAt) <= defaultStaleAfter {
+		if time.Since(existing.HeartbeatAt) <= t.stale {
 			return nil, fmt.Errorf("%w (held by %s, last heartbeat %s ago)",
 				ErrSessionLocked, existing.Holder, time.Since(existing.HeartbeatAt).Round(time.Second))
 		}
@@ -139,7 +240,7 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 		// single UPDATE. Predicate keeps the operation safe under
 		// concurrent stealers — only one update succeeds, the
 		// other rebounds to the locked path on its next attempt.
-		res := h.db.WithContext(ctx).
+		res := db.WithContext(ctx).
 			Model(&agentRunLockRow{}).
 			Where("app_name = ? AND user_id = ? AND session_id = ? AND holder = ?",
 				app, user, session, existing.Holder).
@@ -149,7 +250,7 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 				"heartbeat_at": now,
 			})
 		if res.Error != nil {
-			return nil, fmt.Errorf("eventlog: AcquireLock: steal stale lease: %w", res.Error)
+			return nil, fmt.Errorf("eventlog: acquire lease: steal stale lease: %w", res.Error)
 		}
 		if res.RowsAffected == 0 {
 			// Someone else stole first.
@@ -158,14 +259,14 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 	}
 
 	lock := &SessionLock{
-		db:                h.db,
+		db:                db,
 		app:               app,
 		user:              user,
 		session:           session,
 		holder:            holder,
-		heartbeatInterval: defaultHeartbeatInterval,
-		heartbeatTimeout:  defaultHeartbeatTimeout,
-		staleAfter:        defaultStaleAfter,
+		heartbeatInterval: t.heartbeat,
+		heartbeatTimeout:  t.timeout,
+		staleAfter:        t.stale,
 		stop:              make(chan struct{}),
 		done:              make(chan struct{}),
 		lost:              make(chan struct{}),

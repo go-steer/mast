@@ -101,10 +101,15 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    # The harness drives a real daemon through drains and waits; bound the
-    # job so a wedged turn fails fast instead of burning the 360-minute
-    # GitHub default. The suite runs in well under a minute normally.
-    timeout-minutes: 5
+    # The harness drives a real daemon through drains, kills and restarts;
+    # bound the job so a wedged turn fails fast instead of burning the
+    # 360-minute GitHub default. Sized at roughly double the real runtime,
+    # not just above it: the comment here used to claim "well under a
+    # minute" while the suite had grown to 4m25s against a 5m cap, so the
+    # first change to add a few seconds of boot wait (#345's lease retry)
+    # was cancelled at 5m15s with all 42 suites green — a timeout reported
+    # as a test failure, which is the most expensive kind of red.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

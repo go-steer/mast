@@ -36,9 +36,88 @@ implementations can corrupt the database, and "documented caveat" is not
 acceptable cover in a product whose pillar is durability.
 
 Postgres makes more than one replica *safe for the store*; it does not make
-a **scheduled** workload safe to scale. There is no leader election, so two
-replicas each keep their own cadence and both fire — see [what installing
-mast costs you today](/roadmap/#what-installing-it-costs-you-today) and
+a **scheduled** workload safe to scale. What it gets you is a fleet that
+refuses to double-fire rather than one that works — see [scaling a scheduled
+workload](#scaling-a-scheduled-workload-one-replica-acts-the-others-say-so)
+below.
+
+## Scaling a scheduled workload: one replica acts, the others say so
+
+Three things a `mast serve` does are started by the clock or the store
+rather than by a request arriving: a workload's **scheduled trigger**, a
+**timed pause** coming due, and the **boot auto-resume** scan of sessions a
+previous shutdown cut short. Each of those used to run once per replica, so
+scaling to 2 meant every cadence, every timed resume and every continued
+session happened twice — and nothing said so. You found out from the far
+end, when the same ticket got two comments.
+
+All three now sit behind a single lease over the session store. Exactly one
+instance takes it and drives them; every other instance serves inject,
+AG-UI and A2A exactly as before, and logs at `ERROR` that it is not driving
+them, naming the instance that is:
+
+```
+level=ERROR msg="another mast instance already drives scheduled work
+  against this session store; this instance will serve requests but will
+  not fire scheduled triggers, timed-pause resumes or boot auto-resume"
+  workload=triage lease=scheduling/triage
+```
+
+If you see that line and did not mean to run two instances, scale to 1. If
+you did mean to, nothing is wrong — it is telling you which pod owns the
+cadence. It takes about ten seconds to appear, for the reason in the next
+paragraph.
+
+**A restart after a crash gets its cadence back.** A daemon that shuts down
+cleanly hands the lease over immediately, but one that is `kill -9`'d or
+OOM-killed cannot, so its lease is still sitting there when the replacement
+boots. Rather than refuse the dead process's own restart — which would end
+scheduled work until you restarted the pod a second time — a contested boot
+waits about ten seconds for the abandoned lease to go stale, then takes it:
+
+```
+level=INFO msg="the scheduling lease is held; waiting in case its holder
+  is gone" workload=triage waiting_up_to=10s
+level=INFO msg="took the scheduling lease from an instance that stopped
+  heartbeating; scheduled work resumes here" workload=triage
+```
+
+That wait is the only reason a second replica takes ten seconds to announce
+that it is second. It is bounded: after the window, a holder that is still
+heartbeating keeps the role.
+
+Two boot cases go the other way, and both say so too. With **no
+`--session-db`** there is nothing for two instances to coordinate through,
+so the daemon keeps firing and warns naming the flag. And if the store
+**cannot be read at startup**, the daemon keeps firing and logs an `ERROR`
+saying it might now be duplicating: a database hiccup at boot should not
+silently turn your one-replica workload into one that never fires again.
+
+A timed pause created against a non-driving replica still fires. The record
+is durable wherever it was written, and the driving instance re-reads the
+pause table every minute, so the resume happens within about a minute of
+when you asked rather than waiting for a restart.
+
+### What this is not
+
+It is **not** leader election, and mast is still a single-instance product
+for anything that acts on its own:
+
+- A replica that does not get the lease at boot stays passive for its whole
+  life. It does **not** take over if the driving instance dies later — the
+  ten-second wait above happens at startup and never again.
+- Recovery is your orchestrator's job. The lease goes stale 8 seconds after
+  its holder stops heartbeating, so a Kubernetes Deployment or StatefulSet
+  that restarts the dead pod restores the cadence — the restarted pod
+  reclaims the lease, the surviving passive one does not. Nothing restores
+  it if you are running two bare binaries by hand.
+- Running N replicas does not distribute scheduled work across them. One
+  does all of it.
+
+Scale out for **request** throughput — inject, AG-UI, A2A. Do not scale out
+expecting scheduled work to go faster or to survive a pod loss without a
+restart. See [what installing mast costs you
+today](/roadmap/#what-installing-it-costs-you-today) and
 [#345](https://github.com/go-steer/mast/issues/345).
 
 ## A pause outlives the process that asked

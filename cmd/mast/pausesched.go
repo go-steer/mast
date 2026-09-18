@@ -73,13 +73,22 @@ const schedRequeueDelay = time.Minute
 // Firing goes through the fire callback, which routes through the same
 // doors an operator would use (gate → consume; interrupt → the
 // turn-locked, budget-wrapped resume path). A fire error requeues with
-// backoff. Multi-replica coordination is v0.3; this scheduler assumes
-// it is the only one over its DB, same as the daemon assumes the
-// single-writer rule.
+// backoff.
+//
+// It is still the only scheduler over its DB, but that is now enforced
+// rather than assumed: serve starts it only on the replica holding the
+// scheduling lease (#345, cmd/mast/schedlease.go). The consequence that
+// shows up here is runRescan — a resume_at minted on a replica that is
+// *not* the holder lands durably in the store and in nobody's heap, so
+// the holder has to go looking for it.
 type pauseScheduler struct {
 	store  *transcript.Store
 	logger *slog.Logger
 	fire   func(ctx context.Context, rec *transcript.PauseRecord) error
+
+	// rescanEvery is runRescan's cadence; a field only so tests do not
+	// have to wait a minute for the tick they are asserting on.
+	rescanEvery time.Duration
 
 	mu      sync.Mutex
 	entries map[string]time.Time // token → fire time
@@ -88,11 +97,12 @@ type pauseScheduler struct {
 
 func newPauseScheduler(store *transcript.Store, logger *slog.Logger, fire func(context.Context, *transcript.PauseRecord) error) *pauseScheduler {
 	return &pauseScheduler{
-		store:   store,
-		logger:  logger,
-		fire:    fire,
-		entries: map[string]time.Time{},
-		wake:    make(chan struct{}, 1),
+		store:       store,
+		logger:      logger,
+		fire:        fire,
+		rescanEvery: rescanInterval,
+		entries:     map[string]time.Time{},
+		wake:        make(chan struct{}, 1),
 	}
 }
 
@@ -114,9 +124,25 @@ func (ps *pauseScheduler) push(token string, at time.Time) {
 // — the boot scan. Timers that expired while the daemon was down fire
 // immediately.
 func (ps *pauseScheduler) seed(ctx context.Context) error {
-	records, err := ps.store.ScanPauses(ctx)
+	n, err := ps.scan(ctx)
 	if err != nil {
 		return err
+	}
+	if n > 0 {
+		ps.logger.Info("timed-pause scheduler seeded from boot scan", "timers", n)
+	}
+	return nil
+}
+
+// scan arms every active pause record that carries a resume_at and
+// reports how many. Idempotent: entries is keyed by token, so re-arming
+// one that is already pending rewrites its time (which is how an
+// extension made elsewhere is picked up) rather than queueing a second
+// fire.
+func (ps *pauseScheduler) scan(ctx context.Context) (int, error) {
+	records, err := ps.store.ScanPauses(ctx)
+	if err != nil {
+		return 0, err
 	}
 	n := 0
 	for _, rec := range records {
@@ -125,10 +151,59 @@ func (ps *pauseScheduler) seed(ctx context.Context) error {
 			n++
 		}
 	}
-	if n > 0 {
-		ps.logger.Info("timed-pause scheduler seeded from boot scan", "timers", n)
+	return n, nil
+}
+
+// rescanInterval is how often the instance holding the scheduling lease
+// re-reads the store for timers it did not mint itself. A minute
+// matches schedRequeueDelay, and it is the resolution an operator gets
+// on "my timed resume fired late": a resume_at is a wall-clock
+// intention measured in minutes or hours, so a bounded minute of slack
+// on a timer that arrived from elsewhere is not a behaviour anyone
+// notices — whereas the alternative, waiting for a restart, is.
+const rescanInterval = time.Minute
+
+// runRescan re-arms timers minted somewhere this process cannot see: a
+// pause with a resume_at POSTed to a *passive* replica, which writes the
+// record durably and pushes it into a scheduler loop that is not
+// running (#345). Without this, that timer waits for the leader to
+// restart.
+//
+// Only the lease holder runs it — a passive replica scanning would be
+// arming a loop that never fires.
+//
+// Errors are logged on transition rather than per tick: a store that
+// is down produces one line and then one more when it comes back,
+// instead of 1,440 a day saying the same thing.
+func (ps *pauseScheduler) runRescan(ctx context.Context) {
+	every := ps.rescanEvery
+	if every <= 0 {
+		every = rescanInterval
 	}
-	return nil
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	failing := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := ps.scan(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if !failing {
+					failing = true
+					ps.logger.Warn("timed-pause rescan failed; timers minted on another instance will not fire until it succeeds", "error", err.Error())
+				}
+				continue
+			}
+			if failing {
+				failing = false
+				ps.logger.Info("timed-pause rescan recovered")
+			}
+		}
+	}
 }
 
 // run is the scheduler loop. It exits with ctx (the daemon's turn

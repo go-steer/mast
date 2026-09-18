@@ -115,6 +115,68 @@
 
 ### Bug or Regression
 
+- **A second replica of a scheduled workload no longer fires everything a
+  second time.** Three loops in `serve` start turns nobody asked for — the
+  scheduled trigger, the timed-pause scheduler and the boot auto-resume scan —
+  and each of them ran once per replica. An operator who scaled a Deployment
+  to 2 got every cadence, every timed resume and every cut-short session
+  continued twice, with nothing in any log to say so; the first symptom was a
+  duplicate remediation at the far end. All three now sit behind one lease
+  (`scheduling/<workload>`) taken over the session store, so exactly one
+  instance drives them and the others serve inject, AG-UI and A2A as before.
+  One lease rather than three because "is this replica the one that acts on
+  its own?" is one question, and three would let a deployment be half-leader.
+
+- **The replica that does not drive them says so, at ERROR, naming the holder
+  and all three loops it is not running.** For an operator this line *is* the
+  feature: the failure it replaces is one you diagnose backwards from side
+  effects, and the fix — scale to 1, or accept the passive replica — takes one
+  command once you know. Two boot cases decide the other way and also say so:
+  with no `--session-db` there is nothing to coordinate through, so the daemon
+  keeps firing and warns naming the flag; and if the store **cannot answer**,
+  it keeps firing and logs an ERROR explaining the risk. That second one fails
+  open on purpose — duplicate work requires a second replica to actually
+  exist, while failing closed would turn a database hiccup at boot into a
+  single-replica workload that never fires again and stays quiet about it.
+
+- **A timed pause created on a passive replica still fires.** `mast sessions
+  pause --resume-at` can land on any instance and the record is durable
+  wherever it lands, but the scheduler that arms it belongs to the leader. The
+  leader now rescans the pause table every minute alongside its boot scan,
+  bounding that timer's lateness at a minute instead of at the leader's next
+  restart. It is idempotent by construction — pending timers are keyed by
+  token and the fire path re-fetches the record — so re-arming a token
+  somebody already resumed is a silent drop, not a second fire. A store the
+  rescan cannot read logs once when it breaks and once when it recovers,
+  rather than once a minute for as long as it is down.
+
+- **A restart after `kill -9` takes its own abandoned lease back, in about
+  ten seconds.** This is the half the first cut got wrong, and the UAT caught
+  it: a SIGKILLed daemon never releases its lease, so its replacement found
+  the lease held — by the corpse of itself — and went passive. Permanently. An
+  OOM kill would have ended scheduled work until somebody restarted the pod a
+  second time, which is a worse bug than the duplicate firing being fixed. A
+  contested boot now polls for the staleness window plus two seconds before
+  concluding the holder is alive, and says at INFO that it is waiting so the
+  pause does not read as a hang. The instance lease is also tighter than the
+  session lock it reuses — 2s heartbeat, 8s staleness, against 5s/30s —
+  because this window is waited out on every contested boot, while a session
+  lock's is only ever waited out by something stealing a stuck turn. The cost
+  lands on a genuine second replica, which spends ten seconds at boot before
+  it can announce that it is second: once per replica, against a crash cost
+  paid on every crash. The window is bounded on purpose; retrying forever is
+  takeover by another name.
+
+  **This is not leader election and mast is still not multi-replica.** A
+  replica that loses the race *at boot* stays passive for its whole life and
+  does not take over when the leader dies later; Kubernetes restores the
+  leader instead, and it is the restarted process that reclaims the lease, not
+  the surviving passive one. A leader that loses its lease mid-life stops its
+  scheduling loops and keeps serving requests, rather than racing the instance
+  that took it. Session-ownership handoff and per-pause claims — the parts
+  that would make a fleet work — are still designed and not built
+  ([#345](https://github.com/go-steer/mast/issues/345)).
+
 - **The watchdog no longer counts a streamed tool call twice, and the
   assumption that let it get away with that is now a test rather than a
   comment.** `ObserveEvent` and `ObserveToolResults` skip partial events, so a

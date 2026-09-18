@@ -1298,30 +1298,80 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		return nil
 	}
 
-	// Timed-pause scheduler (v0.2 pause/abort design): fires through
-	// the same doors an operator would use — no privileged side path.
-	sched := newPauseScheduler(store, logger,
-		newTimedFireCallback(store, tracker, obs, workloadName, resumeByInterrupt, logger))
-	go sched.run(turnCtx)
+	// One lease over every loop that starts a turn nobody asked for
+	// (#345). See schedlease.go for what it governs and what it
+	// deliberately is not. schedCtx cancels those loops without
+	// cancelling the request-driven daemon around them, which is what a
+	// lease lost mid-life has to do: stop acting on our own, keep
+	// serving.
+	schedLease := acquireSchedulingLease(turnCtx, durableDB, workloadName, logger)
+	defer func() { _ = schedLease.release() }()
+	schedCtx, stopSchedulingWork := context.WithCancel(turnCtx)
+	defer stopSchedulingWork()
 	go func() {
-		// Boot scan: seeds timers minted before this process started —
-		// including ones that expired while the daemon was down.
-		if err := sched.seed(turnCtx); err != nil {
-			logger.Error("timed-pause boot scan failed; pre-existing timers will not fire until restart", "error", err.Error())
+		select {
+		case <-schedCtx.Done():
+		case <-schedLease.lost():
+			// Another instance took the lease because our heartbeat
+			// lapsed past the staleness window. It is now also firing,
+			// so the safe move is to stop rather than to race it.
+			logger.Error("scheduling lease lost to another instance; this one stops firing scheduled triggers, timed-pause resumes and auto-resume, and will not take them back without a restart",
+				"workload", workloadName)
+			stopSchedulingWork()
 		}
 	}()
-	// pause_session records minted mid-serve now push their timers too.
-	pauseRec.attach(sched)
+
+	// Timed-pause scheduler (v0.2 pause/abort design): fires through
+	// the same doors an operator would use — no privileged side path.
+	//
+	// nil on a passive replica, and the two push sites check for it. A
+	// scheduler whose loop never runs is not a harmless spare: pushes
+	// would pile up in a map nothing drains, and — worse for whoever
+	// reads this next — the code would look like the timer was armed.
+	var sched *pauseScheduler
+	if schedLease.drivesScheduledWork() {
+		sched = newPauseScheduler(store, logger,
+			newTimedFireCallback(store, tracker, obs, workloadName, resumeByInterrupt, logger))
+		go sched.run(schedCtx)
+		go func() {
+			// Boot scan: seeds timers minted before this process started —
+			// including ones that expired while the daemon was down.
+			if err := sched.seed(schedCtx); err != nil {
+				logger.Error("timed-pause boot scan failed; pre-existing timers will not fire until restart", "error", err.Error())
+			}
+		}()
+		// And a rescan on a cadence, because the boot scan only covers
+		// what predates this process. A pause minted with a resume_at on
+		// a *passive* replica is written durably and pushed into that
+		// replica's scheduler, which never runs — so without this the
+		// timer would wait for the leader to restart. The rescan is
+		// idempotent by construction: entries is keyed by token and
+		// fireDue re-fetches, so re-arming a consumed token is a silent
+		// drop rather than a second fire.
+		go sched.runRescan(schedCtx)
+		// pause_session records minted mid-serve push their timers
+		// straight in.
+		pauseRec.attach(sched)
+	}
 
 	// Boot-time auto-resume (#41): scan sessions a prior shutdown cut
-	// short and drive a continuation for each eligible one. On turnCtx
-	// (drain-cancellable) and only with a durable store — in-memory
-	// sessions never survive a restart, so there is nothing to resume.
+	// short and drive a continuation for each eligible one. On schedCtx
+	// (drain-cancellable, and cancelled if the scheduling lease is lost)
+	// and only with a durable store — in-memory sessions never survive a
+	// restart, so there is nothing to resume.
 	// bootDone lets the drain path await this goroutine so it cannot
 	// start a fresh turn after the drain has sampled "all turns finished"
 	// (closed immediately when the pass never launches).
+	//
+	// Gated on the scheduling lease for the same reason the two
+	// schedulers are, and it is the path where duplication costs most:
+	// two replicas booting together would each drive a continuation for
+	// every cut-short session, so every one of them gets two turns
+	// (#345). The issue names the scheduler and the timed-pause path;
+	// this is the third loop of the same shape and leaving it out would
+	// have made the headline false.
 	bootDone := make(chan struct{})
-	if resumes.auto && sessions.db != "" {
+	if resumes.auto && sessions.db != "" && schedLease.drivesScheduledWork() {
 		ar := &autoResumer{
 			turnDeps:     deps,
 			bundle:       bundle,
@@ -1333,11 +1383,14 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		}
 		go func() {
 			defer close(bootDone)
-			ar.run(turnCtx)
+			ar.run(schedCtx)
 		}()
 	} else {
 		close(bootDone)
-		if resumes.auto {
+		// Only the store explains itself here. A lease refusal has
+		// already said, at ERROR, everything it stops — repeating one of
+		// the three at INFO would read like a different cause.
+		if resumes.auto && sessions.db == "" {
 			logger.Info("auto-resume enabled but --session-db is empty (in-memory sessions); nothing to resume")
 		}
 	}
@@ -1350,7 +1403,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// workload declares no cadence).
 	schedDone := make(chan struct{})
 	stopScheduled := func() {}
-	if sched := bundle.EdgeTrigger.Scheduled; sched != nil {
+	if sched := bundle.EdgeTrigger.Scheduled; sched != nil && schedLease.drivesScheduledWork() {
 		// Both already validated at load; re-resolved here because the
 		// daemon reads the cadence from the bundle, not from its own
 		// durable record — editing the bundle is how an operator
@@ -1418,7 +1471,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 			stopScheduled = st.stop
 			go func() {
 				defer close(schedDone)
-				st.run(turnCtx)
+				st.run(schedCtx)
 			}()
 		}
 	} else {
@@ -1494,7 +1547,10 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 				logger.Info("hard pause cancelled in-flight turn", "session", req.SessionID)
 			}
 		}
-		if !spec.ResumeAt.IsZero() {
+		if !spec.ResumeAt.IsZero() && sched != nil {
+			// nil on a passive replica (#345). The record is durable
+			// either way, so the leader's rescan arms it within a minute
+			// — that is the whole reason the rescan exists.
 			sched.push(h.Token, spec.ResumeAt)
 		}
 		return inject.PauseResult{
