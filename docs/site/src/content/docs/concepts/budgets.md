@@ -433,7 +433,10 @@ pick numbers for you. It will, however, tell you what the last run cost:
 `Result.Usage`, the `session_cost_usd` log field, the `mast.cost.usd` span
 attribute and `mast_cost_usd_total` all report it. Five runs of a new
 workload behind a generous ceiling is a cheaper way to find the right
-ceiling than one run behind a guessed one.
+ceiling than one run behind a guessed one — and on a daemon,
+[`GET /usage`](/concepts/interop/#where-the-tokens-went) reports what
+those runs spent it *on*, split per model and per call, which is usually
+what tells you whether the number is a ceiling problem or a prompt one.
 
 ## Getting unstuck after a trip
 

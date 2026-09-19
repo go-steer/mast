@@ -49,6 +49,7 @@ import (
 
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/modeltext"
+	"github.com/go-steer/mast/internal/usagetrack"
 	buildversion "github.com/go-steer/mast/internal/version"
 	"github.com/go-steer/mast/pkg/a2a"
 	mastagent "github.com/go-steer/mast/pkg/agent"
@@ -1080,10 +1081,12 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 				}
 				return resumeForPerms(ctx, req)
 			},
-			usage: func(sid string) attach.UsageInfo {
-				_, cost, calls := meters.meter(sid).Snapshot()
-				return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}
-			},
+			// GET /usage, which declared an eight-field token breakdown
+			// and filled in two of them on every release the route has
+			// existed (#356). The counts come off the same OnSpend hook
+			// the durable ledger does, so what an operator reads is the
+			// split the money was computed from.
+			usage: meters.usageInfo,
 			// GET /guardrails + POST /guardrails/reset: which backstop
 			// stopped this session, and the only thing that unsticks
 			// it. A budget trip is otherwise permanent — the meter
@@ -2257,6 +2260,13 @@ type meterPool struct {
 	cfg  budget.Config
 	byID map[string]*budget.Meter
 
+	// usage is the session's token breakdown, folded from the same
+	// OnSpend hook the ledger is written from (#356). One per meter,
+	// created and discarded with it: the counts it holds are this
+	// process's, because the ledger stores no buckets to restore them
+	// from.
+	usage map[string]*usagetrack.Tracker
+
 	// spend is the durable ledger (#175). Nil when the daemon has no
 	// durable session store, in which case a ceiling is enforced against
 	// this process's spend only — the pre-v0.5 behavior, and the reason
@@ -2310,6 +2320,7 @@ func newMeterPool(bundle *workload.Bundle, specs []specialists.Spec, provider, m
 	return &meterPool{
 		cfg:           cfg,
 		byID:          map[string]*budget.Meter{},
+		usage:         map[string]*usagetrack.Tracker{},
 		restored:      map[string]bool{},
 		writeFailures: map[string]int{},
 	}
@@ -2321,15 +2332,49 @@ func (mp *meterPool) meter(sessionID string) *budget.Meter {
 	m, ok := mp.byID[sessionID]
 	if !ok {
 		cfg := mp.cfg
+		tracker := usagetrack.New()
 		// Each session's meter writes its own rows, so the hook closes
 		// over the session ID here rather than the pool threading it
 		// through budget.Spend. pkg/budget stays a package about
 		// arithmetic that knows nothing about sessions.
-		cfg.OnSpend = func(s budget.Spend) { mp.record(sessionID, s) }
+		//
+		// The tracker goes on the same hook and not a second one: the
+		// ledger and the usage report are two readings of the same call,
+		// and a call that reached one and not the other is a discrepancy
+		// with no way to explain it. The tracker is folded first because
+		// it only takes its own lock, while the ledger append blocks on a
+		// database write.
+		cfg.OnSpend = func(s budget.Spend) {
+			tracker.Record(s)
+			mp.record(sessionID, s)
+		}
 		m = budget.New(cfg)
 		mp.byID[sessionID] = m
+		if mp.usage == nil {
+			mp.usage = map[string]*usagetrack.Tracker{}
+		}
+		mp.usage[sessionID] = tracker
 	}
 	return m
+}
+
+// usageInfo is what GET /sessions/{id}/usage answers with.
+//
+// The turn count and cost come off the meter rather than the tracker, so
+// the number here is the one the ceiling is enforced against — including
+// spend restored from a previous process, which the tracker has no
+// buckets for and cannot hold. usagetrack.Tracker.Info owns the
+// reconciliation; this is only the two reads.
+func (mp *meterPool) usageInfo(sessionID string) attach.UsageInfo {
+	_, cost, calls := mp.meter(sessionID).Snapshot()
+
+	mp.mu.Lock()
+	t := mp.usage[sessionID]
+	mp.mu.Unlock()
+	if t == nil {
+		return attach.UsageInfo{Overall: attach.UsageTotals{Turns: calls, CostUSD: cost}}
+	}
+	return t.Info(usagetrack.Cumulative{Turns: calls, CostUSD: cost})
 }
 
 // durable gives the pool a ledger to write spend to and the guardrail

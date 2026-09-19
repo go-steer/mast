@@ -62,10 +62,20 @@ func RenderUsage(info UsageInfo) string {
 			fmt.Fprintf(&sb, "  thoughts: %s tokens\n", commas(info.Overall.ThoughtsTokens))
 		}
 		fmt.Fprintf(&sb, "  cost $%.4f", info.Overall.CostUSD)
-		if info.Overall.CostUSDUncachedReference > info.Overall.CostUSD {
-			saved := info.Overall.CostUSDUncachedReference - info.Overall.CostUSD
+		// The reference is omitted only when it is absent — equal to the
+		// cost, which is how an unpriceable call reports "no saving
+		// computable". When it is BELOW the cost the line still prints,
+		// and says so: a session that has warmed a cache it has not reused
+		// yet is paying the write premium for nothing, and silence there
+		// reads as "caching is not happening" rather than as the warning
+		// it is.
+		switch ref := info.Overall.CostUSDUncachedReference; {
+		case ref > info.Overall.CostUSD:
 			fmt.Fprintf(&sb, "  (uncached ref $%.4f → cache saved $%.4f)",
-				info.Overall.CostUSDUncachedReference, saved)
+				ref, ref-info.Overall.CostUSD)
+		case ref > 0 && ref < info.Overall.CostUSD:
+			fmt.Fprintf(&sb, "  (uncached ref $%.4f → cache cost $%.4f, not yet repaid)",
+				ref, info.Overall.CostUSD-ref)
 		}
 		sb.WriteString("\n")
 	}

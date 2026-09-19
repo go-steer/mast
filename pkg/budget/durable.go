@@ -58,6 +58,7 @@ package budget
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrRestored is returned by a second Restore on the same meter. Prior
@@ -76,11 +77,73 @@ var ErrRestored = errors.New("budget: meter has already been restored")
 // never be re-attributed. Recording the author lets Restore attribute
 // against whatever scopes the *current* config carries, which is exactly
 // what a live Observe does.
+//
+// # The breakdown half
+//
+// The first four fields are what a durable ledger needs. The rest are
+// what a usage report needs, and they are here rather than derived by a
+// second reader of the event because deriving them a second time is how
+// the two disagree: the split of a prompt into cached, written and fresh
+// is not a copy of the provider's counters but the meter's own reading
+// of them (see callOf and fitBucket), and it is the reading the money
+// was computed from. A report keyed off anything else is a breakdown of
+// a different call than the one that was billed.
+//
+// Everything below the line is reported, not priced, except Call and
+// CostUSDUncachedReference. A consumer that only wants the ledger keeps
+// ignoring them — the four original fields have not moved.
 type Spend struct {
 	Author   string
 	Tokens   int64
 	CostUSD  float64
 	Unpriced bool
+
+	// At is the event's own timestamp, which is when the call landed
+	// rather than when the hook ran. Zero for an event a producer left
+	// unstamped; a consumer that needs an ordering has the arrival order
+	// of the hook itself.
+	At time.Time
+
+	// Model is the id the price was resolved against — see priceOf. It
+	// is empty only when the event named no model and the meter was
+	// configured with none, which on a streaming Gemini run is the
+	// common case for the first half of that pair (Limits.Model exists
+	// for exactly that).
+	Model string
+
+	// Call is the billable split of this call: the three mutually
+	// exclusive input buckets and the output total. Output includes
+	// thinking, because thinking bills at the output rate.
+	Call Call
+
+	// ThoughtsTokens is the thinking subset of Call.OutputTokens, and
+	// ToolUseTokens the tool-definition subset of the prompt. Both are
+	// breakdowns of a bucket already counted above, never additions to
+	// it — adding either to a total double-counts it.
+	//
+	// Both come from genai's usage metadata rather than from the
+	// provider sidecar. The sidecar's equivalents (usage.Detail's
+	// ReasoningTokens and ToolUseTokens) are the same two Gemini
+	// counters, and the sidecar exists for the buckets genai has no
+	// field for, which these are not.
+	ThoughtsTokens int64
+	ToolUseTokens  int64
+
+	// CostUSDUncachedReference is what this call would have cost on a
+	// backend with no prompt cache at all: every prompt token fresh, at
+	// the plain input rate.
+	//
+	// Usually above CostUSD, and the gap is what the cache saved — but
+	// deliberately not floored there. A turn that WRITES a cache entry
+	// costs more than one that does not (Anthropic's 5-minute TTL bills
+	// writes at 1.25x fresh input), so on a warming turn this figure is
+	// below the cost, and a workload that warms caches it never reuses
+	// should be able to see that it is paying for nothing.
+	//
+	// Equal to CostUSD when no saving can be computed rather than when
+	// none was made: a call the rate card could not price falls back to
+	// the flat rate, which has no notion of a cache.
+	CostUSDUncachedReference float64
 }
 
 // Totals is one accumulator's durable form — the exported shape of the

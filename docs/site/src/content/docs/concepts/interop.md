@@ -549,6 +549,60 @@ ceiling on every priced event. See
 [getting unstuck after a trip](/concepts/budgets/#getting-unstuck-after-a-trip)
 for what a reset does and the three things it deliberately refuses to do.
 
+### Where the tokens went
+
+`GET /sessions/{id}/usage` answers the question `/guardrails` does not:
+not *am I close to the ceiling* but *what am I spending it on*. It reports
+the session's token split three ways — overall, per model, and per call —
+with each call's timestamp, the model its price resolved against, and what
+it cost.
+
+```json
+"overall": {
+  "input_tokens": 58864, "input_tokens_cached": 28804,
+  "input_tokens_uncached": 30060, "output_tokens": 504,
+  "turns": 3, "cost_usd": 0.0826,
+  "cost_usd_uncached_reference": 0.1201
+},
+"per_turn": [
+  {"turn": 2, "ts": "2026-09-19T14:30:09Z", "model": "claude-sonnet-5",
+   "input_tokens": 28850, "input_tokens_cached": 28804,
+   "input_tokens_uncached": 46, "output_tokens": 200,
+   "total_tokens": 29050, "cost_usd": 0.0079}
+]
+```
+
+Four things about those numbers are worth knowing before you act on them:
+
+- **A cache *write* is not a cache hit.** Writing an entry bills at a
+  premium over fresh input (1.25x on Anthropic's 5-minute TTL), so a
+  warming turn costs *more* than not caching at all. Written tokens land
+  in `input_tokens_uncached`, because that is what they were billed as.
+- **`cost_usd_uncached_reference` is the counterfactual, not a floor.** It
+  is what the same calls would have cost on a backend with no prompt cache
+  at all, and it is deliberately allowed to fall *below* `cost_usd`: a
+  workload that warms caches it never reuses is paying the write premium
+  for nothing, and that is a thing you want to be able to see. Where the
+  rendered `/usage` block would otherwise print *cache saved $X*, a
+  session in that state prints *cache cost $X, not yet repaid* instead.
+- **`thoughts_tokens` is a subset of `output_tokens`, never an addition.**
+  Thinking bills at the output rate and is already inside it. It reads
+  zero on Anthropic models, which report no split — a genuine "did not
+  say" rather than a measured zero.
+- **`turns` and `cost_usd` cover the session; the token buckets cover this
+  process.** The durable spend ledger stores what a call cost and not what
+  it was made of, so a session [resumed after a
+  restart](/concepts/budgets/#spend-survives-a-restart) reports its whole
+  spend — the same figure the ceiling is enforced against, so `/usage` and
+  `/guardrails` cannot disagree — with a breakdown that starts at the
+  resume. `per_turn` is capped at the last 500 calls, and turn numbers are
+  absolute, so a first row numbered higher than 1 is how you know rows
+  were dropped.
+
+The breakdown is folded from the same reading of the provider's counters
+that priced the call, rather than derived a second time from the event
+stream, so the split you read is the split the money came from.
+
 Attach can read transcripts and drive turns, so it gets its own token
 (`MAST_ATTACH_TOKEN`) and a hard rule: a non-loopback bind without auth is
 **refused**, not warned about. It also stays up through a shutdown drain,
