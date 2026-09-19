@@ -115,6 +115,21 @@
 
 ### Bug or Regression
 
+- **The docs site no longer builds by accident.** `docs/site/astro.config.mjs`
+  imports `@astrojs/markdown-remark` and `docs/site/package.json` never
+  declared it; the import resolved anyway because npm hoists that package to
+  the top of `node_modules` as a transitive dependency of `astro`, and a
+  hoisted package is indistinguishable from a declared one at resolution time.
+  A `@astrojs/starlight` **minor** bump reshuffles the tree, the hoist stops,
+  and the build dies with `Cannot find module` — with nothing in this repo
+  changed. Declaring it is one line. The half worth reading is the second:
+  `dev/tools/docs-lint` now fails when the site's own JavaScript imports a
+  package `package.json` does not declare, and it lives there rather than in
+  the site build because `docs-lint` is a required check on `main` and
+  `ci-docs / build` is not — the one class of breakage this catches arrives
+  *as a dependency bump*, which is exactly when nobody is reading an advisory
+  red ([#422](https://github.com/go-steer/mast/issues/422)).
+
 - **An OTel SDK minor bump can no longer stop the daemon from starting.**
   `pkg/observability` built its exported resource by merging mast's
   `service.name` — tagged with the schema URL of the `semconv` package mast
