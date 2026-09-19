@@ -777,6 +777,73 @@ func TestEmitStreamProgressSkipsNonModelAndEmpty(t *testing.T) {
 	}
 }
 
+// A status-update carries a whole a2a.Message with its own messageId and
+// no continuation marker, so a partial event has no honest encoding in one
+// — emitting it claims a distinct agent message and turns an N-chunk
+// answer into N messages. emitStreamProgress therefore skips partials and
+// narrates the aggregate ADK guarantees arrives after them, which is what
+// makes the frame sequence the same under StreamingModeSSE as under
+// StreamingModeNone (#408).
+//
+// Latent today: TestEveryRunnerSiteIsNonStreaming forbids a runner site
+// that could produce a partial, so this drives the emitter directly rather
+// than fabricating a streaming run — what is pinned is the function's
+// handling of an event shape ADK defines, not a run mast can arrange.
+//
+// Neutralize check: drop `ev.Partial` from the guard and the three chunk
+// events leak three frames.
+func TestEmitStreamProgressSkipsPartials(t *testing.T) {
+	var got []*a2a.TaskStatusUpdateEvent
+	emit := func(ev any) { got = append(got, ev.(*a2a.TaskStatusUpdateEvent)) }
+	chunk := func(text string, partial bool) *adksession.Event {
+		ev := adksession.NewEvent(context.Background(), "inv-partial")
+		ev.Content = genai.NewContentFromText(text, genai.RoleModel)
+		ev.Partial = partial
+		return ev
+	}
+
+	// One model response arriving as three chunks and then whole, which is
+	// what StreamingModeSSE yields.
+	emitStreamProgress(emit, "a2a-p", "c1", 0, chunk("The ", true))
+	emitStreamProgress(emit, "a2a-p", "c1", 1, chunk("pod is ", true))
+	emitStreamProgress(emit, "a2a-p", "c1", 2, chunk("OOMKilled", true))
+	if len(got) != 0 {
+		t.Fatalf("partial events emitted %d frames, want 0: %+v", len(got), got)
+	}
+
+	emitStreamProgress(emit, "a2a-p", "c1", 3, chunk("The pod is OOMKilled", false))
+	if len(got) != 1 {
+		t.Fatalf("the completed response emitted %d frames, want exactly 1", len(got))
+	}
+	if text := got[0].Status.Message.Parts[0].Text; text != "The pod is OOMKilled" {
+		t.Errorf("progress frame carries %q, want the whole response", text)
+	}
+}
+
+// The other half of #408: turnCapture needs no Partial guard, because
+// last-wins over events whose final member is the complete response picks
+// the aggregate either way. Pinned so that "make both sites consistent"
+// does not become a change that empties the result artifact on a provider
+// that ends a turn on a partial.
+func TestTurnCaptureTakesTheWholeResponseNotTheLastChunk(t *testing.T) {
+	var c turnCapture
+	mk := func(text string, partial bool) *adksession.Event {
+		ev := adksession.NewEvent(context.Background(), "inv-partial")
+		ev.Content = genai.NewContentFromText(text, genai.RoleModel)
+		ev.Partial = partial
+		return ev
+	}
+	for _, ev := range []*adksession.Event{
+		mk("The ", true), mk("pod is ", true), mk("OOMKilled", true),
+		mk("The pod is OOMKilled", false),
+	} {
+		c.onEvent(ev)
+	}
+	if c.lastText != "The pod is OOMKilled" {
+		t.Errorf("captured %q, want the whole response — the result artifact is built from this", c.lastText)
+	}
+}
+
 // TestA2ABackendStreamForeignSessionNoEmit pins the ownership fence on the
 // stream path: a continuation targeting a foreign-surface session id
 // returns ErrTaskNotFound BEFORE any emit, so the server reports a clean

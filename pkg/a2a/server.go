@@ -611,9 +611,13 @@ func (s *Server) resolveSendWorkload(w http.ResponseWriter, ctx context.Context,
 //
 // Auth, scope, and rate-limit refusals are decided BEFORE the SSE upgrade,
 // so they ride a normal JSON-RPC error response — a caller reading the
-// stream sees a clean error, not a truncated event stream. Because the
-// turn path runs StreamingModeNone, updates are message-granular (one per
-// model response), not token deltas; token-level streaming is a follow-on.
+// stream sees a clean error, not a truncated event stream. Updates are
+// message-granular — one per model response, not token deltas — and that
+// is a property of the frame rather than of the turn mode: a status-update
+// carries a whole Message with its own messageId and no way to mark a
+// continuation, so the backend skips partial events (#408). A2A's delta
+// mechanism is Append + LastChunk on TaskArtifactUpdateEvent, which is
+// where token-level narration would have to land.
 func (s *Server) handleMessageStream(w http.ResponseWriter, ctx context.Context, req rpcServerRequest, principal *Principal) {
 	var params messageSendParams
 	if err := json.Unmarshal(req.Params, &params); err != nil || params.Message == nil {

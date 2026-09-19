@@ -164,9 +164,13 @@ func (c *turnCapture) onEvent(ev *session.Event) {
 	if len(ev.LongRunningToolIDs) > 0 {
 		c.inputRequired = true
 	}
-	// Capture the last model-authored text; StreamingModeNone emits one
-	// complete event per model response, so the final such event is the
-	// answer.
+	// Capture the last model-authored text. What this depends on is that
+	// the complete model response arrives last, which is ADK's contract in
+	// every mode and not a property of StreamingModeNone: under
+	// StreamingModeSSE the partials are forwarded for display and the final
+	// non-partial event is the one the Runner processes. So last-wins picks
+	// the aggregate either way and needs no Partial guard — unlike
+	// emitStreamProgress, which emits per event and does (#408).
 	if ev.Content == nil || ev.Content.Role != genai.RoleModel {
 		return
 	}
@@ -191,16 +195,29 @@ func (c *turnCapture) onEvent(ev *session.Event) {
 // progress narration (final=false). Runs synchronously inside runTurnPre's
 // event loop, on the SSE handler's goroutine, so it needs no locking.
 //
-// Because the turn runs StreamingModeNone, each model event is a whole
-// response, so the final model response is emitted BOTH here (as the last
+// One frame per model response, never per chunk — partial events are
+// skipped (#408). That is a property of the frame, not of today's turn
+// mode: a status-update carries a whole a2a.Message with its own
+// messageId, and A2A gives it no way to say "this continues the previous
+// one". Emitting a fragment in it claims a distinct agent message, so an
+// N-chunk answer would arrive as N messages rather than one being built.
+// The protocol *does* have a delta mechanism — Append + LastChunk — and it
+// put it on TaskArtifactUpdateEvent instead, which is where token-level
+// narration would have to go if mast ever wants it. ADK guarantees the
+// final non-partial event is the complete response ("the Runner fully
+// processes only the final non-partial event"), so skipping partials gives
+// the same frames under StreamingModeSSE as under StreamingModeNone rather
+// than degrading under one of them.
+//
+// The final model response is therefore emitted BOTH here (as the last
 // progress status-update) and again by the server as the result artifact —
 // the two are distinct A2A channels (live narration vs. deliverable), and
-// the duplication is inherent to message-granular streaming; token-level
-// deltas (StreamingModeSSE) are the follow-on that removes it. seq gives
-// each progress frame a distinct messageId so a client that dedupes by it
-// does not collapse a multi-round turn's frames into one.
+// the duplication is inherent to a narration channel that carries whole
+// messages. seq gives each progress frame a distinct messageId so a client
+// that dedupes by it does not collapse a multi-round turn's frames into
+// one.
 func emitStreamProgress(emit func(any), taskID, contextID string, seq int, ev *session.Event) {
-	if ev == nil || ev.Content == nil || ev.Content.Role != genai.RoleModel {
+	if ev == nil || ev.Partial || ev.Content == nil || ev.Content.Role != genai.RoleModel {
 		return
 	}
 	var sb strings.Builder
