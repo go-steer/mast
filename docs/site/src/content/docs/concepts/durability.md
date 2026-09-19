@@ -107,10 +107,13 @@ for anything that acts on its own:
   life. It does **not** take over if the driving instance dies later — the
   ten-second wait above happens at startup and never again.
 - Recovery is your orchestrator's job. The lease goes stale 8 seconds after
-  its holder stops heartbeating, so a Kubernetes Deployment or StatefulSet
-  that restarts the dead pod restores the cadence — the restarted pod
-  reclaims the lease, the surviving passive one does not. Nothing restores
-  it if you are running two bare binaries by hand.
+  its holder stops heartbeating, and the reclaim is not identity-matched:
+  **any instance that boots** after that window takes it — the restarted
+  pod, a scale-up, a redeploy. What cannot take it is an instance that is
+  already running, because a replica asks exactly once, at startup. So a
+  Deployment or StatefulSet restores the cadence by restarting the dead
+  pod, while the healthy passive replica beside it keeps sitting out.
+  Nothing restores it if you are running two bare binaries by hand.
 - Running N replicas does not distribute scheduled work across them. One
   does all of it.
 

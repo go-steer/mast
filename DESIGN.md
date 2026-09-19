@@ -386,7 +386,10 @@ when somebody reads their chat.
   the holder stops heartbeating. A contested boot first waits out the
   8s staleness window (plus slack) before deciding it lost, so a
   SIGKILLed daemon's own restart reclaims the lease its corpse is
-  holding rather than being locked out by it. Two consequences to
+  holding rather than being locked out by it. The reclaim is not
+  identity-matched — a stale lease goes to whichever instance *boots*
+  next, restart or scale-up alike; what never takes one is an instance
+  already running, which asks once at startup. Two consequences to
   respect before adding a fourth self-starting loop — put it behind the
   same lease, and if it can be *triggered* on a passive replica the way
   a `--resume-at` pause can, give the leader a rescan for it too
