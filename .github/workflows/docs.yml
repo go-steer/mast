@@ -48,7 +48,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: docs/site/package-lock.json
       - id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
       - name: Build
         run: dev/tools/docs-site.sh build
       # Gate the deploy on the same link verification ci-docs.yml runs
