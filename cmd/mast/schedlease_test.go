@@ -215,12 +215,17 @@ func plantAbandonedLease(t *testing.T, db *gorm.DB, workloadName string, staleFo
 }
 
 // The crash case, and the reason the retry window exists at all. A
-// daemon that is SIGKILLed never releases its lease, so its own restart
-// finds the lease held — by itself, a moment ago. Refusing there would
-// mean an OOM kill silently ends scheduled work until somebody restarts
-// the pod a second time, which is strictly worse than the duplicate-fire
-// bug the lease was added to fix.
-func TestAcquireSchedulingLease_RestartAfterAKillReclaimsTheLease(t *testing.T) {
+// daemon that is SIGKILLed never releases its lease, so the next
+// instance to boot finds the lease held — by a corpse, a moment ago.
+// Refusing there would mean an OOM kill silently ends scheduled work
+// until somebody restarts the pod a second time, which is strictly
+// worse than the duplicate-fire bug the lease was added to fix.
+//
+// The planted holder is a foreign ID and the acquirer mints its own, so
+// what this asserts is the real contract: staleness alone decides, and
+// the taker need not be the process that died. The pod-restart case is
+// one instance of that, not the rule.
+func TestAcquireSchedulingLease_BootAfterAKillTakesTheAbandonedLease(t *testing.T) {
 	t.Parallel()
 	db := schedLeaseDB(t)
 	// Fresh enough that a no-retry acquisition would refuse it, stale
@@ -240,7 +245,7 @@ func TestAcquireSchedulingLease_RestartAfterAKillReclaimsTheLease(t *testing.T) 
 	defer lease.release()
 
 	if !lease.drivesScheduledWork() {
-		t.Fatalf("a restart after a kill must reclaim its own abandoned lease, or the crash ends scheduled work for good; waited %s, log was %s",
+		t.Fatalf("an instance booting after a kill must take the abandoned lease, or the crash ends scheduled work for good; waited %s, log was %s",
 			time.Since(start).Round(time.Millisecond), buf.String())
 	}
 	got := buf.String()
@@ -312,7 +317,7 @@ func TestAcquireSchedulingLease_RetryStopsWhenBootIsCancelled(t *testing.T) {
 func TestSchedLeaseRetryWindowOutlastsStaleness(t *testing.T) {
 	t.Parallel()
 	if schedLeaseRetryFor <= eventlog.InstanceLeaseStaleAfter {
-		t.Errorf("retry window %s does not outlast the %s staleness window, so a restart after a kill can never reclaim its lease",
+		t.Errorf("retry window %s does not outlast the %s staleness window, so an instance booting after a kill can never take the abandoned lease",
 			schedLeaseRetryFor, eventlog.InstanceLeaseStaleAfter)
 	}
 }
