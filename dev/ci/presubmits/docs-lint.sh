@@ -14,17 +14,26 @@
 # limitations under the License.
 
 # docs-lint.sh — presubmit: prose-drift checks over README, DESIGN.md
-# and the site content (self-test first, so a defanged regex fails
-# loudly).
+# and the site content, plus the install page's asset claims (each
+# self-tests first, so a defanged regex fails loudly).
 #
 # Note for anyone touching the version rule: this job checks out at
 # actions/checkout@v4's default depth, which fetches no tags, so the
 # current release is read from CHANGELOG.md rather than from
-# `git describe`.
+# `git describe`. dev/release/check-install-page.sh reads it the same
+# way and for the same reason.
+#
+# check-install-page.sh runs in its offline mode here — the page
+# against `.goreleaser.yaml`. The published-release mode is a
+# different question, asked after the release exists, by
+# .github/workflows/release.yml.
 #
 # These scripts are exactly what CI runs (.github/workflows/ci.yml →
 # dev/ci/presubmits/all.sh); run all.sh locally before pushing.
 
 set -euo pipefail
-"$(dirname "$0")/../../tools/docs-lint" --self-test
-exec "$(dirname "$0")/../../tools/docs-lint"
+here="$(dirname "$0")"
+"$here/../../tools/docs-lint" --self-test
+"$here/../../tools/docs-lint"
+"$here/../../release/check-install-page.sh" --self-test
+exec "$here/../../release/check-install-page.sh"
