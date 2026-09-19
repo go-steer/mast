@@ -164,6 +164,26 @@ Sessions grouped by tenant share isolation scope (state-bound nodes see tenant-s
 
 All sessions share one scope. Explicit opt-in for single-tenant deployments where isolation overhead isn't worth it. Not the default.
 
+### Sequencing against the v1.0 freeze — decided 2026-09-19 ([#344](https://github.com/go-steer/mast/issues/344))
+
+**`per_tenant` is explicitly post-v1.0.** No part of it needs to land before the freeze, and the freeze does not make it harder afterwards, because each of the three frozen surfaces it touches takes the change additively. The useful half of writing that down is the prohibition at the end: there is exactly one way to implement per-tenant isolation that breaks the freeze, and it is the shortest one.
+
+| Frozen surface | What per-tenant needs from it | Additive after the freeze? |
+|---|---|---|
+| `pkg/workload` | an `isolation:` block on `Bundle` | Yes — a new block is a new struct field and a new YAML key |
+| `pkg/transcript` | a tenant filter on every read | The parameter is already there, unpopulated |
+| root `github.com/go-steer/mast` | a caller-supplied tenant id | Yes — via `Config`, which every entry point already takes |
+
+**The bundle key.** The rule is already written in the tree: `AGUIRunQueue`'s doc comment in [`../pkg/workload/bundle.go`](../pkg/workload/bundle.go) states that adding a key to a block is free after v1.0 while changing a key's *shape* is a `schema_version` bump — and `isolation:` is a block for the same reason `run_queue:` is. The loader's behaviour for a key of this kind is already right too: `Load` probes `schema_version` leniently and only then unmarshals with `KnownFields(true)` ([`../pkg/workload/loader.go`](../pkg/workload/loader.go)), so a v1.0 binary handed a bundle written for a later schema refuses it by version, naming both numbers, rather than ignoring an isolation block it cannot read. For the file that declares who may not read whom, refusing is the correct failure.
+
+**The store.** Every read and write on `transcript.Store` already takes a `userID` — `List`, `Get`, `Decisions`, `Acks`, `Schedule`, `RecordAck`, `AckEffects`. The tenant axis does not have to be *added* to the frozen signatures; it has to be populated and enforced. Two calls sit outside it deliberately, and both are operator-plane rather than tenant-plane: `ScanInterrupted(ctx)` sweeps every user by design (it is the auto-resume sweeper), and `ExportDecisions` carries `UserID` inside `ExportOptions`, where empty means auto-discover. Whether those two become tenant-scoped or admin-only is a question for whoever implements this; neither needs a new parameter, so neither is a freeze question.
+
+**The library API.** Today the root package hardcodes `const userID = "mast-library"` — every library-run session lands under one user, so the library surface has no tenant axis at all. All seven frozen root entry points (`Run`, `RunWorkload`, `ListSessions`, `ResumeSession`, `ResumeByToken`, `AckEffects`, `Pause`) take `cfg Config`, so a tenant field on `Config` reaches all of them without changing a signature. That is the same seam the `WithIsolationScope(tenantID)` sketch above describes, arrived at from the other direction.
+
+**What the freeze forbids: re-using `userID` to mean tenant.** It is the obvious shortcut — the parameter is on every call already, and nothing would fail to compile. It is also a semantic change to a frozen key, which is precisely what [#300](https://github.com/go-steer/mast/issues/300) promised not to do. A tenant is not a user; a tenant *has* users. Taking the shortcut breaks the freeze without changing one signature, which is the kind of break a signature diff cannot catch — so it is written here rather than left to be noticed.
+
+None of this makes deferral free. [#344](https://github.com/go-steer/mast/issues/344)'s argument for doing the work — that the second team to install mast discovers the missing boundary by looking at a session store rather than by reading a design doc — is untouched by which side of the freeze it lands on. What is settled is only the ordering: nothing here blocks v1.0, and v1.0 does not block this.
+
 ## Configuration surface for deployment
 
 Deployment-specific config lives in the runtime config, injected via env / config file / command line:
