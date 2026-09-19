@@ -14,8 +14,9 @@
 
 # GoReleaser config for mast. Adapted from the go-steer/core-agent
 # release setup, deliberately leaner for v0.1.x: cross-compiled
-# binaries + checksums; Sigstore signing and container images are
-# recorded follow-ups (see .github/workflows/release.yml header).
+# binaries + checksums, and — since #342 — a Sigstore signature over
+# the checksum file. Container images remain a recorded follow-up
+# (see .github/workflows/release.yml header).
 version: 2
 
 project_name: mast
@@ -47,6 +48,32 @@ archives:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+
+# Sigstore keyless signature over checksums.txt, and only over
+# checksums.txt: the checksum file already covers every tarball
+# byte-for-byte, so one signature transitively covers the whole
+# release and a verifier has one thing to check rather than four.
+# `artifacts: all` would produce four more signatures that say
+# nothing the first one does not.
+#
+# Keyless means there is no private key anywhere: cosign gets a
+# short-lived certificate from Fulcio against the workflow's GitHub
+# OIDC token, and the identity baked into that certificate is the
+# workflow file and the ref it ran on. That is the thing a verifier
+# pins — see docs/site/.../install.md. `output: true` keeps cosign's
+# log in the job output, because a signing step that fails quietly
+# is how a release ships unsigned.
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    output: true
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - --yes
+      - --output-certificate=${certificate}
+      - --output-signature=${signature}
+      - ${artifact}
 
 release:
   # v0.1.0-pre, v0.2.0-rc.1 etc. are marked Pre-release automatically.

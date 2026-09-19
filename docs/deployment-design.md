@@ -188,7 +188,7 @@ deployment:
 
 ## Packaging
 
-> **Status, 2026-09-11 ([#291](https://github.com/go-steer/mast/issues/291)):** this section is a *target*, and most of it is unbuilt. Shipped today: the container image and the GitHub Release binaries. **Not shipped:** the Homebrew tap, cosign signatures, the Debian/apt repo, `examples/deploy/gke-helm/`, `examples/deploy/terraform/`, and the Cloud Build config — `examples/deploy/gke/` is a README. Read the paragraphs below as the shape being aimed at, not as an inventory; the work is tracked in [#342](https://github.com/go-steer/mast/issues/342) and the lapsed schedule is struck through under [Phasing](#phasing).
+> **Status, 2026-09-11 ([#291](https://github.com/go-steer/mast/issues/291)):** this section is a *target*, and most of it is unbuilt. Shipped today: the container image, the GitHub Release binaries, and — since 2026-09-19 — cosign signatures over the checksum file (see [Signed release artifacts](#signed-release-artifacts--shipped-2026-09-19-342)). **Not shipped:** the Homebrew tap, the Debian/apt repo, `examples/deploy/gke-helm/`, `examples/deploy/terraform/`, and the Cloud Build config — `examples/deploy/gke/` is a README. Read the paragraphs below as the shape being aimed at, not as an inventory; the work is tracked in [#342](https://github.com/go-steer/mast/issues/342) and the lapsed schedule is struck through under [Phasing](#phasing).
 
 ### Container images
 
@@ -198,9 +198,23 @@ deployment:
 
 ### Binaries
 
-- **GitHub Releases** for each tag: `mast-linux-amd64`, `mast-linux-arm64`, `mast-darwin-amd64`, `mast-darwin-arm64`, `mast-windows-amd64.exe`. Signed release artifacts (cosign).
+- **GitHub Releases** for each tag: `mast-linux-amd64`, `mast-linux-arm64`, `mast-darwin-amd64`, `mast-darwin-arm64`, `mast-windows-amd64.exe`. Signed release artifacts (cosign). *What ships is `mast_<version>_<os>_<arch>.tar.gz` for linux/darwin x amd64/arm64 — no Windows build and no bare binaries — plus `checksums.txt` and, since 2026-09-19, its signature. See below.*
 - **Homebrew formula** in `homebrew-tap` for developer laptop install.
 - **Debian packages** in a public apt repo for Debian/Ubuntu server operators. v0.3+.
+
+### Signed release artifacts — shipped 2026-09-19 ([#342](https://github.com/go-steer/mast/issues/342))
+
+Every tag after v0.9.0 publishes `checksums.txt.sig` and `checksums.txt.pem` beside `checksums.txt`. Three decisions are worth recording, because the line above ("Signed release artifacts (cosign)") settles none of them.
+
+**Keyless, not a project key.** cosign exchanges the release job's GitHub OIDC token for a short-lived Fulcio certificate; the identity written into that certificate is `https://github.com/go-steer/mast/.github/workflows/release.yml@refs/tags/<tag>`. There is no mast public key for a verifier to obtain out of band and no private key for the project to hold, rotate, or lose. What is being attested is not "a human at go-steer vouches for this" but "mast's release workflow, at this tag, produced this" — which is the claim an installer actually wants and the one a transparency log can back.
+
+**The checksum file only.** `checksums.txt` covers every tarball byte-for-byte, so a signature over it transitively covers the release. `artifacts: all` would mint four more signatures asserting nothing the first does not, and would give a verifier three more opportunities to check the wrong one and believe they were done.
+
+**Identity flags are mandatory, and the docs say so in those words.** `cosign verify-blob` without `--certificate-identity` and `--certificate-oidc-issuer` verifies that the blob carries *a* valid Sigstore signature — a check that any GitHub Action in the world can produce. Leaving them as optional-looking extras in a copy-pasteable command is how a verification step becomes decorative. `dev/release/verify-signature.sh <tag>` bakes both in, fetches the tarballs the signed file names, and runs `sha256sum --check`, because a verified signature over a list that is then ignored proves nothing about the bytes on disk.
+
+The release workflow runs that same script **against the published release**, not against its own `dist/`. GoReleaser exiting 0 means cosign exited 0 on a runner; it says nothing about whether the `.sig` and `.pem` became release assets. That is the same failure shape as the empty release bodies of v0.1.0-pre through v0.3.0, where every step logged correct output and the artifact was wrong ([#125](https://github.com/go-steer/mast/issues/125)), so it gets the same answer: assert on the download. The dry run signs and verifies too — against `refs/heads/<branch>` rather than `refs/tags/<tag>`, and it asserts that identity rather than accepting any — because a signing step that has never executed is not evidence that signing works.
+
+Still open on #342: SLSA provenance attestation, and a signature on the container image.
 
 ### Kubernetes manifests
 
@@ -290,7 +304,7 @@ Deployment-cost knobs operators tune:
 | ~~**v0.3**~~ | ~~Spanner adapter (via community contribution or Google-team direct). Timed-pause scheduler (claim-based). Multi-tenant deployment starter. Attach-mode proxy-based affinity. Custom-Kubernetes-metric HPA guide.~~ **Did not ship.** |
 | ~~**v0.4+**~~ | ~~Firestore adapter; multi-region active-active (with Spanner); explicit autonomous-loop load balancing; Debian package.~~ **Did not ship.** |
 
-**The v0.2–v0.4 rows lapsed, and are struck through rather than re-dated (2026-09-11, [#291](https://github.com/go-steer/mast/issues/291)).** Every version row after v0.1 above went unshipped through v0.7.0: there is no Helm chart, no session-ownership handoff, no claim-based scheduler, no multi-tenant starter, no Debian package. The packaging section's Homebrew tap, cosign signatures, apt repo, `examples/deploy/gke-helm/` and `examples/deploy/terraform/` do not exist either, and `examples/deploy/gke/` is a README.
+**The v0.2–v0.4 rows lapsed, and are struck through rather than re-dated (2026-09-11, [#291](https://github.com/go-steer/mast/issues/291)).** Every version row after v0.1 above went unshipped through v0.7.0: there is no Helm chart, no session-ownership handoff, no claim-based scheduler, no multi-tenant starter, no Debian package. The packaging section's Homebrew tap, apt repo, `examples/deploy/gke-helm/` and `examples/deploy/terraform/` do not exist either (cosign signatures did not either, and shipped 2026-09-19 — see [Signed release artifacts](#signed-release-artifacts--shipped-2026-09-19-342)), and `examples/deploy/gke/` is a README.
 
 They are struck rather than moved because a schedule that slips five releases without anyone noticing is not a schedule, and re-dating it to v0.8 would produce the same artifact — a table that reads like a plan and enforces nothing. This is the failure shape [#300](https://github.com/go-steer/mast/issues/300) found in the stability promise: a corpus commitment repeated for releases, with no mechanism that could ever fail because of it.
 
