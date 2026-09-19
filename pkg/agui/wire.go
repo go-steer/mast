@@ -205,7 +205,9 @@ type RunStarted struct {
 // RunFinished is the terminal event for a run that reached a stopping point,
 // carrying a RunOutcome that says which. A success outcome carries Result (the
 // workload's final answer, also present as the closing TextMessage triad; the
-// duplication is inherent under message-granular streaming). An interrupt
+// duplication is deliberate — the terminal event is self-contained, so a
+// client that only handles RunFinished needs no message reassembly). An
+// interrupt
 // outcome carries the open Interrupts the client must answer to resume — a HITL
 // pause is a clean run stop, not a RunError (docs/ag-ui-design.md).
 type RunFinished struct {
@@ -278,9 +280,12 @@ type StepFinished struct {
 }
 
 // TextMessageStart / TextMessageContent / TextMessageEnd stream one assistant
-// message. mast runs StreamingModeNone (message-granular), so a message is
-// emitted as start + a single content frame carrying the whole text + end;
-// the triad shape keeps token-level streaming a forward-compatible upgrade.
+// message. mast's emitter drops partial events, so a message is emitted as
+// start + a single content frame carrying the whole text + end — under every
+// streaming mode, not just StreamingModeNone. The triad shape keeps
+// token-level streaming a forward-compatible upgrade
+// ([#407](https://github.com/go-steer/mast/issues/407)): filling in more
+// content frames between the same start and end is additive for a client.
 // Role is present only on the start frame ("assistant").
 type TextMessageStart struct {
 	baseEvent
@@ -331,9 +336,9 @@ type ToolCallResult struct {
 // ReasoningStart / ReasoningEnd bracket one reasoning phase, and
 // ReasoningMessageStart / ReasoningMessageContent / ReasoningMessageEnd stream
 // one reasoning message inside it — the same start/content/end shape as the
-// assistant-text triad, for the same reason (mast runs StreamingModeNone, so
+// assistant-text triad, for the same reason (the emitter drops partials, so
 // the content frame carries the whole text and token-level streaming stays a
-// forward-compatible upgrade).
+// forward-compatible upgrade — #407).
 //
 // The phase bracket is not ceremony. It is what lets a client open a
 // collapsed "thinking" region once and close it once, rather than inferring

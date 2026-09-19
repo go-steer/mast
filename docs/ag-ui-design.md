@@ -234,9 +234,9 @@ Mast's internal event stream emits AG-UI events uniformly:
 | session start | `RunStarted{ThreadID, RunID}` |
 | a model event whose `Author` differs from the open step's | `StepFinished{stepName: <previous author>}` (if one was open) + `StepStarted{stepName: <author>}`. **Shipped** (#98) — unconditional, no bundle key. Supersedes this row's original `StepStarted{stepName: "turn-N"}` (if `activity_events` enabled), which was degenerate: an AG-UI run drives exactly one turn through `runTurnPre`, so every run would have reported `turn-1`. |
 | turn end, any disposition | `StepFinished` for the open step, ahead of the terminal frame. **Shipped** (#98) |
-| assistant text token | `TextMessageStart/Content(delta)/End` |
+| assistant text **message** | `TextMessageStart/Content(delta)/End` — one triad per message, the `delta` carrying the whole text. This row said "token"; see the correction below. |
 | tool call begin | `ToolCallStart{toolCallId, toolCallName}` |
-| tool arg streaming | `ToolCallArgs{delta}` |
+| tool **call arguments** | `ToolCallArgs{delta}` — one frame carrying the whole argument object. This row said "tool arg streaming"; see the correction below. |
 | tool call end | `ToolCallEnd{toolCallId}` + `ToolCallResult{content}` |
 | specialist / sub-workflow invocation | `ToolCallStart` (nested) + child span visibility via `parentMessageId`; a coordinator/graph handoff additionally brackets as a `StepStarted` named after the agent that takes over |
 | planner step | `ActivitySnapshot{activityType: "PLAN"}` — **not shipped, and blocked rather than unscheduled**: a planner dispatch runs under a private runner, so none of its events reach the outer consumer the AG-UI emitter rides (`pkg/planner/dispatch.go`, "a private runner is a private event stream"). See the deferred bullet in [Implementation status](#implementation-status) for what deciding it needs. |
@@ -249,6 +249,38 @@ Mast's internal event stream emits AG-UI events uniformly:
 | model thinking parts, workload sets `agui.emit_reasoning` | `REASONING_START` → `REASONING_MESSAGE_START/CONTENT/END` → `REASONING_END`, ahead of the answer's own triad; one event's thinking parts concatenate into one reasoning message. **Shipped** (#98). |
 | model thinking parts, workload does not set it (the default) | *nothing* — not an empty bracket and not a marker, so a client cannot learn the model reasoned |
 | a thinking block whose payload is only its provider signature | *nothing*, under either setting. The signature is a replay credential, not a thought; `ReasoningEncryptedValue` is deliberately unmodeled |
+
+> **Correction, 2026-09-19 ([#400](https://github.com/go-steer/mast/issues/400)).**
+> The left column of this table named *tokens* — "assistant text token", "tool
+> arg streaming" — and the emitter has never worked that way. It mints one
+> frame per **runner event**, and every runner site in the module passes
+> `StreamingModeNone`, so one runner event is one whole model response and the
+> `delta` fields carry whole values. That is the same whole-message choice the
+> 2026-09-14 (#98) correction above records for the removed `streaming:`
+> bundle key, which was struck for naming a field that never existed and a
+> behaviour never chosen; the rows simply kept the earlier vocabulary. They
+> are reworded rather than marked unimplemented, because the frames *are*
+> shipped — it is the granularity the table overstated.
+>
+> The correction is not cosmetic, because the wording described a shape the
+> emitter would have handled wrongly. Under `StreamingModeSSE` ADK yields each
+> provider chunk as its own partial event, and since every frame was minted
+> per event, a streamed tool call would have produced a **complete**
+> `ToolCallStart`/`Args`/`End` triple per chunk with empty arguments —
+> dispatched as several distinct calls by any client acting on
+> `ToolCallEnd` — plus the real one on the aggregate. `onEvent` now drops
+> partials, the same guard `pkg/watchdog/bridge.go` took for the same reason
+> in [#331](https://github.com/go-steer/mast/issues/331), and
+> `cmd/mast/agui.go` moves into the safe set named by
+> `TestEveryRunnerSiteIsNonStreaming`'s failure message.
+>
+> Filling the delta frames with actual deltas — the feature the old wording
+> implied — is [#407](https://github.com/go-steer/mast/issues/407), and it is
+> deferred on purpose: with nothing in the module streaming, the only evidence
+> it worked would be a fixture written by the same change, so it waits for a
+> runner site that can produce real chunks. Until then the contract a client
+> may rely on is the one stated in the rows above: each frame arrives once and
+> carries the whole value.
 
 ### Auth
 

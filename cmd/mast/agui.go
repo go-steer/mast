@@ -610,9 +610,11 @@ type aguiEmitter struct {
 	interrupted bool
 }
 
-// nextID mints a per-run-unique id for a synthesized message/tool call. mast
-// runs StreamingModeNone (one whole model response per event), so ids are
-// per-event, not per-token.
+// nextID mints a per-run-unique id for a synthesized message/tool call. Ids
+// are per-event, not per-token, and onEvent drops partials so an event is
+// always a whole model response — under StreamingModeNone because nothing
+// produces a partial, and under SSE because the chunks are skipped and only
+// the aggregate reaches here.
 func (e *aguiEmitter) nextID(kind string) string {
 	e.seq++
 	return fmt.Sprintf("agui-%s-%d", kind, e.seq)
@@ -620,7 +622,8 @@ func (e *aguiEmitter) nextID(kind string) string {
 
 // onEvent translates one runner event into AG-UI frames: model-authored text
 // becomes a TextMessage triad (start → one content frame with the whole text →
-// end, since StreamingModeNone is message-granular); each model FunctionCall
+// end, because partials are dropped and the event is therefore a whole model
+// response — see the guard below); each model FunctionCall
 // becomes a ToolCall start/args/end triple parented to that message; each
 // FunctionResponse (which arrives on non-model events) becomes a ToolCallResult.
 // A RequestedInput or an unanswered long-running tool marks the run interrupted.
@@ -628,6 +631,28 @@ func (e *aguiEmitter) nextID(kind string) string {
 // answer, but only for a workload that opted in (see emitReasoning).
 func (e *aguiEmitter) onEvent(ev *session.Event) {
 	if ev == nil {
+		return
+	}
+	// A partial is one provider chunk of a model response, not a response.
+	// Every frame below is minted per event, so emitting for a chunk would
+	// turn an N-chunk answer into N standalone one-fragment messages plus
+	// the aggregate's N+1th — and, the half that actually breaks a client,
+	// would emit a complete TOOL_CALL_START/ARGS/END triple per chunk with
+	// empty arguments, which anything dispatching on TOOL_CALL_END runs as
+	// several separate tool calls. The aggregate that follows carries the
+	// whole turn, so dropping the chunks loses nothing. Nothing sets
+	// Partial outside a streaming model, so this is a no-op under
+	// StreamingModeNone — the same guard, for the same reason, as
+	// pkg/watchdog/bridge.go's (#400, same class as #331).
+	//
+	// This makes the emitter CORRECT under SSE; it does not make it
+	// streaming-aware. A caller who turns SSE on gets whole messages, not
+	// deltas. Feeding chunks into the delta frames AG-UI already has —
+	// TEXT_MESSAGE_CONTENT per chunk inside one bracket, TOOL_CALL_ARGS
+	// from PartialArgs — is a feature, and it is #407, which is gated on
+	// something in the module actually setting StreamingModeSSE so the
+	// result can be verified against a real client rather than a fixture.
+	if ev.Partial {
 		return
 	}
 	if ev.RequestedInput != nil || len(ev.LongRunningToolIDs) > 0 {
@@ -772,8 +797,8 @@ func (e *aguiEmitter) closeStep() {
 // and the signature that block does carry has no AG-UI frame at all.
 //
 // The parts of one event are **concatenated into one reasoning message**,
-// mirroring the answer path directly above: mast runs StreamingModeNone, so
-// an event is a whole message, and splitting one model turn's thinking across
+// mirroring the answer path directly above: onEvent drops partials, so an
+// event is a whole message, and splitting one model turn's thinking across
 // several messages would invent a structure the provider did not send.
 func (e *aguiEmitter) emitReasoning(parts []*genai.Part) {
 	if !e.reasoning {

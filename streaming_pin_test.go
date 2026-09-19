@@ -89,22 +89,28 @@ func runConfigProblems(label, src string) ([]string, int) {
 			pos := fset.Position(kv.Pos())
 			problems = append(problems, label+":"+strconv.Itoa(pos.Line)+
 				": a runner site sets StreamingMode to something other than\n"+
-				"\tStreamingModeNone. Every event consumer in this module except two\n"+
-				"\tassumes one event is one whole model response, and under SSE it is\n"+
-				"\tnot — see #331.\n"+
+				"\tStreamingModeNone. Most event consumers in this module assume one\n"+
+				"\tevent is one whole model response, and under SSE it is not —\n"+
+				"\tsee #331.\n"+
 				"\n"+
 				"\tThe safe set is exactly the non-test files that name `.Partial`\n"+
 				"\t(re-derive it with: grep -rn '\\.Partial' --include='*.go'):\n"+
 				"\t  pkg/watchdog/bridge.go — skips partials as of #331\n"+
 				"\t  pkg/agent/stall.go — skips partials\n"+
+				"\t  cmd/mast/agui.go — skips partials as of #400\n"+
 				"\tAudit everything else that reads an event before deleting this\n"+
-				"\tcheck. The known-worst is the emitter in cmd/mast/agui.go, which\n"+
-				"\twould emit every tool call once per chunk and repeat the assistant\n"+
-				"\ttext with it — written up in #400, which is also the issue for\n"+
-				"\tdoing this properly, since AG-UI has delta frames for exactly\n"+
-				"\tthis. pkg/agui/wire.go, pkg/a2a/server.go and cmd/mast/a2a.go\n"+
-				"\teach carry a comment asserting message granularity that turning\n"+
-				"\tSSE on would falsify.\n"+
+				"\tcheck. What is left is the A2A pair: cmd/mast/a2a.go's\n"+
+				"\temitStreamProgress emits one narration frame per event, so under\n"+
+				"\tSSE its progress stream fragments (its result artifact does not —\n"+
+				"\tthat is a last-wins capture). Written up in #408, with the reason\n"+
+				"\tit is degradation rather than the tool-dispatch bug #400 was.\n"+
+				"\tpkg/a2a/server.go carries a comment asserting message\n"+
+				"\tgranularity that turning SSE on would falsify.\n"+
+				"\n"+
+				"\tNote that cmd/mast/agui.go being safe is not the same as AG-UI\n"+
+				"\tstreaming working: it now emits whole messages under SSE rather\n"+
+				"\tthan wrong ones. Feeding chunks into AG-UI's delta frames is\n"+
+				"\t#407, and it is the change that should turn SSE on here.\n"+
 				"\n"+
 				"\tThis test does not forbid SSE. It forbids turning it on without\n"+
 				"\twalking that list — delete the check in the same change that\n"+
@@ -233,10 +239,13 @@ var c = someOtherConfig{StreamingMode: "sse"}
 		})
 	}
 
-	// The message has to be usable by whoever trips it, which means
-	// naming the consumer that breaks and the way to re-derive the list.
+	// The message has to be usable by whoever trips it, which means naming
+	// the consumer that still breaks and the way to re-derive the list.
+	// cmd/mast/a2a.go and #408 are in this list because they are what is
+	// left unaudited; agui.go stays in it because it moved to the safe set
+	// (#400) and a reader needs to see that it was checked, not omitted.
 	got, _ := runConfigProblems("x.go", qualifiedSSE)
-	for _, want := range []string{"cmd/mast/agui.go", "pkg/watchdog/bridge.go", "#331", ".Partial"} {
+	for _, want := range []string{"cmd/mast/a2a.go", "#408", "cmd/mast/agui.go", "pkg/watchdog/bridge.go", "#331", ".Partial"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("failure message does not mention %q:\n%s", want, got[0])
 		}
