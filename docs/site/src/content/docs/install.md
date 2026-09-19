@@ -94,9 +94,16 @@ nothing — `--certificate-identity-regexp '.*'` reports **Verified OK** against
 certificate from any workflow in any repository on GitHub, which is a fact about
 Sigstore and not about mast. If you widen the identity to avoid editing a tag
 into a script, widen it to a pattern that still pins the repository and the
-workflow file. `cosign verify-blob` without them checks that
-the signature is valid and not who made it, which is a check any GitHub Action
-in the world passes.
+workflow file:
+
+```sh
+--certificate-identity-regexp '^https://github\.com/go-steer/mast/\.github/workflows/release\.yml@refs/tags/v'
+```
+
+That says *some mast release* signed this — weaker than naming the tag, far
+stronger than `.*`. The leading `^` is load-bearing: cosign matches the pattern
+anywhere in the identity, so an unanchored `go-steer/mast` also accepts a
+certificate issued to `github.com/attacker/go-steer/mast-lookalike`.
 
 Then check the tarballs against the file you just verified — a signature over a
 list you do not compare against is a signature over nothing:
