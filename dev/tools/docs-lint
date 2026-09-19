@@ -21,6 +21,12 @@
 #   3. pinned @vX.Y.Z installs of our own module
 #   4. site links that hard-code the deploy base (/mast/...)
 #   5. a version claim that no longer names the current release
+#   6. an npm package the site imports but does not declare
+#
+# Rule 6 is not prose, and it is here rather than in the site build
+# because the site build is not a required check — the one class of
+# breakage it catches arrives as a dependency bump, which is exactly
+# when nobody is reading an advisory red.
 #
 # core-agent's own fifth rule (wrong-MAJOR vN.X.Y prose pins) is still
 # not ported, and the "revisit at v1.0" note that used to sit here was
@@ -212,6 +218,64 @@ check_stale_version() {
   ' "$path"
 }
 
+# Check 6: an npm package the site's own JavaScript imports must be
+# declared in docs/site/package.json.
+#
+# `astro.config.mjs` imported `@astrojs/markdown-remark` for a year
+# without declaring it, and resolved every time — npm had hoisted it to
+# the top of node_modules as a transitive dependency of astro. A
+# Starlight minor bump reshuffled the tree, the hoist stopped, and the
+# site build died with `Cannot find module`. Nothing in the repo
+# changed; a package two levels away did.
+#
+# The rule is repo-wide rather than per-file, and it takes its inputs as
+# arguments so the self-test can feed it fixtures — a resolver checked
+# only against the tree it was written for is a resolver that passes by
+# construction.
+#
+# Node builtins, relative paths and absolute paths are not packages. A
+# scoped specifier contributes its first two segments (`@astrojs/x`),
+# a bare one its first (`astro` from `astro/config`).
+check_site_imports_declared() {
+  local pkg="$1"
+  shift
+  [[ -f "$pkg" ]] || { echo "docs-lint: $pkg not found"; return; }
+
+  # Keys of the dependencies / devDependencies objects. The closing
+  # brace is matched at the object's own indent, so a nested object
+  # would end the block early rather than leak into it.
+  local declared
+  declared=$(awk '
+    /"(dependencies|devDependencies)"[[:space:]]*:[[:space:]]*\{/ { inblock = 1; next }
+    inblock && /^[[:space:]]*\}/ { inblock = 0; next }
+    inblock && match($0, /"[^"]+"/) { print substr($0, RSTART + 1, RLENGTH - 2) }
+  ' "$pkg")
+
+  local src spec name
+  for src in "$@"; do
+    [[ -f "$src" ]] || continue
+    while IFS= read -r spec; do
+      case "$spec" in
+        .* | /* | node:*) continue ;;
+      esac
+      if [[ "$spec" == @* ]]; then
+        name=$(printf '%s\n' "$spec" | cut -d/ -f1-2)
+      else
+        name=${spec%%/*}
+      fi
+      grep -qxF "$name" <<<"$declared" || printf '%s: imports %s, which %s does not declare — it resolves only for as long as npm hoists it out of another package'"'"'s tree, and the dependency bump that stops hoisting it breaks the site build with no change to this repo\n' "$src" "$name" "$pkg"
+    done < <(grep -hoE "from[[:space:]]+['\"][^'\"]+['\"]" "$src" 2>/dev/null |
+      sed -E "s/.*['\"]([^'\"]+)['\"]/\1/" | sort -u)
+  done
+}
+
+# The site's own JavaScript — its Astro config and the remark plugins
+# it loads. Everything else under docs/site is content or node_modules.
+site_js_paths() {
+  find docs/site/astro.config.mjs docs/site/src -type f \
+    \( -name '*.mjs' -o -name '*.js' \) 2>/dev/null | sort
+}
+
 # ---- driver -----------------------------------------------------------
 
 run_all_checks() {
@@ -233,6 +297,16 @@ run_all_checks() {
       findings=$((findings + $(printf '%s\n' "$out" | wc -l)))
     fi
   done < <(scoped_paths)
+
+  # Rule 6 is about the site as a whole, not about any one page, so it
+  # runs once rather than per scoped path.
+  local deps
+  # shellcheck disable=SC2046
+  deps=$(check_site_imports_declared docs/site/package.json $(site_js_paths))
+  if [[ -n "$deps" ]]; then
+    printf '%s\n' "$deps"
+    findings=$((findings + $(printf '%s\n' "$deps" | wc -l)))
+  fi
 
   if (( findings > 0 )); then
     echo ""
@@ -316,6 +390,36 @@ Assets for v9.9.9:
 Shipped in v0.5.0, on the v0.4.0 change set, in the v0.2 scaffold.
 EOF
 
+  # Rule 6 needs a package.json and a source file rather than a page.
+  # `astro` is declared and imported deep (`astro/config`), so the rule
+  # has to compare package names and not specifiers; `@astrojs/starlight`
+  # is declared and scoped; `unified` and `@astrojs/markdown-remark` are
+  # the shape the bug had. The relative, absolute and `node:` imports are
+  # not packages and must stay silent.
+  cat > "$tmp/package.json" <<'EOF'
+{
+  "name": "fixture",
+  "dependencies": {
+    "astro": "^7.1.0",
+    "@astrojs/starlight": "^0.41.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.0.0"
+  }
+}
+EOF
+
+  cat > "$tmp/config.mjs" <<'EOF'
+import { defineConfig } from 'astro/config';
+import starlight from '@astrojs/starlight';
+import { unified } from '@astrojs/markdown-remark';
+import { visit } from 'unist-util-visit';
+import { readFile } from 'node:fs/promises';
+import format from 'prettier';
+import local from './plugins/base.mjs';
+import rooted from '/opt/fixture/thing.mjs';
+EOF
+
   local out=0
   local n
   n=$(check_tool_counts "$tmp/fixture.md" | wc -l)
@@ -353,8 +457,28 @@ EOF
     check_stale_version "$tmp/version-ok.md" "v9.9.9"
     out=1; }
 
+  # Rule 6, named rather than counted for the same reason as rule 5:
+  # the two ways to defang it are to stop resolving scopes and to start
+  # treating builtins as packages, and both should say which.
+  local undeclared
+  undeclared=$(check_site_imports_declared "$tmp/package.json" "$tmp/config.mjs")
+  local want
+  for want in "@astrojs/markdown-remark" "unist-util-visit"; do
+    grep -qF "imports $want," <<<"$undeclared" || {
+      echo "self-test: check_site_imports_declared did not fire on \"$want\""; out=1; }
+  done
+  for want in "astro" "@astrojs/starlight" "prettier" "node:fs/promises" "./plugins/base.mjs" "/opt/fixture/thing.mjs"; do
+    grep -qF "imports $want," <<<"$undeclared" && {
+      echo "self-test: check_site_imports_declared fired on \"$want\", which it should not"; out=1; }
+  done
+  n=$(printf '%s' "$undeclared" | grep -c . || true)
+  (( n == 2 )) || {
+    echo "self-test: check_site_imports_declared reported $n finding(s), expected 2"
+    printf '%s\n' "$undeclared"
+    out=1; }
+
   if (( out == 0 )); then
-    echo "docs-lint self-test: OK (all 5 rules fired on the fixtures, and rule 5 stayed silent on a current one)"
+    echo "docs-lint self-test: OK (all 6 rules fired on the fixtures, and rules 5 and 6 stayed silent on the clean ones)"
   fi
   return $out
 }
