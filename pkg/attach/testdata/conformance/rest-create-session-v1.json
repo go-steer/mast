@@ -1,0 +1,6 @@
+{
+  "app": "mast",
+  "user": "alice@example.com",
+  "sessionID": "s-1a2b3c",
+  "url": "http://mast.internal:8080/sessions/mast/s-1a2b3c"
+}

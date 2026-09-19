@@ -1,0 +1,47 @@
+{
+  "overall": {
+    "input_tokens": 57664,
+    "input_tokens_cached": 28804,
+    "input_tokens_uncached": 28860,
+    "output_tokens": 204,
+    "turns": 2,
+    "cost_usd": 0.0799228,
+    "cost_usd_uncached_reference": 0.117368
+  },
+  "per_model": {
+    "claude-sonnet-5": {
+      "input_tokens": 57664,
+      "input_tokens_cached": 28804,
+      "input_tokens_uncached": 28860,
+      "output_tokens": 204,
+      "turns": 2,
+      "cost_usd": 0.0799228,
+      "cost_usd_uncached_reference": 0.117368
+    }
+  },
+  "per_turn": [
+    {
+      "turn": 1,
+      "ts": "2026-09-19T14:02:11Z",
+      "model": "claude-sonnet-5",
+      "input_tokens": 28814,
+      "input_tokens_uncached": 28814,
+      "output_tokens": 4,
+      "total_tokens": 28818,
+      "cost_usd": 0.07207,
+      "cost_usd_uncached_reference": 0.057668
+    },
+    {
+      "turn": 2,
+      "ts": "2026-09-19T14:02:47Z",
+      "model": "claude-sonnet-5",
+      "input_tokens": 28850,
+      "input_tokens_cached": 28804,
+      "input_tokens_uncached": 46,
+      "output_tokens": 200,
+      "total_tokens": 29050,
+      "cost_usd": 0.0078528,
+      "cost_usd_uncached_reference": 0.0597
+    }
+  ]
+}

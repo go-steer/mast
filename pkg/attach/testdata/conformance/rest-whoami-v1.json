@@ -1,0 +1,6 @@
+{
+  "identity": "oncall@example.com",
+  "admin": true,
+  "source": "asserted",
+  "proxy_by": "incident-bot@example.com"
+}
