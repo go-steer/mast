@@ -115,6 +115,26 @@
 
 ### Bug or Regression
 
+- **A2A `message/stream` progress frames skip partial model events, so a
+  streamed answer arrives as one agent message rather than N.** A
+  `TaskStatusUpdateEvent` carries a whole `Message` with its own `messageId`
+  and no continuation marker; A2A's delta mechanism is `Append`/`LastChunk`
+  on `TaskArtifactUpdateEvent`, not on the status channel. So a fragment has
+  no honest encoding in a progress frame, and emitting one per chunk would
+  claim a distinct agent message per chunk. `emitStreamProgress` now carries
+  the same one-line `ev.Partial` guard as the watchdog bridge and the AG-UI
+  emitter ([#400](https://github.com/go-steer/mast/issues/400)). Nothing in
+  the module can produce a partial event today — `TestEveryRunnerSiteIsNonStreaming`
+  forbids arranging one — so this changes no frame a caller currently sees;
+  it makes message granularity a property of the frame rather than of the
+  turn mode, which is what the design doc had claimed and the code had not.
+  `turnCapture` deliberately keeps **no** such guard: it is last-wins over
+  model text, so it picks the complete response either way, and a guard
+  there would empty the result artifact on a provider whose turn ends on a
+  partial. A test pins that asymmetry so "make both sites consistent" cannot
+  quietly regress it.
+  ([#408](https://github.com/go-steer/mast/issues/408))
+
 - **`GET /sessions/{id}/usage` now fills in the token breakdown it has
   promised since the route shipped.** The response declared eight token
   fields; mast populated a turn count and a dollar figure and left every
