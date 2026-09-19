@@ -157,6 +157,37 @@ tail pumps from the event log — so it **implies one**: with no
 `--session-db` of your own, the daemon opens `~/.mast/sessions.db` and says
 so at startup. Name a path to put it anywhere else.
 
+### The normative response shapes
+
+Prose is not a contract. The JSON these routes return is pinned as
+fixtures in
+[`pkg/attach/testdata/conformance/`](https://github.com/go-steer/mast/tree/main/pkg/attach/testdata/conformance) —
+`rest-*-v1.json` for the plain HTTP bodies, the SSE event fixtures beside
+them for the stream. Write a client against those, not against a mock you
+wrote yourself: mast-web's bundled mock invented snake_case names for the
+sessions list, its client was written against the mock, every one of its
+tests passed, and the list rendered empty against every real daemon
+(mast-web#41). A fixture is the thing a mock can be checked against.
+
+Three shapes a client gets wrong by reading the examples rather than the
+fixtures:
+
+- **`last_touched_at` and `next_wake_at` are always on the wire**, as
+  `0001-01-01T00:00:00Z` when they do not apply. They are tagged
+  `omitempty`, which does nothing to a `time.Time`. Read them for the zero
+  value; presence does not mean the field applies.
+- **`GET /sessions` with nothing to show is `{"sessions":[]}`**, never
+  `null`. So are `viewers` and `contributors` on an ACL. Everything else
+  optional is genuinely absent.
+- **On `GET .../usage`, a cache *write* counts as uncached input** — it
+  bills at a premium over fresh input, not a discount — and
+  `cost_usd_uncached_reference` is a counterfactual, not a floor. A turn
+  that warmed the cache and has not reused it yet reports a reference
+  *below* its cost. That is correct, not a rounding error to hide.
+
+The fixtures' own [README](https://github.com/go-steer/mast/blob/main/pkg/attach/testdata/conformance/README.md)
+lists which routes are pinned and, more usefully, which are not.
+
 ### What `turn_state` says
 
 Every `status-update` frame carries a `turn_state`, and a client that

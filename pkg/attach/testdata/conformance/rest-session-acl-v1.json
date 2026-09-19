@@ -1,0 +1,12 @@
+{
+  "owner": "lookout@example.com",
+  "viewers": [
+    "sre-readonly@example.com"
+  ],
+  "contributors": [
+    "oncall@example.com",
+    "incident-bot@example.com"
+  ],
+  "enforced": true,
+  "persisted": true
+}

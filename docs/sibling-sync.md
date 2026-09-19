@@ -1401,8 +1401,9 @@ would carry unused. Whoever ships the knob ships the rate in the same PR. Nothin
 before then.
 
 Nothing new is owed **upstream** this pass. The carry-forwards there are unchanged: the peer-lease
-clamp, the `ef9b9b5` port, and the content-level sync check of core-agent's #542 / #545 / #546 /
-#547 / #549.
+clamp, the `ef9b9b5` port, and ~~the content-level sync check of core-agent's #542 / #545 / #546 /
+#547 / #549~~ — **the sync check is discharged as of 2026-09-19**; see the section below for what
+#549 turned into and why the other four needed nothing.
 
 ## Found while shipping [#364](https://github.com/go-steer/mast/issues/364), 2026-09-16
 
@@ -1484,3 +1485,56 @@ the only account of an unattended run, so the two-readers cost lands differently
 
 **Not owed upstream.** The producer is mast's, the seam is mast's, and the defect was mast's own
 unported gap rather than a bug in anything core-agent ships.
+
+## Content-level sync check of core-agent #542 / #545 / #546 / #547 / #549, 2026-09-19
+
+The check owed since the 2026-07-31 upstream report (mast filed core-agent #530–#536; all seven
+closed upstream by 2026-07-31, and this ledger has carried "verify what they actually did" ever
+since). Four of the five needed nothing and one became a PR.
+
+| Upstream | mast verdict |
+|---|---|
+| `c07a4b4` (#542) — normalize genai enums in `input_schema` | absorbed, verified at code level in the 2026-08-17 triage. Re-read: unchanged. |
+| `59d27e5` (#545) — real gemini tier defaults | absorbed by [#149](https://github.com/go-steer/mast/pull/149). |
+| `6676bf9` (#546) — Gemini 3.0+ builtins constraint | absorbed, verified at code level. |
+| `cfcbe22` (#547) — close the lost-retry race in the transient-cancel test | absorbed; verdict already corrected 2026-08-17 (mast's test polls `Init` and carries the comment saying why). |
+| `7c0a6fda` (#549) — pin REST response shapes in conformance fixtures | **not absorbed. Ported as practice, not as files** — see below. |
+
+**What #549 was.** mast's own report (#536) was that core-agent's SSE event shapes had been
+fixture-pinned since v1.4.0 while the REST response shapes lived only as prose, so mast-web's
+bundled mock could invent snake_case field names for the sessions list, its client could be written
+against the mock, every test could pass, and the list could render undefined against every real
+backend (mast-web#41). core-agent closed it with `rest-*-v1` fixtures for three routes. **mast had
+the identical gap and had not closed it** — the report went upstream and never came home.
+
+**What was taken, and what was not.** The practice: fixtures built from the runtime types, a
+live-handler key-set test wherever a handler assembles its envelope as an inline map (a fixture
+compared against a map the test itself wrote agrees with itself no matter what the handler does),
+and a byte-exact pin on the one shape whose failure mode is `null` rather than a wrong name. Not the
+files. Every fixture here is marshalled from mast's own types, because **the two handler sets have
+diverged past the point where one file describes both**:
+
+- mast's ACL route is a `PUT` — a whole-document replace, where an omitted list *clears* that list —
+  where core-agent's is a `PATCH` (`core-agent/pkg/attach/handlers_acl.go:137`) with the opposite
+  rule. A client carried between them silently deletes ACL entries.
+- mast reads the ACL at `SessionRead`; core-agent requires `SessionAdmin`. mast's is the deliberate
+  choice and the comment at `pkg/attach/handlers_operator.go:50-52` says why (everyone the ACL
+  admits can already read the transcript, and a viewer who wants write access needs to know whom to
+  ask).
+- mast's `StatusInfo` carries four fields where theirs carries seven; mast has no session titles, no
+  per-subagent events route, no stop-agent route.
+- `/usage` — which both daemons serve — is fixtured here and not there.
+
+So the REST fixtures are **not a future port candidate in either direction**, and when the
+`core-tui` shared harness lands and the SSE fixtures move to it, these should stay. That is written
+into the fixtures' own README so the next person does not try.
+
+**Owed upstream: nothing, and one optional nudge.** Nothing is owed, because the gap was mast's own
+unclosed report rather than a defect in anything core-agent ships. The nudge, if someone wants to
+file it: core-agent's `/usage` is the route where an unpinned response costs the most — eight token
+fields that a client cannot distinguish "unmeasured zero" from "measured zero" on — and #549 did not
+cover it. That is an observation about their coverage, not a bug, and it should be filed as one or
+not at all.
+
+**Consequence for future triage.** The 2026-07-31 report is now fully discharged and comes off the
+carry-forward list. What remains owed upstream is the peer-lease clamp and the `ef9b9b5` port.

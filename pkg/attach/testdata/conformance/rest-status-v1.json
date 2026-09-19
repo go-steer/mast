@@ -1,0 +1,6 @@
+{
+  "state": "running",
+  "model_name": "claude-sonnet-5",
+  "next_wake_at": "0001-01-01T00:00:00Z",
+  "current_tool": "get_k8s_pod_logs"
+}

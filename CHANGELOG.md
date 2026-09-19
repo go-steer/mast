@@ -456,6 +456,31 @@
 
 ### Documentation
 
+- **The attach surface's REST response shapes are now pinned as conformance
+  fixtures, so a client author has something normative to test against.** Seven
+  `rest-*-v1.json` fixtures under `pkg/attach/testdata/conformance/` cover the
+  sessions list, create-session, whoami, status, ACL, inject and usage bodies,
+  with tests that fail on a struct-tag rename or a field reorder. The SSE event
+  shapes have been fixtured since v1.4.0; the HTTP bodies lived only as prose,
+  which is what let mast-web's bundled mock invent snake_case names for the
+  sessions list, its client be written against the mock, every one of its tests
+  pass, and the list render empty against every real daemon (mast-web#41). mast
+  reported exactly this gap to core-agent as their #536, they closed it with
+  fixtures of their own (#549), and mast never closed its own — this is the
+  return leg. Three traps the fixtures exist to state rather than imply:
+  `last_touched_at` and `next_wake_at` are always on the wire as
+  `0001-01-01T00:00:00Z` (`omitempty` does nothing to a `time.Time`), `GET
+  /sessions` with nothing to show is `{"sessions":[]}` and never `null`, and on
+  the usage body a cache *write* is reported as **uncached** input with
+  `cost_usd_uncached_reference` sitting *below* the cost — a counterfactual, not
+  a floor. What was taken from core-agent is the practice, not the files: the
+  two handler sets have diverged (mast's ACL is a `PUT` where theirs is a
+  `PATCH`, readable at `SessionRead` where theirs needs `SessionAdmin`; four
+  status fields against seven; `/usage` fixtured here and not there), so these
+  stay in-tree when the shared harness takes the SSE fixtures. No runtime change
+  — every fixture was proved load-bearing by renaming the tag it pins and
+  watching the test fail.
+
 - **The corpus now says that the daemon's own bearer token is one principal
   holding every configured scope, so its per-workload scope check cannot
   fail.** `MAST_A2A_TOKEN` and `MAST_AGUI_TOKEN` are each a single token
