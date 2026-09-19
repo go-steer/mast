@@ -115,6 +115,24 @@
 
 ### Bug or Regression
 
+- **An OTel SDK minor bump can no longer stop the daemon from starting.**
+  `pkg/observability` built its exported resource by merging mast's
+  `service.name` — tagged with the schema URL of the `semconv` package mast
+  imports — onto `resource.Default()`, whose schema URL is whichever semconv
+  version the *SDK* was built against. `resource.Merge` refuses two different
+  schema URLs, so that line asserted a version match between two dependencies
+  that move on separate schedules. It held by coincidence until the SDK's
+  semconv advanced, and then `SetupOTel` returned `conflicting Schema URL` to
+  every process configured with an OTLP endpoint — which `cmd/mast` treats as
+  fatal, so this was not degraded telemetry but a daemon that refuses to boot,
+  citing a mismatch no operator caused. mast now merges a **schemaless**
+  resource, which merges with anything and leaves the SDK's own schema URL on
+  the result — a truer claim than mast naming a version it does not control.
+  Bumping the import to the matching semconv would have fixed the pair and
+  rebuilt the trap; the coincidence is on a weekly schedule now that
+  Dependabot runs. Found by the auto-merge gate on its first day, on the real
+  bump that triggers it ([#420](https://github.com/go-steer/mast/issues/420)).
+
 - **A second replica of a scheduled workload no longer fires everything a
   second time.** Three loops in `serve` start turns nobody asked for — the
   scheduled trigger, the timed-pause scheduler and the boot auto-resume scan —

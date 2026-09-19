@@ -51,8 +51,7 @@ func SetupOTel(ctx context.Context) (shutdown func(context.Context) error, enabl
 	if err != nil {
 		return noop, false, fmt.Errorf("otlp trace exporter: %w", err)
 	}
-	res, err := resource.Merge(resource.Default(),
-		resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName("mast")))
+	res, err := mastResource(resource.Default())
 	if err != nil {
 		return noop, false, fmt.Errorf("otel resource: %w", err)
 	}
@@ -65,4 +64,34 @@ func SetupOTel(ctx context.Context) (shutdown func(context.Context) error, enabl
 		propagation.TraceContext{}, propagation.Baggage{},
 	))
 	return tp.Shutdown, true, nil
+}
+
+// mastResource layers mast's one resource attribute — service.name —
+// onto whatever the SDK's default resource already carries.
+//
+// The added resource is deliberately **schemaless**, and that is the
+// whole of a fix for a bug that took the daemon down rather than the
+// telemetry. resource.Merge refuses to merge two resources declaring
+// *different* schema URLs, and `resource.Default()`'s URL is whichever
+// semconv version the SDK was built against — so naming one here asserts
+// a version match with a dependency that moves on its own schedule. It
+// held until the SDK's semconv advanced past the `semconv/v1.41.0`
+// import above, and then `SetupOTel` returned "conflicting Schema URL"
+// to every caller that had configured an OTLP endpoint. That is not
+// degraded telemetry: `cmd/mast` treats the error as fatal, so the
+// daemon does not start. A minor bump of a dependency should not be able
+// to do that, and a dependency bot that can open one makes the question
+// when rather than whether.
+//
+// A schemaless resource merges with anything and Merge keeps the other
+// side's URL, so the exported resource still declares the SDK's own —
+// which is a truer claim than mast naming a version it does not control.
+// The single attribute at stake is `service.name`, stable since the
+// first semantic conventions; the import remains only to spell its key.
+//
+// It takes its base rather than calling `resource.Default()` so a test
+// can hand it a foreign schema URL, which is the shape the bug had and
+// is not otherwise reachable from inside one build.
+func mastResource(base *resource.Resource) (*resource.Resource, error) {
+	return resource.Merge(base, resource.NewSchemaless(semconv.ServiceName("mast")))
 }
