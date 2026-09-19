@@ -62,7 +62,7 @@ jobs:
       # in sync with GOLANGCI_LINT_VERSION in dev/tools/lint-go —
       # ensure_tool finds the cached binary on GOBIN and skips the
       # (slow, from-source) go install.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/go/bin/golangci-lint
           key: ${{ runner.os }}-golangci-lint-v2.12.1
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/go/bin/govulncheck
           key: ${{ runner.os }}-govulncheck
