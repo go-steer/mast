@@ -20,6 +20,8 @@
 #   - runs the full presubmit suite first — a tag never ships red
 #   - cross-compiles the mast binary (linux/darwin x amd64/arm64)
 #     via GoReleaser, with SHA-256 checksums
+#   - signs checksums.txt with Sigstore keyless (#342), and then
+#     verifies the signature it published
 #   - publishes the Release with notes drawn from CHANGELOG.md
 #     (dev/release/notes.sh); pre-release suffixes (-pre, -rc.N)
 #     are marked Pre-release automatically
@@ -27,11 +29,13 @@
 # The O-tier gate runs on the dry run too, deliberately. A dry run's job
 # is to answer "would the real tag work", and one that skipped the only
 # gate that can refuse a release would answer a narrower question than
-# the one being asked. Dispatched on `main`, it is a full rehearsal.
+# the one being asked. Dispatched on `main`, it is a full rehearsal —
+# which now includes signing and verifying, since a signing step that
+# has never run is not evidence that signing works.
 #
 # Deliberate v0.1.x omissions vs core-agent, to add when warranted:
-# Sigstore keyless signing of checksums, container images
-# (release-images.yml), retroactive-tag overlay machinery.
+# container images (release-images.yml), retroactive-tag overlay
+# machinery.
 #
 # Manual dry run: gh workflow run release.yml -f dry_run=true
 
@@ -51,6 +55,10 @@ permissions:
   contents: write
   # Reading the O tier's verdict for the commit being released.
   checks: read
+  # cosign keyless: exchanged with Fulcio for a short-lived signing
+  # certificate. No signing key is stored anywhere, which is the
+  # point — there is no secret to rotate and none to leak.
+  id-token: write
 
 jobs:
   release:
@@ -71,6 +79,11 @@ jobs:
           go-version-file: go.mod
       - name: Presubmits
         run: dev/ci/presubmits/all.sh
+      # Needed by .goreleaser.yaml's signs: block on both paths — the
+      # dry run signs too, because a rehearsal that skips the step
+      # cannot tell you the step works.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
       - name: Compose release notes
         if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
         run: dev/release/notes.sh "${GITHUB_REF_NAME}" > /tmp/release-notes.md && cat /tmp/release-notes.md
@@ -98,12 +111,42 @@ jobs:
             echo "::error::${GITHUB_REF_NAME} published with a ${body_len}-char body; the CHANGELOG notes did not reach the release." >&2
             exit 1
           fi
+      # Same discipline as the notes check above, applied to the
+      # signature: download what an outsider downloads and verify it
+      # there. GoReleaser exiting 0 means cosign exited 0 on the
+      # runner's filesystem — it says nothing about whether the .sig
+      # and .pem reached the release, which is the only place anyone
+      # will look for them.
+      - name: Verify the published signature
+        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+        run: dev/release/verify-signature.sh "${GITHUB_REF_NAME}"
       - name: GoReleaser (dry run)
         if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           args: release --clean --skip=publish --snapshot
+      # The dry run's half of the same check. Nothing is published, so
+      # there is no download to make; what can still be proved is that
+      # the signature covers the checksum file and carries this
+      # workflow's identity at the ref it was dispatched from. The
+      # identity differs from the tag path by construction
+      # (refs/heads/<branch> rather than refs/tags/<tag>), which is
+      # exactly why it is asserted here rather than assumed: a
+      # rehearsal that accepted any identity would pass on a signature
+      # made by someone else's workflow.
+      - name: Verify the dry-run signature
+        if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          set -euo pipefail
+          cd dist
+          cosign verify-blob checksums.txt \
+            --signature checksums.txt.sig \
+            --certificate checksums.txt.pem \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          sha256sum --check checksums.txt
+          echo "dry run: checksums.txt signed and every artifact it names matches"
       - name: Upload dist (dry run)
         if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4

@@ -84,6 +84,32 @@
 
 ### Feature
 
+- **Release artifacts are signed, and the release refuses to finish if the
+  signature did not reach them.** Every tag from the next release onward ships
+  `checksums.txt.sig` and `checksums.txt.pem` beside the checksum file — a
+  Sigstore **keyless** signature, so there is no mast public key to fetch and
+  trust and no mast private key to leak: the job exchanges its GitHub OIDC
+  token for a short-lived Fulcio certificate whose identity is the release
+  workflow and the tag it ran on. That identity is the thing a verifier pins,
+  and pinning it is the whole product: cosign refuses to verify keyless without
+  an identity flag at all, but `--certificate-identity-regexp '.*'` reports
+  **Verified OK** against a certificate from any workflow in any repository on
+  GitHub — measured, not assumed — so the install page warns about the wildcard
+  rather than about the omission cosign already blocks. Only
+  `checksums.txt` is signed — it already covers each tarball byte-for-byte, so
+  one signature transitively covers the release and a verifier has one thing to
+  check rather than four. `dev/release/verify-signature.sh <tag>` does the whole
+  verification from published artifacts with `cosign`, `curl` and no
+  credentials; the release job runs that same script against the release it has
+  just cut, because GoReleaser exiting 0 means cosign exited 0 on a runner and
+  says nothing about whether the `.sig` and `.pem` reached the release — the
+  same discipline as the notes check beside it, for the same reason. The dry
+  run signs and verifies too: a rehearsal that skips the step cannot tell you
+  the step works. First slice of
+  [#342](https://github.com/go-steer/mast/issues/342); SLSA provenance and a
+  signed container image stay open there, and v0.9.0 and earlier remain
+  unsigned.
+
 - **`GET /healthz` is a readiness probe that can actually go red.** The
   daemon's health check was `GET /`, which consults nothing and answers a
   static `200 ok`. A daemon whose session database had been deleted, whose

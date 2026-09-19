@@ -58,9 +58,70 @@ mast --version
 Prints the release version (plus commit and date for tarball builds;
 `mast dev` for a local `go install` build without ldflags stamping).
 
-`checksums.txt` proves the bytes you downloaded match the bytes the release
-job produced. It is not a signature, and there is no provenance attestation
-yet — [#342](https://github.com/go-steer/mast/issues/342).
+## Verify the signature
+
+`checksums.txt` proves the bytes you downloaded match the bytes *something*
+produced. The signature beside it proves that something was mast's release
+workflow.
+
+**v0.9.0, the current release, is not signed.** Signing landed with
+[#342](https://github.com/go-steer/mast/issues/342) after it was cut, so v0.9.0
+and everything before it ship `checksums.txt` alone and the rest of this
+section does not apply to them. Every release from the next one onward also
+ships `checksums.txt.sig` and `checksums.txt.pem`.
+
+Those are a Sigstore **keyless** signature: there
+is no mast public key to fetch and trust, because there is no mast private
+key. The release job exchanges its GitHub OIDC token for a short-lived
+certificate, and the identity written into that certificate is the workflow
+file and the tag it ran on. That identity is what you pin:
+
+```sh
+cosign verify-blob checksums.txt \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  --certificate-identity "https://github.com/go-steer/mast/.github/workflows/release.yml@refs/tags/vX.Y.Z" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+```
+
+`vX.Y.Z` is the release you downloaded — the tag is part of the identity, so it
+is not a label and it is not optional.
+
+cosign will not let you skip the question: `verify-blob` in keyless mode exits
+with *"--certificate-identity or --certificate-identity-regexp is required"*
+rather than verifying anything. What it *will* accept is an answer that means
+nothing — `--certificate-identity-regexp '.*'` reports **Verified OK** against a
+certificate from any workflow in any repository on GitHub, which is a fact about
+Sigstore and not about mast. If you widen the identity to avoid editing a tag
+into a script, widen it to a pattern that still pins the repository and the
+workflow file. `cosign verify-blob` without them checks that
+the signature is valid and not who made it, which is a check any GitHub Action
+in the world passes.
+
+Then check the tarballs against the file you just verified — a signature over a
+list you do not compare against is a signature over nothing:
+
+```sh
+sha256sum --check --ignore-missing checksums.txt
+```
+
+Both steps, plus fetching every asset, are what
+[`dev/release/verify-signature.sh`](https://github.com/go-steer/mast/blob/main/dev/release/verify-signature.sh)
+does; it needs `cosign` and `curl` and no credentials:
+
+```sh
+dev/release/verify-signature.sh vX.Y.Z
+```
+
+The release job runs that same script against the release it has just
+published, so a release whose signature does not reach the assets does not
+finish cutting. Verifying the step that signs is not the same as verifying the
+thing it signed — mast's early releases published empty bodies while every step
+in the job logged the right output, which is why this one asserts on the
+download.
+
+There is still no SLSA provenance attestation and no signed container image;
+both stay on [#342](https://github.com/go-steer/mast/issues/342).
 
 ## Putting it in a cluster
 
