@@ -115,6 +115,28 @@
 
 ### Bug or Regression
 
+- **An MCP server that asks mast for input now fails the call saying so,
+  instead of returning an empty tool result.** mast refuses server-initiated
+  input — elicitation, sampling, roots — on both protocol versions, and has
+  since the feature landed. But only one of the two routes was actually
+  mast's refusal. On the older protocol the server sends a request and mast
+  declines it by name. On the 2026-07-28 protocol the server answers the call
+  with an *input-required result* instead, and mast was handing that result
+  to ADK's `mcptoolset`, which has no notion of one: it reads the content,
+  finds none, and reports a tool that returned nothing. What made this look
+  fine was an accident in `adk/v2` through v2.2.0, which errored on any
+  empty-content result — so an input request surfaced as *an* error, just one
+  that named nothing and came from the wrong layer. v2.4.0 replaced that
+  branch with a formatter that renders empty content as `""` and returns
+  success, and the accident stopped happening: the model began being told the
+  tool returned nothing. It is now mast's own check, at the seam with ADK, and
+  it names the request the server made
+  ([#430](https://github.com/go-steer/mast/issues/430)). The unopinionated
+  client still surfaces the result — a caller that owns the retry loop is
+  where an approval gate would go if mast ever supports elicitation, and it
+  cannot gate a request it is never told about. Two tests, one per client, pin
+  that difference so collapsing them back together fails.
+
 - **The docs site no longer builds by accident.** `docs/site/astro.config.mjs`
   imports `@astrojs/markdown-remark` and `docs/site/package.json` never
   declared it; the import resolved anyway because npm hoists that package to

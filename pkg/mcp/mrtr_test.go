@@ -176,6 +176,35 @@ func TestMastClientSurfacesInputRequests(t *testing.T) {
 	}
 }
 
+// TestToolsetClientRefusesInputRequiredResults is the other half of the
+// pair above, and the pair is the point: the same exchange, the same
+// protocol regime, two clients that answer it differently on purpose.
+// newMCPClient surfaces the result because a caller that owns the retry
+// loop needs to see it; newToolsetClient refuses because the caller it is
+// built for — ADK's mcptoolset — does not own that loop and will render an
+// input request as a tool that returned nothing.
+//
+// Collapsing the two back into one client makes exactly one of these two
+// tests fail, whichever way it is collapsed.
+func TestToolsetClientRefusesInputRequiredResults(t *testing.T) {
+	for _, tc := range inputRequestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			url, calls := inputRequestServer(t, true, tc.req)
+
+			res, err := callInputRequestTool(t, newToolsetClient(), url)
+			if err == nil {
+				t.Fatalf("CallTool succeeded (needsInput=%v); an input request reached the toolset as an ordinary result", res.NeedsInput())
+			}
+			if !strings.Contains(err.Error(), "input-required result") {
+				t.Errorf("CallTool = %v, want the toolset client's refusal", err)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Errorf("the tool ran %d times, want 1 — refusing a result must not re-dispatch the call", got)
+			}
+		})
+	}
+}
+
 // TestMastClientRefusesInputRequests covers the classic-protocol regime,
 // the one MultiRoundTripOptions.Disabled does not reach. Here the server
 // asks the client directly and the refusal has to come from mast.
@@ -303,12 +332,17 @@ func TestToolsetDoesNotAnswerInputRequests(t *testing.T) {
 		}
 	})
 
-	// On stdio the request never reaches the refusal: the client-side
-	// middleware is off, so the SDK hands the input-required result back and
-	// ADK — which has no notion of one — reports a result with no content.
-	// That is the correct outcome for a mast that does not support
-	// elicitation. The assertion is negative by necessity: what distinguishes
-	// fixed from broken is which error comes back, not whether one does.
+	// On stdio the server never sends a request: the new protocol lets it
+	// answer the call with an input-required *result* instead, which no
+	// receiving middleware ever sees. refuseInputRequiredResults catches that
+	// one on the way back out, so both regimes end in an error naming what
+	// mast declined — here roots/list, the same method the http subtest
+	// refuses on the receiving side.
+	//
+	// This assertion used to look for ADK's "no text content in tool
+	// response", which was never mast's error and stopped existing in
+	// adk/v2 v2.4.0 — an input request then began reaching the model as an
+	// empty successful result. Assert on the message mast owns.
 	t.Run("stdio", func(t *testing.T) {
 		err := runInputRequestTool(t, ServerConfig{
 			Transport: TransportStdio,
@@ -318,8 +352,11 @@ func TestToolsetDoesNotAnswerInputRequests(t *testing.T) {
 		if strings.Contains(err.Error(), "multi-round-trip") || strings.Contains(err.Error(), "multi round-trip") {
 			t.Errorf("the stdio toolset's client answered a server input request instead of surfacing it: %v", err)
 		}
-		if !strings.Contains(err.Error(), "no text content") {
-			t.Errorf("tool error = %v, want ADK's empty-result report for a surfaced input request", err)
+		if !strings.Contains(err.Error(), "input-required result") {
+			t.Errorf("tool error = %v, want mast's refusal — the stdio toolset is not using mast's client", err)
+		}
+		if !strings.Contains(err.Error(), "roots/list") {
+			t.Errorf("tool error = %v, want it to name the request the server made", err)
 		}
 	})
 }

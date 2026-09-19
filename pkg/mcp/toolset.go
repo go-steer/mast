@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"slices"
 	"sort"
+	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/tool"
@@ -107,9 +108,88 @@ func refuseServerInitiatedInput() mcpsdk.Middleware {
 	}
 }
 
+// refuseInputRequiredResults turns an input-required tool result into an
+// error on the way back out of the call.
+//
+// This is deliberately *not* part of newMCPClient. Surfacing the result to
+// the caller is that client's contract — a caller that owns the retry loop is
+// exactly where an approval gate would go if mast ever supports elicitation,
+// and it cannot gate a request it is never told about. What this middleware
+// asserts is narrower: the caller here is ADK's mcptoolset, and it does not
+// own that loop. See newToolsetClient.
+//
+// mcptoolset has no notion of an input request. It reads Content, finds none,
+// and reports a result with nothing in it. So the model is told the tool
+// returned nothing, when what happened is that the server asked a question
+// mast declines to answer. Those are different facts and the second is the
+// one an operator needs.
+//
+// Through adk/v2 v2.2.0 that distinction was masked by an accident:
+// mcptoolset errored with "no text content in tool response" on any result
+// whose content was empty, so an input request surfaced as *an* error, just
+// an uninformative one. v2.4.0 replaced that branch with a formatter that
+// renders empty content as an empty string and returns success, and the
+// accident stopped happening — an input request began reaching the model as
+// {"output": ""}. Hence a check mast owns, which reads the same however the
+// toolset above it chooses to render a result with no content.
+//
+// This does not fire on the classic-protocol path. There the server never
+// returns an input-required result; it sends mast a real elicitation/sampling/
+// roots request mid-call, which refuseServerInitiatedInput rejects. Between
+// the two, both protocol regimes produce an error that names what mast
+// refused.
+func refuseInputRequiredResults() mcpsdk.Middleware {
+	return func(next mcpsdk.MethodHandler) mcpsdk.MethodHandler {
+		return func(ctx context.Context, method string, req mcpsdk.Request) (mcpsdk.Result, error) {
+			res, err := next(ctx, method, req)
+			if err != nil {
+				return res, err
+			}
+			call, ok := res.(*mcpsdk.CallToolResult)
+			// NeedsInput is the protocol-level flag; InputRequests is
+			// checked too so a load-shedding result (NeedsInput with an
+			// empty map) and a server that populates the field without the
+			// result type both land here rather than in the caller.
+			if !ok || (!call.NeedsInput() && len(call.InputRequests) == 0) {
+				return res, nil
+			}
+			return nil, fmt.Errorf("mcp: %s returned an input-required result (%s): mast does not answer input requests, so the call cannot proceed",
+				method, inputRequestMethods(call.InputRequests))
+		}
+	}
+}
+
+// inputRequestMethods names what the server asked for, in a stable order, so
+// the error says "roots/list" rather than "input" — the same vocabulary
+// serverInitiatedInput uses, because it is the same three requests arriving by
+// the other protocol regime's route.
+//
+// The SDK's own params-to-method table is unexported, so this is a copy. The
+// default arm keeps a fourth kind legible rather than silently dropping it.
+func inputRequestMethods(m mcpsdk.InputRequestMap) string {
+	if len(m) == 0 {
+		return "no requests named; the server is shedding load"
+	}
+	methods := make([]string, 0, len(m))
+	for _, req := range m {
+		switch req.(type) {
+		case *mcpsdk.ElicitParams:
+			methods = append(methods, "elicitation/create")
+		case *mcpsdk.CreateMessageParams, *mcpsdk.CreateMessageWithToolsParams: //nolint:staticcheck // SA1019: deprecated by SEP-2577, functional until at least 2027-07-28
+			methods = append(methods, "sampling/createMessage")
+		case *mcpsdk.ListRootsParams: //nolint:staticcheck // SA1019: deprecated by SEP-2577, functional until at least 2027-07-28
+			methods = append(methods, "roots/list")
+		default:
+			methods = append(methods, fmt.Sprintf("%T", req))
+		}
+	}
+	sort.Strings(methods)
+	return strings.Join(slices.Compact(methods), ", ")
+}
+
 // newMCPClient builds the MCP client both transports connect through.
 //
-// It differs from the SDK's default client in three ways, all of them the
+// It differs from the SDK's default client in four ways, all of them the
 // same decision: a server does not get to ask mast for input mid-call.
 //
 // SEP-2322 multi-round-trip is disabled. go-sdk installs that middleware on
@@ -120,7 +200,8 @@ func refuseServerInitiatedInput() mcpsdk.Middleware {
 // round trip inside a call in flight. With it off the SDK returns the
 // input-required result to the caller (CallToolResult.NeedsInput) and the
 // caller owns the retry loop, which is where a gate would go if mast ever
-// decides to support elicitation.
+// decides to support elicitation. Keeping that result reachable is this
+// function's job; declining to act on it is newToolsetClient's.
 //
 // That flag alone is not enough, which is the part not obvious from the
 // SDK's documentation. The client-side middleware only runs on protocol
@@ -147,6 +228,17 @@ func newMCPClient() *mcpsdk.Client {
 		},
 	)
 	c.AddReceivingMiddleware(refuseServerInitiatedInput())
+	return c
+}
+
+// newToolsetClient is newMCPClient for the one caller mast actually has:
+// ADK's mcptoolset, which cannot act on an input-required result and will
+// render it as a tool that returned nothing. The two transports both go
+// through here; newMCPClient stays the unopinionated client a caller that
+// *does* own the retry loop would want.
+func newToolsetClient() *mcpsdk.Client {
+	c := newMCPClient()
+	c.AddSendingMiddleware(refuseInputRequiredResults())
 	return c
 }
 
@@ -205,7 +297,7 @@ func newHTTPToolset(ctx context.Context, name string, cfg ServerConfig, filter t
 	}
 
 	ts, err := mcptoolset.New(mcptoolset.Config{
-		Client:     newMCPClient(),
+		Client:     newToolsetClient(),
 		Transport:  transport,
 		ToolFilter: filter,
 	})
@@ -225,7 +317,7 @@ func newStdioToolset(name string, cfg ServerConfig, filter tool.Predicate) (tool
 	}
 	transport := &mcpsdk.CommandTransport{Command: buildStdioCommand(cfg)}
 	ts, err := mcptoolset.New(mcptoolset.Config{
-		Client:     newMCPClient(),
+		Client:     newToolsetClient(),
 		Transport:  transport,
 		ToolFilter: filter,
 	})
