@@ -91,9 +91,11 @@
   trust and no mast private key to leak: the job exchanges its GitHub OIDC
   token for a short-lived Fulcio certificate whose identity is the release
   workflow and the tag it ran on. That identity is the thing a verifier pins,
-  and `cosign verify-blob` without `--certificate-identity` /
-  `--certificate-oidc-issuer` is a check every GitHub Action in the world
-  passes, which the install page now says in those words. Only
+  and pinning it is the whole product: cosign refuses to verify keyless without
+  an identity flag at all, but `--certificate-identity-regexp '.*'` reports
+  **Verified OK** against a certificate from any workflow in any repository on
+  GitHub — measured, not assumed — so the install page warns about the wildcard
+  rather than about the omission cosign already blocks. Only
   `checksums.txt` is signed — it already covers each tarball byte-for-byte, so
   one signature transitively covers the release and a verifier has one thing to
   check rather than four. `dev/release/verify-signature.sh <tag>` does the whole

@@ -85,7 +85,16 @@ cosign verify-blob checksums.txt \
 ```
 
 `vX.Y.Z` is the release you downloaded — the tag is part of the identity, so it
-is not optional and not a label. **Nor are those two flags.** `cosign verify-blob` without them checks that
+is not a label and it is not optional.
+
+cosign will not let you skip the question: `verify-blob` in keyless mode exits
+with *"--certificate-identity or --certificate-identity-regexp is required"*
+rather than verifying anything. What it *will* accept is an answer that means
+nothing — `--certificate-identity-regexp '.*'` reports **Verified OK** against a
+certificate from any workflow in any repository on GitHub, which is a fact about
+Sigstore and not about mast. If you widen the identity to avoid editing a tag
+into a script, widen it to a pattern that still pins the repository and the
+workflow file. `cosign verify-blob` without them checks that
 the signature is valid and not who made it, which is a check any GitHub Action
 in the world passes.
 
