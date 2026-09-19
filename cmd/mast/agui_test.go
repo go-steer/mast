@@ -384,6 +384,68 @@ func TestAGUIEmitterSkipsUserText(t *testing.T) {
 	}
 }
 
+// TestAGUIEmitterDropsPartials drives the emitter with the sequence a
+// streaming model produces — chunk, chunk, chunk, then the aggregate — and
+// pins that only the aggregate reaches the wire (#400).
+//
+// The two things this catches are not equally bad, and the tool half is the
+// one that breaks a client: each chunk of a streamed FunctionCall carries
+// PartialArgs and no Args, so pre-fix the emitter minted a COMPLETE
+// start/args/end triple per chunk with empty arguments, and anything
+// dispatching on TOOL_CALL_END would run the tool once per chunk. The text
+// half is a rendering bug by comparison — N one-fragment bubbles, then the
+// whole answer again.
+//
+// Neutralize check (performed, both halves red without the guard): remove
+// `if ev.Partial { return }` from onEvent and this reports 4 text content
+// frames instead of 1 and 3 tool triples instead of 1.
+func TestAGUIEmitterDropsPartials(t *testing.T) {
+	emit, got := collectEmit()
+	e := &aguiEmitter{emit: emit}
+
+	// Three text chunks, then the aggregate carrying the whole answer.
+	for _, chunk := range []string{"hel", "lo ", "there"} {
+		ev := mkEvent(&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: chunk}}})
+		ev.Partial = true
+		e.onEvent(ev)
+	}
+	e.onEvent(mkEvent(&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "hello there"}}}))
+
+	// Two arg chunks with no Args at all — the shape the streaming-args path
+	// produces — then the assembled call.
+	for range 2 {
+		part := &genai.Part{FunctionCall: &genai.FunctionCall{ID: "call-9", Name: "search"}}
+		ev := mkEvent(&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{part}})
+		ev.Partial = true
+		e.onEvent(ev)
+	}
+	fc := genai.NewPartFromFunctionCall("search", map[string]any{"q": "x"})
+	fc.FunctionCall.ID = "call-9"
+	e.onEvent(mkEvent(&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{fc}}))
+
+	var textContent, toolStart, toolEnd int
+	for _, f := range *got {
+		switch f.(type) {
+		case agui.TextMessageContent:
+			textContent++
+		case agui.ToolCallStart:
+			toolStart++
+		case agui.ToolCallEnd:
+			toolEnd++
+		}
+	}
+	if textContent != 1 {
+		t.Fatalf("text content frames = %d, want 1 (partials must not emit)", textContent)
+	}
+	if toolStart != 1 || toolEnd != 1 {
+		t.Fatalf("tool frames = start:%d end:%d, want 1 each — a TOOL_CALL_END per chunk is a tool dispatched per chunk", toolStart, toolEnd)
+	}
+	// The aggregate, not the last chunk, is what the run reports.
+	if e.lastText != "hello there" {
+		t.Fatalf("lastText = %q, want the aggregate %q", e.lastText, "hello there")
+	}
+}
+
 // TestAGUIExposedWorkloads: not opted in → nil; opted in → one endpoint with
 // defaults filled (endpoint_path=/agui/<name>, description from the bundle).
 func TestAGUIExposedWorkloads(t *testing.T) {

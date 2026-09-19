@@ -202,10 +202,33 @@
   anything it cannot prove is `StreamingModeNone` — including a variable, which
   is the shape a `--stream` flag would arrive in. It does not forbid SSE; it
   forbids turning SSE on silently, and its failure message is the audit list
-  for doing it properly, naming the consumers already safe and the one that is
-  worst. That last one is now written up separately: `cmd/mast/agui.go`'s
-  emitter has no dedup of any kind and would emit a complete message triad and
-  a complete tool-call triple per chunk
+  for doing it properly, naming the consumers already safe and the ones that
+  are not. The worst of those was `cmd/mast/agui.go`, which is the next entry;
+  what the message now names as unaudited is the A2A pair
+  ([#408](https://github.com/go-steer/mast/issues/408)).
+
+- **The AG-UI emitter would have dispatched every tool call once per provider
+  chunk the day streaming was turned on; it now drops partial events.** Same
+  class as the watchdog fix above, found by auditing who else depended on one
+  event being one whole model response, and nothing observable changes today
+  for the same reason: no runner site sets `StreamingModeSSE`. What it
+  prevents is worse than a miscount. Because every frame is minted per event,
+  a streamed tool call produced a *complete* `TOOL_CALL_START`/`ARGS`/`END`
+  triple per chunk with empty arguments — and a client that dispatches on
+  `TOOL_CALL_END`, which is the frame the protocol has for exactly that, would
+  run the tool several times, most of them on `{}`. The assistant-text half is
+  a rendering bug beside it: an N-chunk answer became N one-fragment messages
+  and then the whole answer again. `RunFinished.result` was always right,
+  because the aggregate arrives last and wins — so the surface that looked
+  correct was the one least able to reveal the problem. This makes the emitter
+  correct under SSE; it does not make it stream. A caller who turns SSE on
+  gets whole messages, not deltas, and feeding chunks into the delta frames
+  AG-UI already has is
+  [#407](https://github.com/go-steer/mast/issues/407) — deliberately deferred
+  until something in the module can actually stream, so the result can be
+  checked against a real client instead of a fixture. The one consumer still
+  unaudited is A2A progress narration, which fragments rather than duplicates
+  ([#408](https://github.com/go-steer/mast/issues/408))
   ([#400](https://github.com/go-steer/mast/issues/400)).
 
 - **A Vertex context cache whose TTL has elapsed is now recognised as gone.**

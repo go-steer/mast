@@ -691,6 +691,24 @@ reasoning are gated because they disclose something new; steps describe
 what is already on the wire, so gating them would be a switch with nothing
 behind it.
 
+### Every frame is whole
+
+AG-UI has delta frames — `TEXT_MESSAGE_CONTENT` carries a `delta`, so does
+`TOOL_CALL_ARGS` — and mast sends each of them exactly once per message,
+carrying the whole thing. An answer arrives as one
+`TEXT_MESSAGE_START`/`CONTENT`/`END` triad holding the entire text; a tool
+call arrives as one `TOOL_CALL_START`/`ARGS`/`END` triple holding the entire
+argument object. A client written to append deltas is correct and will
+simply receive one. Nothing arrives twice, and no `TOOL_CALL_END` ever
+describes a call the model had not finished writing.
+
+That is a promise about completeness, not a claim to stream. Turning the
+answer into per-token frames, so a browser can render it as it is produced,
+is [#407](https://github.com/go-steer/mast/issues/407) and is deliberately
+not built yet: mast runs every model non-streaming today, so there is
+nothing to forward, and the contract above is what a client can build
+against until there is.
+
 ### Hanging up is not an interrupt
 
 If the SSE connection drops — a closed laptop, a proxy timeout, a reload —

@@ -217,12 +217,22 @@ when somebody reads their chat.
   each provider chunk as a partial event *before* the guard that
   decides whether to act on it, and every one of those readers sees the
   same call again. Seven non-test files say "mast runs
-  `StreamingModeNone`" in a comment; exactly two check it
-  (`grep -rn '\.Partial' --include='*.go'`): `pkg/watchdog/bridge.go`
-  and `pkg/agent/stall.go`. The
+  `StreamingModeNone`" in a comment; three check it
+  (`grep -rn '\.Partial' --include='*.go'`): `pkg/watchdog/bridge.go`,
+  `pkg/agent/stall.go` and — since
+  [#400](https://github.com/go-steer/mast/issues/400) — the AG-UI
+  emitter in `cmd/mast/agui.go`, which was the worst entry on the list
+  because it minted a *complete* tool-call triple per chunk with empty
+  arguments, so a client dispatching on `TOOL_CALL_END` would have run
+  the tool several times. The
   assumption is pinned by `TestEveryRunnerSiteIsNonStreaming` (module
   root), whose failure message is the audit list; the pin exists to be
-  deleted by whoever finishes that audit, not to forbid streaming
+  deleted by whoever finishes that audit, not to forbid streaming. What
+  is left on it is the A2A pair
+  ([#408](https://github.com/go-steer/mast/issues/408)), and skipping
+  partials makes the AG-UI emitter *correct* under SSE without making
+  it stream — feeding chunks into AG-UI's delta frames is
+  [#407](https://github.com/go-steer/mast/issues/407)
   ([#331](https://github.com/go-steer/mast/issues/331),
   [#400](https://github.com/go-steer/mast/issues/400)).
 - **Two runner plugins bracket every tool call, in this order.**
@@ -750,7 +760,12 @@ which this line should have said when Stage 4 landed; and the
 named after the authoring agent. What is left of the activity
 family is its planner half, and that is blocked on a seam rather
 than unscheduled: a planner dispatch runs on a private runner whose
-events never reach the stream the AG-UI emitter reads); the
+events never reach the stream the AG-UI emitter reads; and
+**incremental delivery** — the emitter fills AG-UI's `delta` fields
+once per message with the whole value, which is a complete frame and
+not a stream, so rendering an answer as it is produced is
+[#407](https://github.com/go-steer/mast/issues/407), deferred until a
+runner site can actually produce chunks to forward); the
 `run_shape_*` planner vocabulary wired to the reference-graph library
 (it returns `not_implemented` in the shipped scaffold); multi-session
 attach (ACL store, per-caller auth, operator session creation) and
