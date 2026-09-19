@@ -1132,9 +1132,10 @@ deploy rather than after.
   scan, and the rest log at `ERROR` that they are not — but they do not
   *share* it either. A passive replica stays passive for its whole life and
   does not take over when the driving one dies; a Kubernetes restart of the
-  dead pod is what brings the cadence back, and it is the *restarted* pod
-  that reclaims the lease — a crashed daemon's replacement waits out the
-  8-second staleness window at boot and takes its own abandoned lease, which
+  dead pod is what brings the cadence back, and it is a *booting* instance
+  that reclaims the lease, never an already-running one — a crashed daemon's
+  replacement waits out the 8-second staleness window at boot and takes the
+  abandoned lease, which
   is also why a genuine second replica takes about ten seconds to announce
   that it is second. So scale out for request throughput if you want to;
   scheduled work still runs on exactly one pod and still pauses while that
