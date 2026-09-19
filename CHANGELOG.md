@@ -482,6 +482,21 @@
 
 ### Documentation
 
+- **The install page can no longer name a release asset that does not exist.**
+  `dev/release/check-install-page.sh` compares the asset list, the download
+  URLs and the tarball-contents sentence in `install.md` against what the
+  release actually carries — on every PR against `.goreleaser.yaml`, and after
+  each tag against the assets the published release has, which is the half
+  that is a fact rather than a prediction. docs-lint has checked the *version*
+  in those URLs since #306; it never checked the *filenames*, so a page whose
+  every version is correct could still list four tarballs where five ship, or
+  promise a signature the release does not carry. Signature artifacts are
+  required to be documented somewhere on the page rather than listed under a
+  release that predates signing. Third slice of
+  [#342](https://github.com/go-steer/mast/issues/342); the packaging half of
+  that item — what an operator installs, rather than how the page describes
+  it — waits on the chart-or-kustomization decision.
+
 - **The attach surface's REST response shapes are now pinned as conformance
   fixtures, so a client author has something normative to test against.** Seven
   `rest-*-v1.json` fixtures under `pkg/attach/testdata/conformance/` cover the

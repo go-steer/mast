@@ -25,6 +25,8 @@
 #   - publishes the Release with notes drawn from CHANGELOG.md
 #     (dev/release/notes.sh); pre-release suffixes (-pre, -rc.N)
 #     are marked Pre-release automatically
+#   - refuses to finish if the install page names assets the release
+#     does not carry (dev/release/check-install-page.sh --release)
 #
 # The O-tier gate runs on the dry run too, deliberately. A dry run's job
 # is to answer "would the real tag work", and one that skipped the only
@@ -120,6 +122,19 @@ jobs:
       - name: Verify the published signature
         if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
         run: dev/release/verify-signature.sh "${GITHUB_REF_NAME}"
+      # And the same discipline applied to the page an operator reads
+      # instead of this workflow. Every PR checks install.md against
+      # `.goreleaser.yaml`, which is a prediction; this checks it
+      # against the assets the release actually carries. install.md
+      # sat at v0.4.0 for three releases including its copy-paste
+      # download URLs (#306), which is the failure mode — caught then
+      # by a human noticing, and now by the release refusing to finish
+      # while the page sends readers at a 404.
+      - name: Verify the install page matches the published assets
+        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: dev/release/check-install-page.sh --release "${GITHUB_REF_NAME}"
       - name: GoReleaser (dry run)
         if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v6

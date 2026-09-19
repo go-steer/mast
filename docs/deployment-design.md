@@ -216,6 +216,19 @@ The release workflow runs that same script **against the published release**, no
 
 Still open on #342: SLSA provenance attestation, and a signature on the container image.
 
+### The install page is checked against the release — shipped 2026-09-19 ([#342](https://github.com/go-steer/mast/issues/342))
+
+`docs/site/src/content/docs/install.md` sat at v0.4.0 for three releases, copy-paste download URLs included, and every check was green ([#306](https://github.com/go-steer/mast/issues/306)). The rule that closed it reads the *version* in those URLs. It does not read the *filenames*, and a page whose every version is right can still list four tarballs where five ship, or offer a `checksums.txt.sig` the release does not carry.
+
+[`dev/release/check-install-page.sh`](../dev/release/check-install-page.sh) compares the page's asset list, its download URLs and its tarball-contents sentence against the assets of the release. It asks two different oracles at two different times, and the split is deliberate:
+
+- **On every PR**, the expected set comes from `.goreleaser.yaml` at the version CHANGELOG.md's newest heading names. Offline, deterministic, and correct on the release-prep PR — where the tag does not exist yet and the heading is already right, which is why docs-lint reads the changelog rather than `git describe`.
+- **After each tag**, from the assets the published release actually carries. A config is what someone intends to ship; the release is what an operator can download, and the gap between those two is the whole reason the notes check and the signature check above assert on the download.
+
+Two things the check deliberately does *not* do. Signature artifacts are required to be **documented on the page**, not **listed under the release** — signing landed after v0.9.0 was cut, so demanding `.sig` inside a list headed "Assets for v0.9.0" would demand a falsehood, while the failure worth catching is a release that signs and a page that never mentions it. And an input the parser cannot understand — an archive name template it has no evaluator for — is fatal rather than a smaller expected set quietly reported as OK.
+
+This is the *checked-by-CI* half of #342's third item. The other half, "an install page that does not assume the reader is us", is waiting on the [chart-or-kustomization choice](#packaging): what the page should tell an operator to run depends on what there is to run.
+
 ### Kubernetes manifests
 
 `examples/deploy/gke/` — canonical GKE manifests: Deployment, Service, HPA, ConfigMap (for `.agents/*`), Secrets (for provider creds), NetworkPolicy, PodDisruptionBudget. Kustomize-friendly (base + overlays for common variations).
