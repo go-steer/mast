@@ -37,7 +37,12 @@
 #   3. The tarballs on the release hash to what that signed file says.
 #
 # Skip (3) and you have verified a signature over a list you then
-# ignored. Skip (2) and you have verified that Sigstore works.
+# ignored. You cannot skip (2) by omission — cosign refuses keyless
+# verify-blob with no identity flag at all — but you can skip it by
+# widening: `--certificate-identity-regexp '.*'` reports Verified OK
+# against any workflow in any repository, and an unanchored pattern
+# matches anywhere in the identity, so it is a substring match rather
+# than the repository check it looks like. Both measured, cosign v2.6.5.
 #
 # ## Why the identity is the workflow file and not a key
 #
