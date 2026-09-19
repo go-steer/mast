@@ -1,0 +1,114 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Dependabot version updates.
+#
+# Before this file existed the repo had Dependabot *alerts* — which are
+# repo-level and need no config — but no version updates, so nothing ever
+# opened a PR. The result was a standing backlog of 11 open alerts (one
+# critical) that no automation was ever going to clear, and the only route
+# to clearing them was a human noticing. Alerts without updates are a
+# to-do list nobody is assigned.
+#
+# Minor and patch bumps are grouped into one PR per ecosystem and
+# auto-merged by .github/workflows/dependabot-automerge.yml once every
+# check on the PR is green. Majors are deliberately left ungrouped and
+# unmerged: one PR each, for a human. See that workflow for why the split
+# is drawn at major rather than somewhere else.
+#
+# Schedule note: Monday 05:30 UTC, deliberately ahead of pricing-regen's
+# 09:07 so the two bots are not contending for the same CI capacity, and
+# early enough that a week's dependency PRs have merged or failed before
+# anyone starts reading them.
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------
+  # Go module (the shipped binary and library).
+  # ---------------------------------------------------------------------
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      go-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      go-security:
+        applies-to: security-updates
+        update-types:
+          - minor
+          - patch
+
+  # ---------------------------------------------------------------------
+  # Docs site (Astro + Starlight). Build-time only — the deployed artifact
+  # is static HTML on GitHub Pages, so a vulnerability here is an exposure
+  # of the build, not of anything an operator runs. That is a reason to
+  # rank it below a Go finding, NOT a reason to leave it sitting: the
+  # build runs on CI runners against repo credentials.
+  # ---------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /docs/site
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      docs-site-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      docs-site-security:
+        applies-to: security-updates
+        update-types:
+          - minor
+          - patch
+
+  # ---------------------------------------------------------------------
+  # Workflow actions. Every workflow in this repo pins by major tag
+  # (actions/checkout@v4, create-github-app-token@v3, …), which floats
+  # patches silently and pins majors forever — so the only bump that ever
+  # shows up here is a major, and it will correctly arrive as a PR for a
+  # human rather than an auto-merge.
+  # ---------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch

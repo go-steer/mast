@@ -1,0 +1,224 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: dependabot-automerge
+
+# Merges Dependabot's minor and patch bumps once every check on the PR is
+# green. Majors are never merged here — they get a comment and wait for a
+# human.
+#
+# WHERE THE LINE IS DRAWN, AND WHY IT IS DRAWN AT MAJOR. Under semver a
+# major is the only bump whose publisher is *telling you* it breaks
+# something. Minor and patch carry a compatibility promise, and when that
+# promise is broken the break is a bug in the dependency rather than an
+# expected cost of upgrading — which means CI is the right detector for
+# it and a human reading the diff is not: nobody reviewing
+# "grpc 1.83.0 -> 1.83.2" learns anything from the diff that the test
+# suite does not learn better. A major is the opposite. Reading its
+# changelog is the work, and no amount of green changes that.
+#
+# WHAT THIS IS NOT. It is not a claim that minor bumps are safe. It is a
+# claim that the check suite is a better judge of them than a rubber-stamp
+# review, and that a dependency PR a human is supposed to read is a
+# dependency PR that sits for three weeks. The eleven alerts this repo had
+# open when this workflow was written — one critical, all of them fixable
+# by a patch or minor bump inside the current major — are what that
+# actually costs.
+#
+# WHY IT WAITS FOR EVERY CHECK RATHER THAN USING `--auto`. GitHub's
+# auto-merge fires on the *required* contexts in branch protection, which
+# here are four: docs-lint, hygiene, lint, test. The docs-site build
+# (`ci-docs / build`) is not among them, and it is precisely the check
+# that an Astro or sharp bump can break — so `--auto` would merge the one
+# class of upgrade it is least able to judge. This job instead waits for
+# every check the PR actually has and requires all of them to pass, which
+# is strictly stricter than branch protection and needs no change to it.
+# The cost is a runner sitting in a poll loop for the length of CI; at
+# roughly three grouped PRs a week that is a rounding error.
+#
+# WHY `pull_request_target`. A workflow triggered by Dependabot through
+# the ordinary `pull_request` event gets a read-only GITHUB_TOKEN and no
+# secrets, so it could neither mint the App token nor merge.
+# `pull_request_target` runs in the context of the base branch and does
+# not have that restriction.
+#
+# THE SECURITY PROPERTY THAT MAKES THAT SAFE: this workflow NEVER CHECKS
+# OUT THE PULL REQUEST. There is no `actions/checkout` anywhere below, no
+# build step, and no script read from the PR head — the job only calls the
+# GitHub API about the PR. That is the whole reason `pull_request_target`
+# is dangerous in general (it hands a privileged token to a job running
+# untrusted code) and the reason it is fine here. If you ever add a step
+# that checks out, builds, or executes anything from the PR head, this
+# becomes a remote-code-execution path into a token that can push to main.
+# Don't. Put that work in ci.yml, where it runs unprivileged.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  # Manual escape hatch: re-drive a PR that was opened while this workflow
+  # was broken, or one whose checks went green after a re-run.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number to evaluate'
+        required: true
+        type: string
+
+# GITHUB_TOKEN is used only to read check state. The merge goes through
+# the go-steer-bot App token minted below, matching pricing-regen.yml.
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+jobs:
+  automerge:
+    name: automerge
+    runs-on: ubuntu-latest
+    # Both triggers are guarded. On pull_request_target the author must be
+    # Dependabot itself — github.actor is not spoofable by PR content. On
+    # workflow_dispatch the actor is whoever pressed the button, so the
+    # Dependabot check moves to the PR's own author, verified below.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.actor == 'dependabot[bot]'
+    timeout-minutes: 30
+    steps:
+      - name: Resolve PR number
+        id: pr
+        env:
+          FROM_EVENT: ${{ github.event.pull_request.number }}
+          FROM_INPUT: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          num="${FROM_EVENT:-${FROM_INPUT:-}}"
+          if [ -z "$num" ]; then
+            echo "::error::no PR number on either trigger"
+            exit 1
+          fi
+          echo "number=${num}" >> "$GITHUB_OUTPUT"
+
+      # Re-verify authorship from the API rather than trusting the trigger.
+      # On workflow_dispatch nothing has checked it yet, and on
+      # pull_request_target this costs one call to close the gap between
+      # "the actor is Dependabot" and "the PR was authored by Dependabot".
+      - name: Verify the PR is Dependabot's
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          author="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json author -q '.author.login')"
+          echo "PR #${PR} author: ${author}"
+          if [ "$author" != "app/dependabot" ] && [ "$author" != "dependabot[bot]" ]; then
+            echo "::error::PR #${PR} was authored by '${author}', not Dependabot. Refusing."
+            exit 1
+          fi
+
+      # Reads Dependabot's own metadata off the PR — the update type is
+      # taken from what Dependabot declares, not parsed out of the title.
+      # For a grouped PR this reports the HIGHEST update type in the group,
+      # which is the conservative reading and the one we want: a group that
+      # somehow contains a major is treated as a major.
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse majors
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          set -euo pipefail
+          echo "major bump (${DEPS}) — leaving for a human"
+          echo "::notice::PR #${PR} is a major bump and will not be auto-merged"
+
+      # Poll until nothing on the PR is still running, then require every
+      # completed check to have passed. SKIPPED and NEUTRAL count as pass:
+      # a path-filtered workflow that correctly did not run (ci-docs on a
+      # gomod bump) must not block the merge, and treating "didn't run" as
+      # failure would mean no Go PR ever merges.
+      #
+      # A check that never reports at all is caught by the job timeout
+      # above rather than by this loop, which is deliberate — a hung check
+      # should look like a hung workflow, not like a silent pass.
+      - name: Wait for every check, and require all of them
+        id: checks
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 120); do
+            gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+              --json statusCheckRollup -q '.statusCheckRollup' > /tmp/rollup.json
+            pending="$(jq -r '[.[] | select((.status // "COMPLETED") != "COMPLETED")] | length' /tmp/rollup.json)"
+            total="$(jq -r 'length' /tmp/rollup.json)"
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
+              break
+            fi
+            echo "waiting: ${pending} of ${total} checks still running"
+            sleep 20
+          done
+
+          echo "--- final check state ---"
+          jq -r '.[] | "\(.name // .context): \(.conclusion // .state // "?")"' /tmp/rollup.json
+
+          bad="$(jq -r '
+            [ .[]
+              | (.conclusion // .state // "PENDING")
+              | ascii_upcase
+              | select(. != "SUCCESS" and . != "SKIPPED" and . != "NEUTRAL")
+            ] | length' /tmp/rollup.json)"
+          if [ "$bad" -ne 0 ]; then
+            echo "::error::${bad} check(s) did not pass — not merging"
+            exit 1
+          fi
+          echo "all checks green"
+
+      # Same App-token rationale as pricing-regen.yml: the org forbids
+      # GITHUB_TOKEN from acting as a PR author, and an App installation
+      # token is a distinct identity that expires in ~1h. Minted only once
+      # the checks have actually passed, so a failed run never holds a
+      # credential it has no use for.
+      - name: Mint App token
+        id: app-token
+        if: steps.checks.outcome == 'success'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.GOSTEER_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.GOSTEER_BOT_PRIVATE_KEY }}
+
+      - name: Squash-merge
+        if: steps.checks.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          set -euo pipefail
+          echo "merging #${PR} (${UPDATE_TYPE}): ${DEPS}"
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
+          state="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state -q '.state')"
+          if [ "$state" != "MERGED" ]; then
+            echo "::error::merge reported success but PR #${PR} is ${state}"
+            exit 1
+          fi
+          echo "::notice::merged #${PR} (${UPDATE_TYPE})"
