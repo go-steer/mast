@@ -1155,10 +1155,12 @@ deploy rather than after.
   stable and there is no hot reload, so an edit can land on disk and change
   nothing until the pod restarts. The daemon logs a digest of what it loaded
   and warns when the mounted files stop matching it — that is the answer,
-  chosen deliberately over reconciliation
-  ([#343](https://github.com/go-steer/mast/issues/343)). The absent CRD is
-  part of the same answer and is **not** on this list: mast is a workload you
-  schedule, not a controller you extend.
+  chosen deliberately over reconciliation. The lines it logs, the restart
+  that fixes it, and the fact that a log line is the *only* surface (no
+  metric, no alert) are written out under
+  [config drift](/install/#config-drift-diagnosed-not-reconciled). The
+  absent CRD is part of the same answer and is **not** on this list: mast is
+  a workload you schedule, not a controller you extend.
 
 The first three are gaps. The fourth is a decision that looks like a gap,
 which is why it is spelled out rather than left to inference.

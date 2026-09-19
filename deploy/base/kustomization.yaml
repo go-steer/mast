@@ -74,4 +74,9 @@ generatorOptions:
   # cost is that an edit can land on disk and change nothing, so the
   # daemon logs a `workload config identity` line at startup and warns
   # when the mounted files stop matching it.
+  #
+  # The operator-facing version of this — the lines it logs, the restart
+  # that fixes it, and the fact that a log line is the only surface — is
+  # at https://go-steer.github.io/mast/install/#config-drift-diagnosed-not-reconciled
+  # (#343). Keep the two in step; nobody installing mast reads this file.
   disableNameSuffixHash: true
