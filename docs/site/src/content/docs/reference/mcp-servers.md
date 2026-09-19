@@ -258,15 +258,34 @@ model completion on the client's account (`sampling/createMessage`), or the
 list of directories the client considers in scope (`roots/list`). On the
 2026-07-28 protocol these arrive folded into the tool result as SEP-2322
 input requests; on earlier
-versions the server sends them as requests of their own. Both shapes reach
-mast the same way and are treated the same way.
+versions the server sends them as requests of their own. The two shapes
+travel different routes, so they are refused at different points and the
+error reads differently — but they are refused.
 
-**mast refuses all of them, on both protocol versions.** The call fails with
+**mast refuses all of them, on both protocol versions.** On the older
+protocol the server sends mast a request, and mast declines to answer it:
 
 ```
 mcp: refusing server-initiated roots/list: mast's approval gate covers tool
 dispatch, not an input request inside a call already in flight
 ```
+
+On the 2026-07-28 protocol there is no request to decline — the server
+answers the call with a result that asks for input instead — so the call
+ends when mast declines to act on it:
+
+```
+mcp: tools/call returned an input-required result (roots/list): mast does
+not answer input requests, so the call cannot proceed
+```
+
+Either way the tool runs exactly once and the model is told what happened.
+That second case is worth naming explicitly, because the alternative is not
+an error: a tool result holding an input request holds no content, and a
+tool result holding no content is easily rendered to the model as *the tool
+returned nothing*. "The server asked a question mast declines to answer" and
+"the tool had nothing to say" are different facts, and only the first one
+tells an operator what to change.
 
 This is deliberate and there is no flag to turn it off. mast's approval gate
 sits on tool *dispatch* — an operator approves a specific call, and that call

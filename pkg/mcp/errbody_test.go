@@ -17,7 +17,9 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -178,17 +180,67 @@ func TestSDKStillDropsTheseBodies(t *testing.T) {
 	})
 }
 
-// TestSessionMissingSentinelSurvives guards the 404 exclusion. The SDK
-// translates a 404 to ErrSessionMissing so it can skip a redundant
-// DELETE on teardown; extracting the body there would trade a sentinel
-// the SDK acts on for a string nobody reads.
+// terminatedSession answers initialize with a session ID and then
+// answers everything after it with one 404 and body — the shape a
+// server produces when it has dropped the session out from under a
+// live client.
+//
+// A session ID is the point of the fixture. The SDK only resolves a 404
+// to ErrSessionMissing for a connection that has one, so a 404 during
+// initialize cannot reach that path at all, and a test that sends one is
+// not testing the sentinel.
+func terminatedSession(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"params"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &req)
+
+		if req.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "sess-1")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":%q,`+
+				`"capabilities":{"tools":{}},"serverInfo":{"name":"terminated","version":"0"}}}`,
+				req.ID, req.Params.ProtocolVersion)
+			return
+		}
+		if len(req.ID) == 0 {
+			// A notification (notifications/initialized). Nothing to 404.
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestSessionMissingSentinelSurvives guards the 404 exclusion in
+// worthInspecting. The SDK translates a 404 on a session it holds an ID
+// for into ErrSessionMissing, so it can skip a redundant DELETE on
+// teardown; extracting the body there would trade a sentinel the SDK
+// acts on for a string nobody reads.
+//
+// The body is the IAM denial shape on purpose. It has to be one
+// errorTextFrom *would* pull text out of, or the exclusion is not what
+// keeps the sentinel — delete the 404 line from worthInspecting and this
+// test has to fail. An earlier version of it sent a standard error
+// object, which errorTextFrom declines on a non-transient status anyway,
+// so it passed with the exclusion and without it.
 func TestSessionMissingSentinelSurvives(t *testing.T) {
-	srv := canned(t, http.StatusNotFound, "application/json",
-		`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"no such project"}}`)
+	srv := terminatedSession(t, iamDenialBody)
 
 	err := connectThroughMast(t, srv.URL)
 	if !errors.Is(err, mcpsdk.ErrSessionMissing) {
-		t.Errorf("404 no longer resolves to ErrSessionMissing: %v", err)
+		t.Errorf("404 on a live session no longer resolves to ErrSessionMissing: %v", err)
 	}
 }
 
