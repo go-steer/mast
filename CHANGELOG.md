@@ -203,8 +203,12 @@
   **This is not leader election and mast is still not multi-replica.** A
   replica that loses the race *at boot* stays passive for its whole life and
   does not take over when the leader dies later; Kubernetes restores the
-  leader instead, and it is the restarted process that reclaims the lease, not
-  the surviving passive one. A leader that loses its lease mid-life stops its
+  leader instead. Once the lease goes stale it is taken by whichever instance
+  **boots** next, with no identity check — a redeploy or a scale-up claims it
+  as readily as a restart of the pod that died. What never claims it is an
+  instance already running, which asks once at startup and never again; that
+  asymmetry, not the lease's expiry, is what "passive for its whole life"
+  means. A leader that loses its lease mid-life stops its
   scheduling loops and keeps serving requests, rather than racing the instance
   that took it. Session-ownership handoff and per-pause claims — the parts
   that would make a fleet work — are still designed and not built

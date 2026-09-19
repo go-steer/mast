@@ -1135,9 +1135,9 @@ deploy rather than after.
   dead pod is what brings the cadence back, and it is a *booting* instance
   that reclaims the lease, never an already-running one — a crashed daemon's
   replacement waits out the 8-second staleness window at boot and takes the
-  abandoned lease, which
-  is also why a genuine second replica takes about ten seconds to announce
-  that it is second. So scale out for request throughput if you want to;
+  abandoned lease, which is also why a genuine second replica takes about ten
+  seconds to announce that it is second. So scale out for request throughput
+  if you want to;
   scheduled work still runs on exactly one pod and still pauses while that
   pod is being replaced. Session-ownership handoff and per-pause claims — the
   parts that would make a real fleet — are designed and not built. Closed as

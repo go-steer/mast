@@ -47,8 +47,15 @@ import (
 // its whole life: it serves inject, AG-UI and A2A normally, and it does
 // not take over if the leader dies later. Kubernetes restores the leader
 // instead — the lease goes stale 8s after the holder stops heartbeating,
-// so the *restarted* process reclaims it (see the retry window below),
-// and a StatefulSet deletes the highest ordinal first on scale-down, so
+// and whichever instance *boots* next takes it (see the retry window
+// below). That reclaim is not identity-matched: acquireLock compares the
+// row's heartbeat against the staleness window and steals it regardless
+// of who held it, so a redeploy or a scale-up claims an abandoned lease
+// as readily as a restart of the process that died. What never claims
+// one is an instance already running — acquireSchedulingLease is called
+// once, at startup, and nothing re-checks. That asymmetry, not the
+// lease's expiry, is what "passive for its whole life" means above.
+// A StatefulSet also deletes the highest ordinal first on scale-down, so
 // the leader is also the last replica standing. Session-ownership
 // handoff and a claim-based scheduler poll are designed in
 // docs/deployment-design.md and are still not built; what ships here is
