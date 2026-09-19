@@ -115,6 +115,35 @@
 
 ### Bug or Regression
 
+- **`GET /sessions/{id}/usage` now fills in the token breakdown it has
+  promised since the route shipped.** The response declared eight token
+  fields; mast populated a turn count and a dollar figure and left every
+  bucket at zero. Three of the eight are `omitempty` and five are not, so a
+  caller could not tell a measured zero from an unmeasured one, and all of
+  them were the second kind — the shape this repo keeps producing, a claim
+  that reads like an answer. What was missing was the producer, never ported
+  from core-agent ([#356](https://github.com/go-steer/mast/issues/356)).
+  `overall`, `per_model` and `per_turn` are now real: input split into
+  cached, written and fresh, output with thinking inside it, per-call
+  timestamps and the model each price resolved against. **The wire shape is
+  unchanged** — v0.5's wire-literal pin holds, fields got populated, not
+  renamed. The counts come off the same `OnSpend` hook the durable spend
+  ledger does, rather than from a second reader of the event stream:
+  splitting a prompt into cached, written and fresh is the meter's own
+  reading of the provider's counters, and a report derived any other way
+  would describe a different call than the one the money came from. Two
+  consequences worth reading before acting on the numbers: a cache *write*
+  counts as uncached, because that is how it bills (at a premium, not a
+  discount); and `cost_usd_uncached_reference` is allowed to fall below
+  `cost_usd` rather than being clamped to it, so a session that has warmed a
+  cache it has not reused reports *cache cost $X, not yet repaid* instead of
+  reporting nothing. `turns` and `cost_usd` still come from the meter, so
+  `/usage` and `/guardrails` cannot disagree about what a session spent
+  across a restart; the buckets beside them are this process's, because the
+  ledger stores what a call cost and not what it was made of. `per_turn` is
+  capped at 500 rows with absolute turn numbers, so a first row numbered
+  above 1 is the record that rows were dropped.
+
 - **An MCP server that asks mast for input now fails the call saying so,
   instead of returning an empty tool result.** mast refuses server-initiated
   input — elicitation, sampling, roots — on both protocol versions, and has

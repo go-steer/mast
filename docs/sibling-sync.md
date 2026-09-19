@@ -1446,3 +1446,41 @@ core-agent ever registers an adapter-shaped agent behind this route, since `pkg/
 structural satisfaction is exactly the case the new `perms` capability flag exists for. The flag is
 deliberately separate from `perms_stream`: the two are separate wirings, and mast is the proof —
 it can report its rules and its adjudications without ever streaming a live question.
+
+## Found while shipping [#356](https://github.com/go-steer/mast/issues/356), 2026-09-19
+
+**Not a port, and the next triage should not file it as one.** #356's title says "the usage tracker
+was never ported", and it was not — but what shipped is mast's own producer on mast's own seam, not
+a transcription of core-agent's. The two read from different places on purpose. core-agent's tracker
+is a **second consumer of the event stream**, folding `UsageMetadata` off events as they pass; mast's
+`internal/usagetrack` folds off `budget.Config.OnSpend`, the per-call hook the durable spend ledger
+(#175) already rides, so the breakdown an operator reads and the money a ceiling is enforced against
+are one arithmetic reaching two places rather than two readings that happen to agree.
+
+The reason is mast-specific and does not transfer upstream as a criticism. Splitting a prompt into
+cached, written and fresh is `budget.callOf` + `fitBucket`'s *reading* of the provider's counters —
+reads fitted into the prompt first, residual to writes, everything floored at `flooredUsage` — not a
+copy of what the provider said. A tracker that re-derived it from the same events would describe a
+different call than the one that was priced on any turn where those guards fire, which is exactly the
+turn worth reporting. core-agent has a human watching and a `/usage` that is a convenience; mast's is
+the only account of an unattended run, so the two-readers cost lands differently.
+
+**Consequences for future triage, so a diff on either side is read correctly:**
+
+- A core-agent commit touching *its* tracker's event-stream plumbing is **n/a for mast** — mast has
+  no such reader. A commit touching what the tracker *reports* (a new bucket, a changed split, a
+  rounding rule) is a **live port candidate**, because the wire shape is shared and `attach.UsageInfo`
+  is pinned to v0.5's wire literal.
+- `budget.Spend` now carries the breakdown half — `At`, `Model`, `Call`, `ThoughtsTokens`,
+  `ToolUseTokens`, `CostUSDUncachedReference`. It is mast's own type (`pkg/budget` imports nothing
+  else in this module, #338/#339) and has no upstream analogue; core-agent's equivalent state lives
+  inside its tracker. Nothing here is owed upstream.
+- `CostUSDUncachedReference` is **deliberately not clamped to the cost**. A cache write bills at a
+  premium (1.25x fresh input on Anthropic's 5-minute TTL), so a warming turn genuinely costs more
+  than not caching at all and the reference sits below the cost until the entry is reused. If a
+  future upstream commit floors an equivalent figure, that is a divergence to argue rather than a
+  fix to absorb — and it is the same shape as `e385fb0`'s clamp argument, where *where* the floor
+  lives was the whole content of the port.
+
+**Not owed upstream.** The producer is mast's, the seam is mast's, and the defect was mast's own
+unported gap rather than a bug in anything core-agent ships.

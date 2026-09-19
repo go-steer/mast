@@ -463,8 +463,21 @@ func (m *Meter) fold(ev *session.Event, u genai.GenerateContentResponseUsageMeta
 	// running token total: with per-scope rates and per-model exact
 	// pricing the session total is a sum of differently-priced calls,
 	// not one multiplication.
-	spend, unpriced := m.priceOf(ev, u, pricer, backend, model, rate)
-	s := Spend{Author: ev.Author, Tokens: tokens, CostUSD: spend, Unpriced: unpriced}
+	c := callOf(ev, u)
+	spend, ref, priced, unpriced := m.priceOf(c, u, pricer, backend, rate, ev.ModelVersion, model)
+	s := Spend{
+		Author:   ev.Author,
+		Tokens:   tokens,
+		CostUSD:  spend,
+		Unpriced: unpriced,
+
+		At:                       ev.Timestamp,
+		Model:                    priced,
+		Call:                     c,
+		ThoughtsTokens:           int64(u.ThoughtsTokenCount),
+		ToolUseTokens:            int64(u.ToolUsePromptTokenCount),
+		CostUSDUncachedReference: ref,
+	}
 
 	m.total.add(tokens, spend)
 	if scoped {
@@ -519,38 +532,112 @@ func crossed(scope string, l Limits, u *usage) []Trip {
 // priceOf costs one model call, through the pricer where it can and at
 // the flat rate where it cannot, and reports whether it had to fall
 // back. Caller holds m.mu.
-func (m *Meter) priceOf(ev *session.Event, u genai.GenerateContentResponseUsageMetadata, p Pricer, backend, model string, rate float64) (cost float64, unpriced bool) {
+//
+// It prices the call twice. ref is what the same call would have cost on
+// a backend with no prompt cache at all, which is the only figure that
+// answers "what is the cache buying me" and the one an operator has no
+// other way to get (attach.UsageTotals.CostUSDUncachedReference, #356).
+// The second pass is a second lookup in a rate table, not a second model
+// call, and it has to happen here: by the time the Spend reaches a
+// consumer the rates are gone.
+//
+// ref is not clamped to cost. A warming turn really does cost more than
+// not caching — see Spend.CostUSDUncachedReference.
+//
+// priced is the id the price was resolved against, and it is the key any
+// per-model report must group on. Grouping on a different id than the
+// one that was billed — the sidecar's ServedModel echo, say — produces a
+// breakdown whose rows do not add up to the total above them.
+func (m *Meter) priceOf(c Call, u genai.GenerateContentResponseUsageMetadata, p Pricer, backend string, rate float64, ids ...string) (cost, ref float64, priced string, unpriced bool) {
 	if p != nil {
-		if usd, ok := priceFirst(p, backend, callOf(ev, u), ev.ModelVersion, model); ok {
-			return usd, false
+		if usd, id, ok := priceFirst(p, backend, c, ids...); ok {
+			ref := uncachedReference(c)
+			if ref == c {
+				// Nothing was served from cache and nothing was written to
+				// one, so the counterfactual is the call itself. Skipping
+				// the lookup is exact rather than an approximation, and it
+				// keeps the no-cache case — every call on a backend without
+				// prompt caching, and the first call on one with it — at
+				// one table lookup.
+				return usd, usd, id, false
+			}
+			// Same id, not the search again: the reference is this call
+			// repriced, so asking a second time could answer from a
+			// different row.
+			refUSD, _, ok := priceFirst(p, backend, ref, id)
+			if !ok {
+				// Unreachable through mast's own pricer (the row that
+				// answered above answers again), but a Pricer is an
+				// interface. Reporting the cost is "no saving computable",
+				// which is true; reporting zero would claim the cache cost
+				// this call everything it spent.
+				refUSD = usd
+			}
+			return usd, refUSD, id, false
 		}
 		m.unpriced++
 		unpriced = true
 	}
-	return float64(u.TotalTokenCount) / 1000 * rate, unpriced
+	// The flat rate has no notion of a cache, so the reference IS the
+	// cost. Reporting a saving of zero would be a claim; reporting the
+	// same number twice is the gap, and the renderer omits the delta
+	// when it is not positive.
+	flat := float64(u.TotalTokenCount) / 1000 * rate
+	return flat, flat, firstNonEmpty(ids...), unpriced
+}
+
+// uncachedReference is c as it would have been billed by a backend that
+// served nothing from cache and kept nothing for later: every prompt
+// token fresh, output unchanged.
+//
+// Cache writes fold into fresh input rather than staying separate,
+// because the counterfactual is a caller who never asked for the entry
+// — those tokens would still have been sent, at the plain rate, without
+// the premium. Leaving them in their own bucket would price the
+// reference as "cached but paying to write", which is not a run anyone
+// could have had.
+func uncachedReference(c Call) Call {
+	return Call{
+		UncachedInputTokens: c.UncachedInputTokens + c.CachedInputTokens + c.CacheWriteTokens,
+		OutputTokens:        c.OutputTokens,
+	}
 }
 
 // priceFirst asks the pricer for each of ids in turn and returns the
-// first price it gets, skipping empty ones. Order is preference:
-// callers pass the event's own ModelVersion before the configured name,
-// because a server echo names what was actually billed — but an echo the
-// pricer cannot resolve is no better than no echo, so a miss falls
-// through rather than ending the search. See Limits.Model for why the
-// second id is needed at all.
+// first price it gets, and the id that got it, skipping empty ones.
+// Order is preference: callers pass the event's own ModelVersion before
+// the configured name, because a server echo names what was actually
+// billed — but an echo the pricer cannot resolve is no better than no
+// echo, so a miss falls through rather than ending the search. See
+// Limits.Model for why the second id is needed at all.
 //
 // Every id is tried on the same backend, including the echoed one: the
 // echo names the model the backend billed for, never a different
 // backend.
-func priceFirst(p Pricer, backend string, c Call, ids ...string) (float64, bool) {
+func priceFirst(p Pricer, backend string, c Call, ids ...string) (float64, string, bool) {
 	for _, id := range ids {
 		if id == "" {
 			continue
 		}
 		if usd, ok := p.PriceCall(backend, id, c); ok {
-			return usd, true
+			return usd, id, true
 		}
 	}
-	return 0, false
+	return 0, "", false
+}
+
+// firstNonEmpty names the call for a report when no pricer resolved it —
+// an unpriced call, or a meter running on the flat rate alone. It is the
+// same preference order priceFirst walks, so the two never disagree
+// about which id describes a call; what differs is only whether a rate
+// was found for it.
+func firstNonEmpty(ids ...string) string {
+	for _, id := range ids {
+		if id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 // callOf normalizes one event's usage into the billable buckets a

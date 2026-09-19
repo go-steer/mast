@@ -328,6 +328,18 @@ type InterruptProvider interface {
 // recorded any turns — see core-agent#222 for the motivating operator
 // use case (per-turn cost + cache attribution).
 //
+// Overall is not simply the sum of PerTurn, and on one daemon it is not
+// always the sum of PerModel either. Its Turns and CostUSD are the
+// meter's cumulative figures for the session, so that what an operator
+// reads here is the number the budget ceiling is enforced against; the
+// token buckets beside them, and every PerModel and PerTurn row, are
+// measured in the process that is answering. A session resumed after a
+// restart therefore reports its whole spend and a breakdown that starts
+// at the resume — mast's durable spend ledger records what each call
+// cost and not what it was made of. PerTurn is also bounded: a long
+// unattended session drops its oldest rows, and the gap between the
+// first row's Turn and 1 is what says so.
+//
 // DigestMethods is the digest wrapper's per-method call count
 // (core-agent#130 / task #84). Present when at least one
 // digest.Process call has fired process-wide — on mast that means the
@@ -360,13 +372,30 @@ type DigestMethodsInfo struct {
 // InputTokens is the total effective prompt size and already includes
 // InputTokensCached (Gemini semantics — see usage.Turn docstring).
 // InputTokensUncached = InputTokens - InputTokensCached and is emitted
-// as a convenience so operators don't have to do the subtraction.
+// as a convenience so operators don't have to do the subtraction. A
+// prompt subset that *created* a cache entry counts as uncached: it is
+// fresh input, billed at a premium rather than a discount.
+//
+// OutputTokens is everything billed at the output rate, and
+// ThoughtsTokens is the thinking subset of it, not an addition to it —
+// the same relationship InputTokensCached has to InputTokens. Summing
+// the two double-counts the thinking. On Anthropic the split is not
+// reported at all and ThoughtsTokens stays zero while the thinking is
+// still inside OutputTokens, which is how that provider bills it.
 //
 // CostUSD is the daemon's own cost estimate with the cached-vs-uncached
 // rate split applied. CostUSDUncachedReference is what CostUSD would
-// have been with zero cache hits — the delta between the two is the
-// caching win, which the demo drive on 2026-07-13 confirmed operators
-// have no other way to see.
+// have been on a backend with no prompt cache at all — the delta between
+// the two is the caching win, which the demo drive on 2026-07-13
+// confirmed operators have no other way to see.
+//
+// The delta can be negative, and is not clamped. Writing a cache entry
+// bills at a premium over fresh input, so a session that warms a cache
+// and does not reuse it has spent money on caching and saved none, and
+// that is a thing worth being able to read. A call priced without a rate
+// card, and spend restored from a previous process, both report a
+// reference exactly equal to their cost: a saving that cannot be
+// computed is a gap rather than a zero.
 //
 // Fields default to zero and use omitempty so a session that never
 // touched the prompt cache still renders cleanly.
@@ -382,9 +411,19 @@ type UsageTotals struct {
 }
 
 // UsageTurn is one entry in UsageInfo.PerTurn — the per-model-call
-// breakdown behind the aggregate Overall totals. Turn is 1-based in
-// submission order; TotalTokens follows the genai convention
-// (prompt + candidates + tool-use + thoughts).
+// breakdown behind the aggregate Overall totals. Turn is 1-based and
+// absolute over the session, so it keeps counting past the point where
+// UsageInfo stops keeping the oldest rows.
+//
+// The token fields carry UsageTotals' meanings. TotalTokens is the
+// provider's own total for the call, reported rather than recomputed:
+// genai's convention is prompt + candidates + thoughts, with tool-use
+// prompt already inside the prompt, but a provider projected onto that
+// shape need not add up and the number an operator can take to a bill is
+// the one the provider stated.
+//
+// ToolUseTokens is the tool-definition and server-side-tool share of
+// InputTokens — a breakdown of the prompt, not an addition to it.
 type UsageTurn struct {
 	Turn                     int       `json:"turn"`
 	At                       time.Time `json:"ts"`
