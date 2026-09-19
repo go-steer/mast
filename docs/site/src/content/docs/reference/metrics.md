@@ -196,3 +196,13 @@ server with `no_digest: true` and a daemon running `--mcp-digest=false`
 emit nothing here. And it does not yet parent the upstream HTTP round
 trip — mast has no `otelhttp` on the MCP transport, so a hosted server's
 request time shows as span duration rather than as a child.
+
+## What has no metric
+
+Config drift does not. The daemon checks once a minute whether the
+configuration on disk still matches what it loaded and logs a `WARN`
+when it stops matching, but nothing here counts it and there is no
+alert behind it — if you want to be paged when an edit fails to take,
+alert on that log line. See [config
+drift](/install/#config-drift-diagnosed-not-reconciled) for what it
+looks like and what to do about it.

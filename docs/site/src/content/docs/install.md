@@ -75,6 +75,87 @@ and it comes with three things to know before the first apply — **run one
 replica**, **one mast per tenant**, and **config drift is diagnosed rather
 than reconciled**. Each is spelled out, with the issue tracking it, under
 [what installing it costs you today](/roadmap/#what-installing-it-costs-you-today).
+The third of those is the one that will surprise you after the first apply, so
+it has its own section below.
+
+## Config drift: diagnosed, not reconciled
+
+**mast does not reload configuration, and editing a ConfigMap does not restart
+it.** Both halves are deliberate. The consequence is the one worth
+internalising before you rely on an edit: *an apply can succeed, the files on
+disk can change, and the daemon can keep running the old configuration
+indefinitely.*
+
+The kustomize base sets `disableNameSuffixHash: true`, so `mast-workload`
+keeps a stable name across applies. A hashed name is the usual way to make a
+ConfigMap edit roll the pods, and it is the wrong trade here: this daemon
+holds in-flight turns that are spending money, approvals parked waiting on a
+human, and armed schedules. Rolling it on every `kubectl apply` — including
+the ones that changed nothing it cares about — costs more than a stale read.
+
+### What you see instead
+
+At startup the daemon logs the identity of exactly what it loaded:
+
+```json
+{"level":"INFO","msg":"workload config identity",
+ "root":"/etc/mast/workload","bundle":"/etc/mast/workload/workload.yaml",
+ "digest":"sha256:20da24285cbc0b31","files":8,"bytes":17947,
+ "newest_mtime":"2026-09-13T19:13:44Z"}
+```
+
+The `digest` is over file *contents* and relative paths only. mtime is
+excluded on purpose — a ConfigMap remount rewrites every mtime without
+changing a byte — and so is the absolute root, so the same bundle mounted at a
+different path digests identically. Two daemons reporting the same digest are
+running the same configuration, and that is a claim you can act on.
+
+Once a minute the daemon re-hashes what is on disk and compares it to what it
+loaded. When they diverge it says so, once, naming the file:
+
+```json
+{"level":"WARN","msg":"WORKLOAD CONFIG ON DISK NO LONGER MATCHES THE RUNNING CONFIG — the edit has not taken effect",
+ "running_digest":"sha256:20da24285cbc0b31","on_disk_digest":"sha256:4e3a2d0b8eba8e6e",
+ "changed":"specialists/storage-audit.specialist.md",
+ "remedy":"mast does not reload configuration; restart the daemon (kubectl rollout restart) to pick this up"}
+```
+
+It is edge-triggered, not repeated every minute, so it will not bury your
+logs — and if you revert the edit it says that too:
+
+```json
+{"level":"INFO","msg":"workload config on disk matches the running config again",
+ "digest":"sha256:20da24285cbc0b31"}
+```
+
+### What to do about it
+
+```sh
+kubectl rollout restart statefulset/mast -n mast-triage
+```
+
+The new pod logs a fresh `workload config identity` line; compare its `digest`
+to the `on_disk_digest` from the warning to confirm the edit took.
+
+### The log line is the only surface
+
+There is **no metric and no alert** for config drift. If nothing is reading
+the daemon's logs, nothing will tell you the edit did not land. That is a real
+limitation, not an oversight to read past: if you want to be paged on it, the
+thing to alert on today is the `WARN` above, matched on its `msg`. Every other
+`mast_*` metric is listed under [metrics](/reference/metrics/), and none of
+them covers this.
+
+### There is no CRD, and none is planned
+
+mast is a workload you schedule, not a controller you extend. It does not
+install a CRD, does not run a reconcile loop, and will not grow one — a second
+control plane to version, support and freeze, aimed at configuration that is
+already files you have GitOps for, is not a trade this project wants to make.
+Drift detection is the answer to "is the daemon running what I applied", and
+the answer is deliberately a diagnosis rather than a correction: mast tells
+you, and you decide when the restart is safe. Given what an in-flight turn is
+holding, that decision is not one a controller should be making for you.
 
 ## Next
 
