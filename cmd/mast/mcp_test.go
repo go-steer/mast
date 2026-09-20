@@ -49,7 +49,7 @@ func writeCatalogFile(t *testing.T, dir, body string) string {
 // missing-catalog error must not fire.
 func TestWireMCPToolsets_EchoSkips(t *testing.T) {
 	ts, _, err := wireMCPToolsets(context.Background(), discardLogger(),
-		bundleWithMCP("gke"), t.TempDir(), "echo", nil)
+		bundleWithMCP("gke"), t.TempDir(), "echo", nil, nil)
 	if err != nil {
 		t.Fatalf("echo wiring should never error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestWireMCPToolsets_EchoSkips(t *testing.T) {
 // no MCP servers does not require an mcp.json to exist.
 func TestWireMCPToolsets_NoRefsSkipsCatalog(t *testing.T) {
 	ts, _, err := wireMCPToolsets(context.Background(), discardLogger(),
-		workload.Bundle{}, t.TempDir(), "scripted", nil)
+		workload.Bundle{}, t.TempDir(), "scripted", nil, nil)
 	if err != nil {
 		t.Fatalf("no-ref wiring should not require a catalog: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestWireMCPToolsets_NoRefsSkipsCatalog(t *testing.T) {
 // under a real model with no mcp.json present is a fatal error.
 func TestWireMCPToolsets_MissingCatalog(t *testing.T) {
 	_, _, err := wireMCPToolsets(context.Background(), discardLogger(),
-		bundleWithMCP("gke"), t.TempDir(), "scripted", nil)
+		bundleWithMCP("gke"), t.TempDir(), "scripted", nil, nil)
 	if err == nil {
 		t.Fatal("expected error when mcp.json is absent but a server is referenced")
 	}
@@ -90,7 +90,7 @@ func TestWireMCPToolsets_UnknownServer(t *testing.T) {
   "servers": {"gke": {"transport": "http", "url": "https://x"}}
 }`)
 	_, _, err := wireMCPToolsets(context.Background(), discardLogger(),
-		bundleWithMCP("nonesuch"), dir, "scripted", nil)
+		bundleWithMCP("nonesuch"), dir, "scripted", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for a server not defined in the catalog")
 	}
@@ -108,7 +108,7 @@ func TestWireMCPToolsets_StdioWiresLazily(t *testing.T) {
   "servers": {"blocker": {"transport": "stdio", "command": "/nonexistent/blocker"}}
 }`)
 	ts, _, err := wireMCPToolsets(context.Background(), discardLogger(),
-		bundleWithMCP("blocker"), dir, "scripted", nil)
+		bundleWithMCP("blocker"), dir, "scripted", nil, nil)
 	if err != nil {
 		t.Fatalf("stdio wiring should be lazy and not error: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestWireMCPToolsets_RetrieveRawRidesWithTheWrap(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeCatalogFile(t, t.TempDir(), twoServerCatalog)
 			ts, extra, err := wireMCPToolsets(context.Background(), discardLogger(),
-				bundleWithMCP(tc.servers...), dir, "scripted", tc.opts)
+				bundleWithMCP(tc.servers...), dir, "scripted", tc.opts, nil)
 			if err != nil {
 				t.Fatalf("wireMCPToolsets: %v", err)
 			}
@@ -200,7 +200,7 @@ func TestWireMCPToolsets_OptOutIsPerServer(t *testing.T) {
 	}
 	dir := writeCatalogFile(t, t.TempDir(), twoServerCatalog)
 	_, extra, err := wireMCPToolsets(context.Background(), discardLogger(),
-		bundleWithMCP("gke", "logs"), dir, "scripted", &mcp.DigestOptions{Store: store})
+		bundleWithMCP("gke", "logs"), dir, "scripted", &mcp.DigestOptions{Store: store}, nil)
 	if err != nil {
 		t.Fatalf("wireMCPToolsets: %v", err)
 	}

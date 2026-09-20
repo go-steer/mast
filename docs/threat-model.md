@@ -153,10 +153,22 @@ results. All four reach the model. mast's stance is default-deny-unknown
 invents `helpfully_reconcile_everything` gets a parked call rather than
 a change. A server's *results*, however, are case A.
 
-Note that MCP tool annotations — including the spec's own
-`readOnlyHint` — are **not** consulted, and could not be: they are
-advisory, and ADK v2.1.0's `mcptoolset` drops them during conversion
-anyway. Classification comes from the operator's bundle or not at all.
+A server's `readOnlyHint` annotation **is** consulted, as of #447, and
+that is a deliberate widening of what this section trusts. The old text
+here said annotations "could not be" consulted because ADK's `mcptoolset`
+drops them at conversion; the drop is real but happens above the client,
+after the `tools/list` response has already crossed mast's own middleware
+with the annotations on it, so the impossibility claim was wrong. What
+remains true is that the hint is the server's self-description, no more
+authoritative than the tool names and descriptions in the paragraph above
+— which is the argument for taking it: a server already chooses all of
+those, and `mcp.json` is inside the control plane (§1.1). The operator's
+`tool_catalog.tools[].mutating` override is evaluated **before** the hint
+and wins in both directions, so a server cannot un-gate a tool the bundle
+has pinned; and a tool neither has classified is still mutating, since a
+missing annotation and `readOnlyHint: false` are indistinguishable on the
+wire. Two servers disagreeing about a shared tool name resolve to
+mutating, so a collision cannot be used to launder a classification.
 
 ### Not modelled
 

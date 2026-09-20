@@ -84,6 +84,44 @@
 
 ### Feature
 
+- **An MCP tool that declares `readOnlyHint: true` is now classified read-only
+  instead of mutating, so it stops parking for approval.** Under the default
+  `hitl.on_mutation: require_approval`, every tool from every MCP server used
+  to interrupt the run — a cluster *list* asked for a human the same way a
+  cluster *delete* did, and an operator who wired three servers got an
+  approval prompt per read. The annotation that distinguishes them was on the
+  wire the whole time. mast's own comments said otherwise, because ADK's
+  `mcptoolset` drops annotations when it converts a tool, and that got read as
+  "the hint is unavailable" rather than what it is: dropped one layer *above*
+  where mast can see it. The `tools/list` response passes through mast's own
+  client middleware with the annotations still attached, which is the same
+  edge `refuseInputRequiredResults` already sits on — no second session, no
+  second process for a stdio server, no extra round trip.
+
+  **This widens what runs unattended, so the precedence is the point.** The
+  audited `tool_catalog.tools[].mutating` override is read **before** the
+  hint and still wins in both directions, so an operator who does not extend
+  trust to a particular tool pins it and no server can unpin it. Below that
+  come mast's builtins, then the hint, then the unchanged default: a tool
+  nobody has classified is mutating. Taking a server at its word is
+  deliberate rather than incidental — `mcp.json` is operator-trusted
+  control-plane config that the permission gate write-protects, so adding a
+  server to it is already the grant, and a new config key to re-ask the
+  question would have frozen at v1.0. What you get instead is a log line per
+  server at startup counting how many of its tools called themselves
+  read-only, mutating and neither.
+
+  Three shapes are unchanged on purpose: a tool with **no** annotations at all
+  is still mutating (the hint is a plain bool, so "said false" and "said
+  nothing" decode identically — absence is carried by the annotations object
+  being absent, and such a tool is never recorded); a `read_only: true` server
+  declaration still wins; and composition-time validation, which runs before
+  any MCP session exists, still sees nothing and answers exactly as it did
+  before. Where two servers publish the same tool name (names are
+  un-namespaced, [#221](https://github.com/go-steer/mast/issues/221)) and
+  disagree, the tool is mutating and both servers are named at WARN
+  ([#447](https://github.com/go-steer/mast/issues/447)).
+
 - **Release assets, the container image and the chart now carry SLSA build
   provenance.** A signature says *who signed this*; an attestation says *what
   built it* — repository, commit, workflow file, ref, runner. The second is

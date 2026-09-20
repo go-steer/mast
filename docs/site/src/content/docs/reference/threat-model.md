@@ -135,11 +135,25 @@ Classification order:
 1. Engine control-flow calls → read-only, not reclassifiable
 2. Your `tool_catalog.tools[].mutating` overrides
 3. mast's own built-in tools → their registered class
-4. **Everything else, including every MCP tool → mutating**
+4. An MCP server's `readOnlyHint` for its own tool → what it says
+5. **Everything else → mutating**
 
-MCP's own `readOnlyHint` annotation is never consulted. It is advisory,
-and ADK drops it during tool conversion regardless, so trusting it would
-mean trusting a field that may not have survived the trip.
+Step 4 is a trust decision, so state it as one: mast takes a wired MCP
+server's word about which of its tools only read. That is the same trust
+`mcp.json` already extends — a server in that file may name, describe and
+schema its tools freely, and this is one more field in the same
+self-description — and the file is inside the control plane (§1.1), write-
+protected by the gate. What step 4 is *not* is a way for a server to reach
+past your configuration: step 2 is read first, so a tool you have pinned
+`mutating: true` stays gated whatever its server claims, and that override
+is audit-logged at startup while the hint is logged per server at connect.
+
+Two limits keep the blast radius where you can see it. A tool with no
+annotation at all is untouched by step 4 and falls to step 5 — the hint is
+a boolean whose absence and whose `false` are the same bytes, so mast
+records neither. And where two servers publish the same tool name and
+disagree about it, the tool is mutating and both are named in a warning;
+a name collision is not a channel for the more permissive server to win.
 
 ### Ceilings
 

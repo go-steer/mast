@@ -363,8 +363,10 @@ func (b BuiltinTools) CodeExecutionOn() bool { return on(b.CodeExecution) }
 // OnMutation is what happens before a state-mutating tool call
 // (docs/orchestration-design.md, hitl_policy.on_mutation). Which calls
 // are mutating is the mutation predicate's answer, not this field's:
-// built-in annotation or absent MCP readOnlyHint, default-deny-unknown,
-// narrowed by the audited tool_catalog.tools[].mutating overrides.
+// the audited tool_catalog.tools[].mutating overrides first, then a
+// built-in's registered class, then the MCP readOnlyHint the server
+// published, then default-deny-unknown for everything still
+// unclassified (#447).
 type OnMutation string
 
 const (
@@ -681,14 +683,21 @@ func (c MonitorCollect) Key() string {
 // call them — does not survive contact with the write gate, and the
 // reason is not a mast quirk. A run-to-run finding diff *advances
 // persisted state* as a side effect of answering "what changed?", so it
-// declares itself mutating and is right to; and mast's mutation
-// predicate defaults every MCP tool to mutating regardless, because
-// ADK's mcptoolset drops MCP's annotations and default-deny-unknown is
-// the only safe reading of a tool nobody classified. Under the default
+// declares itself mutating and is right to. Under the default
 // hitl.on_mutation: require_approval, a cycle that asks the model to
 // call the diff parks for a human on EVERY fire. An unattended monitor
 // that needs an operator to authorize finding out whether anything
 // changed is not unattended.
+//
+// Through v0.9 the argument was wider than that and wrong in its wide
+// part: mast's predicate defaulted *every* MCP tool to mutating, said
+// to be forced by ADK's mcptoolset dropping MCP's annotations. #447
+// closed that — the annotations are read off the tools/list response
+// before the conversion that drops them — so a genuinely read-only
+// collection tool no longer parks merely for being MCP. The narrow
+// argument is untouched and is the one this block rests on: a finding
+// diff advances persisted state, so it is mutating however it is
+// classified, and no annotation is going to say otherwise.
 //
 // So the collection leg is mast's. Nothing gates it because no model
 // asked for anything, and internal/compose refuses to start if a tool

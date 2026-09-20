@@ -818,7 +818,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// runner construction path attaches it (#53's lesson).
 	// Built once and shared with the boot-time auto-resume pass so its
 	// eligibility gate classifies dangling calls exactly as the outbox does.
-	effPred := effects.NewPredicate(effects.Overrides(logger, toolPolicies(bundle)))
+	effPred := effects.NewPredicateWithHints(effects.Overrides(logger, toolPolicies(bundle)), built.mcpAnnotations.ReadOnly)
 	effSubAgents := effects.SubAgentNames(root)
 	// A sub-agent name that also names a mutating tool is ambiguous in the
 	// session log and makes a genuine effect invisible to the outbox (gate
@@ -2017,7 +2017,12 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, mdl mode
 		return rootBuild{}, err
 	}
 
-	toolsets, extraTools, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, mdl.name, seams.digest)
+	// Annotations captured off each server's tools/list, so the mutation
+	// predicate can classify an MCP tool instead of defaulting it to
+	// mutating (#447). Built here because this is where the toolsets are
+	// built; read in serve, where the predicate is.
+	mcpAnnotations := mastmcp.NewAnnotations(logger)
+	toolsets, extraTools, err := wireMCPToolsets(ctx, logger, bundle, cfgDir, mdl.name, seams.digest, mcpAnnotations)
 	if err != nil {
 		return rootBuild{}, err
 	}
@@ -2049,9 +2054,10 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, mdl mode
 		// compose installed it or the MCP wiring did. Concatenated into
 		// a fresh slice rather than appended in place — compose's return
 		// value is not this function's to extend.
-		builtin:  append(append([]tool.Tool(nil), builtin...), extraTools...),
-		dispatch: resolved,
-		config:   cfgID,
+		builtin:        append(append([]tool.Tool(nil), builtin...), extraTools...),
+		dispatch:       resolved,
+		config:         cfgID,
+		mcpAnnotations: mcpAnnotations,
 	}, nil
 }
 
@@ -2078,6 +2084,13 @@ type rootBuild struct {
 	// from it, and serve hands it to the drift watcher. Zero value
 	// under --workload="" (no bundle, nothing to watch).
 	config configIdentity
+
+	// mcpAnnotations holds the readOnlyHint every wired MCP server
+	// published for its own tools. serve feeds it to the mutation
+	// predicate; it is populated lazily, on each server's first
+	// tools/list, which is the same round trip that shows the model the
+	// tool in the first place (#447).
+	mcpAnnotations *mastmcp.Annotations
 }
 
 // catalog builds the operator tool catalog for this build.
@@ -2146,7 +2159,7 @@ func resolveDispatch(flagValue string, bundle *workload.Bundle) string {
 // unchanged — but retrieve_raw is still registered for the servers that
 // were, and a roster where every server opted out gets no tool, because
 // nothing will have stored anything for it to fetch.
-func wireMCPToolsets(ctx context.Context, logger *slog.Logger, bundle workload.Bundle, cfgDir, modelName string, digestOpts *mastmcp.DigestOptions) ([]tool.Toolset, []tool.Tool, error) {
+func wireMCPToolsets(ctx context.Context, logger *slog.Logger, bundle workload.Bundle, cfgDir, modelName string, digestOpts *mastmcp.DigestOptions, annotations *mastmcp.Annotations) ([]tool.Toolset, []tool.Tool, error) {
 	if modelName == "echo" || len(bundle.ToolCatalog.MCP) == 0 {
 		return nil, nil, nil
 	}
@@ -2173,7 +2186,7 @@ func wireMCPToolsets(ctx context.Context, logger *slog.Logger, bundle workload.B
 			logger.Info("wiring stdio MCP server (launched on first tool use)",
 				"server", ref.Server, "command", cmdPath, "args", cmdArgs)
 		}
-		ts, err := mastmcp.NewToolset(ctx, ref.Server, scfg)
+		ts, err := mastmcp.NewToolset(ctx, ref.Server, scfg, mastmcp.WithAnnotations(annotations))
 		if err != nil {
 			return nil, nil, fmt.Errorf("wire MCP server %q: %w", ref.Server, err)
 		}

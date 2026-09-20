@@ -1610,7 +1610,7 @@ keeps recording under other names: a claim mast makes in text that nothing in th
 
 | SHA | Subject | Verdict |
 |---|---|---|
-| `92091883` | mcp: believe the server when it says a tool only reads (#1099) | **Port, first.** Falsifies a premise mast wrote down as a fact about the substrate. |
+| `92091883` | mcp: believe the server when it says a tool only reads (#1099) | **Ported 2026-09-20** ([#447](https://github.com/go-steer/mast/issues/447)). Falsified a premise mast wrote down as a fact about the substrate. |
 | `6cab9d67` | attach: a pump's start cursor belongs to the pump (#1076) | **Ported 2026-09-20** ([#448](https://github.com/go-steer/mast/issues/448)). A live data race in ported code, reachable in mast by the same interleaving; the regression test was confirmed to trip `-race` on both read sites first. |
 | `f93d675d` + `eae797f8` | permissions: a refused call cannot re-open the same prompt; the gate ends a turn the operator already answered | **Port the mechanism; mast already has the words.** |
 | `8303e2f2` | eventlog: one event, one transaction (#1063) | **Port.** mast documents the same non-atomicity as a v1 limitation, in two files. |
@@ -1750,11 +1750,19 @@ green run. That second property is the same vacuity floor `charts/installpage_te
 
 Carried forward from 2026-09-20, in the order they are worth doing:
 
-1. **[#447](https://github.com/go-steer/mast/issues/447) (`92091883`) — read the MCP `readOnlyHint`
-   the server already sends.** First, because it is the only row in the batch that falsifies
-   something mast states as a fact about the substrate, it removes the root cause of a workaround
-   mast built a whole bundle leg around, and the client middleware seam it needs is already
-   installed.
+1. ~~**[#447](https://github.com/go-steer/mast/issues/447) (`92091883`) — read the MCP `readOnlyHint`
+   the server already sends.**~~ **Done 2026-09-20.** Ranked first because it was the only row in the
+   batch that falsified something mast states as a fact about the substrate, and the client
+   middleware seam it needs was already installed. Both held: the capture is nine lines on the seam
+   `refuseInputRequiredResults` already occupies, and the premise was wrong in a specific way worth
+   recording — ADK's `mcptoolset` does drop annotations, but it drops them one layer *above* the
+   client, after the `tools/list` response has already passed through mast's own middleware carrying
+   them. Nobody had looked, because the true half of the sentence was load-bearing enough to stop the
+   question. What the port then needed was not the mechanism but the **trust decision** — taking a
+   remote server's word moves tools from gated to ungated — settled as "trust it, no new config key,
+   the audited `tool_catalog` override wins and is checked first" in [`./README.md`](./README.md)'s
+   resolved-decisions table. Cost of the whole thing: one new file, one new predicate constructor,
+   and a fixture server publishing one tool of each of the three shapes.
 2. ~~**[#448](https://github.com/go-steer/mast/issues/448) (`6cab9d67`) — the pump's start cursor.**~~
    **Done 2026-09-20.** Cheapest real defect in the batch, as predicted: a data race in ported code,
    fixable without a design decision. It was taken first anyway, ahead of #447, because it needed no

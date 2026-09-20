@@ -45,9 +45,13 @@ import (
 // to full daemon-environment inheritance in childEnv. The catalog-level
 // command_allowlist is not enforced here because it is a Catalog policy,
 // not a property of a single ServerConfig.
-func NewToolset(ctx context.Context, name string, cfg ServerConfig) (tool.Toolset, error) {
+func NewToolset(ctx context.Context, name string, cfg ServerConfig, opts ...ToolsetOption) (tool.Toolset, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("mcp: server %q: %w", name, err)
+	}
+	var o toolsetOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 	var (
 		ts  tool.Toolset
@@ -55,9 +59,9 @@ func NewToolset(ctx context.Context, name string, cfg ServerConfig) (tool.Toolse
 	)
 	switch cfg.Transport {
 	case TransportHTTP:
-		ts, err = newHTTPToolset(ctx, name, cfg, nil)
+		ts, err = newHTTPToolset(ctx, name, cfg, nil, o.annotations)
 	case TransportStdio:
-		ts, err = newStdioToolset(name, cfg, nil)
+		ts, err = newStdioToolset(name, cfg, nil, o.annotations)
 	default:
 		return nil, fmt.Errorf("mcp: server %q: unsupported transport %q (want %q or %q)",
 			name, cfg.Transport, TransportHTTP, TransportStdio)
@@ -66,6 +70,25 @@ func NewToolset(ctx context.Context, name string, cfg ServerConfig) (tool.Toolse
 		return nil, err
 	}
 	return named{name: name, Toolset: ts}, nil
+}
+
+// ToolsetOption configures NewToolset. Variadic so the two settings a
+// caller may want — nothing today beyond the annotation sink — do not
+// each fork the constructor.
+type ToolsetOption func(*toolsetOptions)
+
+type toolsetOptions struct {
+	annotations *Annotations
+}
+
+// WithAnnotations routes the server's tools/list annotations into a,
+// where mast's mutation predicate can read them. Without it an MCP tool
+// stays unclassified and the predicate's default-deny-unknown applies —
+// which is what every caller got before #447, and what a caller that
+// does not want to extend trust to a server's self-declaration still
+// gets by leaving this off.
+func WithAnnotations(a *Annotations) ToolsetOption {
+	return func(o *toolsetOptions) { o.annotations = a }
 }
 
 // serverInitiatedInput are the requests an MCP server can send *to* the
@@ -236,9 +259,18 @@ func newMCPClient() *mcpsdk.Client {
 // render it as a tool that returned nothing. The two transports both go
 // through here; newMCPClient stays the unopinionated client a caller that
 // *does* own the retry loop would want.
-func newToolsetClient() *mcpsdk.Client {
+//
+// ann, when non-nil, additionally captures the tool annotations off the
+// tools/list response — the same sending edge, for the same reason: it
+// is where mast sees what the server sent rather than what the toolset
+// above it kept. server names the catalog key, for the log line and for
+// naming both sides of a cross-server name conflict.
+func newToolsetClient(server string, ann *Annotations) *mcpsdk.Client {
 	c := newMCPClient()
 	c.AddSendingMiddleware(refuseInputRequiredResults())
+	if ann != nil {
+		c.AddSendingMiddleware(captureToolAnnotations(ann, server))
+	}
 	return c
 }
 
@@ -274,7 +306,7 @@ func (n named) Name() string { return n.name }
 // it observes the response the server actually sent, and it is the
 // outermost layer for now: when otelhttp arrives it belongs outside
 // this one, so the span records the raw HTTP outcome.
-func newHTTPToolset(ctx context.Context, name string, cfg ServerConfig, filter tool.Predicate) (tool.Toolset, error) {
+func newHTTPToolset(ctx context.Context, name string, cfg ServerConfig, filter tool.Predicate, ann *Annotations) (tool.Toolset, error) {
 	if cfg.URL == "" {
 		return nil, fmt.Errorf("mcp: server %q: http transport requires a url", name)
 	}
@@ -297,7 +329,7 @@ func newHTTPToolset(ctx context.Context, name string, cfg ServerConfig, filter t
 	}
 
 	ts, err := mcptoolset.New(mcptoolset.Config{
-		Client:     newToolsetClient(),
+		Client:     newToolsetClient(name, ann),
 		Transport:  transport,
 		ToolFilter: filter,
 	})
@@ -311,13 +343,13 @@ func newHTTPToolset(ctx context.Context, name string, cfg ServerConfig, filter t
 // mcptoolset rejects an Auth credential provider on a non-HTTP transport,
 // so stdio servers authenticate (if at all) through their environment —
 // see buildStdioCommand.
-func newStdioToolset(name string, cfg ServerConfig, filter tool.Predicate) (tool.Toolset, error) {
+func newStdioToolset(name string, cfg ServerConfig, filter tool.Predicate, ann *Annotations) (tool.Toolset, error) {
 	if cfg.Command == "" {
 		return nil, fmt.Errorf("mcp: server %q: stdio transport requires a command", name)
 	}
 	transport := &mcpsdk.CommandTransport{Command: buildStdioCommand(cfg)}
 	ts, err := mcptoolset.New(mcptoolset.Config{
-		Client:     newToolsetClient(),
+		Client:     newToolsetClient(name, ann),
 		Transport:  transport,
 		ToolFilter: filter,
 	})

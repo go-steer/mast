@@ -60,12 +60,20 @@ const (
 	ClassReadOnly Class = iota
 
 	// ClassMutating tools get intent/completion records in the log and
-	// are refused in ambiguous-effect mode. Default for unknown tools:
-	// MCP annotations are advisory and ADK v2.1.0's mcptoolset drops
-	// them entirely (convertTool copies name/description/schemas only),
-	// so default-deny-unknown is both the designed and the only
-	// implementable stance; operators un-gate known-safe tools via the
-	// workload tool_catalog override.
+	// are refused in ambiguous-effect mode. It is the default for an
+	// unknown tool — default-deny-unknown — and, until #447, that meant
+	// every MCP tool: ADK's mcptoolset drops MCP's annotations
+	// (convertTool copies name/description/schemas only), which was read
+	// as making any other stance unimplementable.
+	//
+	// It was not. The annotations reach mast before that conversion, on
+	// the tools/list response, and pkg/mcp.Annotations captures them
+	// there; a tool whose server published readOnlyHint=true is now
+	// classified read-only through NewPredicateWithHints. The default is
+	// unchanged for everything that stays unclassified, and operators
+	// still pin either way with the workload tool_catalog override —
+	// which is checked first, because an annotation is the far end of
+	// the wire describing itself.
 	ClassMutating
 
 	// ClassSpawning tools start sub-runs whose inner tool calls this
@@ -124,11 +132,44 @@ var builtinClasses = map[string]Class{
 // Predicate classifies a tool by name. See NewPredicate.
 type Predicate func(toolName string) Class
 
-// NewPredicate builds the mutation predicate: control surfaces are
-// read-only, mast builtins use their registered class, per-tool
-// overrides from the workload bundle apply next, and everything else —
-// MCP tools included — defaults to mutating (default-deny-unknown).
+// ReadOnlyHint reports the `readOnlyHint` an MCP server published for
+// toolName. annotated is false when nothing has published annotations
+// for that name, which is the case the shape has to carry: MCP's
+// readOnlyHint is a plain bool, so "the server said false" and "the
+// server said nothing" are otherwise the same value, and only the
+// second one should fall through to default-deny-unknown.
+//
+// pkg/mcp.Annotations.ReadOnly is the implementation; the indirection
+// keeps this package free of an MCP dependency it otherwise has no use
+// for.
+type ReadOnlyHint func(toolName string) (readOnly, annotated bool)
+
+// NewPredicate builds the mutation predicate with no annotation source:
+// every MCP tool is unclassified and takes the default-deny-unknown
+// answer. See NewPredicateWithHints for the wired form.
 func NewPredicate(overrides map[string]bool) Predicate {
+	return NewPredicateWithHints(overrides, nil)
+}
+
+// NewPredicateWithHints builds the mutation predicate. In order:
+// control surfaces are read-only; per-tool overrides from the workload
+// bundle decide next; mast builtins use their registered class; an MCP
+// tool its server annotated is classified by that annotation; and
+// everything left over defaults to mutating (default-deny-unknown).
+//
+// The order of the last two is the load-bearing part. An annotation is
+// the far end of the wire describing itself, so the audited workload
+// override is checked first and still wins — an operator who does not
+// want to take a server's word for it pins the tool with
+// tool_catalog.tools[].mutating and nothing downstream can unpin it.
+// Builtins come before it too: those are mast's own tools, whose
+// implementation is in this repo, and no MCP server has standing to
+// reclassify one that happens to share a name.
+//
+// hint may be nil, and its annotated=false answer is the same as being
+// nil for any given tool, so a caller never has to distinguish "no
+// annotations configured" from "no annotation for this tool".
+func NewPredicateWithHints(overrides map[string]bool, hint ReadOnlyHint) Predicate {
 	return func(name string) Class {
 		if controlCalls[name] {
 			return ClassReadOnly
@@ -141,6 +182,11 @@ func NewPredicate(overrides map[string]bool) Predicate {
 		}
 		if c, ok := builtinClasses[name]; ok {
 			return c
+		}
+		if hint != nil {
+			if readOnly, annotated := hint(name); annotated && readOnly {
+				return ClassReadOnly
+			}
 		}
 		return ClassMutating
 	}
