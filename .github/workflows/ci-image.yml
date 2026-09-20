@@ -62,8 +62,11 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: build
+  # Named `image`, not `build`: ci-docs.yml already contributes a check
+  # called `build`, and two workflows whose failures mean entirely
+  # different things should not share a name in the PR rollup.
+  image:
+    name: image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
