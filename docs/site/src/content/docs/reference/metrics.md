@@ -141,6 +141,32 @@ regardless and counts it.
 |---|---|---|
 | `mast_monitor_acks_total` | `workload`, `outcome` | Operator acknowledgements taken on the daemon ingress. Outcomes: `forwarded` (recorded and accepted by the producer's ack tool), `error` (the durable record or the forward failed — the suppression did not take). |
 
+### Planner-dispatch family
+
+A [planner](/concepts/specialists-and-dispatch/) runs each `invoke_specialist` delegation on a
+runner of its own, and counts how each one ended.
+
+`rate_limited` is the one to alert on, and it is split out of `failed` for a
+reason that is visible nowhere else: a delegation lost to a provider rejection
+does **not** fail the turn. The planner is handed the error as an ordinary
+tool result and is free to do the specialist's work itself — at full
+parent-context cost, with none of the specialist's instruction, on a run that
+still ends `ok` in `mast_turns_total`. A climbing `rate_limited` rate beside a
+flat turn-error rate is that substitution happening.
+
+`halted` is the system working: a budget ceiling or a watchdog trip stopped
+the specialist and the planner was told so in a labelled partial. It is
+counted apart from `failed` because nothing broke.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_dispatches_total` | `workload`, `outcome` | Planner `invoke_specialist` dispatches by how each one ended. Outcomes: `ok` (the specialist returned a result), `halted` (a ceiling or a watchdog trip stopped it early; the planner got a labelled partial), `rate_limited` (the provider rejected a model call under the specialist), `failed` (any other error under the specialist). |
+
+Counted per dispatch and not per specialist: the specialist name is
+workload-authored and unbounded, and a label with a workload's vocabulary in
+it is a cardinality bill the operator did not agree to. The specialist is in
+the `WARN` log line the same failure writes, alongside the session id.
+
 ## Park announcements
 
 A durable [approval park](/concepts/approvals/) is discoverable four ways, and

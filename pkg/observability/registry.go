@@ -202,6 +202,53 @@ var parkNotifyOutcomes = []string{
 	ParkNotifyError,
 }
 
+// Planner-dispatch outcomes (mast_dispatches_total{workload,outcome})
+// for the #452 visibility half. One count per invoke_specialist
+// dispatch, closed however it closed.
+//
+// The family exists because a dispatch that dies under the specialist
+// is the one event on this seam that produces nothing else: a completed
+// dispatch produces a result, a halt produces a labelled partial and a
+// log line, and a dispatch killed by a provider rejection produced —
+// until this — a tool error the planner was free to absorb by doing the
+// specialist's work itself. Upstream measured what that costs: four
+// runs in a 38-run archive silently stopped being delegated runs, at
+// full parent-context cost, and still scored.
+const (
+	// DispatchOK: the specialist ran to the end of its stream.
+	DispatchOK = "ok"
+	// DispatchHalted: a sink stopped the sub-run — a per-specialist
+	// budget ceiling or a watchdog trip. mast's own decision, already
+	// logged and already visible to the planner as a labelled partial;
+	// counted here so the denominator is every dispatch.
+	DispatchHalted = "halted"
+	// DispatchRateLimited: the sub-runner failed and the failure reads
+	// as the provider saying "not now" (429/RESOURCE_EXHAUSTED and
+	// friends, per attach.ClassifyTurnError).
+	//
+	// Split out of DispatchFailed rather than folded into it because it
+	// is the one dispatch failure that is both transient and the
+	// operator's business: it means capacity, not a broken workload,
+	// and burying it in a general failure count is what made it
+	// invisible. Deliberately NOT a claim that a retry happened —
+	// nothing retries an outbound model call in this module today
+	// (#452 step 2).
+	DispatchRateLimited = "rate_limited"
+	// DispatchFailed: the sub-runner failed some other way. Excludes
+	// DispatchRateLimited, so the two sum to every failed dispatch.
+	DispatchFailed = "failed"
+)
+
+// dispatchOutcomes is the fixed label set primed for
+// mast_dispatches_total{workload,outcome}, kept beside the vocabulary so
+// Prime and Dispatch cannot drift.
+var dispatchOutcomes = []string{
+	DispatchOK,
+	DispatchHalted,
+	DispatchRateLimited,
+	DispatchFailed,
+}
+
 // Monitoring-ack outcomes (mast_monitor_acks_total{outcome}) for the
 // v0.5 W4.6 ingress leg. Two outcomes and no more: mast either got the
 // operator's acknowledgement to the producer that owns the suppression,
@@ -340,6 +387,7 @@ type Registry struct {
 	monitorNotifies *prometheus.CounterVec
 	monitorDigests  *prometheus.CounterVec
 	parkNotifies    *prometheus.CounterVec
+	dispatches      *prometheus.CounterVec
 	monitorAcks     *prometheus.CounterVec
 	a2aTasks        *prometheus.CounterVec
 	aguiRuns        *prometheus.CounterVec
@@ -435,6 +483,9 @@ func New() *Registry {
 	r.parkNotifies = counter("mast_park_notifications_total",
 		"Durable approval parks by whether the operator was told about them out of band (sent, throttled, error).",
 		"workload", "outcome")
+	r.dispatches = counter("mast_dispatches_total",
+		"Planner invoke_specialist dispatches, by how each one ended (ok, halted, rate_limited, failed).",
+		"workload", "outcome")
 	r.monitorAcks = counter("mast_monitor_acks_total",
 		"Operator acknowledgements taken on the daemon ingress and forwarded to the producer that owns the suppression.",
 		"workload", "outcome")
@@ -502,6 +553,9 @@ func (r *Registry) Prime(workload string) {
 	r.monitorDigests.WithLabelValues(workload)
 	for _, outcome := range parkNotifyOutcomes {
 		r.parkNotifies.WithLabelValues(workload, outcome)
+	}
+	for _, outcome := range dispatchOutcomes {
+		r.dispatches.WithLabelValues(workload, outcome)
 	}
 	for _, outcome := range monitorAckOutcomes {
 		r.monitorAcks.WithLabelValues(workload, outcome)
@@ -673,6 +727,22 @@ func (r *Registry) ParkNotify(workload, outcome string) {
 		return
 	}
 	r.parkNotifies.WithLabelValues(workload, outcome).Inc()
+}
+
+// Dispatch records how one planner invoke_specialist dispatch ended
+// (one of the Dispatch* constants). Called once per dispatch, from the
+// host's SubRunSink.Close.
+//
+// Counted per dispatch and not per specialist: the specialist name is
+// workload-authored and unbounded, and the question this family answers
+// — is this workload losing delegations, and to what — does not need
+// it. The log line the same close writes names the specialist, which is
+// where an operator goes once the count says to look.
+func (r *Registry) Dispatch(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.dispatches.WithLabelValues(workload, outcome).Inc()
 }
 
 // MonitorAck records one operator acknowledgement taken on the ingress

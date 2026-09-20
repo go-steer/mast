@@ -111,7 +111,7 @@ func (s *orderingSink) Observe(ev *session.Event) error {
 	return nil
 }
 
-func (s *orderingSink) Close() {}
+func (s *orderingSink) Close(planner.DispatchOutcome) {}
 
 type scaleArgs struct {
 	Deployment string `json:"deployment"`

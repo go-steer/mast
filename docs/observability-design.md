@@ -154,6 +154,12 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 *The denominator is deliberately parks-announced rather than parks-raised, because a daemon with no `--park-notify` increments nothing and its silence is configuration rather than a fault. `error` is the alert: it is the daemon saying it stopped to ask a question and could not reach anybody to ask. `throttled` is the second alert and a different one — it does not mean an announcement was lost so much as that a workload has started parking in a loop, which is the state that ends with an operator muting the channel and thereby missing the park that mattered. Both leave the park itself untouched: a failed or dropped announcement is never an error on the turn's books, only on the daemon's.)*
 
+*(Shipped v0.10, 2026-09-20 — a planner delegation that died under the specialist (#452). Every other dispatch shape — coordinator, graph, fan-out — funnels its sub-agent events up the outer stream, where a failure becomes a `turn-error` frame. `invoke_specialist` does not: it runs on a private runner, and ADK converts the sub-runner's error into an ordinary tool result, so through v0.9 a delegation lost to a provider rejection produced no log line, no metric, no frame, and a turn that ended `ok`:*
+
+- *`mast_dispatches_total{workload, outcome}` — one increment per `invoke_specialist` dispatch; outcome ∈ `ok` (the specialist returned) / `halted` (a budget ceiling or a watchdog trip stopped it early and the planner got a labelled partial) / `rate_limited` (the provider rejected a model call under the specialist) / `failed` (anything else broke under it)*
+
+*`rate_limited` is split out of `failed` because it is the one dispatch failure that is both transient and the operator's business, and because what follows it is not an error but a substitution: the planner, handed the rejection as a tool result, does the specialist's work itself at full parent-context cost. A climbing `rate_limited` rate beside a flat `mast_turns_total{outcome="error"}` is that substitution, and it is invisible in every other series. `halted` is counted apart from both because a ceiling firing is the system working. Labelled by workload and not by specialist: the specialist name is workload-authored and unbounded, so it goes in the `WARN` line rather than in a label — the same reasoning that kept `skill` out of the protocol-server families.)*
+
 <!-- shipped-metric-families:end -->
 
 **Session lifecycle:**

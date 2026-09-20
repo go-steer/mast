@@ -142,7 +142,9 @@ func TestSubRunRecorderRecordsThenPairs(t *testing.T) {
 		t.Fatalf("completed = %v, want [c1]", store.completed)
 	}
 
-	rec.Close() // nothing to flush; every record is written as it arrives
+	// No end-of-dispatch call to make: every record is written as its
+	// event arrives, which is the point — the failure this recorder
+	// exists for is the one where the dispatch never gets to finish.
 }
 
 // TestSubRunRecorderStopsTheDispatchOnRecordFailure pins the divergence
