@@ -21,8 +21,12 @@ resources:
   - ../../base
 
 images:
-  - name: ghcr.io/go-steer/mast
-    newTag: spike-0
+  # No mast override: the base's tag is the one to edit, and there is
+  # one right answer per cluster rather than a per-overlay opinion.
+  # This pinned `spike-0` from the fork until 2026-09-20 — a tag that
+  # was never pushed, to a package the org did not carry. Pin a
+  # released version here (or in the base) for anything real; :latest
+  # is what the base ships and is not what you want in production.
   - name: ghcr.io/go-steer/k8s-event-watcher
     newTag: "2.6.0"
 

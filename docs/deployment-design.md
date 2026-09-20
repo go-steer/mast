@@ -249,6 +249,30 @@ Two things the check deliberately does *not* do. Signature artifacts are require
 
 This is the *checked-by-CI* half of #342's third item. The other half, "an install page that does not assume the reader is us", is waiting on the [chart-or-kustomization choice](#packaging): what the page should tell an operator to run depends on what there is to run.
 
+### The image an operator pulls — shipped 2026-09-20 ([#342](https://github.com/go-steer/mast/issues/342))
+
+Item 1 of #342 asks for "one composition an outsider can run — Helm chart or a self-sufficient kustomization, pick one and say why". Attempting to answer it surfaced a prerequisite nobody had written down: **there was no mast image**, and there had not been one at any point.
+
+Three facts, each checkable:
+
+- `deploy/base/50-statefulset-daemon.yaml` pulls `ghcr.io/go-steer/mast:latest`. The org publishes nine container packages — `core-agent`, `core-agent-slim`, `core-agent-tui`, `k8s-event-watcher`, `lookout`, `switchboard`, `cogo`, `simian-agent`, `charts/lookout` — and `mast` has never been one of them.
+- `deploy/overlays/example` pinned `newTag: spike-0`, a tag that was never pushed. Dropped 2026-09-20.
+- The `Dockerfile` that would produce the image had not built since go.mod moved to `go 1.26.6`: its `GO_VERSION` pin stayed at 1.26.3 and the golang images set `GOTOOLCHAIN=local`, so `go mod download` fails outright. Nothing in CI compiled it, which is why six weeks passed without anyone finding out. Fixed, and `.github/workflows/ci-image.yml` now builds the image, runs the binary inside it, and cross-compiles arm64 on every push to `main`.
+
+So the chart-versus-kustomization question was choosing a wrapper for an artifact that did not exist, and the second half of item 2 ("cosign on release binaries **and the container image**") was blocked on the same gap. Publishing comes first; that is the reordering, and it is the only part of #342's suggested sequence that changed.
+
+[`../.github/workflows/release-images.yml`](../.github/workflows/release-images.yml) publishes `ghcr.io/go-steer/mast` for `linux/amd64` and `linux/arm64`: `:X.Y.Z`, `:X.Y`, `:X` and `:latest` on a release tag — `:latest` guarded off any tag containing a `-`, semver's pre-release marker, for the reason release.yml already marks those releases Pre-release — and `:main` plus `:main-<sha>` on a main push. It is adapted from core-agent's file of the same name (see [`./sibling-sync.md`](./sibling-sync.md)), with three deliberate differences:
+
+- **It verifies what it published.** `cosign sign` exiting 0 says the runner signed something; it does not say a verifier pulling the tag finds a signature. The workflow re-verifies against the registry with the identity pinned exactly, then pulls the image back and runs it. Same [#125](https://github.com/go-steer/mast/issues/125) discipline as the release notes, the checksum signature and the install page.
+- **One image, no variant matrix.** mast has no `no_tui` build tag and no separate client binary.
+- **No O-tier gate.** `release.yml` already refuses to publish a release for a commit the tier has not passed; a second gate on the same commit adds a failure mode, not a guarantee.
+
+The main-push tags are not a convenience. They are what continuously rehearses push → sign → verify, so that path is never first exercised on a release tag — the same argument that makes release.yml's dry run sign for real.
+
+The image also now knows what it is. `VERSION`, `COMMIT` and `BUILD_DATE` build args feed the same three `-X` symbols `.goreleaser.yaml` injects into the released binaries, so `mast --version` inside the image answers with the release rather than with `dev`. A bare `docker build .` passes none of them and still reports `dev`, which is the honest answer for a build with no release to claim.
+
+**What is still open on item 1.** Publishing does not answer chart-versus-kustomization; it makes the question answerable. `deploy/base`'s `:latest` starts resolving at the next release tag, and `:main` is pullable from this change onward.
+
 ### Kubernetes manifests
 
 `examples/deploy/gke/` — canonical GKE manifests: Deployment, Service, HPA, ConfigMap (for `.agents/*`), Secrets (for provider creds), NetworkPolicy, PodDisruptionBudget. Kustomize-friendly (base + overlays for common variations).

@@ -48,11 +48,28 @@ ENV CGO_ENABLED=0 \
     GOOS=${TARGETOS} \
     GOARCH=${TARGETARCH}
 
+# Build identity, injected exactly as .goreleaser.yaml injects it into
+# the released binaries — same three symbols, same meanings. Without
+# them a published image answers `mast --version` with "dev", which is
+# the wrong answer for the one build an operator did not compile
+# themselves.
+#
+# Empty is the honest default: a bare `docker build .` has no version
+# to claim, and the ldflags below leave internal/version.Version at its
+# "dev" default when VERSION is unset. Declared last so a new version
+# never invalidates the module-download or source layers.
+ARG VERSION=""
+ARG COMMIT=""
+ARG BUILD_DATE=""
+
 # -s -w strips DWARF + symbol table to shrink the binary by ~30%.
 # -trimpath strips absolute paths in stack traces (avoids leaking the
 # build host's filesystem layout).
 RUN go build \
-    -ldflags "-s -w" \
+    -ldflags "-s -w \
+      ${VERSION:+-X github.com/go-steer/mast/internal/version.Version=${VERSION}} \
+      ${COMMIT:+-X main.commit=${COMMIT}} \
+      ${BUILD_DATE:+-X main.date=${BUILD_DATE}}" \
     -trimpath \
     -o /out/mast \
     ./cmd/mast

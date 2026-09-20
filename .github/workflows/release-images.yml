@@ -1,0 +1,228 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Publishes the multi-arch (amd64 + arm64) mast image to GHCR and signs
+# it with Sigstore keyless — adapted from go-steer/core-agent's
+# release-images.yml, leaner for mast's single variant.
+#
+# Until this landed, nothing published a mast image at all:
+# deploy/base/50-statefulset-daemon.yaml has named
+# ghcr.io/go-steer/mast:latest since the fork and the org has never
+# carried that package, so the manifests #342 is about could not be
+# applied by anyone (#342, and see docs/deployment-design.md).
+#
+#   ghcr.io/go-steer/mast:X.Y.Z  :X.Y  :X  :latest   on a release tag
+#   ghcr.io/go-steer/mast:main   :main-<sha>         on a main push
+#
+# Verify a published image:
+#
+#   cosign verify ghcr.io/go-steer/mast:X.Y.Z \
+#     --certificate-identity-regexp \
+#       '^https://github\.com/go-steer/mast/\.github/workflows/release-images\.yml@refs/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#
+# The leading `^` and the workflow path are both load-bearing: cosign
+# matches the identity pattern as a SUBSTRING, so an unanchored
+# 'go-steer/mast' also accepts a certificate minted for
+# github.com/attacker/go-steer/mast-lookalike. Measured against a real
+# artifact, cosign v2.6.5 — same finding as
+# dev/release/verify-signature.sh's header.
+#
+# Three deliberate differences from core-agent's version:
+#
+#   1. It verifies what it published. core-agent signs and stops;
+#      `cosign sign` exiting 0 says the runner signed something, not
+#      that a verifier pulling the tag finds a signature. Same #125
+#      discipline as release.yml's notes, signature and install-page
+#      checks. Reported upstream (docs/sibling-sync.md).
+#   2. One image, no variant matrix. mast has no `no_tui` build tag and
+#      no separate client binary.
+#   3. No O-tier gate. release.yml already refuses to publish a release
+#      for a commit the tier has not passed; a second gate on the same
+#      commit adds a failure mode, not a guarantee.
+#
+# Main pushes publish :main-<sha> on purpose, and it is the cheapest
+# part of this file to get wrong by removing: it is what continuously
+# rehearses push + sign + verify, so the path is never first exercised
+# on a release tag. It also gives deploy/ something pullable between
+# releases.
+
+name: release-images
+
+on:
+  push:
+    tags: ['v*.*.*']
+    branches: ['main']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.9.0). Empty = use the current ref.'
+        required: false
+
+concurrency:
+  group: release-images-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Push to GHCR.
+  packages: write
+  # cosign keyless: exchanged with Fulcio for a short-lived signing
+  # certificate. Nothing is stored, so there is no key to rotate.
+  id-token: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/mast
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # arm64 needs no emulation to BUILD — the builder stage pins
+      # --platform=$BUILDPLATFORM and cross-compiles via GOARCH — but
+      # buildx still wants QEMU registered to assemble a foreign-arch
+      # image.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # {{version}} strips the leading v, so v0.9.0 becomes :0.9.0 —
+      # matching what `mast --version` prints, which is goreleaser's
+      # .Version and also has no v.
+      #
+      # :latest is guarded on the tag carrying no `-`, i.e. semver's
+      # rule for a pre-release. A -rc.1 must not become the tag an
+      # operator gets by default, and release.yml already marks those
+      # releases Pre-release for the same reason.
+      - name: Compute tags, labels and annotations
+        id: meta
+        uses: docker/metadata-action@v5
+        env:
+          # On a multi-arch image GHCR renders its package page from
+          # INDEX annotations, not from per-platform LABELs; without
+          # this the description stays blank however correct the label.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index,manifest
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=ref,event=branch,enable=${{ github.ref_type != 'tag' }}
+            type=sha,prefix=main-,format=short,enable=${{ github.ref_name == 'main' && github.ref_type != 'tag' }}
+            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' }}
+          labels: |
+            org.opencontainers.image.title=mast
+            org.opencontainers.image.documentation=https://go-steer.github.io/mast/
+            org.opencontainers.image.vendor=go-steer
+          annotations: |
+            org.opencontainers.image.title=mast
+            org.opencontainers.image.documentation=https://go-steer.github.io/mast/
+            org.opencontainers.image.vendor=go-steer
+
+      # The version baked into the binary, not just into the tag. An
+      # image whose --version says "dev" cannot answer the first
+      # question asked of a misbehaving pod.
+      - name: Compute build identity
+        id: identity
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${DISPATCH_TAG}" ]]; then
+            version="${DISPATCH_TAG#v}"
+          else
+            version="main-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "publishing as ${version}"
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            VERSION=${{ steps.identity.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.identity.outputs.date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Sign the digest, not the tags. Tags move; a digest does not,
+      # and one signature over the digest covers every tag pointing at
+      # it — including the ones a later release will re-point.
+      - name: Sign the image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # And then check what a verifier finds, rather than trusting that
+      # the step above exiting 0 means the signature is discoverable.
+      # The identity is asserted exactly, not by wildcard: a pattern of
+      # '.*' returns "Verified OK" against any workflow in any repo, so
+      # a green verify step proves nothing unless the identity is
+      # pinned.
+      - name: Verify the published image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify "${IMAGE}@${DIGEST}" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-images.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            > /dev/null
+          echo "signature verified for ${IMAGE}@${DIGEST}"
+
+      # The image is pulled back from the registry and run, because
+      # every check above this line ran against the runner's view of
+      # the build. This is the only step that asserts something about
+      # what an operator receives.
+      - name: The published image runs and knows its own version
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          WANT: ${{ steps.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          got=$(docker run --rm "${IMAGE}@${DIGEST}" --version)
+          echo "published image reports: ${got}"
+          case "${got}" in
+            "mast ${WANT} "*) ;;
+            *)
+              echo "::error::published image reports '${got}', expected version ${WANT}" >&2
+              exit 1
+              ;;
+          esac
