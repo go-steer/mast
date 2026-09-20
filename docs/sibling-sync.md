@@ -1188,6 +1188,10 @@ re-derive it.
 
 ## Next triage
 
+**Superseded 2026-09-20.** The live carry-forward list is under "Triage of 2026-09-20" at the foot
+of this file; everything below in this section is the 2026-09-09 pass's, kept because most of its
+entries carry the reason a shipped item was ranked where it was. Its own list is exhausted.
+
 The weekly report regenerates [#153](https://github.com/go-steer/mast/issues/153) in place. Triage
 again when the counts move materially, or when a security commit appears upstream — whichever comes
 first. Start from the "port" and "watch" rows above rather than from a fresh count; the absorbed and
@@ -1577,3 +1581,206 @@ buildx, `docker/metadata-action`'s semver tag pyramid with `:latest` guarded off
 files: a change to either side's image pipeline is a port candidate. The upstream nudge about
 verifying the published signature joins the peer-lease clamp and the `ef9b9b5` port on what is owed
 upstream.
+
+## Triage of 2026-09-20
+
+The report reads **99 commits / 92 of 204 ported files** against core-agent `2ad8052` (2026-09-19).
+**Twenty-three SHAs are new** since the 2026-09-09 baseline of `10fa0cc`, and the auto-regenerated
+issue is itself five days behind the upstream head it names, so this pass was run against a freshly
+fetched `origin/main` rather than against [#153](https://github.com/go-steer/mast/issues/153)'s
+body. All twenty-three are verdicted below.
+
+**Nineteen of the twenty-three are one story, and it is mast's story.** Upstream spent this window
+making a *gated* daemon survivable unattended, and the commit messages say why out loud, twice:
+"every shipped autonomous recipe is on mode:yolo: not because the gate is too strict, but because a
+gate that can hang forever is not a thing you can leave running." That is a confession that their
+own approval gate was unusable for the workload mast exists to serve. The arc runs
+`01ab5a3a` → `a0bcfe66` → `46f0f432` → `f93d675d` → `4095b15a` → `eae797f8` → `2dc08c82`, each step
+measured on a live cluster by `dev/uat/approval-gate/`, and each one fixing what the previous one
+exposed rather than what its issue predicted.
+
+Reading that arc against mast is uncomfortable in a specific way. mast has the *prose* of almost
+every step — the refusal strings in `pkg/approval/plugin.go` are stronger than the ones upstream
+shipped in `46f0f432`, and they predate them — and upstream's Run 10 is the measurement that says
+the prose buys nothing. The model quoted the new guidance back as its `Last error` and asked a
+fourth time. **mast has the sentence and none of the mechanism**, which is the shape this ledger
+keeps recording under other names: a claim mast makes in text that nothing in the code enforces.
+
+### Port — with the finding, ranked
+
+| SHA | Subject | Verdict |
+|---|---|---|
+| `92091883` | mcp: believe the server when it says a tool only reads (#1099) | **Port, first.** Falsifies a premise mast wrote down as a fact about the substrate. |
+| `6cab9d67` | attach: a pump's start cursor belongs to the pump (#1076) | **Port, cheapest.** A live data race in ported code, reachable in mast by the same interleaving. |
+| `f93d675d` + `eae797f8` | permissions: a refused call cannot re-open the same prompt; the gate ends a turn the operator already answered | **Port the mechanism; mast already has the words.** |
+| `8303e2f2` | eventlog: one event, one transaction (#1063) | **Port.** mast documents the same non-atomicity as a v1 limitation, in two files. |
+| `a0bcfe66` | permissions: a gated prompt nobody is attached to must tell somebody (#1059) | **Port the notify half only.** mast has the egress; no park ever reaches it. |
+| `00d5d98f` | models: retry a Vertex 429 once (#1037) | **Port candidate on upstream's evidence, not mast's.** mast has no outbound retry at all. |
+| `532f7c75` | docs: comments name attachadapter.WithPromptBroker (#1134) | **Text absorbed — mast is the reporter. Port the *guard*.** |
+
+#### `92091883` — mast's mutation predicate reads an input it is never given
+
+`pkg/workload/bundle.go:366` says which calls are mutating is decided by "built-in annotation or
+absent MCP `readOnlyHint`, default-deny-unknown". Nothing in mast ever populates that hint. The
+comment 300 lines further down says why, and states it as a fact about the substrate:
+
+> mast's mutation predicate defaults every MCP tool to mutating regardless, because ADK's
+> `mcptoolset` drops MCP's annotations and default-deny-unknown is the only safe reading of a tool
+> nobody classified.
+
+The first clause is true and the conclusion does not follow, which upstream has now shown by
+building the other branch: read the annotations off the `tools/list` response the adapter *already
+asked for*, through sending middleware on the same `*mcp.Client`, and re-attach them below the
+namespace wrap. One session, one round trip. Upstream also went and counted — all 15 tools on
+`container.googleapis.com/mcp/read-only` publish `readOnlyHint=true`, and all 23 on the full `/mcp`
+publish one either way. The annotation was never missing from the wire.
+
+The seam is already in mast. `pkg/mcp/toolset.go`'s `newToolsetClient()` installs
+`AddSendingMiddleware(refuseInputRequiredResults())` on exactly the client this would hang off.
+
+What the gap costs is written in mast's own words, in the paragraph justifying the monitoring
+bundle's hand-built collection leg: "a cycle that asks the model to call the diff parks for a human
+on EVERY fire. An unattended monitor that needs an operator to authorize finding out whether
+anything changed is not unattended." mast answered that by taking the collection leg away from the
+model. This closes the root cause instead. The absence-carried-in-the-shape detail is the
+load-bearing half of the port: `ToolAnnotations.ReadOnlyHint` is a plain `bool`, so a wrapper that
+stamps every tool makes an *unannotated* tool report mutating and silently overrides a working
+declaration. Annotated tools come back wrapped; unannotated ones come back untouched.
+
+#### `6cab9d67` — the race is live in mast, with mast's own hardening sitting next to it
+
+`pkg/attach/broadcaster.go:323` writes `b.startedAt` inside `register` under `b.mu`;
+`broadcaster.go:679` and `:715` read it from the pump goroutine with no lock. The interleaving
+upstream's race detector caught reaches mast unchanged: `detachLocked` nils `b.cancel` when the last
+subscriber leaves, so the next `register` is a first-subscriber registration again and writes the
+field while the *previous* pump goroutine may not yet have reached its
+`b.stream.Watch(ctx, b.startedAt, …)`. An SSE client that disconnects and reconnects is enough.
+
+Worth naming because it argues against a comfortable reading: mast already hardened this exact
+function, with the `pumpGen` generation stamp that stops a stale pump's deferred sweep from tearing
+down its successor. That hardening is real and it does nothing here — a generation counter orders
+*teardown*, not the field read. Having fixed the neighbouring bug is not evidence about this one.
+
+#### `f93d675d` + `eae797f8` — mast has the sentence and none of the mechanism
+
+mast's refusal strings are better than the ones upstream shipped in `46f0f432`: "Do not retry this
+call, do not attempt the same change by another route, and do not treat this as a failure. Finish
+any read-only work, report that the change awaits approval, and stop." That covers the
+by-another-route escape upstream's wording does not, and it has been there since v0.4.
+
+`pkg/permissions/gate.go` remembers approvals — `sessionAllow`, `sessionAllowTools`,
+`sessionAllowVerbs` — and remembers no refusals at all. There is no key under which a denied
+`tool|detail` is recorded, and no pre-turn boundary step to clear one at; mast has no
+`pkg/agent/preturn.go` analogue. So after a reject, an identical proposal takes the same path
+through the write gate and parks again.
+
+**mast's version of the loop is worse than the one upstream measured, and the reason is the
+durability mast is otherwise right about.** Upstream's re-prompt is in-process and evaporates; a
+mast re-park writes a fresh long-running function call into the session event log and a fresh row
+into `GET /parks`. Each iteration is a durable artifact an operator must answer or clear, and each
+one is an out-of-band page to the person who already said no. The loop is human-rate-limited rather
+than model-rate-limited, which caps the spend and *raises* the cost per iteration.
+
+Take both halves or neither. `f93d675d` alone moves the stop from the prompt to the turn —
+`eae797f8`'s finding was that something already ended the turn (the watchdog) at *session* scope,
+so one "no" ended the daemon's working life — and `4095b15a` is the correction that makes the two
+arms agree about whose books the repetition sits on.
+
+#### `8303e2f2` — the same v1 limitation, written down in two places
+
+`pkg/eventlog/eventlog.go:28` — "atomic-across-tables writes are not provided in v1; the
+AppendEvent path writes ADK first, then the overlay, and surfaces overlay-write errors so callers
+can retry". `service.go:51` says the same and adds "Eventual-consistency reconciliation across the
+two tables is out of scope for v1." Upstream's fix registers a GORM after-create callback on the
+ADK connection so the overlay row is written inside ADK's own transaction, and a failed overlay
+write rolls the event back.
+
+mast is more exposed than the shared text suggests, because of what mast hangs off the overlay: the
+seq every live-tail subscriber walks, the spend ledger, `GET /healthz`'s bounded read, and the park
+rows. An ADK event with no companion row is a durable park nothing can see. "Callers can retry" is
+true, and there is no caller that does.
+
+### Absorbed, ahead, or divergent — 6 commits
+
+| SHA | Subject | Verdict |
+|---|---|---|
+| `46f0f432` | permissions: a refusal has to say the answer will not change (#1072) | **mast is ahead, and it does not matter.** mast's wording predates this and is stronger. Upstream's own Run 10 is the measurement that says wording alone changes nothing; recorded here so nobody reads mast's strings as coverage. |
+| `f5f89220` | mcp: mount a server for the tools you want, not all of them (#1102) | **Absorbed in a finer shape.** `specialists.ToolAllowlist.MCP` filters per specialist through `filterToolsets`, with presence-per-axis semantics upstream's mount-level list does not have. **Residual:** a specialist that declares no `mcp:` key inherits the whole catalog (`InheritsAllMCP`), and mast has no mount-level floor under that. Not filed — the #759 promise is kept for any specialist that declares reach, and a second filter is a feature. |
+| `56351d55` | mcp: read fidelity is a property of the tool surface (#1084) | **Absorbed in shape.** mast's `tool_catalog.tools[]` carries per-tool operator text and the audited `mutating` override on the same entry. |
+| `e8f216c4` | agent: a delegation returns the calls the subagent made (#1031) | **mast is ahead.** The `SubRunObserver` seam (#226) hands each sub-run event to the host, and #235's per-dispatch recorder writes each mutating intent to the outer session's companion ops row. |
+| `9d3eba89` | vertexcache: wait for a failure to be recorded, not for an RPC to be sent (#1078) | **Not verdicted — carried as a watch row.** The 2026-08-17 pass recorded mast already polling `Init` rather than firing once (`cfcbe22`), but that was the *transient* path and this is the *retry* path, a different set of waits. Not read at code level this pass; do not read the older row as coverage. |
+| `363a914c` | instruction: ship the persona, keep the equipment local (#1121) | **Divergent.** mast's authoring models are workloads and specialists, not personas; the identity/equipment/conduct split lands in the bundle. `@include builtin:NAME` in `pkg/instruction` would be a second authoring surface, which is what [`specialists-design.md`](./specialists-design.md) exists to avoid. |
+
+### Watchdog and guardrail — 5 commits, all behind the standing governance call
+
+`8a237001` (the seventh signal), `f266b8ae` (the eighth), `2dc08c82` (`Alert.Scope`, turn versus
+session), `4095b15a` (the gate's cut scrubs the signal run lengths) and `b6d001f8` / `8cf9071a` (the
+`guardrail-trip` frame; a halted session goes inert) are one subsystem. mast ships four signals
+(`RepeatedToolCall`, `DominantToolCall`, `ToolFailureStreak`, `AlternatingCycle`) against upstream's
+eight.
+
+None is filed as a port, and the reason is a decision this ledger already carries rather than a
+judgement made today: **whether a new signal joins the default set is the open watchdog-governance
+call for a human**, recorded at 2026-08-21 when `DominantToolCallSignal` shipped as an undefaulted
+constructor for exactly this reason. Adding four more signals without answering it would settle it
+by accumulation.
+
+One row inside the cluster is *not* governance-gated and is worth separating: `4095b15a`'s
+`resetWatchdogSignals` — clear the evidence, never the tripped flag, because an arm that could
+un-halt would let a looping agent overrule the operator. That argument is portable on its own, and
+it becomes load-bearing the moment mast takes `f93d675d`'s suppression, which is the same collision
+upstream hit. It is folded into the `f93d675d` filing rather than tracked separately.
+
+### `532f7c75` — the report came back with a guard on it
+
+This is mast's own finding, reported from the [#364](https://github.com/go-steer/mast/issues/364)
+section above and taken upstream on 2026-09-19. The text half needs nothing: mast fixed its copy on
+2026-09-16 and `pkg/attach/prompter.go:57` now carries the old name as a *record*, which is the
+convention upstream converged on independently.
+
+What did not come back is the **guard**. Upstream added a tree-wide test over Go comments:
+`WithAttach` may appear only as a record of the old name, never as an instruction to call one. Two
+details in it are why it is worth having rather than obvious — comment groups are collapsed before
+matching, because legitimate records wrap and a line-by-line match reports them as violations; and a
+marker that matches nothing *fails* rather than passes, so a walk that stops finding files is not a
+green run. That second property is the same vacuity floor `charts/installpage_test.go` needed on
+2026-09-20, arrived at independently in both repos in the same week.
+
+### Next triage
+
+Carried forward from 2026-09-20, in the order they are worth doing:
+
+1. **[#447](https://github.com/go-steer/mast/issues/447) (`92091883`) — read the MCP `readOnlyHint`
+   the server already sends.** First, because it is the only row in the batch that falsifies
+   something mast states as a fact about the substrate, it removes the root cause of a workaround
+   mast built a whole bundle leg around, and the client middleware seam it needs is already
+   installed.
+2. **[#448](https://github.com/go-steer/mast/issues/448) (`6cab9d67`) — the pump's start cursor.**
+   Cheapest real defect here: a data race in ported code, provable under `-race`, fixable without a
+   design decision.
+3. **[#449](https://github.com/go-steer/mast/issues/449) (`f93d675d` + `eae797f8` + `4095b15a`) —
+   stop asking after a refusal, and end the turn on the gate's own evidence.** Needs a decision mast
+   has not made: mast's gate does not prompt, so the suppression key and the turn-boundary clear
+   both have to be re-sited onto the park path.
+4. **[#450](https://github.com/go-steer/mast/issues/450) (`8303e2f2`) — one event, one
+   transaction.** Closes a v1 limitation mast documents twice.
+5. **[#451](https://github.com/go-steer/mast/issues/451) (`a0bcfe66`'s notify half) — a park nobody
+   can see.** `pkg/notify` exists and only monitoring cycles reach it. Upstream's SSRF-safe shape —
+   a target *name*, resolved through a registry, never a URL — is the part to take. Their
+   `approval_timeout` half is deliberately **not** in that issue: mast's park is durable and costs
+   no goroutine, so whether a park should expire is a semantics decision about the record rather
+   than a way to stop a hang.
+6. **[#452](https://github.com/go-steer/mast/issues/452) (`00d5d98f`) — retry a transient provider
+   429 once.** Last of the ports because the evidence is upstream's 38-run archive and mast has no
+   measurement of its own. Port the fix, never the diagnosis: the issue's step 1 is measuring it
+   against mast's evals, and its step 3 — a lost delegation being visible rather than silently
+   absorbed by the parent — does not depend on the retry landing at all.
+7. **`532f7c75`'s comment guard** — a small hygiene test, not filed on its own; worth taking with
+   whichever of the above lands first.
+
+The three open questions from 2026-09-09 are unchanged: park-on-interrupt semantics, whether
+ADK-installed dispatch tools should meet the permissions gate, and the watchdog-governance call —
+which this batch makes more pressing, since four upstream signals now sit behind it.
+
+Nothing new is owed **upstream** this pass. The carry-forwards there are unchanged: the peer-lease
+clamp, the `ef9b9b5` port, and the signature-verification nudge from the #342 section above.
