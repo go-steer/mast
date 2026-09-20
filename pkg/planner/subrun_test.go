@@ -43,6 +43,7 @@ type recordingObserver struct {
 	opened      int
 	closed      int
 	err         error
+	outcomes    []planner.DispatchOutcome
 }
 
 func (o *recordingObserver) SubRun(sessionID, specialist string) planner.SubRunSink {
@@ -90,10 +91,17 @@ func (s *recordingSink) Observe(ev *session.Event) error {
 	return o.meter.Observe(ev)
 }
 
-func (s *recordingSink) Close() {
+func (s *recordingSink) Close(out planner.DispatchOutcome) {
 	s.obs.mu.Lock()
 	defer s.obs.mu.Unlock()
 	s.obs.closed++
+	s.obs.outcomes = append(s.obs.outcomes, out)
+}
+
+func (o *recordingObserver) closeOutcomes() []planner.DispatchOutcome {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]planner.DispatchOutcome(nil), o.outcomes...)
 }
 
 // dispatchResult digs the invoke_specialist FunctionResponse out of a

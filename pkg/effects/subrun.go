@@ -119,10 +119,16 @@ type SubRunRecorderConfig struct {
 	Logger *slog.Logger
 }
 
-// NewSubRunRecorder builds the recording half of the dispatch seam. The
-// result satisfies planner.SubRunSink structurally; this package does
-// not import pkg/planner, which keeps the outbox's dependency graph the
-// leaf it has always been.
+// NewSubRunRecorder builds the recording half of the dispatch seam.
+//
+// The result is one CONSUMER of planner.SubRunSink, not an
+// implementation of it: its Observe has the sink's signature, and a host
+// composes it into a sink of its own alongside the metering and watchdog
+// halves, which is what both cmd/mast and the library build do. It
+// carried a no-op Close and a claim to satisfy the interface structurally
+// until #452 gave Close a parameter; the claim went rather than the leaf,
+// because this package not importing pkg/planner is the property worth
+// keeping and a no-op Close was never the reason the seam worked.
 func NewSubRunRecorder(cfg SubRunRecorderConfig) (*SubRunRecorder, error) {
 	if cfg.Store == nil {
 		return nil, fmt.Errorf("effects: SubRunRecorderConfig.Store is required")
@@ -208,11 +214,6 @@ func (r *SubRunRecorder) Observe(ev *session.Event) error {
 	}
 	return nil
 }
-
-// Close implements the sink's end-of-dispatch hook. Nothing to flush:
-// every record is written as its event arrives, because the failure this
-// exists for is the one where Close never runs.
-func (r *SubRunRecorder) Close() {}
 
 // MutatingCalls splits one event into the mutating- or spawning-class
 // FunctionCalls it raises and the call IDs its FunctionResponses

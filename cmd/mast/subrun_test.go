@@ -30,6 +30,7 @@ import (
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 
@@ -53,7 +54,7 @@ func TestDaemonSubRunObserverMetersToTheOuterSession(t *testing.T) {
 	sub.attach(pool, obs, nil, nil, built.bundle.Name, discardLogger())
 
 	sink := sub.SubRun("incident-abc", "OOMKilled")
-	defer sink.Close()
+	defer sink.Close(planner.DispatchOutcome{})
 
 	// A modest dispatch: under every ceiling, so it must be silently
 	// counted rather than refused.
@@ -95,7 +96,7 @@ func TestDaemonSubRunObserverBeforeAttachIsInert(t *testing.T) {
 	if err := sink.Observe(nil); err != nil {
 		t.Fatalf("unattached sink refused a nil event: %v", err)
 	}
-	sink.Close()
+	sink.Close(planner.DispatchOutcome{})
 }
 
 // A sub-run event with no outer session cannot be attributed. Metering
@@ -110,7 +111,7 @@ func TestDaemonSubRunObserverRefusesToInventASession(t *testing.T) {
 	if err := sink.Observe(spend("OOMKilled", 100)); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	sink.Close()
+	sink.Close(planner.DispatchOutcome{})
 	if tokens, _, _ := pool.meter("").Snapshot(); tokens != 0 {
 		t.Errorf("unattributed spend was metered under the empty session: %d tokens", tokens)
 	}
@@ -159,7 +160,7 @@ func TestDaemonSubRunWatchdogSeesADispatchLoop(t *testing.T) {
 			break
 		}
 	}
-	sink.Close()
+	sink.Close(planner.DispatchOutcome{})
 
 	if halt == nil {
 		t.Fatal("a specialist looped inside a dispatch and the sink never stopped it")
@@ -196,7 +197,7 @@ func TestDaemonSubRunWatchdogUnderFeedbackDoesNotHalt(t *testing.T) {
 			t.Fatalf("feedback mode stopped a dispatch: %v", err)
 		}
 	}
-	sink.Close()
+	sink.Close(planner.DispatchOutcome{})
 
 	if cancelled {
 		t.Error("feedback mode cancelled the turn; only enforce halts")
@@ -234,7 +235,7 @@ func TestDaemonSubRunDedupIsPerDispatchAndSignalsSpanThem(t *testing.T) {
 		if err := sink.Observe(toolCallEvent("OOMKilled", "get_k8s_resource", "same-id")); err != nil {
 			halt = err
 		}
-		sink.Close()
+		sink.Close(planner.DispatchOutcome{})
 		if halt != nil {
 			break
 		}
@@ -287,7 +288,7 @@ func TestDaemonSubRunObserverRecordsDispatchedMutations(t *testing.T) {
 	if err := sink.Observe(mutatingCallEvent("remediator", "scale_up", "c1")); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	sink.Close()
+	sink.Close(planner.DispatchOutcome{})
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -315,7 +316,7 @@ func TestDaemonSubRunObserverDoesNotRecordACallItStops(t *testing.T) {
 	sub.attachRecording(store, effects.NewPredicate(nil), nil)
 
 	sink := sub.SubRun("incident-abc", "OOMKilled")
-	defer sink.Close()
+	defer sink.Close(planner.DispatchOutcome{})
 
 	// 10k tokens at echo's $0.05/1K is $0.50, twice OOMKilled's $0.25:
 	// the meter refuses, and the event carries a mutating call.

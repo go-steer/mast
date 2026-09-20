@@ -103,8 +103,16 @@ func (o recordingObserver) SubRun(sessionID, specialist string) planner.SubRunSi
 	if err != nil {
 		o.t.Fatalf("NewSubRunRecorder: %v", err)
 	}
-	return rec
+	// Wrapped rather than returned: the recorder is one consumer of the
+	// seam, not a sink, which is how both real hosts hold it.
+	return recordingSink{rec: rec}
 }
+
+type recordingSink struct{ rec *effects.SubRunRecorder }
+
+func (s recordingSink) Observe(ev *session.Event) error { return s.rec.Observe(ev) }
+
+func (s recordingSink) Close(planner.DispatchOutcome) {}
 
 type scaleUpArgs struct {
 	Delta int `json:"delta"`

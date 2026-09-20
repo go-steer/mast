@@ -20,6 +20,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/planner"
@@ -243,11 +244,56 @@ func (r *daemonSubRun) Observe(ev *session.Event) error {
 // It cannot stop the dispatch — that is over — but it can still trip
 // the session, which is the halt that matters: the trip is a latch, and
 // the turn that reads it is the next one.
-func (r *daemonSubRun) Close() {
-	if r.wds == nil || r.sessionID == "" {
-		return
+//
+// It is also where a dispatch that died under the specialist becomes
+// visible (#452). The drain runs first: a watchdog signal is about the
+// session and outlives this dispatch, where the report below is about
+// the dispatch and nothing depends on it.
+func (r *daemonSubRun) Close(out planner.DispatchOutcome) {
+	if r.wds != nil && r.sessionID != "" {
+		watchdog.Drain(r.wds.watchdog(r.sessionID), r.onAlert)
 	}
-	watchdog.Drain(r.wds.watchdog(r.sessionID), r.onAlert)
+	r.report(out)
+}
+
+// report is the operator-facing half of a dispatch ending: one metric
+// increment, and a log line for the ways of ending that are not the
+// ordinary one.
+//
+// A failed dispatch gets the log line because the count alone cannot
+// say which specialist or why, and because until #452 this failure had
+// no record anywhere at all — the planner was handed the error as an
+// ordinary tool result and was free to do the specialist's work itself,
+// at full parent-context cost, on a run that still looked successful
+// from the outside.
+//
+// A halt does NOT get one here: onAlert and the budget path already
+// logged it with the reason, and a second line per halt would say less
+// than the first.
+func (r *daemonSubRun) report(out planner.DispatchOutcome) {
+	outcome := observability.DispatchOK
+	switch {
+	case out.Err != nil:
+		// Classified with the same reader the attach surface uses on an
+		// outer-turn error, so "rate limited" means the same thing on
+		// both — an operator correlating a rate_limited dispatch count
+		// with a rate_limited turn-error frame is looking at one
+		// classifier's output, not two that agree today.
+		te := attach.ClassifyTurnError(out.Err)
+		outcome = observability.DispatchFailed
+		if te.Kind == attach.TurnErrorRateLimited {
+			outcome = observability.DispatchRateLimited
+		}
+		if r.logger != nil {
+			r.logger.Warn("a planner dispatch was lost; the planner may do the specialist's work itself",
+				"session", r.sessionID, "specialist", r.specialist,
+				"kind", te.Kind, "retryable", te.Retryable,
+				"error", out.Err.Error())
+		}
+	case out.Halted != nil:
+		outcome = observability.DispatchHalted
+	}
+	r.obs.Dispatch(r.workload, outcome)
 }
 
 // watch feeds one sub-run event to the session's watchdog and returns

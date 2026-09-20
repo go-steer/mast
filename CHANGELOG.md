@@ -84,6 +84,36 @@
 
 ### Feature
 
+- **A planner delegation that dies under the specialist now says so:
+  `mast_dispatches_total{workload, outcome}` plus a `WARN` line naming the
+  session and the specialist.** Coordinator, graph and fan-out dispatch funnel
+  their sub-agent events up the outer stream, so a failure there becomes a
+  `turn-error` frame an operator can see. `invoke_specialist` does not — it
+  runs on a private runner, and ADK converts the sub-runner's error into an
+  ordinary tool result. Through v0.9 that meant a delegation lost to a provider
+  429 produced **no log line, no metric, no frame, and a turn that ended
+  `ok`**; the planner, handed the rejection as a tool result, was free to do
+  the specialist's work itself at full parent-context cost, with none of the
+  specialist's instruction, on a run that still scored. The four outcomes are
+  `ok`, `halted`, `rate_limited` and `failed`. `rate_limited` is split out
+  because it is the one dispatch failure that is both transient and the
+  operator's business, and because a climbing `rate_limited` rate beside a flat
+  turn-error rate is that silent substitution happening — visible in no other
+  series. `halted` is counted apart from `failed` because a budget ceiling or a
+  watchdog trip firing is the system working, and it is deliberately **not**
+  logged a second time here: the consumer that halted the dispatch already said
+  why. Labelled by workload and not by specialist, because a specialist name is
+  workload-authored and unbounded; it goes in the log line instead. The
+  library build has no registry, so it gets the log line and nothing else —
+  and it is the only report there is, since `Run` returns no error either.
+  Mechanically this is a new argument on `planner.SubRunSink.Close`
+  (`planner.DispatchOutcome`, carrying `Err` and `Halted` as mutually
+  exclusive fields); `pkg/planner` is outside the v1.0 promise, and
+  `effects.SubRunRecorder` dropped its no-op `Close` rather than have
+  `pkg/effects` import `pkg/planner` — it was always a consumer of the seam
+  rather than an implementation of it
+  ([#452](https://github.com/go-steer/mast/issues/452)).
+
 - **`--park-notify <conversation>` announces a durable approval park to chat,
   so an unattended daemon that stops to ask a question tells somebody it
   asked.** Every existing way to discover a park is a pull — `GET /parks`, the

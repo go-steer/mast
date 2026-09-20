@@ -204,7 +204,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 	// only way its spend reaches this turn's ceilings is the observer
 	// seam compose threads into the planner (#226).
 	meter := budget.New(meterConfig(cfg, &bundle, specs, modelName))
-	seam := &subRunMeter{m: meter}
+	seam := &subRunMeter{m: meter, logger: cfg.Logger}
 	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:         bundle,
 		Specs:          specs,
@@ -293,7 +293,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 		return nil, err
 	}
 	meter := budget.New(meterConfig(cfg, &bundle, specs, modelName))
-	seam := &subRunMeter{m: meter}
+	seam := &subRunMeter{m: meter, logger: cfg.Logger}
 	root, _, err := compose.BuildRoot(ctx, compose.RootConfig{
 		Bundle:         bundle,
 		Specs:          specs,
@@ -580,6 +580,7 @@ func libraryWatchdogMode(bundle *workload.Bundle) (watchdog.Mode, error) {
 // daemonSubRunObserver, and for the same reason.
 type subRunMeter struct {
 	m       *budget.Meter
+	logger  *slog.Logger
 	records func(sessionID, specialist string) *effects.SubRunRecorder
 }
 
@@ -596,7 +597,7 @@ func (s *subRunMeter) bindRecorder(f func(sessionID, specialist string) *effects
 // ceiling bind here — and used by the recorder for attribution the log
 // cannot supply.
 func (s *subRunMeter) SubRun(sessionID, specialist string) planner.SubRunSink {
-	sink := &subRunSink{m: s.m}
+	sink := &subRunSink{m: s.m, logger: s.logger, sessionID: sessionID, specialist: specialist}
 	if s.records != nil {
 		sink.rec = s.records(sessionID, specialist)
 	}
@@ -605,8 +606,11 @@ func (s *subRunMeter) SubRun(sessionID, specialist string) planner.SubRunSink {
 
 // subRunSink is one dispatch's sink for the library build.
 type subRunSink struct {
-	m   *budget.Meter
-	rec *effects.SubRunRecorder
+	m          *budget.Meter
+	rec        *effects.SubRunRecorder
+	logger     *slog.Logger
+	sessionID  string
+	specialist string
 }
 
 // Observe meters first and records last, the ordering cmd/mast's sink
@@ -623,7 +627,29 @@ func (s *subRunSink) Observe(ev *adksession.Event) error {
 	return s.rec.Observe(ev)
 }
 
-func (s *subRunSink) Close() {}
+// Close says out loud that a dispatch died under the specialist (#452).
+// The library build has no metric registry, so the log line is the whole
+// report — and it is the only one there is: the planner is handed the
+// sub-runner's error as an ordinary tool result and is free to do the
+// specialist's work itself, at full parent-context cost, on a Run that
+// returns no error at all.
+//
+// A halt is not logged here; the budget and watchdog paths above already
+// logged it with the reason.
+//
+// Unlike cmd/mast's sink this one does not classify the error into a
+// kind. The classification exists to pick a metric label and the library
+// build has no registry, so the only thing it would buy here is an
+// import of pkg/attach in the root package — which today does not depend
+// on it, and which every embedding consumer pays for.
+func (s *subRunSink) Close(out planner.DispatchOutcome) {
+	if out.Err == nil || s.logger == nil {
+		return
+	}
+	s.logger.Warn("a planner dispatch was lost; the planner may do the specialist's work itself",
+		"session", s.sessionID, "specialist", s.specialist,
+		"error", out.Err.Error())
+}
 
 func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workload.Bundle, meter *budget.Meter, seam *subRunMeter, sessionID string, msg *genai.Content) (*Result, error) {
 	svc := cfg.Sessions

@@ -103,7 +103,7 @@ func (s *countingSubRunSink) Observe(*session.Event) error {
 	return nil
 }
 
-func (s *countingSubRunSink) Close() {}
+func (s *countingSubRunSink) Close(planner.DispatchOutcome) {}
 
 // RootConfig.SubRunObserver has to reach the planner's dispatch tool,
 // not merely exist: a declared field that nothing threads is not a

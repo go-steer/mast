@@ -231,9 +231,47 @@ type SubRunObserver interface {
 // end-of-run drain lands here, the same one watchdog.Tap defers at the
 // end of a turn. It cannot stop anything — the run is over — but it can
 // still trip a session-level latch the host holds.
+//
+// It is also the only place a host learns that the dispatch did not
+// finish. A sub-runner error — a provider rejection, most of all a
+// transient one — ends the dispatch without producing an event, so a
+// sink watching the stream sees a dispatch that simply stopped
+// (#452). Close carries the reason so the host can say so.
 type SubRunSink interface {
 	Observe(ev *session.Event) error
-	Close()
+	Close(DispatchOutcome)
+}
+
+// DispatchOutcome is how one dispatch ended, handed to
+// [SubRunSink.Close].
+//
+// A struct rather than an error argument because the two ways a
+// dispatch fails to complete are not the same event and a host acts on
+// them differently — and because a third way, if one appears, should be
+// a field rather than another signature.
+type DispatchOutcome struct {
+	// Err is the sub-runner's own failure: the specialist stopped
+	// because something broke under it, most often the provider
+	// rejecting a model call. Nil when the dispatch ran to completion
+	// or when the sink itself stopped it.
+	//
+	// This is the case with no other symptom. A halt is the host's own
+	// decision and a completed dispatch produces a result; a sub-runner
+	// error produces neither, and until #452 nothing anywhere recorded
+	// that it had happened — the planner was handed the error as an
+	// ordinary tool result and was free to do the specialist's work
+	// itself, at full parent-context cost, on a run that still scored.
+	Err error
+
+	// Halted is what the sink's own Observe returned to stop the run,
+	// echoed back so a sink that batches does not have to remember. Nil
+	// when the sink stopped nothing.
+	//
+	// Err and Halted are mutually exclusive: once a sink halts a
+	// dispatch the sub-context is cancelled, and the runner's ensuing
+	// "context canceled" is a symptom of the stop rather than a second
+	// failure, so it is not reported as one.
+	Halted error
 }
 
 func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Agent, obs SubRunObserver) (tool.Tool, error) {
@@ -273,14 +311,22 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 		// CheckCapabilitySplit refuses any roster whose specialists hold
 		// undeclared mutating tools — so reaching the hole takes a
 		// roster that declares capability: change_executor.
-		var sink SubRunSink
+		var (
+			sink    SubRunSink
+			outcome DispatchOutcome
+		)
 		if obs != nil {
 			// Opened before the runner exists, so a host that scopes per
 			// dispatch has its scope for the whole of one, and closed
 			// however the dispatch ends — including the error returns
 			// below.
+			//
+			// The close reads `outcome` at defer time rather than
+			// capturing it now, which is what lets the error returns
+			// below be reported at all: each one sets the field and
+			// returns, and the sink hears about it on the way out.
 			if sink = obs.SubRun(ctx.SessionID(), args.Name); sink != nil {
-				defer sink.Close()
+				defer func() { sink.Close(outcome) }()
 			}
 		}
 		r, err := runner.New(runner.Config{
@@ -290,6 +336,7 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 			AutoCreateSession: true,
 		})
 		if err != nil {
+			outcome.Err = fmt.Errorf("construct runner: %w", err)
 			return nil, fmt.Errorf("invoke_specialist %q: construct runner: %w", args.Name, err)
 		}
 
@@ -317,6 +364,7 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 				if halted != nil {
 					break
 				}
+				outcome.Err = err
 				return nil, fmt.Errorf("invoke_specialist %q: %w", args.Name, err)
 			}
 			if ev == nil {
@@ -377,6 +425,7 @@ func newInvokeSpecialistTool(roster []string, dispatchers map[string]adkagent.Ag
 			// early and why, and decides what to do about it.
 			res["status"] = "halted"
 			res["reason"] = halted.Error()
+			outcome.Halted = halted
 		}
 		return res, nil
 	})
