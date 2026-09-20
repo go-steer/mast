@@ -16,7 +16,14 @@
 # pure-Go so we can stay on the static distroless variant.
 
 # ---- Builder stage ----
-ARG GO_VERSION=1.26.3
+#
+# GO_VERSION must be >= the `go` directive in go.mod. The golang images
+# set GOTOOLCHAIN=local, so a lower pin does not silently download the
+# newer toolchain — it fails `go mod download` outright. That is how
+# this file stopped building: go.mod moved to 1.26.6 and the pin stayed
+# at 1.26.3, with nothing in CI compiling the image to notice.
+# `.github/workflows/ci-image.yml` now builds it on every PR.
+ARG GO_VERSION=1.26.6
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
 WORKDIR /src

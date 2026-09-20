@@ -21,6 +21,14 @@ coverage.html
 credentials.json
 application_default_credentials.json
 
+# Not needed by the build, and expensive to send. docs/site landed
+# after this file was written; its node_modules alone is ~250MB of
+# build context that the builder stage never reads.
+.git/
+docs/site/node_modules/
+docs/site/dist/
+docs/site/.astro/
+
 # Docker-internal.
 Dockerfile
 .dockerignore

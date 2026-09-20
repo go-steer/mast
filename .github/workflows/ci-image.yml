@@ -1,0 +1,105 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# CI for the container image. Verification only — nothing is pushed.
+#
+# This exists because the Dockerfile stopped building and nobody found
+# out. go.mod moved to `go 1.26.6` while the Dockerfile's GO_VERSION arg
+# stayed at 1.26.3; the golang images set GOTOOLCHAIN=local, so that is
+# a hard `go mod download` failure rather than a silent toolchain
+# download. `deploy/base` has referenced ghcr.io/go-steer/mast the whole
+# time (#342).
+#
+# Three things are asserted, in the order a failure is cheapest to read:
+#   1. the image builds for linux/amd64;
+#   2. the binary inside it actually runs — distroless has no shell, so
+#      a mislinked or non-static binary fails here and nowhere earlier;
+#   3. it cross-compiles for linux/arm64, which is a separate claim the
+#      Dockerfile's TARGETARCH plumbing makes and which no other job
+#      exercises.
+#
+# Like ci-docs.yml this is deliberately NOT a Go presubmit: a Go
+# contributor should not need a working Docker daemon to run all.sh.
+#
+# On the path filter. The trigger lists the inputs that decide whether
+# the *image* builds independent of Go source — the Dockerfile, the
+# ignore rules, the toolchain pin, the directory the final stage COPYs.
+# A break coming from Go source instead would be caught by the push
+# build on main, and by release-images.yml before anything is
+# published. Building on every Go PR would mostly re-prove what
+# presubmit `build` just proved, at a second compile's cost.
+
+name: ci-image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'go.mod'
+      - 'go.sum'
+      - 'examples/workloads/gke-triage/**'
+      - '.github/workflows/ci-image.yml'
+
+concurrency:
+  group: ci-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Named `image`, not `build`: ci-docs.yml already contributes a check
+  # called `build`, and two workflows whose failures mean entirely
+  # different things should not share a name in the PR rollup.
+  image:
+    name: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: mast:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Distroless has no shell and no package manager, so this is the
+      # first moment anything proves the binary is actually executable
+      # in the image we would ship. `--help` exits 0 and touches no
+      # network, no provider and no session store.
+      - name: The binary in the image runs
+        run: docker run --rm mast:ci --help > /dev/null
+
+      # The Dockerfile takes TARGETOS/TARGETARCH and sets GOOS/GOARCH
+      # from them; nothing else in CI ever supplies a value for those.
+      # Not loaded — a foreign-arch image cannot be run here, and the
+      # claim being checked is that it compiles.
+      - name: Cross-compile (linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          tags: mast:ci-arm64
+          cache-from: type=gha
