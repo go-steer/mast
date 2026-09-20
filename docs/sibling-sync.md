@@ -1612,7 +1612,7 @@ keeps recording under other names: a claim mast makes in text that nothing in th
 |---|---|---|
 | `92091883` | mcp: believe the server when it says a tool only reads (#1099) | **Ported 2026-09-20** ([#447](https://github.com/go-steer/mast/issues/447)). Falsified a premise mast wrote down as a fact about the substrate. |
 | `6cab9d67` | attach: a pump's start cursor belongs to the pump (#1076) | **Ported 2026-09-20** ([#448](https://github.com/go-steer/mast/issues/448)). A live data race in ported code, reachable in mast by the same interleaving; the regression test was confirmed to trip `-race` on both read sites first. |
-| `f93d675d` + `eae797f8` | permissions: a refused call cannot re-open the same prompt; the gate ends a turn the operator already answered | **Port the mechanism; mast already has the words.** |
+| `f93d675d` + `eae797f8` + `4095b15a` | permissions: a refused call cannot re-open the same prompt; the gate ends a turn the operator already answered | **Ported 2026-09-20** ([#449](https://github.com/go-steer/mast/issues/449)). Mechanism theirs, siting mast's: none of the three could go where upstream put it. |
 | `8303e2f2` | eventlog: one event, one transaction (#1063) | **Port.** mast documents the same non-atomicity as a v1 limitation, in two files. |
 | `a0bcfe66` | permissions: a gated prompt nobody is attached to must tell somebody (#1059) | **Port the notify half only.** mast has the egress; no park ever reaches it. |
 | `00d5d98f` | models: retry a Vertex 429 once (#1037) | **Port candidate on upstream's evidence, not mast's.** mast has no outbound retry at all. |
@@ -1685,6 +1685,18 @@ Take both halves or neither. `f93d675d` alone moves the stop from the prompt to 
 `eae797f8`'s finding was that something already ended the turn (the watchdog) at *session* scope,
 so one "no" ended the daemon's working life — and `4095b15a` is the correction that makes the two
 arms agree about whose books the repetition sits on.
+
+**Ported 2026-09-20 as [#449](https://github.com/go-steer/mast/issues/449), all three halves, and
+none of them where upstream put them.** The memory is on `pkg/approval`'s plugin rather than on
+`permissions.Gate`: the gate's methods take a bare context and cannot tell one turn from the next,
+and this memory's whole correctness is the turn boundary. The boundary itself was *measured* rather
+than assumed — ADK gives one invocation ID to the park, the verdict and everything after it, even
+across two `Runner.Run` calls, and a new one to the next operator turn — so the clear is memory
+hygiene and an expired key can never match. And the turn-end is a context cancellation, not a
+returned error, because a before-tool callback's error is handed to the model as an ordinary tool
+response and the flow simply continues; a refusal the model can read and ignore is the thing the
+port exists to stop being. `4095b15a`'s scrub is `cmd/mast`'s `watchdogPool.forgetToolRun`:
+signals, never the trip.
 
 #### `8303e2f2` — the same v1 limitation, written down in two places
 
@@ -1769,10 +1781,19 @@ Carried forward from 2026-09-20, in the order they are worth doing:
    decision from anyone. The prediction that held up under test is the one worth keeping: the
    detector flagged **both** unsynchronized reads — the debug line and the `Watch` argument — on
    pre-fix code.
-3. **[#449](https://github.com/go-steer/mast/issues/449) (`f93d675d` + `eae797f8` + `4095b15a`) —
-   stop asking after a refusal, and end the turn on the gate's own evidence.** Needs a decision mast
-   has not made: mast's gate does not prompt, so the suppression key and the turn-boundary clear
-   both have to be re-sited onto the park path.
+3. ~~**[#449](https://github.com/go-steer/mast/issues/449) (`f93d675d` + `eae797f8` + `4095b15a`) —
+   stop asking after a refusal, and end the turn on the gate's own evidence.**~~ **Done
+   2026-09-20.** The re-siting was the work, as predicted, and it cost two decisions rather than
+   one. The memory went on the plugin that raises the park rather than on `permissions.Gate`, whose
+   methods have no turn identity to expire at and whose "nothing about a mutation is remembered" is
+   a documented property. The turn boundary turned out to need **measuring**: ADK gives the park,
+   the operator's verdict and everything after it one invocation ID across two separate
+   `Runner.Run` calls, and a fresh turn a new one — so there is no clearing step to get wrong.
+   The unpredicted cost was the turn-end itself: an error returned from a before-tool callback
+   **cannot end an ADK turn** — `callTool` hands it back to the model as an ordinary tool response
+   — so the stop had to become a context cancellation on the watchdog's pattern, carried on the
+   context so it reaches a planner-dispatched specialist's sub-runner. Both recorded in
+   [`./README.md`](./README.md)'s resolved-decisions table.
 4. **[#450](https://github.com/go-steer/mast/issues/450) (`8303e2f2`) — one event, one
    transaction.** Closes a v1 limitation mast documents twice.
 5. **[#451](https://github.com/go-steer/mast/issues/451) (`a0bcfe66`'s notify half) — a park nobody

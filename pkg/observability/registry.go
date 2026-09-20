@@ -53,6 +53,15 @@ const (
 	// session has runway left — an alert on this one should page
 	// differently from either.
 	OutcomeWatchdogHalt = "watchdog_halt"
+	// OutcomeRefusalLoop is a turn the write gate stopped because the
+	// model kept re-proposing a call an operator had already refused
+	// (#449). Separate from watchdog_halt on the same reasoning that
+	// made watchdog_halt separate from error, applied one level down:
+	// this one latches nothing and needs no reset, so a rate on it is
+	// a count of models arguing with their operators rather than a
+	// queue of sessions waiting on a human. Separate from error
+	// because nothing failed.
+	OutcomeRefusalLoop = "refusal_loop"
 )
 
 // Token kinds for the mast_tokens_total{kind} label.
@@ -426,7 +435,7 @@ func (r *Registry) Prime(workload string) {
 	if r == nil {
 		return
 	}
-	for _, outcome := range []string{OutcomeOK, OutcomeError, OutcomeBudgetExceeded, OutcomeWatchdogHalt} {
+	for _, outcome := range []string{OutcomeOK, OutcomeError, OutcomeBudgetExceeded, OutcomeWatchdogHalt, OutcomeRefusalLoop} {
 		r.turns.WithLabelValues(workload, outcome)
 	}
 	r.modelCalls.WithLabelValues(workload)

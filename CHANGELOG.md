@@ -253,6 +253,48 @@
 
 ### Bug or Regression
 
+- **A refused mutating call cannot park a second time in the same turn, and
+  a model that keeps proposing it ends the turn.** mast's refusal text has
+  told the model not to retry and not to reach the same change by another
+  route since v0.4; nothing enforced it, so an identical proposal took the
+  same path through the write gate and parked again. mast's version of that
+  loop is worse than the in-process one it was ported from, for the reason
+  mast is otherwise right about: a park is **durable**, so every iteration
+  writes a fresh long-running call into the session event log and a fresh
+  row into `GET /parks` — another out-of-band page to the person who already
+  said no. Now the exact call an operator refused is suppressed for the rest
+  of the turn: it does not park, it does not reach the operator, and it
+  comes back as `already_refused` with the same instruction attached. Same
+  call means the same tool and the same arguments — a different call, or the
+  same tool with different arguments, parks normally, because the operator
+  has not answered that question. Three suppressed proposals end the turn
+  with a `refusal_loop` error, and **nothing latches**: no guardrail trips,
+  there is nothing to reset, and the next turn starts clean. Three rather
+  than one because the first re-proposal may be the model reacting before it
+  has read the refusal, and deliberately below the watchdog's repeat
+  threshold of five — both mechanisms watch this behaviour, and the
+  watchdog's answer is a *session* halt an operator has to clear, which is
+  the wrong price for one "no". The two arms are kept from double-counting:
+  the gate tells the watchdog to forget the calls it turned away, since
+  those calls never ran, and that scrub clears the **signals and never the
+  trip** — an arm that could un-halt a session would let a looping agent
+  overrule its operator by looping harder. The suppression's scope is one
+  turn, and the boundary is ADK's invocation ID, which was measured rather
+  than assumed: a park, its verdict and everything after it share one ID
+  even across two `Runner.Run` calls, and the next operator turn gets a new
+  one. A refusal that outlived its turn would silently block a call the
+  operator would have approved, which is the failure this shape rules out
+  rather than mitigates. Attach protocol **1.6.0 → 1.7.0**: `refusal_loop`
+  is a new value in the existing `turn-error` kind enum, `retryable: false`,
+  and separate from `watchdog_halt` because the two differ in the only way
+  a client acts on — a halt needs a guardrail reset before anything works
+  again, and this does not; a client rendering the halt's remedy here would
+  send an operator to clear a guardrail that never tripped. Also a new
+  `mast_turns_total{outcome="refusal_loop"}` value, on the same reasoning
+  that separated `watchdog_halt` from `error`
+  ([#449](https://github.com/go-steer/mast/issues/449), porting core-agent
+  `f93d675d` + `eae797f8` + `4095b15a`).
+
 - **The attach broadcaster's pump no longer reads its start cursor off a
   shared field.** `b.startedAt` was written by `register` under `b.mu` and
   read by the pump goroutine under nothing — once for a debug line, once as

@@ -24,7 +24,7 @@ exports. What is written below is what a `curl /metrics` returns.
 
 | Family | Labels | Meaning |
 |---|---|---|
-| `mast_turns_total` | `workload`, `outcome` | Turns driven through the runner. Outcomes: `ok`, `error`, `budget_exceeded`, `watchdog_halt` (stopped by the behavioral watchdog under `--watchdog=enforce`). |
+| `mast_turns_total` | `workload`, `outcome` | Turns driven through the runner. Outcomes: `ok`, `error`, `budget_exceeded`, `watchdog_halt` (stopped by the behavioral watchdog under `--watchdog=enforce`), `refusal_loop` (stopped by the [write gate](/concepts/approvals/#a-refusal-the-model-cannot-talk-its-way-past) because the model kept re-proposing a call an operator had refused). |
 | `mast_model_calls_total` | `workload` | Model calls observed on the event stream (events carrying usage metadata). |
 | `mast_tokens_total` | `workload`, `kind` | Provider tokens, by kind: `prompt`, `candidates`. |
 | `mast_cost_usd_total` | `workload` | Accumulated cost in USD, derived by the budget meter's pricing model. |
@@ -168,7 +168,7 @@ the chokepoint still leaves a record.
 | `mast.workload.name` | string | Same workload name the counter families are labelled by. |
 | `mast.turn.kind` | string | What drove the turn: `inject`, `attach`, `resume`, `scheduled`, `autoresume`, `a2a`, `agui`, `oneshot`. |
 | `mast.turn.detail` | string | The particulars of that one turn — the inject's reason, the interrupt ID a resume answered, the tick a scheduled fire was due at, the A2A method. Absent when the kind has no detail. |
-| `mast.turn.outcome` | string | How it ended. The `mast_turns_total` vocabulary (`ok`, `error`, `budget_exceeded`, `watchdog_halt`) plus `refused` — see below. |
+| `mast.turn.outcome` | string | How it ended. The `mast_turns_total` vocabulary (`ok`, `error`, `budget_exceeded`, `watchdog_halt`, `refusal_loop`) plus `refused` — see below. |
 | `mast.turn.queued_ms` | int | How long the turn waited for the session's turn lock. One session runs one turn at a time, so on a busy session this is latency that otherwise reads as a slow model. |
 | `mast.cost.usd` | float | What *this turn* added, not the session total. Absent on a turn refused before the runner. |
 
