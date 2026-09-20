@@ -39,6 +39,10 @@
 # artifact, cosign v2.6.5 — same finding as
 # dev/release/verify-signature.sh's header.
 #
+# And check what built it, which the signature does not say:
+#
+#   dev/release/verify-provenance.sh --oci ghcr.io/go-steer/mast@sha256:...
+#
 # Three deliberate differences from core-agent's version:
 #
 #   1. It verifies what it published. core-agent signs and stops;
@@ -81,6 +85,8 @@ permissions:
   # cosign keyless: exchanged with Fulcio for a short-lived signing
   # certificate. Nothing is stored, so there is no key to rotate.
   id-token: write
+  # SLSA build provenance for the image and the chart (#342).
+  attestations: write
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/mast
@@ -213,6 +219,33 @@ jobs:
             > /dev/null
           echo "signature verified for ${IMAGE}@${DIGEST}"
 
+      # SLSA build provenance beside the signature. The signature says
+      # this workflow signed the digest; the provenance says which commit
+      # of which repository the image was built from, which is the
+      # question an operator with a running pod and a CVE advisory
+      # actually has.
+      #
+      # push-to-registry writes the attestation as an OCI referrer of the
+      # digest, so it travels with the image: a verifier who can pull the
+      # image can check it without a GitHub account, and a copy of the
+      # image into another registry that carries referrers keeps it.
+      - name: Attest the image
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # And check what a verifier finds, not that the step above exited
+      # 0 — the same reason the signature is re-verified above. The
+      # script pins the signer workflow, because bare `--repo` accepts an
+      # attestation from any workflow in this repository.
+      - name: Verify the published provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: dev/release/verify-provenance.sh --oci "${IMAGE}@${DIGEST}"
+
       # The image is pulled back from the registry and run, because
       # every check above this line ran against the runner's view of
       # the build. This is the only step that asserts something about
@@ -322,6 +355,22 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             > /dev/null
           echo "signature verified for ${CHART_REPO}@${DIGEST}"
+
+      # A chart is a build output like any other, and the one an operator
+      # runs against their own cluster with cluster-wide read. Same
+      # attestation, same referrer placement, same pinned-signer check.
+      - name: Attest the chart
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.CHART_REPO }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify the published provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: dev/release/verify-provenance.sh --oci "${CHART_REPO}@${DIGEST}"
 
       # The outside check, and the only step here that asserts something
       # about what a reader actually gets. The install page tells people

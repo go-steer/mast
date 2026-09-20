@@ -1130,7 +1130,9 @@ deploy rather than after.
   `checksums.txt`, verifiable against the release workflow's own identity with
   no mast public key to trust
   ([how](/install/#verify-the-signature)); the container image and the chart
-  are signed the same way. SLSA provenance stays on that issue.
+  are signed the same way, and all three now also carry a SLSA build
+  provenance attestation naming the commit and the workflow they were built
+  from ([how](/install/#check-what-built-it)).
 - **Run one replica for anything scheduled.** Extra replicas no longer
   duplicate work — a lease over the session store means one instance fires
   the scheduled trigger, the timed-pause resumes and the boot auto-resume
