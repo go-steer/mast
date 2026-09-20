@@ -141,6 +141,31 @@ regardless and counts it.
 |---|---|---|
 | `mast_monitor_acks_total` | `workload`, `outcome` | Operator acknowledgements taken on the daemon ingress. Outcomes: `forwarded` (recorded and accepted by the producer's ack tool), `error` (the durable record or the forward failed — the suppression did not take). |
 
+## Park announcements
+
+A durable [approval park](/concepts/approvals/) is discoverable four ways, and
+three of them require somebody to look first. `--park-notify <conversation>`
+is the fourth: it announces the park to the chat ingress `--notify-url`
+configures, once, when the park opens.
+
+This family only moves on a daemon that set that flag. A workload with no
+park egress increments nothing, and that silence is configuration rather than
+a fault — so the denominator here is parks *announced*, not parks *raised*.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_park_notifications_total` | `workload`, `outcome` | Parks by whether the operator was told about them out of band. Outcomes: `sent` (the ingress took it), `throttled` (this workload is parking faster than the announcement budget of 3 then 1 per 5 minutes allows), `error` (the send failed). |
+
+`error` is the one to alert on: it is the daemon reporting that it stopped to
+ask a question and could not reach anybody to ask. Nothing is queued and
+nothing replays — the park is unaffected and still answerable, so the recovery
+is an operator reading `GET /parks`.
+
+`throttled` is a different alert. It rarely means one announcement went
+missing and usually means a workload has started parking in a loop, which ends
+with an operator muting the channel — and a muted channel costs them the park
+that mattered too. Neither outcome is ever an error on the turn's books.
+
 ## Traces
 
 Trace export is env-gated OTel: a no-op unless `OTEL_EXPORTER_OTLP_*`

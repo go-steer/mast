@@ -172,6 +172,36 @@ var monitorNotifyOutcomes = []string{
 	MonitorNotifyError,
 }
 
+// Park-announcement outcomes (mast_park_notifications_total{outcome})
+// for the #451 out-of-band half of a park. The family answers one
+// question: did the operator get told this daemon stopped to ask
+// something. A park the gate raised and nobody heard about is the
+// failure the feature exists to remove, so both ways of not hearing
+// about it are counted rather than logged only.
+const (
+	// ParkNotifySent: the announcement reached the chat ingress.
+	ParkNotifySent = "sent"
+	// ParkNotifyThrottled: the announcement was dropped because the
+	// park budget was spent. The park is unaffected and still
+	// answerable; what was lost is the push. A rising count means a
+	// workload is parking faster than an operator can be told, which is
+	// itself worth an alert.
+	ParkNotifyThrottled = "throttled"
+	// ParkNotifyError: the ingress refused, or could not be reached.
+	// There is no retry — see pkg/notify — so this is a park the
+	// operator was not told about.
+	ParkNotifyError = "error"
+)
+
+// parkNotifyOutcomes is the fixed label set primed for
+// mast_park_notifications_total{outcome}, kept beside the vocabulary so
+// Prime and ParkNotify cannot drift.
+var parkNotifyOutcomes = []string{
+	ParkNotifySent,
+	ParkNotifyThrottled,
+	ParkNotifyError,
+}
+
 // Monitoring-ack outcomes (mast_monitor_acks_total{outcome}) for the
 // v0.5 W4.6 ingress leg. Two outcomes and no more: mast either got the
 // operator's acknowledgement to the producer that owns the suppression,
@@ -309,6 +339,7 @@ type Registry struct {
 	scheduledFires  *prometheus.CounterVec
 	monitorNotifies *prometheus.CounterVec
 	monitorDigests  *prometheus.CounterVec
+	parkNotifies    *prometheus.CounterVec
 	monitorAcks     *prometheus.CounterVec
 	a2aTasks        *prometheus.CounterVec
 	aguiRuns        *prometheus.CounterVec
@@ -401,6 +432,9 @@ func New() *Registry {
 	r.monitorDigests = counter("mast_monitor_digest_wakes_total",
 		"Monitoring cycles that spoke because the notify deadman expired rather than because anything changed.",
 		"workload")
+	r.parkNotifies = counter("mast_park_notifications_total",
+		"Durable approval parks by whether the operator was told about them out of band (sent, throttled, error).",
+		"workload", "outcome")
 	r.monitorAcks = counter("mast_monitor_acks_total",
 		"Operator acknowledgements taken on the daemon ingress and forwarded to the producer that owns the suppression.",
 		"workload", "outcome")
@@ -466,6 +500,9 @@ func (r *Registry) Prime(workload string) {
 		r.monitorNotifies.WithLabelValues(workload, outcome)
 	}
 	r.monitorDigests.WithLabelValues(workload)
+	for _, outcome := range parkNotifyOutcomes {
+		r.parkNotifies.WithLabelValues(workload, outcome)
+	}
 	for _, outcome := range monitorAckOutcomes {
 		r.monitorAcks.WithLabelValues(workload, outcome)
 	}
@@ -624,6 +661,18 @@ func (r *Registry) MonitorDigestWake(workload string) {
 		return
 	}
 	r.monitorDigests.WithLabelValues(workload).Inc()
+}
+
+// ParkNotify records what became of one park's out-of-band
+// announcement (one of the ParkNotify* constants). Called once per park
+// on a daemon with a park egress configured, and not at all on one
+// without — a workload that never asked to be told is not counted as
+// failing to be told.
+func (r *Registry) ParkNotify(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.parkNotifies.WithLabelValues(workload, outcome).Inc()
 }
 
 // MonitorAck records one operator acknowledgement taken on the ingress

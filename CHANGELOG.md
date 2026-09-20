@@ -84,6 +84,64 @@
 
 ### Feature
 
+- **`--park-notify <conversation>` announces a durable approval park to chat,
+  so an unattended daemon that stops to ask a question tells somebody it
+  asked.** Every existing way to discover a park is a pull — `GET /parks`, the
+  attach stream, `mast sessions show`, the audit log — which is fine for an
+  operator at a console and useless for the workload this product is for: a
+  fifteen-minute cadence can park at 03:00 and sit there until somebody thinks
+  to look. The flag sends one message when the park opens, through the same
+  ingress `--notify-url` already configures (which it now requires, along with
+  `MAST_NOTIFY_TOKEN`; setting it without them is a startup error rather than a
+  console warning, because an operator who configured a page has told us they
+  are not watching a console). The message names the session, the agent and the
+  call, and ends with the `mast sessions show` line that prints the resume
+  command. Serve mode only — one-shot builds no write gate, so it raises no
+  parks.
+
+  **The destination is a daemon flag and not a bundle field**, which is the one
+  place this diverges from `monitor.notify.conversation`. A monitoring cycle's
+  conversation is the workload talking; a park announcement is mast talking
+  *about* the workload, so a bundle-chosen destination would put the routing of
+  "mast is asking permission" inside the thing being asked about. Nothing a
+  workload declares and nothing a model emits can choose where one goes, and
+  the sender is outside the write gate — a gate asking permission to report
+  that it needs permission is a circle with nobody left to break it.
+
+  **It announces every park, not only the unwatched ones.** This is a
+  deliberate divergence from core-agent's `a0bcfe66`, which fires only when a
+  prompt's fan-out reached nobody. That measurement is right for their shape: a
+  prompt is a blocked goroutine with a deadline, so "was anyone attached when
+  it opened" identifies who can answer before it expires. mast's park is a
+  durable row that outlives the process, so attachment at raise-time predicts
+  nothing an hour later, and an operator who detaches thirty seconds after the
+  park would get silence all night. The cost of announcing anyway is a
+  redundant message to somebody already watching; the cost of the other
+  direction is the park nobody hears about. (Announcing only once a park has
+  gone *unanswered* for an interval would beat both, and is a different change:
+  it needs a durable timer rather than a goroutine.)
+
+  Three bounds, because an egress that can page an operator is an egress a
+  runaway workload can abuse. Announcements are capped at three then one per
+  five minutes, with drops counted as `throttled` — twelve an hour is already
+  past where an operator mutes the channel, and a muted channel costs them the
+  park that mattered too. A park notice is always its own message and never an
+  append, so it cannot splice into the story a monitoring cycle is telling, and
+  a monitoring cycle cannot consume the budget that gets a park announced. And
+  a send is never the turn's problem: it runs on its own goroutine with a
+  context detached from the turn (a park is *when* a turn is closest to being
+  cancelled, so parenting the send on it would kill exactly the announcements
+  that matter most) and bounded at 60s, and a failure is an ERROR log line plus
+  `mast_park_notifications_total{outcome="error"}` — never an error returned to
+  the gate. The park stays recorded and stays answerable whatever the chat
+  ingress does.
+
+  One thing to know before pointing this at a channel: the park hint renders
+  the call with its argument values, elided at 120 characters each. A chat
+  channel's readership is not the session's ACL. The untruncated arguments
+  never leave the confirmation record.
+  ([#451](https://github.com/go-steer/mast/issues/451))
+
 - **An MCP tool that declares `readOnlyHint: true` is now classified read-only
   instead of mutating, so it stops parking for approval.** Under the default
   `hitl.on_mutation: require_approval`, every tool from every MCP server used

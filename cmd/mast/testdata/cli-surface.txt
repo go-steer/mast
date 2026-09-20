@@ -33,6 +33,7 @@ mast [flags] [prompt]
   --mcp-digest           bool      "true"
   --model                string    "echo"
   --notify-url           string    ""
+  --park-notify          string    ""
   --provider             string    ""
   --session-db           string    ""
   --session-db-driver    string    "sqlite"

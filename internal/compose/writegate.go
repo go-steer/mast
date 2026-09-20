@@ -15,6 +15,7 @@
 package compose
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -94,6 +95,16 @@ type WriteGateConfig struct {
 	// field of the same name for why an arm that could un-halt would
 	// let a looping agent overrule its operator.
 	ForgetToolRun func(sessionID string)
+
+	// NotifyPark announces a park out of band, so an unattended daemon
+	// that stops to ask a question tells somebody it asked (#451).
+	//
+	// A passthrough for the same reason ForgetToolRun is one: the egress
+	// belongs to the host. cmd/mast has a configured chat ingress and a
+	// rate budget of its own; a library embed has neither, and its parks
+	// are answered by the process that raised them. Optional, and its
+	// absence is exactly the pre-#451 behaviour.
+	NotifyPark func(context.Context, approval.ParkNotice)
 
 	Logger *slog.Logger
 }
@@ -178,6 +189,7 @@ func WriteGate(cfg WriteGateConfig) (WriteGateResult, error) {
 		Workload:  cfg.Bundle.Name,
 
 		ForgetToolRun: cfg.ForgetToolRun,
+		NotifyPark:    cfg.NotifyPark,
 		Logger:        cfg.Logger,
 	})
 	if err != nil {

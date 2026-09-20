@@ -1820,12 +1820,41 @@ Carried forward from 2026-09-20, in the order they are worth doing:
    rather not depend on reflection") is contradicted forty lines below by `adkGormDB` and by ADK's
    exported `NewSessionServiceFromDB`. Corrected in place rather than acted on, with the
    single-pool collapse named as its own change; see the section above for why it is not this one.
-5. **[#451](https://github.com/go-steer/mast/issues/451) (`a0bcfe66`'s notify half) — a park nobody
+5. ~~**[#451](https://github.com/go-steer/mast/issues/451) (`a0bcfe66`'s notify half) — a park nobody
    can see.** `pkg/notify` exists and only monitoring cycles reach it. Upstream's SSRF-safe shape —
    a target *name*, resolved through a registry, never a URL — is the part to take. Their
    `approval_timeout` half is deliberately **not** in that issue: mast's park is durable and costs
    no goroutine, so whether a park should expire is a semantics decision about the record rather
-   than a way to stop a hang.
+   than a way to stop a hang.~~ **Done 2026-09-20**, with the seam re-sited and the trigger
+   changed. Both are recorded here because a later reader diffing the two trees will find neither
+   where upstream put it.
+
+   **The seam moved.** `a0bcfe66` hooks `attach.PromptBroker`. mast has that type and it is dead
+   code — its own doc comment says no mast entrypoint wires one, and that is a decision rather than
+   a gap, because mast's approvals are durable parks and its gate never prompts. Porting the hook
+   where upstream put it would have compiled, tested green against the broker, and announced
+   nothing in production. The live seam is `pkg/approval`'s park, so `NotifyPark` hangs off
+   `approval.Config` and `cmd/mast` owns the egress.
+
+   **The trigger changed, and this is the divergence to know about.** Upstream fires only when the
+   prompt's fan-out reached nobody: it counts *deliveries*. That is right for a prompt, which is a
+   blocked goroutine with a deadline — "was anyone attached when it opened" identifies who can
+   answer before it expires. It is wrong for a park, which is a durable row outliving the process:
+   attachment at raise-time predicts nothing about an hour later, and an operator who detaches
+   thirty seconds after the park gets silence all night. mast announces every park it is configured
+   to announce. The cost is a redundant message to somebody already watching; the other direction
+   costs the park nobody hears about. It also avoids exporting a non-constructing lookup into
+   `attach.broadcasterPool`, which is unexported and whose `For()` constructs lazily — asking "is
+   anyone attached to session X" would have been new public API in service of the weaker signal.
+
+   Announcing only once a park has gone **unanswered** for an interval beats both, and is a
+   different change: it needs a durable timer rather than a goroutine — the same machinery the
+   deferred `approval_timeout` question needs, which is why the two should be taken together or
+   not at all.
+
+   The SSRF-safe shape did port as written: `--park-notify` names a conversation, the URL and
+   bearer are already deployment configuration, and nothing in a bundle or from a model can choose
+   a destination.
 6. **[#452](https://github.com/go-steer/mast/issues/452) (`00d5d98f`) — retry a transient provider
    429 once.** Last of the ports because the evidence is upstream's 38-run archive and mast has no
    measurement of its own. Port the fix, never the diagnosis: the issue's step 1 is measuring it

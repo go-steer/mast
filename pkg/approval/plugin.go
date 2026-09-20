@@ -15,6 +15,7 @@
 package approval
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,6 +142,23 @@ type Config struct {
 	// embed, a one-shot — and leaves the suppression working with
 	// nothing to tell.
 	ForgetToolRun func(sessionID string)
+
+	// NotifyPark, when non-nil, is told out of band that a call has been
+	// parked (#451). It is how a daemon nobody is attached to stops
+	// being a daemon nobody hears from: every surface that discovers a
+	// park — GET /parks, the attach stream, `mast sessions show` — is a
+	// pull, and an unattended workload can park at 03:00 and wait until
+	// somebody happens to look.
+	//
+	// Called at most once per park, on its own goroutine, with a
+	// detached and separately bounded context. The gate does not wait
+	// for it and never sees its error, so an implementation that wants
+	// its failures noticed must log them itself. See announcePark.
+	//
+	// Nil is correct for any composition with no egress — a library
+	// embed, a one-shot, a daemon whose operator did not configure one —
+	// and parks behave exactly as they did before this existed.
+	NotifyPark func(context.Context, ParkNotice)
 
 	// Workload names the workload whose bundle composed this gate, and
 	// is stamped onto every Decision record so an exported adjudication
@@ -302,7 +320,8 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 	// event log as a long-running function call, which is what makes the
 	// pause outlive this process (scoreboard row 5).
 	set := g.changeSetContextFor(ctx, t, args)
-	if err := ctx.RequestConfirmation(parkHint(key, set, stale), Request{
+	hint := parkHint(key, set, stale)
+	if err := ctx.RequestConfirmation(hint, Request{
 		Tool:      t.Name(),
 		Args:      args,
 		Key:       key,
@@ -315,6 +334,21 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 		return nil, fmt.Errorf("approval: requesting confirmation for %s: %w", t.Name(), err)
 	}
 	g.audit(ctx, t, key, "awaiting_approval", "parked for operator approval")
+
+	// Announced only after RequestConfirmation returned, so mast never
+	// pages an operator about a park that was not written down. The
+	// order costs nothing: the send is asynchronous either way.
+	g.announcePark(ctx, ParkNotice{
+		Session:    ctx.SessionID(),
+		Invocation: ctx.InvocationID(),
+		Workload:   g.cfg.Workload,
+		Agent:      ctx.AgentName(),
+		Tool:       t.Name(),
+		Key:        key,
+		Hint:       hint,
+		ParkedAt:   time.Now().UTC(),
+	})
+
 	if stale != "" {
 		return map[string]any{
 			"status": "awaiting_operator_approval",

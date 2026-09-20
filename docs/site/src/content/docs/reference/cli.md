@@ -35,6 +35,7 @@ start a daemon; it exits `2` with the misplaced-flag error, because
 | `--a2a-listen` | (empty) | [A2A](https://a2a-protocol.org) server surface: a TCP address like `127.0.0.1:7780`. Empty = disabled. Publishes an agent card and a JSON-RPC 2.0 endpoint (`POST /a2a`) for workloads that opt in via the bundle's `a2a.expose` section. Card endpoints (`/.well-known/agent-card.json`, `/.well-known/agent-card/<name>.json`) are public; `/a2a` is authenticated when `MAST_A2A_TOKEN` is set, with per-skill scope enforcement. Non-loopback binds are refused without a token (`tasks/cancel` is destructive). Serve mode only. See [A2A server](#a2a-server). |
 | `--agui-listen` | (empty) | [AG-UI](https://docs.ag-ui.com/introduction) server surface: a TCP address like `127.0.0.1:7781`. Empty = disabled. Serves a per-workload HTTP+SSE run endpoint and a `/agui/agents.json` discovery descriptor for workloads that opt in via the bundle's `agui.expose` section. Authenticated when `MAST_AGUI_TOKEN` is set (per-workload scope enforcement); rate limits via `MAST_AGUI_RATE`/`MAST_AGUI_BURST`. Non-loopback binds are refused without a token (a run drives a budgeted turn). Serve mode only. See [AG-UI server](#ag-ui-server). |
 | `--notify-url` | (empty) | Chat egress for monitoring cycles: [switchboard](https://github.com/go-steer/switchboard)'s message ingress, as an origin (`http://switchboard:8080`) or the full `/v1/messages` endpoint. Empty = disabled, and a workload whose bundle declares a `monitor.notify` block then **refuses to start**. Requires `MAST_NOTIFY_TOKEN`. Serve mode only — one-shot runs no monitoring cycle. See [chat egress](#chat-egress-for-monitoring-cycles). |
+| `--park-notify` | (empty) | The conversation a durable [approval park](/concepts/approvals/) announces itself to, through the ingress `--notify-url` configures (which is then required, along with `MAST_NOTIFY_TOKEN` — setting this without them is a startup error). Empty = disabled, and a park is then discoverable only by pulling: `GET /parks`, the attach stream, `mast sessions show`. Announced once per park, never repeated, capped at 3 then 1 per 5 minutes. Serve mode only — one-shot builds no write gate, so it raises no parks. See [announcing a park](#announcing-a-park). |
 | `--session-db` | (empty) | SQLite file path (default driver) or Postgres DSN/URL with `--session-db-driver=postgres`. Empty = in-memory sessions, **no durability** — except under `--attach-listen`, which implies `~/.mast/sessions.db`. Also the condition for the durable budget ledger: with a session database, `max_cost_usd` bounds what a workload spends across restarts rather than per process, and a crash loop can no longer spend the cap once per restart. See [spend survives a restart](/concepts/budgets/#spend-survives-a-restart). |
 | `--session-db-driver` | `sqlite` | `sqlite` or `postgres`. `postgres` with an empty `--session-db` is a startup error, never a silent in-memory downgrade — and it stays one under `--attach-listen`, since the implied default is a sqlite path and a DSN has a host, a database and credentials that cannot be guessed. |
 | `--timeout` | `5m` | One-shot turn deadline (`2m`, `90s`, …); `0` disables. One-shot only — serve-mode wallclock ceilings come from workload budgets. An unresponsive backend (or a provider SDK silently retrying on quota errors) fails loudly instead of hanging a script. |
@@ -81,6 +82,51 @@ Which conversation to post into, and how long the workload may stay silent,
 are the bundle's (`monitor.notify.conversation`, `monitor.notify.digest_after`)
 — they are properties of the workload, while the ingress and the credential
 are properties of the deployment.
+
+### Announcing a park
+
+A [park](/concepts/approvals/) is durable, and everything that discovers one
+is a pull: `GET /parks`, the attach stream, `mast sessions show`. An
+unattended workload on a fifteen-minute cadence can therefore park at 03:00
+and wait until somebody thinks to look. `--park-notify` is the push:
+
+```bash
+MAST_INJECT_TOKEN=… MAST_NOTIFY_TOKEN=… mast --workload=cluster-watch \
+  --notify-url=http://switchboard:8080 --park-notify='#sre-oncall' \
+  --listen=:7777 --session-db=/var/lib/mast/sessions.db
+```
+
+One message per park, when the park opens, saying which session is waiting
+and what for, and ending with the `mast sessions show` line that prints the
+resume command. It is never repeated: this reports that a decision is
+pending, not that it is still pending.
+
+The destination is a **daemon** flag and not a bundle field, which is the one
+difference from `monitor.notify.conversation` above and is deliberate. A
+monitoring cycle's conversation is a property of the workload — it is the
+workload talking. A park announcement is mast talking *about* the workload,
+so letting the bundle route it would put the destination of "mast is asking
+permission" inside the thing being asked about.
+
+Three more properties worth knowing before you point this at a channel:
+
+- **It announces every park, not just the unwatched ones.** mast does not
+  check whether an operator happens to be attached when the park opens,
+  because a park outlives the process and attachment right then predicts
+  nothing about an hour later. The cost is a redundant message to somebody
+  already watching; the alternative costs the 03:00 park nobody hears about.
+- **The message carries the call's arguments, elided.** The park hint renders
+  as `Approve mutating call scale_deployment(deployment=api, replicas=10)?`,
+  with each value cut at 120 characters. A chat channel's readership is not
+  the session's ACL — pick the conversation accordingly. The untruncated
+  arguments never leave the confirmation record.
+- **It has a budget of its own**, three then one per five minutes, counted in
+  [`mast_park_notifications_total`](/reference/metrics/#park-announcements).
+  A workload that parks in a loop can exhaust its own announcements and
+  nothing else — not the monitoring egress, which shares the client and
+  nothing else. Dropped announcements are `throttled`; a failed send is
+  `error` and an ERROR log line. Neither ever fails the turn: the park stays
+  recorded and stays answerable whatever the chat ingress does.
 
 ## `mast sessions` (operator surface)
 

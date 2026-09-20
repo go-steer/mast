@@ -141,6 +141,7 @@ type runFlags struct {
 	a2aListen        *string
 	aguiListen       *string
 	notifyURL        *string
+	parkNotify       *string
 	sessionDB        *string
 	sessionDrv       *string
 	timeout          *time.Duration
@@ -204,6 +205,12 @@ type listenOpts struct {
 	a2a    string // --a2a-listen: empty disables
 	agui   string // --agui-listen: empty disables
 	notify string // --notify-url: outbound, where a monitoring cycle posts
+	// parkNotify is --park-notify: outbound, the conversation a durable
+	// approval park announces itself to. A separate field rather than a
+	// reuse of whatever the bundle's monitor block names, because the
+	// destination of "mast is asking permission" must not be chosen by
+	// the workload being asked about (#451).
+	parkNotify string
 }
 
 // sessionOpts is where session state lives. Empty db means in-memory
@@ -240,6 +247,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		a2aListen:        fs.String("a2a-listen", "", "A2A server bind address (e.g. `127.0.0.1:7780`); empty disables the surface. Publishes an agent card and a JSON-RPC endpoint for workloads that opt in via the bundle's a2a.expose. Authenticated when MAST_A2A_TOKEN is set. Non-loopback binds are refused without auth (tasks/cancel is destructive) — set MAST_A2A_TOKEN or bind loopback"),
 		aguiListen:       fs.String("agui-listen", "", "AG-UI server bind address (e.g. `127.0.0.1:7781`); empty disables the surface. Serves an HTTP+SSE run endpoint and a /agui/agents.json discovery doc for workloads that opt in via the bundle's agui.expose. Authenticated when MAST_AGUI_TOKEN is set (rate limits via MAST_AGUI_RATE/MAST_AGUI_BURST). Non-loopback binds are refused without auth (a run drives a budgeted turn) — set MAST_AGUI_TOKEN or bind loopback"),
 		notifyURL:        fs.String("notify-url", "", "serve mode: switchboard's outbound message ingress (e.g. `http://switchboard:8080`), where a monitoring cycle posts what it found. Required by any workload whose bundle declares a `monitor.notify` block; the bearer comes from MAST_NOTIFY_TOKEN, which must not be one of this daemon's own inbound tokens"),
+		parkNotify:       fs.String("park-notify", "", "serve mode: the `conversation` a durable approval park announces itself to, through the same ingress as --notify-url (which is then required, along with MAST_NOTIFY_TOKEN). Without it a park is discoverable only by pulling — GET /parks, the attach stream, `mast sessions show` — so an unattended workload can park at 03:00 and wait until somebody looks. Announced once per park, never repeated, capped at 3 then 1 per 5m"),
 		sessionDB:        fs.String("session-db", "", "session store location: a SQLite file path (default driver) or a Postgres DSN/URL with --session-db-driver=postgres; empty = in-memory sessions (no durability), except under --attach-listen, which implies ~/.mast/sessions.db"),
 		sessionDrv:       fs.String("session-db-driver", "sqlite", "session DB driver: `sqlite` (--session-db is a file path) or `postgres` (--session-db is a DSN or postgres:// URL)"),
 		timeout:          fs.Duration("timeout", 5*time.Minute, "one-shot turn deadline (e.g. 2m, 90s); 0 disables. One-shot only — serve-mode ceilings come from workload budgets"),
@@ -265,6 +273,7 @@ func run() {
 		a2aListen        = f.a2aListen
 		aguiListen       = f.aguiListen
 		notifyURL        = f.notifyURL
+		parkNotify       = f.parkNotify
 		sessionDB        = f.sessionDB
 		sessionDrv       = f.sessionDrv
 		timeoutFlag      = f.timeout
@@ -360,6 +369,10 @@ func run() {
 			fmt.Fprintln(os.Stderr, "mast: --notify-url is a serve-mode flag; one-shot mode runs no monitoring cycle")
 			os.Exit(exitUsage)
 		}
+		if *parkNotify != "" {
+			fmt.Fprintln(os.Stderr, "mast: --park-notify is a serve-mode flag; one-shot mode builds no write gate, so it raises no parks")
+			os.Exit(exitUsage)
+		}
 		if explicit["dispatch"] {
 			logger.Warn("--dispatch is a serve-mode flag; ignored in one-shot mode")
 		}
@@ -419,11 +432,12 @@ func run() {
 		workloadOpts{arg: *workloadFlag, dispatch: *dispatchMode},
 		modelOpts{provider: *providerFlag, name: *modelName},
 		listenOpts{
-			inject: *listen,
-			attach: *attachListen,
-			a2a:    *a2aListen,
-			agui:   *aguiListen,
-			notify: *notifyURL,
+			inject:     *listen,
+			attach:     *attachListen,
+			a2a:        *a2aListen,
+			agui:       *aguiListen,
+			notify:     *notifyURL,
+			parkNotify: *parkNotify,
 		},
 		sessions,
 		resumeOpts{auto: *autoResume, window: *autoResumeWindow},
@@ -811,6 +825,18 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		return err
 	}
 
+	// Same refusal, same reason, for the park egress (#451): an operator
+	// who named a conversation for approval parks has said they are not
+	// watching a console, and starting anyway with a warning on that
+	// console hands them the silence they configured against. Checked
+	// here rather than where the notifier is built, which is after the
+	// metric registry it needs — and startup errors belong before the
+	// listeners bind.
+	if err := parkNotifyConfigError(listeners.parkNotify, notifyClient); err != nil {
+		logger.Error("refusing to start", "error", err.Error())
+		return err
+	}
+
 	// Recorded-effect outbox (docs/durable-execution-design.md): the
 	// runner plugin that refuses mutating tool calls while a session
 	// carries unacknowledged dangling intents from an interrupted turn,
@@ -883,7 +909,10 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// from, so the producer contract checks a proposed change against
 	// the tool that would actually run it (v0.4 W7.0).
 	toolSchemas := newToolSchemas(logger, built.toolsets)
-	writeGate, err := compose.WriteGate(compose.WriteGateConfig{
+	// Assigned once, below, as soon as the metric registry exists. The
+	// gate reads it through the closure it is handed, never here.
+	var parkNotices *parkNotifier
+	gateCfg := compose.WriteGateConfig{
 		Bundle:      bundle,
 		Predicate:   effPred,
 		Specs:       specs,
@@ -894,7 +923,20 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		// identical one is the fifth in a row (#449).
 		ForgetToolRun: wds.forgetToolRun,
 		Logger:        logger,
-	})
+	}
+	// Installed only when an operator asked for it, so an unconfigured
+	// daemon spends no goroutine and no context per park — and resolved
+	// through the variable rather than bound to its value, because
+	// parkNotices is not built until the metric registry exists a few
+	// hundred lines below. Reading it at wiring time is how core-agent's
+	// port of this shipped a nil dereference at startup with the feature
+	// switched off (their #647 follow-up); a getter cannot have that bug.
+	if listeners.parkNotify != "" {
+		gateCfg.NotifyPark = func(ctx context.Context, n approval.ParkNotice) {
+			parkNotices.announce(ctx, n)
+		}
+	}
+	writeGate, err := compose.WriteGate(gateCfg)
 	if err != nil {
 		logger.Error("failed to construct write gate", "error", err.Error())
 		return err
@@ -995,6 +1037,17 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		workloadName = bundle.Name
 	}
 	obs.Prime(workloadName)
+
+	// The push half of a park (#451). Built here because it needs the
+	// registry above; the write gate already holds a getter for it. The
+	// error is the "configured with nowhere to send" one serve refused
+	// long before this, kept because a constructor that can fail should
+	// say so rather than rely on a caller having checked.
+	parkNotices, err = buildParkNotifier(logger, obs, workloadName, listeners.parkNotify, notifyClient)
+	if err != nil {
+		logger.Error("failed to configure park announcements", "error", err.Error())
+		return err
+	}
 
 	// Shutdown bookkeeping: which sessions have a turn in flight, and
 	// the pre-mark/clear ordering for their interruption markers. The
