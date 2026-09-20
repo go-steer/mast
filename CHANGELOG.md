@@ -253,6 +253,62 @@
 
 ### Bug or Regression
 
+- **An event and the index entry every reader finds it by now commit
+  together or not at all.** `eventlog.AppendEvent` was two independent
+  writes — ADK persists its `events` row, then mast inserts the
+  `agent_eventlog` overlay row that gives the event its monotonic `seq` — so
+  a crash, OOM kill or node eviction landing between them left an event ADK
+  has and the overlay does not. The overlay is not a sidecar; it is **the
+  index**. `Since` and `Watch` query overlay rows and hydrate from ADK
+  afterwards, because ADK's event IDs are timestamp-based strings with no
+  monotonic ordering, so an event with no overlay row is not late — it is
+  permanently absent from live tail, attach replay and every transcript built
+  on them, while sitting intact in the database. mast hangs more off that
+  index than the shared upstream text suggests: the `seq` every attach
+  subscriber walks, the durable spend ledger, `GET /healthz`'s bounded read
+  and the park rows all key on it, so **an orphaned event is concretely a
+  durable park nothing can see**. The old comments' answer — "surfaces
+  overlay-write errors so callers can retry" — is true, and there is no
+  caller that does. The fix is not the obvious one, because the obvious one
+  does not exist: `Open` deliberately runs **two GORM connection pools**
+  against the same DSN, and two SQLite connections cannot share a
+  transaction, so an outer `db.Transaction` would merely nest a second
+  connection's transaction inside ADK's and commit them separately — the bug
+  with more syntax. So mast does not join ADK's transaction from outside;
+  **it gets invited in.** ADK's `applyEvent` runs
+  `s.db.WithContext(ctx).Transaction(...)` and calls `tx.Create(storageEv)`
+  inside it, and GORM runs registered create callbacks on that same `tx` — so
+  an after-create callback registered on ADK's own `*gorm.DB` fires with the
+  transaction in hand and inserts the overlay row there, on ADK's connection,
+  inside ADK's transaction. Three properties keep it from being clever. The
+  **only ADK internal it depends on is the table name** `"events"`, which the
+  callback filters on and a test asserts directly, so a dependency bump that
+  renames it fails in CI rather than silently turning the atomicity off;
+  everything else travels down from `AppendEvent` through
+  `tx.Statement.Context`. It **degrades rather than fails** — an ADK that
+  stops exposing its handle means registration is skipped, `Open` still
+  succeeds, and `AppendEvent` falls back to the two-write path it always had,
+  with a dedicated test that fails if that fallback ever engages silently on
+  the ADK mast ships. And it **cannot recurse**, since the table filter
+  rejects the overlay insert and the pending record is consumed once. The
+  error direction is the one judgement call: an overlay insert that fails now
+  **rolls the event back with it**, trading a visible error a caller can retry
+  — on an event the model can regenerate — for an invisible one nothing can
+  recover, which is the correct side of that trade in a system whose pillar is
+  an auditable log. A **second, latent split-write** goes with it: the overlay
+  row was written unconditionally, including for **partial** streaming events
+  ADK deliberately drops without persisting anything, which is exactly the
+  orphan `deleteSession`'s comment calls poison — the `seq` is real, so an
+  unfiltered `Watch` re-queries the row every poll and re-fails to hydrate it,
+  forever. Latent only because the runner filters partials before calling us,
+  which made it a direct-library-caller bug. Not in scope, and recorded in
+  `pkg/eventlog/atomic.go` rather than left as an omission: **overlay rows
+  orphaned before this change stay orphaned**, because backfilling them at
+  `Open` would hand each a fresh `seq` at the end of the log and deliver a
+  pre-crash event *after* everything written since — ordering damage in
+  exchange for presence, on rows nobody can distinguish from a session ADK
+  pruned. ([#450](https://github.com/go-steer/mast/issues/450))
+
 - **A refused mutating call cannot park a second time in the same turn, and
   a model that keeps proposing it ends the turn.** mast's refusal text has
   told the model not to retry and not to reach the same change by another

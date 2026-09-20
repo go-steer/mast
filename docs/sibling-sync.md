@@ -1613,7 +1613,7 @@ keeps recording under other names: a claim mast makes in text that nothing in th
 | `92091883` | mcp: believe the server when it says a tool only reads (#1099) | **Ported 2026-09-20** ([#447](https://github.com/go-steer/mast/issues/447)). Falsified a premise mast wrote down as a fact about the substrate. |
 | `6cab9d67` | attach: a pump's start cursor belongs to the pump (#1076) | **Ported 2026-09-20** ([#448](https://github.com/go-steer/mast/issues/448)). A live data race in ported code, reachable in mast by the same interleaving; the regression test was confirmed to trip `-race` on both read sites first. |
 | `f93d675d` + `eae797f8` + `4095b15a` | permissions: a refused call cannot re-open the same prompt; the gate ends a turn the operator already answered | **Ported 2026-09-20** ([#449](https://github.com/go-steer/mast/issues/449)). Mechanism theirs, siting mast's: none of the three could go where upstream put it. |
-| `8303e2f2` | eventlog: one event, one transaction (#1063) | **Port.** mast documents the same non-atomicity as a v1 limitation, in two files. |
+| `8303e2f2` | eventlog: one event, one transaction (#1063) | **Ported 2026-09-20** ([#450](https://github.com/go-steer/mast/issues/450)). Taken as written — same callback, same table filter, same context hand-off. |
 | `a0bcfe66` | permissions: a gated prompt nobody is attached to must tell somebody (#1059) | **Port the notify half only.** mast has the egress; no park ever reaches it. |
 | `00d5d98f` | models: retry a Vertex 429 once (#1037) | **Port candidate on upstream's evidence, not mast's.** mast has no outbound retry at all. |
 | `532f7c75` | docs: comments name attachadapter.WithPromptBroker (#1134) | **Text absorbed — mast is the reporter. Port the *guard*.** |
@@ -1712,6 +1712,24 @@ seq every live-tail subscriber walks, the spend ledger, `GET /healthz`'s bounded
 rows. An ADK event with no companion row is a durable park nothing can see. "Callers can retry" is
 true, and there is no caller that does.
 
+**Ported 2026-09-20.** Unlike the three commits above it, this one needed no re-siting: mast's
+`pkg/eventlog` is a near-copy of upstream's, so the callback, the `"events"` table filter, the
+context hand-off and the `buildOverlayRow` split all landed as written. Two mast-specific notes.
+The port's degradation clause reads better here than upstream's text does, because mast already
+reaches ADK's `*gorm.DB` reflectively in two places — `Handle.Close` and
+`OpenSessionServiceWithDB` — so the callback registration adds no new reflection, only a third
+consumer of an existing one. And the comment that justified the two-pool split in
+`pkg/eventlog/sql.go` — "GORM's API doesn't expose a `*gorm.DB` from session/database, and we'd
+rather not depend on reflection" — was **false on both clauses** and is corrected in the same
+change: `adkGormDB` forty lines below is that reflection, and ADK v2.4.0 exports
+`NewSessionServiceFromDB(*gorm.DB)`, so one shared pool has a public seam. Collapsing to a single
+pool is deliberately **not** folded in: it would retire `adkGormDB` *and* the `_txlock=immediate`
+reasoning, whose entire subject is two pools writing concurrently, and #450 gets atomicity without
+moving either pool. mast has no `docs/eventlog-decisions.md` — the issue's fourth acceptance
+criterion names a file core-agent has and mast never forked — so the closure is recorded in the
+package docs, [`./README.md`](./README.md)'s resolved-decisions table and the durability page
+instead.
+
 ### Absorbed, ahead, or divergent — 6 commits
 
 | SHA | Subject | Verdict |
@@ -1794,8 +1812,14 @@ Carried forward from 2026-09-20, in the order they are worth doing:
    — so the stop had to become a context cancellation on the watchdog's pattern, carried on the
    context so it reaches a planner-dispatched specialist's sub-runner. Both recorded in
    [`./README.md`](./README.md)'s resolved-decisions table.
-4. **[#450](https://github.com/go-steer/mast/issues/450) (`8303e2f2`) — one event, one
-   transaction.** Closes a v1 limitation mast documents twice.
+4. ~~**[#450](https://github.com/go-steer/mast/issues/450) (`8303e2f2`) — one event, one
+   transaction.** Closes a v1 limitation mast documents twice.~~ **Done 2026-09-20.** The
+   prediction held exactly: upstream's shape transplanted with no re-siting, which is what made it
+   the cheap one to take after #449. The unbudgeted finding was in the comment the port had to
+   touch — the two-pool split's stated reason ("GORM's API doesn't expose a `*gorm.DB` … we'd
+   rather not depend on reflection") is contradicted forty lines below by `adkGormDB` and by ADK's
+   exported `NewSessionServiceFromDB`. Corrected in place rather than acted on, with the
+   single-pool collapse named as its own change; see the section above for why it is not this one.
 5. **[#451](https://github.com/go-steer/mast/issues/451) (`a0bcfe66`'s notify half) — a park nobody
    can see.** `pkg/notify` exists and only monitoring cycles reach it. Upstream's SSRF-safe shape —
    a target *name*, resolved through a registry, never a URL — is the part to take. Their
