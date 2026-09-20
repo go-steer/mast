@@ -1614,9 +1614,9 @@ keeps recording under other names: a claim mast makes in text that nothing in th
 | `6cab9d67` | attach: a pump's start cursor belongs to the pump (#1076) | **Ported 2026-09-20** ([#448](https://github.com/go-steer/mast/issues/448)). A live data race in ported code, reachable in mast by the same interleaving; the regression test was confirmed to trip `-race` on both read sites first. |
 | `f93d675d` + `eae797f8` + `4095b15a` | permissions: a refused call cannot re-open the same prompt; the gate ends a turn the operator already answered | **Ported 2026-09-20** ([#449](https://github.com/go-steer/mast/issues/449)). Mechanism theirs, siting mast's: none of the three could go where upstream put it. |
 | `8303e2f2` | eventlog: one event, one transaction (#1063) | **Ported 2026-09-20** ([#450](https://github.com/go-steer/mast/issues/450)). Taken as written — same callback, same table filter, same context hand-off. |
-| `a0bcfe66` | permissions: a gated prompt nobody is attached to must tell somebody (#1059) | **Port the notify half only.** mast has the egress; no park ever reaches it. |
+| `a0bcfe66` | permissions: a gated prompt nobody is attached to must tell somebody (#1059) | **Ported 2026-09-20** ([#451](https://github.com/go-steer/mast/issues/451)). Notify half only, and on a different seam: upstream hooks `attach.PromptBroker`, which in mast is unwired dead code. |
 | `00d5d98f` | models: retry a Vertex 429 once (#1037) | **Port candidate on upstream's evidence, not mast's.** mast has no outbound retry at all. |
-| `532f7c75` | docs: comments name attachadapter.WithPromptBroker (#1134) | **Text absorbed — mast is the reporter. Port the *guard*.** |
+| `532f7c75` | docs: comments name attachadapter.WithPromptBroker (#1134) | **Absorbed 2026-09-20.** Text was already mast's own fix; the guard now ships as `renamed_options_test.go`. |
 
 #### `92091883` — mast's mutation predicate reads an input it is never given
 
@@ -1776,6 +1776,36 @@ marker that matches nothing *fails* rather than passes, so a walk that stops fin
 green run. That second property is the same vacuity floor `charts/installpage_test.go` needed on
 2026-09-20, arrived at independently in both repos in the same week.
 
+**Taken 2026-09-20 as [`renamed_options_test.go`](../renamed_options_test.go)**, in the
+`deprecation_test.go` / `streaming_pin_test.go` idiom: a module-root walk, a checker that takes
+source text so it can be run against fixtures, and a floor. Four things about the port are worth
+having written down.
+
+*The rule is weaker than the sentence describing it, deliberately.* "May appear only as a record,
+never as an instruction" is not decidable from a comment. What is decidable is that a group naming
+the dead spelling also names the live one, and that is what ships — so a reader who reaches
+`agent.WithAttachPromptBroker` reaches `attachadapter.WithPromptBroker` without leaving the comment.
+It would accept "call `agent.WithAttachPromptBroker`, not `attachadapter.WithPromptBroker`". Nobody
+writes that, and pretending to detect intent would have meant a keyword list of history words that
+a real record fails at the first paraphrase.
+
+*The collapse is done twice.* Once to fold the group's lines into one string, which is the property
+upstream names; once more to drop the remaining spaces, so a name a human wrapped mid-identifier
+(`// agent.` / `// WithAttachPromptBroker`) still matches. `gofmt` does not rewrap comments, so that
+shape survives review precisely when nothing automated is looking for it.
+
+*The floor is two floors, and one of them is per-row.* The file count catches a walk that stopped
+finding files (659 when written, floor 300). Separately, each row asserts its *live* spelling still
+appears somewhere in the module — because every match here is a substring match on a name, and the
+day a name moves again the whole check passes by finding nothing. A third test pins the record in
+`pkg/attach/prompter.go` itself: it is the one thing the check has to accept, and a port overwriting
+that file would otherwise delete it silently and leave a green run.
+
+*It caught itself on the first run.* The test file is inside the tree it walks, and its own header
+paragraph named the dead spelling while explaining the dead spelling. That is the failure mode in
+miniature — the mention was legitimate, the omission of the working name next to it was not — and
+the fix was to obey the rule rather than exempt the file.
+
 ### Next triage
 
 Carried forward from 2026-09-20, in the order they are worth doing:
@@ -1860,8 +1890,10 @@ Carried forward from 2026-09-20, in the order they are worth doing:
    measurement of its own. Port the fix, never the diagnosis: the issue's step 1 is measuring it
    against mast's evals, and its step 3 — a lost delegation being visible rather than silently
    absorbed by the parent — does not depend on the retry landing at all.
-7. **`532f7c75`'s comment guard** — a small hygiene test, not filed on its own; worth taking with
-   whichever of the above lands first.
+7. ~~**`532f7c75`'s comment guard** — a small hygiene test, not filed on its own; worth taking with
+   whichever of the above lands first.~~ **Done 2026-09-20** as `renamed_options_test.go`, taken on
+   its own rather than folded into a port, because the thing it guards against *is* a port. See the
+   section above for what changed on the way in.
 
 The three open questions from 2026-09-09 are unchanged: park-on-interrupt semantics, whether
 ADK-installed dispatch tools should meet the permissions gate, and the watchdog-governance call —
