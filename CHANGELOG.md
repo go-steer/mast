@@ -84,6 +84,30 @@
 
 ### Feature
 
+- **Release assets, the container image and the chart now carry SLSA build
+  provenance.** A signature says *who signed this*; an attestation says *what
+  built it* — repository, commit, workflow file, ref, runner. The second is
+  what ties a tarball you have downloaded to the tree you are reading on
+  GitHub, and no signature can answer it. Verify a release asset with
+  `dev/release/verify-provenance.sh vX.Y.Z`, or the image and chart with
+  `dev/release/verify-provenance.sh --oci <repo>@sha256:...`. The two claims
+  take **opposite subject policies** on purpose: signing still covers
+  `checksums.txt` alone, because it transitively covers the tarballs and a
+  verifier should have exactly one thing to check, while provenance is
+  attested per asset, because `gh attestation verify <the-file-you-downloaded>`
+  is the command people actually run and routing it through a checksum list
+  would put the hop back. If you write the command yourself rather than using
+  the script, **`--repo` on its own is this feature's `.*`**: it accepts an
+  attestation from any workflow in the repository, so pin `--signer-workflow`
+  and, for release assets, `--source-ref refs/tags/vX.Y.Z`. The image and
+  chart attestations are pushed to the registry as OCI referrers, so they
+  travel with a copy of the artifact rather than living only in the GitHub
+  API. Both release workflows verify what they published rather than trusting
+  the step that produced it, and the script was shown able to fail — against
+  v0.9.0, which predates attestation, it fetches all five assets, gets a 404
+  per digest and exits 1
+  ([#342](https://github.com/go-steer/mast/issues/342)).
+
 - **The install is a Helm chart, and the `deploy/` kustomize tree is gone.**
   `helm install mast oci://ghcr.io/go-steer/charts/mast --set
   gcp.projectID=<project>` is the whole install; the chart publishes as an OCI

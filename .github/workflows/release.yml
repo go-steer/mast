@@ -22,6 +22,8 @@
 #     via GoReleaser, with SHA-256 checksums
 #   - signs checksums.txt with Sigstore keyless (#342), and then
 #     verifies the signature it published
+#   - records SLSA build provenance for every asset (#342), and then
+#     verifies it against the assets the release carries
 #   - publishes the Release with notes drawn from CHANGELOG.md
 #     (dev/release/notes.sh); pre-release suffixes (-pre, -rc.N)
 #     are marked Pre-release automatically
@@ -61,6 +63,8 @@ permissions:
   # certificate. No signing key is stored anywhere, which is the
   # point — there is no secret to rotate and none to leak.
   id-token: write
+  # Recording SLSA build provenance for the release assets (#342).
+  attestations: write
 
 jobs:
   release:
@@ -122,6 +126,34 @@ jobs:
       - name: Verify the published signature
         if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
         run: dev/release/verify-signature.sh "${GITHUB_REF_NAME}"
+      # SLSA build provenance, which is not the signature said twice.
+      # The signature answers "who signed this" — mast's release workflow
+      # at this tag. The provenance answers "what built it": the source
+      # repo and commit, the workflow and its ref, the runner. Only the
+      # second lets a reader tie a tarball back to the tree they are
+      # reading on GitHub.
+      #
+      # Every asset, not just checksums.txt. Signing covers the checksum
+      # file alone on purpose (it transitively covers the tarballs), but
+      # provenance is attested per subject so the command an operator
+      # actually runs — against the tarball they downloaded — answers
+      # without a second hop through a checksum list.
+      #
+      # The action rather than `cosign attest` with a hand-written
+      # predicate: a predicate the build composes about itself from
+      # values the build chooses is precisely the part a verifier is told
+      # not to trust. This one is populated from the OIDC token and the
+      # runner's own context.
+      - name: Attest the release assets
+        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'dist/*.tar.gz, dist/checksums.txt'
+      - name: Verify the published provenance
+        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: dev/release/verify-provenance.sh "${GITHUB_REF_NAME}"
       # And the same discipline applied to the page an operator reads
       # instead of this workflow. Every PR checks install.md against
       # `.goreleaser.yaml`, which is a prediction; this checks it
@@ -162,6 +194,35 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
           sha256sum --check checksums.txt
           echo "dry run: checksums.txt signed and every artifact it names matches"
+      # The dry run attests too, for the reason it signs: a step that has
+      # never executed is not evidence that the step works, and the first
+      # time to discover that `attestations: write` is missing is not the
+      # tag. What it produces is a real, public attestation for artifacts
+      # that will never be released — true statements about a build that
+      # happened, which is why this is noise in the ledger rather than a
+      # lie in it.
+      - name: Attest the dry-run artifacts
+        if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'dist/*.tar.gz, dist/checksums.txt'
+      # Deliberately looked up through the API by digest rather than read
+      # from the bundle the step above wrote to disk: what the rehearsal
+      # needs to prove is that the attestation was *stored* and is
+      # findable, which an offline `--bundle` check would skip. The
+      # signer is pinned for the same reason as everywhere else — bare
+      # `--repo` accepts an attestation from any workflow here.
+      - name: Verify the dry-run provenance
+        if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh attestation verify dist/checksums.txt \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+            --source-ref "${GITHUB_REF}"
+          echo "dry run: provenance stored and findable for dist/checksums.txt"
       - name: Upload dist (dry run)
         if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
