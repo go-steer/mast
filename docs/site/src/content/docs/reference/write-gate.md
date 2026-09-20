@@ -276,6 +276,44 @@ retry, do not reach the same change by another route, report it. The
 agent finishes its read-only work and stops rather than looking for a
 way around.
 
+That is the instruction. The gate does not rely on it being followed.
+
+For the rest of the turn, the exact call an operator refused is
+**suppressed**: proposing it again does not park a second time, does not
+reach the operator, and comes back as `already_refused` with the same
+instruction attached. Same call means the same tool and the same
+arguments — a different call, including the same tool with different
+arguments, parks normally, because the operator has not answered that
+question.
+
+Three suppressed proposals in one turn and the turn ends, with the
+outcome `refusal_loop`. Nothing latches: no guardrail is tripped, there
+is nothing for an operator to reset, and the next turn starts clean. The
+refusal itself applies to the turn it was given in — if the change
+should happen after all, send a new turn and approve the call when it
+parks.
+
+The audit log carries both halves: `already_refused` for each suppressed
+proposal, and `refusal_loop` for the one that ended the turn.
+
+The boundary is the turn, and that is the point. A refusal that outlived
+its turn would silently block a call the operator would have approved,
+with no symptom to read.
+
+:::note[Why the turn ends there and not at the watchdog]
+The [behavioral watchdog](/concepts/interop/#where-the-posture-comes-from) would catch this too — a
+run of identical tool calls is exactly what it watches — but it halts the
+**session** and makes an operator clear a guardrail before the daemon
+works again. One "no" should not cost that. So the gate stops the turn on
+its own evidence at a lower threshold, and tells the watchdog to forget
+the calls it turned away: those calls never happened, and leaving them on
+the watchdog's books would bill the operator for the model's loop anyway.
+
+The watchdog's own trip is deliberately *not* cleared by this. An arm
+that could un-halt a session would let a looping agent overrule its
+operator by looping harder.
+:::
+
 ## Editing a call before it runs
 
 ```sh
@@ -337,7 +375,10 @@ same terms the pause does, and it is there for an aborted session too.
 Every outcome is on the daemon's audit log as well, each with a named
 outcome: `awaiting_approval`, `denied_by_policy`, `denied_by_operator`,
 `approval_scope_refused`, `edit_unattributed`, `edit_refused`,
-`edit_applied`, `apply`, `dry_run` — plus, for change sets,
+`edit_applied`, `apply`, `dry_run`, `already_refused` (a refused call
+proposed again in the same turn, suppressed rather than re-asked) and
+`refusal_loop` (the third such proposal, which ends the turn) — plus,
+for change sets,
 `change_set_approved` (the answer that minted the grants),
 `approved_by_change_set` (a granted call firing),
 `change_set_scope_refused` (the verdict mast would not honor as a set) and

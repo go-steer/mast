@@ -79,6 +79,22 @@ type WriteGateConfig struct {
 	// run reads simply mints no grant, so its calls park one at a time.
 	ToolRead func(ctx adkagent.Context, toolName string, args map[string]any) (map[string]any, error)
 
+	// ForgetToolRun scrubs the behavioral watchdog's run-length
+	// evidence for a session, and is called when the gate turns away a
+	// re-proposal of an already-refused call (#449).
+	//
+	// A passthrough rather than something this package builds, because
+	// the watchdog lives in the host: cmd/mast owns the per-session
+	// pool, and a library embed may have no watchdog at all. Optional,
+	// and its absence is the harmless direction — the gate still
+	// suppresses, the watchdog still counts, and a determined model
+	// reaches the halt instead of the turn stop.
+	//
+	// It must clear signals and NOT the halt. See approval.Config's
+	// field of the same name for why an arm that could un-halt would
+	// let a looping agent overrule its operator.
+	ForgetToolRun func(sessionID string)
+
 	Logger *slog.Logger
 }
 
@@ -160,7 +176,9 @@ func WriteGate(cfg WriteGateConfig) (WriteGateResult, error) {
 		Grants:    grants,
 		Captures:  captures,
 		Workload:  cfg.Bundle.Name,
-		Logger:    cfg.Logger,
+
+		ForgetToolRun: cfg.ForgetToolRun,
+		Logger:        cfg.Logger,
 	})
 	if err != nil {
 		return WriteGateResult{}, fmt.Errorf("compose: build write gate: %w", err)

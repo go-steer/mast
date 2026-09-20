@@ -110,9 +110,36 @@ looks small on paper:
 Every outcome lands in the audit log under a fixed vocabulary:
 `awaiting_approval`, `denied_by_policy`, `denied_by_operator`,
 `approval_scope_refused`, `edit_unattributed`, `edit_refused`,
-`edit_applied`, `apply`, `dry_run`, and the change-set outcomes
-`change_set_approved`, `approved_by_change_set`, `change_set_scope_refused`,
-`change_set_refused`.
+`edit_applied`, `apply`, `dry_run`, `already_refused`, `refusal_loop`, and
+the change-set outcomes `change_set_approved`, `approved_by_change_set`,
+`change_set_scope_refused`, `change_set_refused`.
+
+### A refusal the model cannot talk its way past
+
+"The agent stops rather than looking for another way" is what the refusal
+*tells* the model. The gate does not depend on it complying.
+
+For the rest of the turn, the call an operator refused is suppressed: the
+model can propose it again, and the operator is not asked again. It comes
+back as `already_refused`. A *different* call still parks normally, so the
+suppression narrows nothing the operator has not already answered.
+
+Three suppressed proposals and the turn ends, counted as `refusal_loop`.
+Nothing latches — no guardrail trips, there is nothing to reset, and the
+next turn starts clean, refusal and all. The scope is one turn on purpose:
+a refusal that outlived its turn would silently block a call the operator
+would have approved.
+
+The [behavioral watchdog](/concepts/interop/#where-the-posture-comes-from)
+would eventually catch the same loop, but it halts the *session* and makes
+an operator clear a guardrail to get the daemon working again. One "no"
+should not cost that, so the gate cuts first, at a lower threshold, and
+tells the watchdog to forget the calls it turned away — they never ran.
+The watchdog's own halt is never cleared by this; an arm that could
+un-halt a session would let a looping agent overrule its operator.
+
+Details and the exact wording the model gets:
+[rejection stops the agent](/reference/write-gate/#rejection-stops-the-agent).
 
 The other two modes exist for real situations, not as escape hatches:
 `dry_run` runs the whole loop and reports what *would* have happened, which

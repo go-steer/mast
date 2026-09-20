@@ -105,6 +105,16 @@ import "time"
 // the same terms as 1.5.0: a new kind value, no new event type, no new
 // field, §2.6's `unknown` fallback intact.
 //
+// v1.7.0 (#449): new `refusal_loop` value in the same enum, also
+// `retryable: false`. It reports a turn the write gate ended because the
+// model kept re-proposing a call an operator had already refused. It is
+// a separate value from `watchdog_halt` because the two differ in the
+// only way a client acts on: a halt latches and needs a guardrail reset
+// before anything works again, while this ends one turn and latches
+// nothing, so a client that renders the halt's remedy here would send an
+// operator to clear a guardrail that never tripped. Additive on the same
+// terms as 1.6.0.
+//
 // The two version lines have diverged, and a client should not read
 // across them. core-agent shipped the same `canceled` value at its
 // 1.8.0, having spent 1.5.0-1.7.0 on session titles, ACLs and wake
@@ -113,7 +123,7 @@ import "time"
 // `features` map rather than inferring a kind's existence from a
 // number. Both servers do agree on the fallback that makes this safe:
 // §2.6 requires an unrecognized kind to read as `unknown`.
-const protocolVersion = "1.6.0"
+const protocolVersion = "1.7.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -416,7 +426,20 @@ const (
 	// reset) and distinct from canceled because that one describes the
 	// in-flight cancel, not the standing refusal that follows it.
 	TurnErrorWatchdogHalt = "watchdog_halt"
-	TurnErrorUnknown      = "unknown"
+	// TurnErrorRefusalLoop fires when the write gate ended a turn
+	// because the model kept re-proposing a call an operator had
+	// already refused in that turn (#449). Retryable=false — the
+	// refusal is the answer, and re-driving the turn asks the model to
+	// disagree with it again.
+	//
+	// Deliberately NOT watchdog_halt, though it stops the same
+	// behaviour. A halt is a standing refusal that survives until an
+	// operator clears a guardrail; this is one turn ending, with
+	// nothing latched and nothing to reset. Telling an operator to POST
+	// /guardrails/reset for a guardrail that did not trip is worse than
+	// telling them nothing.
+	TurnErrorRefusalLoop = "refusal_loop"
+	TurnErrorUnknown     = "unknown"
 )
 
 // TurnError is emitted on a pipeline failure that should reach the

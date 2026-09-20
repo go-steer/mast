@@ -39,6 +39,7 @@ import (
 
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/modeltext"
+	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/observability"
@@ -153,6 +154,10 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// wired the day a class root carries a bundle, rather than being
 	// the one construction site somebody forgets (#53's lesson).
 	oneShotPlugins := []*plugin.Plugin{outboxPlugin}
+	// No ForgetToolRun: the one-shot's watchdog is a fresh one per
+	// invocation with no pool behind it, and the two mechanisms cannot
+	// disagree across a turn boundary a one-shot does not have. The turn
+	// stop is wired below, where the run context is.
 	writeGate, err := compose.WriteGate(compose.WriteGateConfig{Predicate: oneShotPred, Logger: logger})
 	if err != nil {
 		return fmt.Errorf("construct write gate: %w", err)
@@ -191,6 +196,16 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// for opening it. See turnspan.go.
 	ctx, ts := startTurnSpan(ctx, nil, "oneshot", sessionID, "oneshot")
 	defer func() { ts.end(err) }()
+
+	// The write gate's turn stop (#449), wired on the same terms as the
+	// gate above: inert today because a one-shot carries no bundle, and
+	// here so that the day one does, the gate's cut surfaces as its own
+	// reason instead of as "context canceled".
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	refused := &refusalStop{}
+	refused.arm(cancel)
+	ctx = approval.WithTurnStop(ctx, refused)
 
 	// One turn to completion: iterate the full event stream, keeping
 	// the last structured output (Task-mode finish_task value) and the
@@ -241,6 +256,10 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 		StreamingMode: adkagent.StreamingModeNone,
 	}), wd, onAlert) {
 		if err != nil {
+			if rerr := refused.why(); rerr != nil {
+				ts.complete(observability.OutcomeRefusalLoop, rerr)
+				return rerr
+			}
 			if opts.Timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				terr := fmt.Errorf("turn exceeded --timeout %s after %d events (raise --timeout or pass --timeout=0 to disable): %w", opts.Timeout, events, err)
 				ts.complete(observability.OutcomeError, terr)
@@ -273,6 +292,12 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 				}
 			}
 		}
+	}
+	// A cancelled stream can also just end. Same backstop the daemon
+	// path keeps, for the same reason.
+	if rerr := refused.why(); rerr != nil {
+		ts.complete(observability.OutcomeRefusalLoop, rerr)
+		return rerr
 	}
 	logger.Info("one-shot turn complete", "task", opts.Class, "session", sessionID, "events", events)
 	ts.complete(observability.OutcomeOK, nil)

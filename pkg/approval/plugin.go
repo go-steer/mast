@@ -121,6 +121,27 @@ type Config struct {
 	// call. See capture.go.
 	Captures *CaptureRules
 
+	// ForgetToolRun, when non-nil, is called with a session ID when the
+	// gate turns away a call an operator already refused in this turn.
+	//
+	// It exists so the behavioral watchdog does not halt the session
+	// over a loop the gate has already stopped. The watchdog reads tool
+	// calls off the event stream and cannot tell a call that ran from
+	// one the gate disposed of, so without this the suppressed
+	// re-proposals still count toward its repeated-call run and the
+	// session trips at five — costing an operator a guardrail reset for
+	// a guardrail that was working.
+	//
+	// The implementation must clear the signals' accumulated evidence
+	// and must NOT clear an enforcer that has already tripped. An arm
+	// that could un-halt would let a looping agent overrule the
+	// operator who halted it.
+	//
+	// Nil is correct for any composition with no watchdog — a library
+	// embed, a one-shot — and leaves the suppression working with
+	// nothing to tell.
+	ForgetToolRun func(sessionID string)
+
 	// Workload names the workload whose bundle composed this gate, and
 	// is stamped onto every Decision record so an exported adjudication
 	// is legible without the session it came from (v0.4 W8). Optional:
@@ -149,6 +170,11 @@ func New(cfg Config) (*plugin.Plugin, error) {
 	return plugin.New(plugin.Config{
 		Name:               PluginName,
 		BeforeToolCallback: g.beforeTool,
+		// Hygiene for the refusal memory, never correctness: an entry
+		// is keyed by the invocation ID it was recorded under and can
+		// never match a later turn, whether or not this runs. See the
+		// comment on refusals.
+		AfterRunCallback: func(ictx agent.InvocationContext) { g.refused.forget(ictx.InvocationID()) },
 	})
 }
 
@@ -167,7 +193,7 @@ func newWriteGate(cfg Config) (*writeGate, error) {
 	if cfg.Policy == OnMutationRequireApproval && cfg.Gate == nil {
 		return nil, fmt.Errorf("approval: Config.Gate is required under %s: without a gate there is nothing to decide policy, and a write gate that cannot refuse is not a gate", OnMutationRequireApproval)
 	}
-	g := &writeGate{cfg: cfg}
+	g := &writeGate{cfg: cfg, refused: newRefusals()}
 	if g.cfg.Logger == nil {
 		g.cfg.Logger = slog.Default()
 	}
@@ -176,6 +202,12 @@ func newWriteGate(cfg Config) (*writeGate, error) {
 
 type writeGate struct {
 	cfg Config
+
+	// refused is what an operator has already said no to in the turn
+	// still running. One writeGate serves every session a daemon has
+	// open; the memory is keyed by invocation ID, which is unique across
+	// all of them, so it needs no session awareness. See suppress.go.
+	refused *refusals
 }
 
 // beforeTool is the whole gate. A non-nil returned map is the tool's
@@ -235,6 +267,23 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 		}, nil
 	}
 
+	// An operator may already have answered this exact call by refusing
+	// it, earlier in this same turn. Asking again is not a neutral cost
+	// here the way a re-prompt is in an interactive agent: a mast park
+	// writes a fresh long-running call into the durable event log and a
+	// fresh row into GET /parks, so every repeat is an artifact somebody
+	// must answer or clear, and an out-of-band page to the person who
+	// already said no.
+	//
+	// This sits below the policy check and above the grant check on
+	// purpose. A configured deny outranks everything and should keep
+	// saying so in its own words; a grant cannot exist for a call that
+	// was just refused, and if one somehow did, the refusal is the more
+	// recent answer from the more authoritative source.
+	if suppressed, endTurn, count := g.refused.suppress(ctx.InvocationID(), key); suppressed {
+		return g.refuseRepeat(ctx, t, key, count, endTurn)
+	}
+
 	// An operator may already have answered this exact call, by
 	// approving the change set it belongs to (W7). A live grant runs
 	// it; a grant that no longer holds is voided and the reason travels
@@ -282,6 +331,59 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 			"Do not retry this call, do not attempt the same change by another route, and do not treat this as a failure. " +
 			"Finish any read-only work, report that the change awaits approval, and stop.",
 	}, nil
+}
+
+// refuseRepeat answers a call the operator already refused in this turn,
+// without opening a second park and without notifying anybody: the
+// operator has already been asked and has already answered.
+//
+// The count is the turn's, not this call's — see turnRefusals.suppressed
+// — so a model rotating through three different refused calls ends the
+// turn as surely as one repeating a single call three times.
+//
+// It writes an audit line and no decision record, deliberately. A
+// decision record answers "what did the operator decide about this
+// call", and that record already exists: it is the denied_by_operator
+// row from when they were asked. A row per re-proposal would fill the
+// exported decision log with rows whose honest content is "nobody was
+// asked", and the model's persistence is behaviour, which is what the
+// audit log is for.
+func (g *writeGate) refuseRepeat(ctx agent.Context, t tool.Tool, key string, count int, endTurn bool) (map[string]any, error) {
+	// The watchdog is watching the same behaviour from the event stream
+	// and would eventually halt the SESSION over it, which is the wrong
+	// price for a loop the gate has already stopped. Tell it these calls
+	// are disposed of. This clears the signals' evidence and never the
+	// enforcer's tripped flag: an arm that could un-halt would let a
+	// looping agent overrule the operator.
+	if g.cfg.ForgetToolRun != nil {
+		g.cfg.ForgetToolRun(ctx.SessionID())
+	}
+
+	out := map[string]any{
+		"error": "already_refused",
+		"detail": "An operator has already refused this exact call in this turn. It has NOT been made, it was not put to them a second time, and proposing it again will not change the answer. " +
+			"Do not retry it and do not attempt the same change by another route. Finish any read-only work, report that the change was refused, and stop.",
+	}
+	if !endTurn {
+		g.audit(ctx, t, key, "already_refused", fmt.Sprintf("suppressed re-proposal %d of %d", count, suppressedCallsEndTurn))
+		return out, nil
+	}
+
+	// The refusal is audited and logged BEFORE the stop, for the reason
+	// the watchdog persists its trip before cancelling: the cancellation
+	// is what makes the run stop being able to write anything down.
+	g.audit(ctx, t, key, "refusal_loop", fmt.Sprintf("ending the turn after %d suppressed re-proposals", count))
+	g.cfg.Logger.Warn("ending the turn: the model will not accept a refusal",
+		"tool", t.Name(), "call", key, "suppressed", count,
+		"session", ctx.SessionID(), "invocation", ctx.InvocationID())
+
+	// Returning the error instead would not end anything — ADK hands a
+	// before-tool callback's error back to the model as an ordinary tool
+	// response. See TurnStop.
+	if stop := TurnStopFrom(ctx); stop != nil {
+		stop.StopTurn(&RefusalLoopError{Tool: t.Name(), Key: key, Count: count})
+	}
+	return out, nil
 }
 
 // parkHint is the one line an operator sees first — in `mast sessions
@@ -386,6 +488,27 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 			code = "approval_scope_refused"
 			detail = "The approval asked to authorize more than this one call, which mast does not allow for a mutating tool. " +
 				"The call was NOT made. Report that the approval must be re-issued for this single call."
+		} else {
+			// The one arming event. It is this branch and not the
+			// enclosing block because a scope refusal is mast refusing
+			// the operator's *scope*, not the operator refusing the
+			// call — they tried to say yes, and the next attempt is
+			// supposed to ask again.
+			//
+			// Three other near-misses deliberately do not arm it. An
+			// allow-once does not: saying yes to one invocation is not
+			// evidence about the next, in either direction, which is
+			// upstream's rule and worth keeping. A malformed verdict
+			// does not: nobody decided anything. And a voided grant
+			// does not — mast's own conservatism deciding an earlier
+			// yes has stopped covering a call is a reason to ask, and
+			// arming on it would silently suppress a call the operator
+			// never saw.
+			//
+			// Keyed on effKey, so an operator who refuses an *edited*
+			// call has refused the call as edited; the model proposing
+			// the original again is a different call and still parks.
+			g.refused.remember(ctx.InvocationID(), effKey)
 		}
 		g.audit(ctx, t, effKey, code, err.Error())
 		out := map[string]any{"error": code, "detail": detail}

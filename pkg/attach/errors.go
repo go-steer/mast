@@ -53,9 +53,8 @@ type SelfClassifyingError interface {
 // declared about itself. Reports false for a kind this package does not
 // ship, leaving the caller to fall back on the heuristics.
 func classifyDeclaredKind(kind string, err error) (TurnError, bool) {
-	// One kind today; an if rather than a switch only because gocritic
-	// says so about a switch with one case.
-	if kind == TurnErrorWatchdogHalt {
+	switch kind {
+	case TurnErrorWatchdogHalt:
 		return TurnError{
 			Kind:      TurnErrorWatchdogHalt,
 			Code:      "WATCHDOG_HALT",
@@ -66,6 +65,19 @@ func classifyDeclaredKind(kind string, err error) (TurnError, bool) {
 			// — the tool name and arguments come first. Repeat it
 			// where it survives.
 			Hint: "The watchdog halted this session and every further turn refuses the same way. Fix what looped, then clear it with POST /sessions/{id}/guardrails/reset.",
+		}, true
+	case TurnErrorRefusalLoop:
+		return TurnError{
+			Kind:      TurnErrorRefusalLoop,
+			Code:      "REFUSAL_LOOP",
+			Message:   firstSentence(err.Error()),
+			Retryable: false,
+			// Pointedly not a reset instruction. Nothing latched, so
+			// the next turn already starts clean; what an operator
+			// might actually want to do is change their mind, and the
+			// hint says where that happens rather than implying the
+			// turn is all that stands in the way.
+			Hint: "The turn ended; nothing is latched and nothing needs resetting. The refusal stands for this turn only. If the change should happen after all, send a new turn and approve the call when it parks.",
 		}, true
 	}
 	return TurnError{}, false

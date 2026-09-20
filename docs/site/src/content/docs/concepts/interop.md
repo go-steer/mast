@@ -447,6 +447,18 @@ call, while retrying a `watchdog_halt` fails identically until somebody
 clears it. Both are separate from `cost_ceiling`, whose remedy is a bigger
 budget rather than a fixed loop.
 
+**`refusal_loop`** is the fourth of these, and the distinction it turns on
+is the one a client acts on. It ends a turn in which the model kept
+re-proposing a call an operator had already refused — see [a refusal the
+model cannot talk its way
+past](/concepts/approvals/#a-refusal-the-model-cannot-talk-its-way-past).
+Also `retryable: false`, and deliberately *not* a `watchdog_halt`: nothing
+latched, no guardrail tripped, and the next turn starts clean. A client
+that rendered the halt's remedy here would send an operator off to clear
+a guardrail that never tripped. Its hint says so, and says what to do
+instead — if the change should happen after all, send a new turn and
+approve the call when it parks.
+
 `enforce` including `feedback` is deliberate. An enforce halt is cleared
 by an operator reset, and a reset resumes a model whose context still ends
 in the loop it was halted for; without the injected observation the very

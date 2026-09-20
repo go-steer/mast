@@ -243,20 +243,20 @@ func TestClassifyTurnError_LongMessageCapped(t *testing.T) {
 	}
 }
 
-// TestProtocolV1_6_0_IsAdditive pins what the #206 and #208 bumps did
-// and did not do. The version moved twice because a client negotiating
-// on it needs to know two new turn-error kinds exist; nothing else
-// about the wire changed, and a future edit that adds an event type or
-// a field under cover of "we already bumped" fails here.
+// TestProtocolV1_7_0_IsAdditive pins what the #206, #208 and #449 bumps
+// did and did not do. The version moved three times because a client
+// negotiating on it needs to know three new turn-error kinds exist;
+// nothing else about the wire changed, and a future edit that adds an
+// event type or a field under cover of "we already bumped" fails here.
 //
 // The existing v1.4.0 conformance fixtures deliberately keep their
 // literal "1.4.0": they pin the shape that shipped under that version,
-// which neither change touches.
-func TestProtocolV1_6_0_IsAdditive(t *testing.T) {
+// which none of the three changes touches.
+func TestProtocolV1_7_0_IsAdditive(t *testing.T) {
 	t.Parallel()
 
-	if protocolVersion != "1.6.0" {
-		t.Errorf("protocolVersion = %q, want 1.6.0 — a wire change needs its own entry in the version log above the constant", protocolVersion)
+	if protocolVersion != "1.7.0" {
+		t.Errorf("protocolVersion = %q, want 1.7.0 — a wire change needs its own entry in the version log above the constant", protocolVersion)
 	}
 
 	want := []string{
@@ -270,7 +270,7 @@ func TestProtocolV1_6_0_IsAdditive(t *testing.T) {
 		"tool-result",
 	}
 	if !slices.Equal(supportedEventTypes, want) {
-		t.Errorf("supportedEventTypes = %v, want %v — canceled and watchdog_halt are new values in an existing enum, not new frames", supportedEventTypes, want)
+		t.Errorf("supportedEventTypes = %v, want %v — canceled, watchdog_halt and refusal_loop are new values in an existing enum, not new frames", supportedEventTypes, want)
 	}
 
 	// §2.6 requires a consumer to fall back to unknown on a kind it
@@ -287,6 +287,7 @@ func TestProtocolV1_6_0_IsAdditive(t *testing.T) {
 		"TurnErrorCostCeiling":   TurnErrorCostCeiling,
 		"TurnErrorCanceled":      TurnErrorCanceled,
 		"TurnErrorWatchdogHalt":  TurnErrorWatchdogHalt,
+		"TurnErrorRefusalLoop":   TurnErrorRefusalLoop,
 		"TurnErrorUnknown":       TurnErrorUnknown,
 	}
 	seen := make(map[string]string, len(kinds))
@@ -356,6 +357,33 @@ func TestClassifyTurnError_DeclaredKindBeatsTheMessageText(t *testing.T) {
 				t.Errorf("Hint = %q, want the reset endpoint — the halt reason carries it too, past where firstSentence cuts", got.Hint)
 			}
 		})
+	}
+}
+
+// A refusal loop and a watchdog halt both stop an agent that will not
+// stop on its own, and the only thing a client does differently with
+// them is the remedy it renders. So the remedy is what this pins: a
+// halt latches and needs a guardrail cleared, a refusal loop latches
+// nothing and must not send anybody to clear a guardrail that never
+// tripped (#449).
+func TestClassifyTurnError_RefusalLoopIsNotAHalt(t *testing.T) {
+	t.Parallel()
+
+	msg := `turn ended: the model re-proposed a call an operator refused 3 times (tool=patch_resource call="patch_resource:sha256:9f2c"). ` +
+		`Nothing was executed and no approval is pending. The refusal stands; the next turn starts clean.`
+	got := ClassifyTurnError(&declaredKindError{kind: TurnErrorRefusalLoop, msg: msg})
+
+	if got.Kind != TurnErrorRefusalLoop {
+		t.Errorf("Kind = %q, want %q", got.Kind, TurnErrorRefusalLoop)
+	}
+	if got.Code != "REFUSAL_LOOP" {
+		t.Errorf("Code = %q, want REFUSAL_LOOP", got.Code)
+	}
+	if got.Retryable {
+		t.Error("Retryable = true — re-driving the turn re-proposes the call the operator just refused")
+	}
+	if strings.Contains(got.Hint, "guardrails/reset") || strings.Contains(got.Hint, "watchdog") {
+		t.Errorf("Hint = %q — it offers a reset for a guardrail that did not trip", got.Hint)
 	}
 }
 

@@ -855,6 +855,26 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		return err
 	}
 
+	// Resolved here rather than at flag time because the bundle is a
+	// source: --watchdog > safety.watchdog > mast's default. Logged at
+	// Info with its source, because a posture nobody can see is a
+	// posture nobody audits — and enforce, the one an operator most
+	// needs to know is armed, is the one that only announces itself by
+	// refusing a turn.
+	//
+	// Built before the write gate rather than after it, because the gate
+	// holds a handle into the pool: the two halves of #449 are the gate
+	// suppressing a refused call and the watchdog forgetting the call
+	// the gate disposed of, and a gate constructed before the pool
+	// exists can only reach it through a variable assigned later.
+	wdRes, err := resolveWatchdog(watchdogInputs{Flag: watchdogFlag, Bundle: bundleWatchdog(bundle)})
+	if err != nil {
+		logger.Error("invalid watchdog posture", "error", err.Error())
+		return err
+	}
+	logger.Info("watchdog posture resolved", "mode", string(wdRes.Mode), "source", wdRes.Source)
+	wds := newWatchdogPool(wdRes.Mode)
+
 	// Pre-call write gate (docs/v0.3-plan.md W2). Registered *after*
 	// the outbox: a replayed result performs no new effect and needs no
 	// fresh approval (resolved-decision row 144).
@@ -869,7 +889,11 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		Specs:       specs,
 		ToolSchemas: toolSchemas.lookup,
 		ToolRead:    toolSchemas.read,
-		Logger:      logger,
+		// The gate's cut has to scrub the watchdog's evidence, or the
+		// calls it already disposed of stay on the books and the next
+		// identical one is the fifth in a row (#449).
+		ForgetToolRun: wds.forgetToolRun,
+		Logger:        logger,
 	})
 	if err != nil {
 		logger.Error("failed to construct write gate", "error", err.Error())
@@ -893,19 +917,6 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	}
 
 	meters := newMeterPool(bundle, specs, mdl.provider, mdl.name)
-	// Resolved here rather than at flag time because the bundle is a
-	// source: --watchdog > safety.watchdog > mast's default. Logged at
-	// Info with its source, because a posture nobody can see is a
-	// posture nobody audits — and enforce, the one an operator most
-	// needs to know is armed, is the one that only announces itself by
-	// refusing a turn.
-	wdRes, err := resolveWatchdog(watchdogInputs{Flag: watchdogFlag, Bundle: bundleWatchdog(bundle)})
-	if err != nil {
-		logger.Error("invalid watchdog posture", "error", err.Error())
-		return err
-	}
-	logger.Info("watchdog posture resolved", "mode", string(wdRes.Mode), "source", wdRes.Source)
-	wds := newWatchdogPool(wdRes.Mode)
 
 	// Both durable stores live on whichever connection the session
 	// backend opened — the eventlog overlay's under --attach-listen, ADK's
@@ -2865,6 +2876,27 @@ func (wp *watchdogPool) reset(sessionID string) {
 	delete(wp.fired, sessionID)
 }
 
+// forgetToolRun clears the session's signal state and nothing else,
+// for the write gate to call when it turns away a re-proposal of a
+// call an operator already refused (#449).
+//
+// The gate and the watchdog watch the same behaviour from two sides,
+// and the calls the gate suppresses never happen — nothing was
+// executed and nobody was asked twice. Leaving them on the watchdog's
+// books means the repeated-call signal keeps counting toward a session
+// halt that the gate has already made unnecessary, and the operator
+// pays for the model's loop with a guardrail reset.
+//
+// Signals only, and the halt deliberately untouched. An arm that could
+// un-halt would let a looping agent overrule the operator by looping
+// harder: propose, get suppressed, clear the trip, repeat. Clearing the
+// evidence is safe because the evidence is about calls that did not
+// happen; clearing the verdict is not. Contrast reset above, which is
+// an operator's own instruction and clears all three.
+func (wp *watchdogPool) forgetToolRun(sessionID string) {
+	wp.watchdog(sessionID).Reset()
+}
+
 // recordReset persists an operator's reset, which both clears the
 // durable halt and serves as the audit record for the intervention.
 //
@@ -3185,6 +3217,16 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	d.tracker.registerCancel(sessionID, cancel)
 	defer d.tracker.unregisterCancel(sessionID)
 
+	// …and it is also how the write gate ends a turn whose model will
+	// not accept a refusal (#449). Installed on the context, not looked
+	// up by session, so it reaches a planner-dispatched specialist on
+	// its own sub-runner; read back next to the watchdog's Preflight
+	// below, because a cancelled run reports "context canceled"
+	// whichever of the two pulled the trigger.
+	refused := &refusalStop{}
+	refused.arm(cancel)
+	ctx = approval.WithTurnStop(ctx, refused)
+
 	// Chokepoint check, after registration. A read failure skips the
 	// check (fail-open): the refusals are availability guards, and an
 	// unreadable ops overlay must not wedge every session — the
@@ -3383,6 +3425,16 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 				ts.complete(observability.OutcomeWatchdogHalt, terr)
 				return terr
 			}
+			// Same symptom, different cause, and the distinction is the
+			// whole of #449: this one latched nothing, so the reply must
+			// not send an operator to clear a guardrail that never
+			// tripped. Checked after the halt because a halt is the
+			// heavier fact — if a turn somehow managed both, the session
+			// is the thing that needs attention.
+			if rerr := refused.why(); rerr != nil {
+				ts.complete(observability.OutcomeRefusalLoop, rerr)
+				return rerr
+			}
 			d.logger.Error("runner emitted error", "turn", label, "session", sessionID, "error", err.Error(), "events_before_error", events)
 			ts.complete(observability.OutcomeError, err)
 			return err
@@ -3448,6 +3500,13 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	if terr := enf.Preflight(); terr != nil {
 		ts.complete(observability.OutcomeWatchdogHalt, terr)
 		return terr
+	}
+	// And the same backstop for the gate's own cut, for the same reason:
+	// the cancellation can land between events, and a stream that ends
+	// quietly is exactly what that looks like from here.
+	if rerr := refused.why(); rerr != nil {
+		ts.complete(observability.OutcomeRefusalLoop, rerr)
+		return rerr
 	}
 	// The backstop for the same check. A refusal that produced no event on
 	// this stream — one inside a sub-agent whose run does not surface
