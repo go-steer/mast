@@ -1,14 +1,24 @@
-# Copyright 2026 Google LLC
-# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+{{/*
+Copyright 2026 Google LLC
+Licensed under the Apache License, Version 2.0. See LICENSE for details.
+*/}}
+{{- $root := . -}}
+{{- range .Values.remediationNamespaces }}
+---
+# The write half of the daemon's RBAC mirror, once per namespace named
+# in .Values.remediationNamespaces. Renders nothing when that list is
+# empty, which is the default: a fresh install diagnoses the whole
+# cluster and can change nothing.
 #
-# The write half of the daemon's RBAC mirror (v0.3 W2.6). A Role, not a
-# ClusterRole: mast may change workloads in the namespaces an operator
-# instantiates this directory for, and nowhere else.
+# A Role, not a ClusterRole. The subject is fixed and the namespace is
+# the operator's choice, so a namespace nobody listed is one mast cannot
+# change — and the list is one place to read rather than N applies of
+# the same directory with a different `sed`.
 #
-# The verbs here are the API-server-side mirror of the workload's
-# declared write surface — patch_k8s_resource, apply_k8s_manifest and
-# delete_k8s_resource in examples/workloads/gke-triage/workload.yaml.
-# The mirror is deliberately NARROWER than the tools:
+# The verbs are the API-server-side mirror of the workload's declared
+# write surface — patch_k8s_resource, apply_k8s_manifest and
+# delete_k8s_resource in files/workload.yaml. The mirror is deliberately
+# NARROWER than the tools:
 #
 #   - apply_k8s_manifest can name any kind; this Role lets it create
 #     only workload objects and ConfigMaps, in one namespace.
@@ -25,10 +35,12 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: mast-daemon-write
+  name: {{ include "mast.writeRole" $root }}
+  namespace: {{ . }}
   labels:
     app.kubernetes.io/name: mast
     app.kubernetes.io/component: daemon
+    {{- include "mast.labels" $root | nindent 4 }}
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
@@ -57,3 +69,28 @@ rules:
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch", "update", "patch"]
+---
+# Binds that Role to a daemon living in a DIFFERENT namespace. The
+# asymmetry is the grant.
+#
+# Both subjects again. Bind only the ServiceAccount and, under
+# WRITE_SCOPE=namespaced, mast is read-only everywhere: measured on a
+# live GKE cluster 2026-09-06 (#290), a patch in this very namespace
+# came back `User "serviceAccount:...svc.id.goog[...]" cannot patch
+# resource "deployments"`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mast.writeRole" $root }}
+  namespace: {{ . }}
+  labels:
+    app.kubernetes.io/name: mast
+    app.kubernetes.io/component: daemon
+    {{- include "mast.labels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "mast.writeRole" $root }}
+subjects:
+  {{- include "mast.daemonSubjects" $root | nindent 2 }}
+{{- end }}

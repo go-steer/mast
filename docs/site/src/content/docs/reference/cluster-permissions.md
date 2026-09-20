@@ -16,29 +16,36 @@ tool error — no matter what the model proposed or the operator approved.
 
 ## The split
 
-| Grant | Kind | Scope | Manifest |
+| Grant | Kind | Scope | Template |
 |---|---|---|---|
-| Diagnosis | `ClusterRole mast-daemon-read` | every namespace, `get` / `list` / `watch` | `deploy/base/14-clusterrole-daemon-read.yaml` |
-| Change | `Role mast-daemon-write` | **one namespace per apply** | `deploy/remediation-target/20-role-daemon-write.yaml` |
+| Diagnosis | `ClusterRole mast-daemon-read` | every namespace, `get` / `list` / `watch` | `charts/mast/templates/clusterrole-daemon-read.yaml` |
+| Change | `Role mast-daemon-write` | **one namespace per `remediationNamespaces` entry** | `charts/mast/templates/rbac-daemon-write.yaml` |
 
-Read ships with the base:
-
-```sh
-kubectl apply -k deploy/overlays/example
-```
-
-Write is a separate, per-namespace act. Edit the target namespace and apply it
-once for each namespace mast may change:
+Read comes with the install:
 
 ```sh
-kustomize build deploy/remediation-target |
-  sed 's/REPLACE_ME_TARGET_NAMESPACE/team-a/' | kubectl apply -f -
+helm install mast oci://ghcr.io/go-steer/charts/mast \
+  --namespace mast-triage --create-namespace \
+  --set gcp.projectID=my-project
 ```
 
-The daemon's ServiceAccount stays in `mast-triage`; the `RoleBinding` reaches
-across namespaces to it. So "which namespaces may mast change" is a list of
-applies you can enumerate with `kubectl get rolebinding -A -l
-app.kubernetes.io/name=mast`, not a field somebody can widen in one edit.
+**Write is opt-in, and a default install has none of it.** With
+`remediationNamespaces` empty — the default — the chart renders no write verb
+anywhere in the cluster. Naming namespaces is what grants it:
+
+```sh
+helm upgrade mast oci://ghcr.io/go-steer/charts/mast \
+  --namespace mast-triage \
+  --set gcp.projectID=my-project \
+  --set 'remediationNamespaces={team-a,team-b}'
+```
+
+That emits one `Role` + `RoleBinding` pair per entry. The daemon's
+ServiceAccount stays in `mast-triage`; each `RoleBinding` reaches across
+namespaces to it. So "which namespaces may mast change" is one list you can
+read back with `helm get values mast -n mast-triage`, or confirm against the
+cluster with `kubectl get rolebinding -A -l app.kubernetes.io/name=mast` —
+not a field somebody can widen in one edit.
 
 ### Two subjects, because mast arrives under two usernames
 
@@ -55,11 +62,12 @@ ServiceAccount token to a GKE API server: it calls
 and the API server sees the Workload Identity Federation principal — an RBAC
 **User**, not a ServiceAccount. GKE does not resolve one to the other.
 
-So **replace `REPLACE_ME_PROJECT` with your project ID** in
-`deploy/base/15-clusterrolebinding-daemon-read.yaml` and
-`deploy/remediation-target/21-rolebinding-daemon-write.yaml`, alongside the
-namespace. Leave it and mast reads and writes nothing over the path it uses:
-a patch in the namespace you granted comes back
+This is why `gcp.projectID` is a **required** chart value rather than one with
+a placeholder default: it is what names that `User`, and a chart that guessed
+would render a binding `kubectl apply` accepts and that binds nobody. Omit it
+and `helm install` stops before anything reaches the API server. Were the
+placeholder to survive instead, mast would read and write nothing over the
+path it actually uses — a patch in the namespace you granted comes back
 
 ```
 deployments.apps "checkout" is forbidden: User
@@ -134,8 +142,7 @@ everywhere, which is why the two changes ship together.
 Upgrading an existing deployment takes both halves, and neither happens by
 itself:
 
-- re-apply `deploy/base` and `deploy/remediation-target` with your project ID
-  substituted, or the MCP path stays unbound;
+- `helm upgrade` with `gcp.projectID` set, or the MCP path stays unbound;
 - **remove the old `roles/container.admin`** — re-running `setup-wif.sh` adds
   bindings and never takes one away.
 
@@ -149,24 +156,34 @@ gcloud projects remove-iam-policy-binding my-project \
 `roles/container.admin`, `container.developer`, `container.clusterAdmin`,
 `editor` or `owner`.
 
-## What keeps the manifests honest
+## What keeps the chart honest
 
-`deploy/rbac_test.go` runs on every PR. It walks from the *subject* rather
-than the filename — every binding that names the daemon under **either**
-username — because the way this boundary erodes is a cluster-scoped grant
-added for one tool, not an edit to the file called "read". It fails if:
+`charts/rbac_test.go` runs on every PR, against the output of `helm template`
+rather than against the templates — what an operator installs is the rendered
+object, not the file. It walks from the *subject* rather than the filename —
+every binding that names the daemon under **either** username — because the
+way this boundary erodes is a cluster-scoped grant added for one tool, not an
+edit to the file called "read". It fails if:
 
 - a ClusterRole bound to the daemon gains a write verb, a wildcard, or secrets;
-- the write grant stops being a namespaced `Role`, or becomes reachable from
-  `deploy/base`'s `resources:` (where the base's namespace transformer would
-  pin it to `mast-triage`);
-- a manifest exists in a directory but is missing from its kustomization, so
-  it reviews as shipped and deploys as absent;
+- a default install (no `remediationNamespaces`) renders *any* write verb
+  bound to the daemon, anywhere;
+- the write grant stops being a namespaced `Role` and `RoleBinding` in each
+  namespace the operator named, or starts landing in the daemon's own
+  namespace — the one namespace where it is useless;
 - a binding names the daemon's ServiceAccount and not its WIF `User`, so it
   grants the in-cluster path only — the failure that made the narrowed IAM
   mode look broken for four releases;
-- that `User` subject loses its `REPLACE_ME_PROJECT` placeholder and gets
-  pinned to one project;
-- the IAM role `setup-wif.sh` binds **by default** stops matching what
-  `10-serviceaccount-daemon.yaml` tells operators it binds. Which arm is the
+- the chart renders at all without `gcp.projectID`, since a rendered
+  placeholder is a binding that applies cleanly and grants nothing;
+- the IAM role `setup-wif.sh` binds **by default** stops matching what the
+  daemon's ServiceAccount template tells operators it binds. Which arm is the
   default is read from the script, not assumed — it has changed once already.
+
+Alongside it, `charts/projection_test.go` pins the chart's copy of the
+workload bundle byte-identical to
+[`examples/workloads/gke-triage/`](https://github.com/go-steer/mast/tree/main/examples/workloads/gke-triage),
+checks that every key in the workload ConfigMap actually reaches the pod, and
+pins the exact set of objects a default install creates. These tests **fail**
+rather than skip when `helm` is not installed: an RBAC test that skips is
+indistinguishable from no RBAC test.

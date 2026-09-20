@@ -162,7 +162,7 @@ tool_catalog:
 // files and the test says which.
 func TestShippedBundlesStillLoad(t *testing.T) {
 	roots := []string{
-		"../../deploy/base/config/workload.yaml",
+		"../../charts/mast/files/workload.yaml",
 		"../../examples/workloads/gke-triage/workload.yaml",
 		"../../examples/workloads/ns-audit/workload.yaml",
 		"../../examples/workloads/bounded-triage/workload.yaml",

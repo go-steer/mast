@@ -1,0 +1,193 @@
+{{/*
+Copyright 2026 Google LLC
+Licensed under the Apache License, Version 2.0. See LICENSE for details.
+*/}}
+# Durable by default (#40, decided 2026-07-30): a StatefulSet with a PVC
+# at /var/lib/mast and --session-db. A rescheduled bare-Deployment pod
+# loses the SQLite DB, and with it durable pauses, abort markers, and
+# shutdown interruption markers. Multi-instance (2-N replicas) means
+# Postgres, not a shared PVC — see docs/deployment-design.md.
+#
+# Deliberately NO checksum/config annotation. Rolling the daemon when
+# the workload ConfigMap changes would restart a process holding
+# in-flight turns, parked approvals and armed cadences; #289 chose the
+# startup warning over the automatic roll.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "mast.daemonName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mast
+    app.kubernetes.io/component: daemon
+    {{- include "mast.labels" . | nindent 4 }}
+  annotations:
+    apphub.cloud.google.com/functional-type: "AGENT"
+spec:
+  replicas: {{ .Values.daemon.replicas }}
+  # serviceName is a StatefulSet requirement; pointing it at the
+  # ClusterIP service is fine at replicas: 1 (stable per-pod DNS only
+  # matters for multi-instance, which needs Postgres). The default
+  # RollingUpdate strategy recreates the single pod sequentially —
+  # delete-then-create, which the ReadWriteOnce volume requires.
+  serviceName: {{ include "mast.daemonName" . }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mast
+      app.kubernetes.io/component: daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mast
+        app.kubernetes.io/component: daemon
+    spec:
+      serviceAccountName: {{ include "mast.daemonSA" . }}
+      # Sized against the shutdown drain bound: on SIGTERM the daemon
+      # drains in-flight turns for up to the workload's
+      # budget.max_wallclock_seconds, pre-marking their sessions durably
+      # before waiting — so even a SIGKILL at this deadline leaves the
+      # interruption markers on disk. See docs/durable-execution-design.md,
+      # "Shutdown contract".
+      terminationGracePeriodSeconds: {{ .Values.daemon.terminationGracePeriodSeconds }}
+      {{- with .Values.daemon.nodeSelector }}
+      # GKE Standard gate: pins onto GKE-metadata-server nodes, which
+      # Workload Identity Federation requires there. Autopilot REJECTS
+      # this selector, which is why the default is empty.
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.daemon.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.daemon.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        # PVC writability for the non-root user: the volume is
+        # group-owned by this GID at mount time.
+        fsGroup: 65532
+      containers:
+        - name: mast
+          image: {{ include "mast.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--workload=/workspace/workload"
+            - "--model={{ .Values.model }}"
+            - "--listen=:7777"
+            - "--session-db=/var/lib/mast/sessions.db"
+            - "--log-level={{ .Values.logLevel }}"
+          env:
+            - name: MAST_INJECT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.injectTokenSecret }}
+                  key: {{ .Values.auth.injectTokenKey }}
+            {{- if .Values.auth.usersFile.enabled }}
+            # Per-person attribution on /resume and /monitor-ack. The
+            # Secret mounts directly: fsGroup makes the projected file
+            # arrive 0440 group-owned by 65532, which is the gid this
+            # container runs as, and mast accepts that (#328). A daemon
+            # image older than v0.10 still rejects any group bit and
+            # will abort at boot.
+            - name: MAST_INJECT_USERS_FILE
+              value: /etc/mast/{{ .Values.auth.usersFile.key }}
+            {{- with .Values.auth.usersFile.proxyIdentities }}
+            - name: MAST_INJECT_PROXY_IDENTITIES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          envFrom:
+            # GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION for the
+            # Vertex AI client.
+            - configMapRef:
+                name: {{ include "mast.gcpEnvConfigMap" . }}
+          ports:
+            - name: inject
+              containerPort: 7777
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.daemon.resources | nindent 12 }}
+          volumeMounts:
+            - name: workload
+              mountPath: /workspace/workload
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/mast
+            {{- if .Values.auth.usersFile.enabled }}
+            - name: users
+              mountPath: /etc/mast
+              readOnly: true
+            {{- end }}
+          readinessProbe:
+            # GET /healthz reads the session database and answers 503
+            # when it cannot. Unauthenticated by construction, so the
+            # kubelet needs no bearer token.
+            #
+            # This is the probe that must be able to go red: a daemon
+            # whose store is gone can still accept injects it cannot
+            # durably record, and 503 is what takes it out of the
+            # Service so it stops being handed them.
+            httpGet:
+              path: /healthz
+              port: inject
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            # Stays on GET /, which consults nothing. Deliberate: the
+            # action behind a liveness failure is a restart, and a
+            # restart does not fix a deleted volume or an unreachable
+            # Postgres — it converts one unready pod into a crash loop
+            # that also kills every in-flight turn.
+            httpGet:
+              path: /
+              port: inject
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        {{- if .Values.auth.usersFile.enabled }}
+        # defaultMode 0400 is what you ask for; fsGroup turns it into
+        # 0440, and that is the mode mast reads.
+        - name: users
+          secret:
+            secretName: {{ .Values.auth.usersFile.secretName }}
+            defaultMode: 0400
+            items:
+              - key: {{ .Values.auth.usersFile.key }}
+                path: {{ .Values.auth.usersFile.key }}
+        {{- end }}
+        # ConfigMap keys cannot contain "/", so the workload tree is
+        # carried flat and items:.path rebuilds it here. Both this list
+        # and the ConfigMap's keys derive from the same glob over the
+        # chart's files/ directory, so neither can lose an entry the
+        # other has — the silent-downgrade failure the kustomize base
+        # needed a dedicated test to catch, because there the two lists
+        # were both written by hand.
+        #
+        # A whole-volume mount, not subPath, which is the case where the
+        # kubelet rewrites the files under a running pod. mast does not
+        # reload them; it notices and warns (#289).
+        - name: workload
+          configMap:
+            name: {{ include "mast.workloadConfigMap" . }}
+            items:
+              {{- range $path, $_ := .Files.Glob "files/**" }}
+              - key: {{ include "mast.workloadKey" $path }}
+                path: {{ $path | trimPrefix "files/" }}
+              {{- end }}
+  volumeClaimTemplates:
+    # Session state: the SQLite DB (sessions, durable pauses, abort +
+    # interruption markers) plus room for growth.
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.daemon.storage.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.daemon.storage.size | quote }}

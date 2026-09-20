@@ -16,11 +16,11 @@
 # it with Sigstore keyless — adapted from go-steer/core-agent's
 # release-images.yml, leaner for mast's single variant.
 #
-# Until this landed, nothing published a mast image at all:
-# deploy/base/50-statefulset-daemon.yaml has named
-# ghcr.io/go-steer/mast:latest since the fork and the org has never
-# carried that package, so the manifests #342 is about could not be
-# applied by anyone (#342, and see docs/deployment-design.md).
+# Until this landed, nothing published a mast image at all: the daemon
+# manifest has named ghcr.io/go-steer/mast:latest since the fork and the
+# org has never carried that package, so the packaged install #342 is
+# about could not be applied by anyone (#342, and see
+# docs/deployment-design.md).
 #
 #   ghcr.io/go-steer/mast:X.Y.Z  :X.Y  :X  :latest   on a release tag
 #   ghcr.io/go-steer/mast:main   :main-<sha>         on a main push
@@ -55,7 +55,7 @@
 # Main pushes publish :main-<sha> on purpose, and it is the cheapest
 # part of this file to get wrong by removing: it is what continuously
 # rehearses push + sign + verify, so the path is never first exercised
-# on a release tag. It also gives deploy/ something pullable between
+# on a release tag. It also gives the chart something pullable between
 # releases.
 
 name: release-images
@@ -84,11 +84,17 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/mast
+  CHART_REPO: ghcr.io/${{ github.repository_owner }}/charts/mast
 
 jobs:
   publish:
     name: publish
     runs-on: ubuntu-latest
+    outputs:
+      # The chart job names this as its appVersion, so the chart it
+      # publishes points at the image this run published rather than at
+      # whatever :latest happens to be by then.
+      version: ${{ steps.identity.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -226,3 +232,120 @@ jobs:
               exit 1
               ;;
           esac
+
+  # The Helm chart, published as an OCI artifact beside the image it
+  # deploys (#342, "Chart, not kustomization"). It is one job later than
+  # the image on purpose: a chart whose appVersion names an image that
+  # failed to publish is exactly the gap this issue exists to close.
+  #
+  # Chart version vs appVersion. On a release tag they are the same
+  # number — the chart versions with mast, because it is not an
+  # independently useful artifact. On a main push the chart takes a
+  # SemVer pre-release (`0.0.0-main.<sha>`, since Helm rejects anything
+  # that is not SemVer) while appVersion stays the image tag the publish
+  # job just pushed (`main-<sha>`), which is the reference `mast.image`
+  # resolves to. charts/mast/Chart.yaml carries `0.0.0-dev` and is never
+  # published as such: --version and --app-version are always passed.
+  chart:
+    name: chart
+    runs-on: ubuntu-latest
+    needs: publish
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      # cosign reads ~/.docker/config.json; helm keeps its own registry
+      # credentials. Both are needed, and the helm one is dropped again
+      # before the outside check below.
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: helm registry login
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "${TOKEN}" | helm registry login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Compute chart version
+        id: ver
+        env:
+          APP_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          case "${APP_VERSION}" in
+            main-*) chart="0.0.0-${APP_VERSION/-/.}" ;;
+            *)      chart="${APP_VERSION}" ;;
+          esac
+          echo "chart=${chart}" >> "$GITHUB_OUTPUT"
+          echo "publishing chart ${chart} with appVersion ${APP_VERSION}"
+
+      - name: Package and push
+        id: push
+        env:
+          APP_VERSION: ${{ needs.publish.outputs.version }}
+          CHART_VERSION: ${{ steps.ver.outputs.chart }}
+        run: |
+          set -euo pipefail
+          helm package charts/mast \
+            --version "${CHART_VERSION}" \
+            --app-version "${APP_VERSION}" \
+            --destination dist
+          # helm push prints "Digest: sha256:…" — the digest of the
+          # pushed manifest, which is what gets signed. Tags move; a
+          # digest does not.
+          helm push "dist/mast-${CHART_VERSION}.tgz" "oci://${CHART_REPO%/mast}" 2>&1 | tee push.log
+          digest=$(awk '/^Digest: /{print $2}' push.log)
+          [[ -n "${digest}" ]] || { echo "::error::helm push printed no digest" >&2; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the chart
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${CHART_REPO}@${DIGEST}"
+
+      # Same identity discipline as the image: pinned exactly, never by
+      # wildcard. cosign substring-matches the identity, so '.*' returns
+      # "Verified OK" for any workflow in any repository.
+      - name: Verify the published chart
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify "${CHART_REPO}@${DIGEST}" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-images.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            > /dev/null
+          echo "signature verified for ${CHART_REPO}@${DIGEST}"
+
+      # The outside check, and the only step here that asserts something
+      # about what a reader actually gets. The install page tells people
+      # to `helm install oci://…` without cloning this repo or holding a
+      # credential; that claim is true only if the package is public and
+      # the pushed archive renders. Both are checked without credentials
+      # — a failure here means the GHCR package needs its visibility
+      # flipped to public, not that the chart is broken.
+      - name: An anonymous reader can install it
+        env:
+          CHART_VERSION: ${{ steps.ver.outputs.chart }}
+          APP_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm registry logout ghcr.io
+          rm -rf pulled && mkdir pulled
+          helm pull "oci://${CHART_REPO}" --version "${CHART_VERSION}" --destination pulled
+          helm template mast "pulled/mast-${CHART_VERSION}.tgz" \
+            --namespace mast-triage \
+            --set gcp.projectID=verification-only > rendered.yaml
+          want="${IMAGE}:${APP_VERSION}"
+          grep -qF "image: \"${want}\"" rendered.yaml || {
+            echo "::error::the published chart does not reference ${want}" >&2
+            grep -n 'image:' rendered.yaml >&2 || true
+            exit 1
+          }
+          echo "anonymous pull renders and references ${want}"

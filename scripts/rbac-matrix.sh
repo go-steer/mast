@@ -17,7 +17,7 @@
 # permits, cell by cell, against a live cluster (v0.3 W2.6, #290).
 #
 # Diagnosis is cluster-wide; change is confined to the namespaces an
-# operator instantiated deploy/remediation-target/ for. This script
+# operator named in the chart's remediationNamespaces. This script
 # asserts both halves — including the cells that must say **no**, which
 # are the ones a widened Role breaks silently.
 #
@@ -39,7 +39,7 @@
 # Measuring only the first is worse than measuring nothing, because it
 # goes green on a cluster where mast cannot write at all: with only the
 # ServiceAccount subject bound, every MCP-path write is Forbidden even
-# in a namespace deploy/remediation-target was applied to (measured on
+# in a namespace the write Role was applied to (measured on
 # live GKE 2026-09-06, #290). So the MCP subject needs PROJECT_ID, and
 # without it this script reports what it measured and exits non-zero
 # rather than calling a half-measured cluster good.
@@ -53,8 +53,8 @@
 #                 drops that half for a cluster with no MCP path (kind,
 #                 minikube, non-GKE) — and then the run is not evidence
 #                 about a GKE deployment.
-#   TARGET_NS   — a namespace mast MAY change (deploy/remediation-target
-#                 applied there). Default: mast-demo.
+#   TARGET_NS   — a namespace mast MAY change (one of the chart's
+#                 remediationNamespaces). Default: mast-demo.
 #   CONTROL_NS  — a namespace mast may NOT change. Default: kube-system.
 #   NAMESPACE   — where the daemon's ServiceAccount lives. Default: mast-triage.
 #   KSA_NAME    — the ServiceAccount. Default: mast-daemon.

@@ -18,8 +18,8 @@
 # out. go.mod moved to `go 1.26.6` while the Dockerfile's GO_VERSION arg
 # stayed at 1.26.3; the golang images set GOTOOLCHAIN=local, so that is
 # a hard `go mod download` failure rather than a silent toolchain
-# download. `deploy/base` has referenced ghcr.io/go-steer/mast the whole
-# time (#342).
+# download. The packaged install has referenced ghcr.io/go-steer/mast
+# the whole time (#342).
 #
 # Three things are asserted, in the order a failure is cheapest to read:
 #   1. the image builds for linux/amd64;

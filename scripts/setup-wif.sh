@@ -40,8 +40,8 @@
 # WRITE_SCOPE decides whether mast's Kubernetes RBAC split is real.
 # GKE allows an API call if EITHER IAM or RBAC allows it, and the daemon
 # reaches the cluster through the GKE MCP server as this principal — so
-# under `cluster-admin` the namespaced write Role in
-# deploy/remediation-target/ subtracts nothing from that path.
+# under `cluster-admin` the chart's namespaced write Roles subtract
+# nothing from that path.
 # `namespaced` binds read-only IAM and leaves the writes to RBAC, which
 # is the boundary v0.3 W2.6 describes.
 #
@@ -60,8 +60,7 @@
 #     naming only `kind: ServiceAccount` matches nothing on that path, so
 #     before the fix `namespaced` did not narrow mast, it made it
 #     read-only. Both subjects are bound now; if you are upgrading an
-#     existing deployment, re-apply deploy/base and
-#     deploy/remediation-target before re-running this.
+#     existing deployment, `helm upgrade` it before re-running this.
 #
 # Verify either mode with `PROJECT_ID=... scripts/rbac-matrix.sh`, which
 # runs the matrix against both usernames. Fall back with
@@ -236,16 +235,16 @@ echo
 if [[ "${WRITE_SCOPE}" == "cluster-admin" ]]; then
     log_warn "roles/container.admin lets this principal change ANY namespace."
     log_warn "GKE allows a call if IAM or RBAC allows it, so the namespaced write"
-    log_warn "Role in deploy/remediation-target/ does not bound the MCP path while"
+    log_warn "Roles the chart renders do not bound the MCP path while"
     log_warn "this binding stands. Re-run with WRITE_SCOPE=namespaced to narrow it."
     echo
 else
     log_info "Writes now come from Kubernetes RBAC, not IAM. mast can change a"
-    log_info "namespace only where deploy/remediation-target/ has been applied,"
+    log_info "namespace named in the chart's remediationNamespaces,"
     log_info "and that RoleBinding has to name the MCP path's subject:"
     log_info "  serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${KSA_NAME}]"
-    log_info "The shipped manifests do; a deployment predating #290 does not, and"
-    log_info "will be read-only until it is re-applied."
+    log_info "The chart does; a deployment predating #290 does not, and will be"
+    log_info "read-only until it is upgraded."
     echo
 fi
 
@@ -270,16 +269,18 @@ else
     echo "     kubectl create ns ${NAMESPACE}"
     echo "     kubectl -n ${NAMESPACE} create secret generic mast-inject-token --from-literal=token=\"\$TOKEN\""
     echo "     kubectl -n ${NAMESPACE} create secret generic k8s-event-watcher-token --from-literal=token=\"\$TOKEN\""
-    echo "  2. Edit deploy/overlays/example/kustomization.yaml (REPLACE_ME → project id, image tag)."
-    echo "     Replace REPLACE_ME_PROJECT with ${PROJECT_ID} in the RBAC subjects too:"
-    echo "       deploy/base/15-clusterrolebinding-daemon-read.yaml"
-    echo "       deploy/remediation-target/21-rolebinding-daemon-write.yaml"
-    echo "     That is the username the GKE MCP path arrives as; leave it unreplaced"
-    echo "     and mast reads and writes nothing."
-    echo "  3. kubectl apply -k deploy/overlays/example"
-    echo "  4. Grant writes in each namespace mast may remediate — edit"
-    echo "     deploy/remediation-target/kustomization.yaml's namespace and apply it,"
-    echo "     once per namespace. Verify with:"
+    echo "  2. Install the chart:"
+    echo "       helm install mast oci://ghcr.io/go-steer/charts/mast \\"
+    echo "         --namespace ${NAMESPACE} --set gcp.projectID=${PROJECT_ID}"
+    echo "     gcp.projectID has no default on purpose. It is substituted into the"
+    echo "     username the GKE MCP path arrives as, and a chart that defaulted it"
+    echo "     would render a binding that applies cleanly and binds nobody (#290)."
+    echo "  3. Grant writes in each namespace mast may remediate — one list, not"
+    echo "     one apply per namespace:"
+    echo "       helm upgrade mast oci://ghcr.io/go-steer/charts/mast \\"
+    echo "         --namespace ${NAMESPACE} --set gcp.projectID=${PROJECT_ID} \\"
+    echo "         --set 'remediationNamespaces={team-a,team-b}'"
+    echo "     Verify with:"
     echo "       PROJECT_ID=${PROJECT_ID} TARGET_NS=<ns> scripts/rbac-matrix.sh"
     echo
     echo "Bindings applied:"

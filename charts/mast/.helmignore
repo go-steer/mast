@@ -1,0 +1,11 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# NOTE: files/ is deliberately NOT ignored — it is the workload bundle
+# the daemon runs, projected into the pod through a ConfigMap.
+.DS_Store
+.git/
+.gitignore
+*.tmp
+*.orig
+*.swp

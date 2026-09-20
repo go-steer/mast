@@ -168,14 +168,15 @@ scripts/demo-spike2.sh
   unclassified tool counts as mutating, so an unclassified read tool will
   stop and ask.
 - For production topologies (Cloud Run + Postgres sessions, GKE, systemd)
-  see `examples/deploy/` in the repo. The GKE kustomize base under
-  `deploy/` is durable by default — the daemon runs as a StatefulSet
-  with a PVC-backed `--session-db`, so pauses, abort markers, and
-  shutdown interruption markers survive pod rescheduling. In-memory
-  sessions (omitting `--session-db`) are a local-development opt-out,
-  not a deploy default.
-- That base also grants the daemon cluster-wide **read** and nothing else;
-  the permission to change a namespace is a separate apply, once per
-  namespace. See [cluster permissions](/reference/cluster-permissions/),
+  see `examples/deploy/` in the repo. The GKE path is the Helm chart
+  (`helm install mast oci://ghcr.io/go-steer/charts/mast`), durable by
+  default — the daemon runs as a StatefulSet with a PVC-backed
+  `--session-db`, so pauses, abort markers, and shutdown interruption
+  markers survive pod rescheduling. In-memory sessions (omitting
+  `--session-db`) are a local-development opt-out, not a deploy default.
+- The chart also grants the daemon cluster-wide **read** and nothing else;
+  permission to change a namespace is opt-in, one entry in
+  `remediationNamespaces` per namespace. See
+  [cluster permissions](/reference/cluster-permissions/),
   including the GKE IAM caveat that decides whether the split bounds
   anything.
