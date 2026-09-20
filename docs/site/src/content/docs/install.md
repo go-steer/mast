@@ -127,38 +127,73 @@ thing it signed — mast's early releases published empty bodies while every ste
 in the job logged the right output, which is why this one asserts on the
 download.
 
-There is still no SLSA provenance attestation and no signed container image;
-both stay on [#342](https://github.com/go-steer/mast/issues/342).
+There is still no SLSA provenance attestation; it stays on
+[#342](https://github.com/go-steer/mast/issues/342).
 
 ## Putting it in a cluster
 
-There is no chart, no Terraform module and no Homebrew tap: the supported
-path is the kustomize base in
-[`deploy/`](https://github.com/go-steer/mast/tree/main/deploy) plus
+The supported path is the Helm chart, published as an OCI artifact beside
+the image. You do not need to clone this repository:
+
+```sh
+helm install mast oci://ghcr.io/go-steer/charts/mast \
+  --namespace mast-triage --create-namespace \
+  --set gcp.projectID=my-project
+```
+
+On GKE, run
 [`scripts/setup-wif.sh`](https://github.com/go-steer/mast/blob/main/scripts/setup-wif.sh)
-for Workload Identity, applied by you. That mast is a thing *you* install
-rather than a service someone runs for you is a
+first — it binds the Workload Identity Federation principal the daemon's
+tools reach the cluster as, and prints these commands with your project
+substituted in.
+
+**`gcp.projectID` has no default, and `helm install` fails without it.** That
+is deliberate. The value is substituted into the RBAC subject the GKE MCP
+path arrives as, and a chart that shipped a placeholder there would render a
+`ClusterRoleBinding` that `kubectl apply` accepts and that binds nobody — a
+boundary that reads as if it exists, with no symptom until a tool call comes
+back `Forbidden`
+([#290](https://github.com/go-steer/mast/issues/290)).
+
+**A default install can change nothing.** mast reads the whole cluster and
+holds no write verb anywhere until you name the namespaces it may remediate:
+
+```sh
+helm upgrade mast oci://ghcr.io/go-steer/charts/mast \
+  --namespace mast-triage \
+  --set gcp.projectID=my-project \
+  --set 'remediationNamespaces={team-a,team-b}'
+```
+
+Each namespace in that list gets its own `Role` and `RoleBinding`; nothing
+cluster-scoped gains a write verb. See
+[cluster permissions](/reference/cluster-permissions/) for the full grant and
+for how to check it against a live cluster.
+
+There is still no Terraform module and no Homebrew tap. That mast is a thing
+*you* install rather than a service someone runs for you is a
 [decision](https://github.com/go-steer/mast/blob/main/docs/positioning.md#who-installs-mast-answered-2026-09-11-closing-291),
-and it comes with three things to know before the first apply — **run one
+and it comes with three things to know before the first install — **run one
 replica**, **one mast per tenant**, and **config drift is diagnosed rather
 than reconciled**. Each is spelled out, with the issue tracking it, under
 [what installing it costs you today](/roadmap/#what-installing-it-costs-you-today).
-The third of those is the one that will surprise you after the first apply, so
-it has its own section below.
+The third of those is the one that will surprise you afterwards, so it has
+its own section below.
 
 ## Config drift: diagnosed, not reconciled
 
 **mast does not reload configuration, and editing a ConfigMap does not restart
 it.** Both halves are deliberate. The consequence is the one worth
-internalising before you rely on an edit: *an apply can succeed, the files on
-disk can change, and the daemon can keep running the old configuration
-indefinitely.*
+internalising before you rely on an edit: *a `helm upgrade` can succeed, the
+files on disk can change, and the daemon can keep running the old
+configuration indefinitely.*
 
-The kustomize base sets `disableNameSuffixHash: true`, so `mast-workload`
-keeps a stable name across applies. A hashed name is the usual way to make a
-ConfigMap edit roll the pods, and it is the wrong trade here: this daemon
+The chart carries no `checksum/config` pod annotation, so `mast-workload`
+changing does not roll the daemon. Annotating the pod template with a hash of
+the ConfigMap is the usual way to make a config edit restart the pods, and it
+is the wrong trade here: this daemon
 holds in-flight turns that are spending money, approvals parked waiting on a
-human, and armed schedules. Rolling it on every `kubectl apply` — including
+human, and armed schedules. Rolling it on every `helm upgrade` — including
 the ones that changed nothing it cares about — costs more than a stale read.
 
 ### What you see instead

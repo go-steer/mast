@@ -271,15 +271,15 @@ The main-push tags are not a convenience. They are what continuously rehearses p
 
 The image also now knows what it is. `VERSION`, `COMMIT` and `BUILD_DATE` build args feed the same three `-X` symbols `.goreleaser.yaml` injects into the released binaries, so `mast --version` inside the image answers with the release rather than with `dev`. A bare `docker build .` passes none of them and still reports `dev`, which is the honest answer for a build with no release to claim.
 
-Publishing does not answer chart-versus-kustomization; it makes the question answerable. `deploy/base`'s `:latest` starts resolving at the next release tag, and `:main` is pullable from this change onward. The answer is the next section.
+Publishing does not answer chart-versus-kustomization; it makes the question answerable. The daemon manifest's `:latest` starts resolving at the next release tag, and `:main` is pullable from this change onward. The answer is the next section.
 
-### Chart, not kustomization — decided 2026-09-20 ([#342](https://github.com/go-steer/mast/issues/342))
+### Chart, not kustomization — decided and shipped 2026-09-20 ([#342](https://github.com/go-steer/mast/issues/342))
 
-Item 1 asks for one composition an outsider can run without editing it first, and says to pick a form and argue it rather than ship both. **It is a Helm chart.** The existing `deploy/` kustomize tree goes when the chart lands; keeping both would leave two compositions that can disagree about what mast deploys, and "one of them already existed" is not the reason #342 asks for.
+Item 1 asks for one composition an outsider can run without editing it first, and says to pick a form and argue it rather than ship both. **It is a Helm chart**, and it is in `charts/mast/`. The `deploy/` kustomize tree was deleted in the same change; keeping both would leave two compositions that can disagree about what mast deploys, and "one of them already existed" is not the reason #342 asks for.
 
 The argument is not that charts are conventional. It is that three of the four things this deployment needs are things kustomize either cannot do or can only do by having the operator edit files in this repo.
 
-**1. There is no parameter surface, and the placeholders survive the render.** `kustomize build` takes no values. Measured on the tree as it stands: `deploy/base` renders two unreplaced placeholders into its output, `deploy/overlays/example` three, and `deploy/remediation-target` three across two distinct names. Being fair to kustomize, a `replacements:` block can source a project ID from a ConfigMap and splice it into the RBAC subject string with a delimiter and index — that removes the `sed` the remediation-target header documents. It does not remove the `kustomization.yaml` the operator has to author against our base, and authoring an overlay against a base is reading the base. The "done when" clause is *installs without reading `deploy/` source*.
+**1. There is no parameter surface, and the placeholders survive the render.** `kustomize build` takes no values. Measured on the tree while it still existed: `deploy/base` rendered two unreplaced placeholders into its output, `deploy/overlays/example` three, and `deploy/remediation-target` three across two distinct names. Being fair to kustomize, a `replacements:` block can source a project ID from a ConfigMap and splice it into the RBAC subject string with a delimiter and index — that removes the `sed` the remediation-target header documents. It does not remove the `kustomization.yaml` the operator has to author against our base, and authoring an overlay against a base is reading the base. The "done when" clause is *installs without reading `deploy/` source*.
 
 **2. One list, N remediable namespaces.** The write grant is per-namespace by design, and that design is right. Its expression is not: today an operator applies the same kustomization once per target namespace with a different `namespace:` each time. A chart takes `remediationNamespaces: [team-a, team-b]` and emits the pairs. Verified against a throwaway chart before this was written — two `RoleBinding`s, each carrying both subjects with the project ID substituted into the Workload Identity Federation username.
 
@@ -287,17 +287,30 @@ The argument is not that charts are conventional. It is that three of the four t
 
 **4. The chart rides the pipeline the previous section just built.** Charts publish as OCI artifacts, so `ghcr.io/go-steer/charts/mast` sits beside the image, versions with the release, and is signed and verified by the same keyless cosign identity — the org already publishes `charts/lookout` this way. kustomize's remote form is a git ref against a repo an outside reader currently cannot resolve.
 
-**What it costs, stated rather than discovered later.** `deploy/projection_test.go` and `deploy/rbac_test.go` are 741 lines that parse the manifests as YAML directly, and templated files are not YAML. They get re-pointed at `helm template` output, which does parse — checked, not assumed. That puts `helm` in the Go test path, and the port has one rule: the tests must **fail** when helm is missing, not skip. An RBAC test that skips is indistinguishable from no RBAC test, and this is the boundary where that matters most. The ConfigMap-drift check against `examples/workloads/gke-triage/` survives unchanged in shape — `.Files.Glob` reads the chart's own copy of the bundle, so the copy still needs pinning to its source.
+**What it cost, which is what was predicted.** `deploy/projection_test.go` and `deploy/rbac_test.go` were 741 lines that parsed the manifests as YAML directly, and templated files are not YAML. They are now `charts/{rbac,projection,render}_test.go`, asserting against `helm template` output, which does parse. That puts `helm` in the Go test path, under the rule the decision set: the tests **fail** when helm is missing rather than skipping, because an RBAC test that skips is indistinguishable from no RBAC test. `MAST_SKIP_CHART_TESTS` is the deliberate opt-out for someone who genuinely has no helm, and CI installs helm so the opt-out can never be why a run is green. The ConfigMap-drift check against `examples/workloads/gke-triage/` survives unchanged in shape — `.Files.Glob` reads the chart's own copy of the bundle, so the copy still needs pinning to its source.
+
+**Two silent-downgrade tests became structurally unnecessary, which is a better outcome than porting them.** `deploy/projection_test.go` existed because the ConfigMap generator's `files:` and the StatefulSet's `items:` were two hand-written enumerations that could disagree, and had ([v0.3 W1.3 finding (b)](./v0.3-plan.md): nine of thirteen specialists were generated into the ConfigMap and never projected into the pod, so those failure modes routed to `_fallback` with nothing in the logs). In the chart both lists come from one `.Files.Glob "files/**"`, so they cannot drift; the test that remains pins the chart's copy against `examples/workloads/gke-triage/` and asserts every ConfigMap key reaches the pod, which is the part a glob cannot guarantee on its own. Likewise, the default install now renders **zero** write verbs anywhere — `remediationNamespaces` is empty — so "a fresh install can change nothing" is a property one test states (`TestDefaultInstallGrantsNoWrite`) rather than a claim about which files an operator remembered not to apply.
 
 Not decided here: the chart covers the GKE daemon topology only. Cloud Run and Terraform stay separate artifacts, and Homebrew and apt remain behind item 3.
+
+**What an install looks like.** One command, no file in this repo read or edited:
+
+```bash
+helm install mast oci://ghcr.io/go-steer/charts/mast \
+  --namespace mast-triage --create-namespace \
+  --set gcp.projectID=my-project \
+  --set 'remediationNamespaces={team-a,team-b}'
+```
+
+Object names are fixed rather than release-prefixed, against Helm convention and on purpose: `scripts/setup-wif.sh` derives an IAM principal from the daemon's ServiceAccount name, `scripts/rbac-matrix.sh` checks grants by subject name, and the WIF username itself embeds the namespace and the ServiceAccount. A release-name prefix would make all three depend on what the operator typed after `helm install`. Two releases in one cluster is not a supported topology regardless — the ClusterRole names are cluster-scoped and would collide under any prefix.
 
 ### Kubernetes manifests
 
 `examples/deploy/gke/` — canonical GKE manifests: Deployment, Service, HPA, ConfigMap (for `.agents/*`), Secrets (for provider creds), NetworkPolicy, PodDisruptionBudget. Kustomize-friendly (base + overlays for common variations).
 
-`examples/deploy/gke-helm/` — Helm chart. *Unbuilt; the v0.2 date lapsed. The chart-or-kustomization choice was settled on 2026-09-20 in favour of the chart (see "Chart, not kustomization" above), so this line describes something still owed rather than something undecided — and when it lands it lands as a published OCI chart, not as an example directory.*
+`examples/deploy/gke-helm/` — *superseded 2026-09-20. The chart is not an example: it is `charts/mast/`, the one shipped composition, published as an OCI artifact. See "Chart, not kustomization" above.*
 
-The shipped manifests live in `deploy/` (base + `overlays/example` + `remediation-target`), not `examples/deploy/` — see "Cluster permissions" below for the RBAC layout.
+The shipped composition lives in `charts/mast/`, not `examples/deploy/` — see "Cluster permissions" below for the RBAC layout.
 
 ### Cluster permissions
 
@@ -305,18 +318,18 @@ The shipped manifests live in `deploy/` (base + `overlays/example` + `remediatio
 
 | Grant | Kind | Scope | Where |
 |---|---|---|---|
-| Diagnosis | `ClusterRole mast-daemon-read` | every namespace, `get`/`list`/`watch`, **no secrets** | `deploy/base/14-*`, `15-*` |
-| Change | `Role mast-daemon-write` | one namespace per apply | `deploy/remediation-target/` |
+| Diagnosis | `ClusterRole mast-daemon-read` | every namespace, `get`/`list`/`watch`, **no secrets** | `charts/mast/templates/clusterrole{,binding}-daemon-read.yaml` |
+| Change | `Role mast-daemon-write` | one namespace per `remediationNamespaces` entry, none by default | `charts/mast/templates/rbac-daemon-write.yaml` |
 
-Three properties are deliberate and are pinned by `deploy/rbac_test.go`:
+Three properties are deliberate and are pinned by `charts/rbac_test.go`:
 
 - **The write grant is narrower than the tools.** `apply_k8s_manifest` can name any kind; the Role lets it create workload objects and ConfigMaps only, in one namespace, and lets nothing delete a Deployment. A call outside the grant fails at the API server as a `Forbidden` the specialist sees as a tool error.
-- **The write grant is not in `base`.** The base pins `namespace: mast-triage` on everything it renders, so a Role carried there would land in the daemon's own namespace and an operator retargeting it would widen the base for everyone. As a separate kustomization, every remediable namespace is a separate, visible apply.
+- **The write grant is opt-in and namespaced.** `remediationNamespaces` is empty by default, and a default install therefore renders no write verb anywhere: mast diagnoses the whole cluster and can change nothing until someone names the namespaces. Each named namespace gets its own `Role` + `RoleBinding` pair, so widening is a value an operator can read back with `helm get values`, not a directory they applied N times and have to remember.
 - **The lint walks from the subject.** Any binding naming the daemon — under either of the two usernames below — is checked, not just the file called "read", because this boundary erodes by someone adding a cluster-scoped grant for one tool.
 
 **The IAM caveat, which is the load-bearing part on GKE.** GKE authorizes a Kubernetes API call if **either** IAM or Kubernetes RBAC allows it, and the daemon reaches the cluster through the GKE MCP server as its Workload Identity Federation principal — not through the pod's KSA token. Bind `roles/container.admin` to that principal and the namespaced write Role bounds the in-cluster API path and *nothing at all* on the MCP path. So `scripts/setup-wif.sh` binds `roles/container.viewer` by default (`WRITE_SCOPE=namespaced`) and leaves the writes to RBAC, which is the configuration the split describes; `WRITE_SCOPE=cluster-admin` is the escape hatch. `scripts/rbac-matrix.sh` checks both halves — the RBAC cells via `kubectl auth can-i --as=`, and, when `PROJECT_ID` is set, whether the principal still holds a cluster-write IAM role.
 
-**Two subjects, because two usernames (#290, measured on live GKE 2026-09-06).** The narrowed mode shipped as an opt-in for four releases on the stated grounds that nobody had run it. Running it produced a result and a reason the result had been unreachable: GKE does **not** resolve the WIF principal to the KSA's RBAC ServiceAccount subject. The API server sees an RBAC *User* named `serviceAccount:<project>.svc.id.goog[mast-triage/mast-daemon]`, which a `kind: ServiceAccount` subject does not match. Under the old default that was invisible — cluster-write IAM allowed the call anyway, and the RBAC file read as if it were the boundary. Under the narrowing it would have been a daemon that could not remediate anything, for reasons no manifest explained. Both bindings now name both subjects, `deploy/rbac_test.go` fails a binding that names only one, and with the pair in place the matrix is green over the MCP path in both directions: patch allowed in the remediable namespace, refused one namespace over, Deployment delete refused, cluster-wide secret list refused. The IAM role and the RBAC subject are one change, not two: either alone leaves the split decorative.
+**Two subjects, because two usernames (#290, measured on live GKE 2026-09-06).** The narrowed mode shipped as an opt-in for four releases on the stated grounds that nobody had run it. Running it produced a result and a reason the result had been unreachable: GKE does **not** resolve the WIF principal to the KSA's RBAC ServiceAccount subject. The API server sees an RBAC *User* named `serviceAccount:<project>.svc.id.goog[mast-triage/mast-daemon]`, which a `kind: ServiceAccount` subject does not match. Under the old default that was invisible — cluster-write IAM allowed the call anyway, and the RBAC file read as if it were the boundary. Under the narrowing it would have been a daemon that could not remediate anything, for reasons no manifest explained. Both bindings now name both subjects, `charts/rbac_test.go` fails a binding that names only one, and with the pair in place the matrix is green over the MCP path in both directions: patch allowed in the remediable namespace, refused one namespace over, Deployment delete refused, cluster-wide secret list refused. The IAM role and the RBAC subject are one change, not two: either alone leaves the split decorative.
 
 ### Cloud Run
 

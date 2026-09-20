@@ -238,9 +238,9 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   remediation in prose and no dispatch shape handed that to the executor on
   its own, so an incident ended at a finding. That is closed on `main` by the
   change-set producer below, unreleased at the time of writing.
-- **The same split, in the deployment manifests** — the kustomize base grants
+- **The same split, in the deployment manifests** — the chart grants
   the daemon cluster-wide read (and no secrets); permission to *change* a
-  namespace is a separate `Role` you apply once per namespace, so an approved
+  namespace is a separate `Role`, opt-in per namespace, so an approved
   call still has to get past the API server. Deliberately narrower than the
   tools it backs, and CI-linted from the subject side so a new cluster-scoped
   grant cannot slip in. On GKE, read the IAM caveat before trusting it: see
@@ -1122,15 +1122,15 @@ guarantees are shaped the way they are. It is also a bill the product has not
 finished paying, and the four unpaid items are worth knowing before you
 deploy rather than after.
 
-- **The install is a kustomize base, not a package.** `deploy/` plus
-  `scripts/setup-wif.sh`, applied by you. There is no chart, no Terraform
-  module and no Homebrew tap —
+- **The install is a Helm chart** — `helm install mast
+  oci://ghcr.io/go-steer/charts/mast`, plus `scripts/setup-wif.sh` for the
+  GCP-side IAM. There is still no Terraform module and no Homebrew tap —
   [#342](https://github.com/go-steer/mast/issues/342). Releases *are* now
   signed: every tag after v0.9.0 carries a Sigstore keyless signature over
   `checksums.txt`, verifiable against the release workflow's own identity with
   no mast public key to trust
-  ([how](/install/#verify-the-signature)). SLSA provenance and a signed
-  container image stay on that issue.
+  ([how](/install/#verify-the-signature)); the container image and the chart
+  are signed the same way. SLSA provenance stays on that issue.
 - **Run one replica for anything scheduled.** Extra replicas no longer
   duplicate work — a lease over the session store means one instance fires
   the scheduled trigger, the timed-pause resumes and the boot auto-resume

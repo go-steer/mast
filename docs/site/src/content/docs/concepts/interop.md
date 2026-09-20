@@ -93,8 +93,8 @@ restart, and a restart does not fix a deleted volume or an unreachable
 database — it turns one unready pod into a crash loop that also kills
 every in-flight turn. Readiness is the probe that should be able to go
 red: it takes the pod out of the Service, which stops it being handed
-injects it cannot durably record. `deploy/base/50-statefulset-daemon.yaml`
-ships wired that way.
+injects it cannot durably record. The chart's daemon StatefulSet
+(`charts/mast/templates/statefulset-daemon.yaml`) ships wired that way.
 
 ### Reading what is parked
 

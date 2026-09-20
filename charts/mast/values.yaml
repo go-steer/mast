@@ -1,0 +1,153 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Defaults for the mast chart. Everything here has a working value
+# except gcp.projectID, which has none that could be right — see below.
+
+# -- Google Cloud project and region.
+gcp:
+  # projectID has NO default and the chart refuses to render without it.
+  # That is deliberate and it is the reason this chart exists rather
+  # than a kustomize overlay. The value ends up inside an RBAC subject
+  # name — serviceAccount:<projectID>.svc.id.goog[<ns>/mast-daemon] —
+  # and a placeholder left in that string produces a ClusterRoleBinding
+  # the API server accepts and that binds nobody. The daemon then
+  # reaches the cluster over the GKE MCP path as a User no binding
+  # names, and the first symptom is a tool call coming back Forbidden
+  # during an incident (#290, measured on live GKE 2026-09-06).
+  #
+  # A render-time error is the cheap version of that failure.
+  projectID: ""
+  # Vertex AI location. `global` unless you have a reason.
+  location: global
+
+# -- The mast image. Published and cosign-signed by
+# .github/workflows/release-images.yml; verify before you install:
+#
+#   cosign verify ghcr.io/go-steer/mast:<tag> \
+#     --certificate-identity-regexp \
+#       '^https://github\.com/go-steer/mast/\.github/workflows/release-images\.yml@refs/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+image:
+  repository: ghcr.io/go-steer/mast
+  # Empty means the chart's appVersion, which is the mast release this
+  # chart was published with. Pin something here to deviate; :latest is
+  # not the default on purpose.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# -- The model the daemon runs its specialists on.
+model: gemini-2.5-flash
+
+logLevel: info
+
+daemon:
+  # 1 is the supported count. Multi-instance is Postgres, not a second
+  # replica on the same ReadWriteOnce volume — see
+  # docs/deployment-design.md, "Multi-instance coordination".
+  replicas: 1
+
+  # Sized against the shutdown drain bound: on SIGTERM the daemon
+  # drains in-flight turns for up to the workload's
+  # budget.max_wallclock_seconds (300 in files/workload.yaml), marking
+  # their sessions durably before waiting. Keep this above that bound
+  # plus teardown headroom.
+  terminationGracePeriodSeconds: 330
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # Session state: the SQLite DB holding sessions, durable pauses, and
+  # abort + interruption markers. Losing it loses parked approvals.
+  storage:
+    size: 1Gi
+    # Empty uses the cluster's default StorageClass.
+    storageClassName: ""
+
+  # GKE Standard clusters need the daemon pinned onto
+  # metadata-server-enabled nodes for Workload Identity Federation.
+  # Autopilot REJECTS that selector (it ships the metadata server
+  # everywhere), so the Autopilot-safe empty map is the default:
+  #
+  #   --set daemon.nodeSelector."iam\.gke\.io/gke-metadata-server-enabled"=true
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+auth:
+  # The shared bearer every write route requires. Create it yourself —
+  # the chart deliberately generates no secret, because a chart-authored
+  # token lands in release state and in whatever stores your values:
+  #
+  #   kubectl -n mast-triage create secret generic mast-inject-token \
+  #     --from-literal=token="$(openssl rand -hex 32)"
+  injectTokenSecret: mast-inject-token
+  injectTokenKey: token
+
+  # OPTIONAL per-person attribution on /resume and /monitor-ack. Without
+  # it every approval is recorded as `shared-bearer-token`, which is
+  # what a shared credential can honestly prove. It opens no second way
+  # in: only those two routes read it.
+  usersFile:
+    enabled: false
+    secretName: mast-users
+    key: users.json
+    # Comma-separated proxy identities allowed to assert a caller.
+    proxyIdentities: ""
+
+watcher:
+  # The k8s-event-watcher sidecar that turns cluster events into
+  # injects. Disable it to drive the daemon from something else.
+  enabled: true
+  image:
+    repository: ghcr.io/go-steer/k8s-event-watcher
+    tag: "2.6.0"
+    pullPolicy: IfNotPresent
+  # Shown in the triage context. Name the cluster something you will
+  # recognise in a transcript.
+  clusterName: local
+  dedupWindow: 5m
+  # Must hold the SAME token as auth.injectTokenSecret — the watcher
+  # posts to the daemon with it as a bearer.
+  tokenSecret: k8s-event-watcher-token
+  tokenKey: token
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# -- The namespaces mast is allowed to CHANGE. Empty by default: a
+# fresh install diagnoses the whole cluster and can write nowhere.
+#
+# Each entry gets its own namespaced Role + RoleBinding. The grant is
+# per-namespace by construction, so widening it is adding a line here
+# and re-installing, and every line is visible in one place:
+#
+#   --set 'remediationNamespaces={team-a,team-b}'
+#
+# This is the half of the read/write split the cluster enforces. The
+# other half is what the agent will propose (internal/compose's
+# capability check), and the two are deliberately independent.
+remediationNamespaces: []
+
+# -- Extra labels applied to every object the chart renders.
+commonLabels: {}

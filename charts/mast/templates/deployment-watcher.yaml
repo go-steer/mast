@@ -1,0 +1,72 @@
+{{/*
+Copyright 2026 Google LLC
+Licensed under the Apache License, Version 2.0. See LICENSE for details.
+*/}}
+{{- if .Values.watcher.enabled }}
+# Turns cluster events into injects. The sidecar image is shared with
+# core-agent unchanged — the InjectPayload schema is stable between the
+# two projects.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mast.watcherName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: k8s-event-watcher
+    app.kubernetes.io/component: sidecar
+    {{- include "mast.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-event-watcher
+      app.kubernetes.io/component: sidecar
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k8s-event-watcher
+        app.kubernetes.io/component: sidecar
+    spec:
+      serviceAccountName: {{ include "mast.watcherSA" . }}
+      containers:
+        - name: watcher
+          image: {{ printf "%s:%s" .Values.watcher.image.repository .Values.watcher.image.tag | quote }}
+          imagePullPolicy: {{ .Values.watcher.image.pullPolicy }}
+          args:
+            - "--daemon-url=http://{{ include "mast.daemonName" . }}.{{ .Release.Namespace }}.svc.cluster.local:7777"
+            - "--token-env=WATCHER_TOKEN"
+            - "--mode=per-incident"
+            - "--cluster-name={{ .Values.watcher.clusterName }}"
+            - "--dedup-window={{ .Values.watcher.dedupWindow }}"
+            - "--in-cluster"
+            - "--metrics-addr=:9090"
+            - "--log-level={{ .Values.logLevel }}"
+          env:
+            # Must be the same token as auth.injectTokenSecret: the
+            # watcher posts to the daemon with it as a bearer.
+            - name: WATCHER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.watcher.tokenSecret }}
+                  key: {{ .Values.watcher.tokenKey }}
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.watcher.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 20
+{{- end }}

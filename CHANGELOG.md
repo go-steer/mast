@@ -84,6 +84,38 @@
 
 ### Feature
 
+- **The install is a Helm chart, and the `deploy/` kustomize tree is gone.**
+  `helm install mast oci://ghcr.io/go-steer/charts/mast --set
+  gcp.projectID=<project>` is the whole install; the chart publishes as an OCI
+  artifact beside the image, versions with the release, and is signed and
+  verified by the same keyless cosign identity. #342 asked for **one**
+  composition an outsider can run without editing it first, with the form
+  argued rather than assumed, so the kustomize tree was deleted rather than
+  kept alongside — two compositions can disagree about what mast deploys.
+  Three properties decided it, none of them "charts are conventional".
+  `kustomize build` takes no values, and measured on the tree before deletion
+  the placeholders survived the render — two out of `deploy/base`, three out
+  of `overlays/example`, three out of `remediation-target`. The per-namespace
+  write grant wants a list (`remediationNamespaces: [team-a, team-b]`) rather
+  than the same directory applied once per namespace with a different
+  `namespace:`. And the deciding one: **an unreplaced `REPLACE_ME_PROJECT`
+  renders a `ClusterRoleBinding` that `kubectl apply` accepts and that binds
+  nobody** — exactly [#290](https://github.com/go-steer/mast/issues/290)'s
+  failure, a boundary that reads as if it exists with no symptom until a tool
+  call returns `Forbidden`. `gcp.projectID` is therefore `required`, and
+  omitting it is a render-time error with nothing sent to the API server. Two
+  further changes come with the shape rather than being chosen separately: a
+  **default install now renders zero write verbs anywhere** (mast diagnoses
+  the whole cluster and can change nothing until namespaces are named), and
+  the ConfigMap keys and the pod's volume `items:` list both derive from one
+  `.Files.Glob`, so the drift that once shipped nine of thirteen specialists
+  into a ConfigMap the pod never projected is no longer expressible. The 741
+  lines of `deploy/{rbac,projection}_test.go` are now
+  `charts/{rbac,projection,render}_test.go`, asserting against `helm template`
+  output; they **fail** rather than skip when helm is missing, and CI installs
+  helm so that opt-out can never be why a run is green
+  ([#342](https://github.com/go-steer/mast/issues/342)).
+
 - **There is a mast container image now, it is signed, and it knows its own
   version.** `ghcr.io/go-steer/mast` publishes for `linux/amd64` and
   `linux/arm64` on every release tag (`:X.Y.Z`, `:X.Y`, `:X`, and `:latest`

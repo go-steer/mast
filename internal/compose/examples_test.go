@@ -40,7 +40,7 @@ const exampleWorkloadsDir = "../../examples/workloads"
 // bundle that shipped as an example into one that no longer boots,
 // with the failure landing on an operator's first run rather than in
 // CI. Only gke-triage was exercised before this test — by
-// dev/ci/presubmits/e2e.sh and deploy/projection_test.go — which left
+// dev/ci/presubmits/e2e.sh and charts/projection_test.go — which left
 // bounded-triage and ns-audit as prose that nothing compiled.
 //
 // The directory is globbed rather than listed so a new example is

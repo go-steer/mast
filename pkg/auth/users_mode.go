@@ -48,7 +48,7 @@ func checkUsersFileMode(path string, info os.FileInfo) error {
 // A blanket `mode&0o077 != 0` rejection is therefore in direct conflict
 // with the platform: mounting users.json from a Secret fails by
 // construction, and mast's own StatefulSet sets an fsGroup
-// (deploy/base/50-statefulset-daemon.yaml), so the recipe anyone starts
+// (charts/mast/templates/statefulset-daemon.yaml), so the recipe anyone starts
 // from arms the trigger.
 //
 // The equality is the entire security argument, so it is worth stating

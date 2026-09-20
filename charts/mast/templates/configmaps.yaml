@@ -1,0 +1,46 @@
+{{/*
+Copyright 2026 Google LLC
+Licensed under the Apache License, Version 2.0. See LICENSE for details.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mast.gcpEnvConfigMap" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mast
+    {{- include "mast.labels" . | nindent 4 }}
+data:
+  GOOGLE_CLOUD_PROJECT: {{ include "mast.projectID" . | quote }}
+  GOOGLE_CLOUD_LOCATION: {{ .Values.gcp.location | quote }}
+---
+# The workload bundle — workload.yaml, mcp.json, schemas/*.json and
+# specialists/*.specialist.md — carried flat and rebuilt into a tree by
+# the pod's volume items: list.
+#
+# Both enumerations come from this one glob, so the ConfigMap and the
+# projection cannot disagree. Under the kustomize base they were two
+# hand-written lists, and a specialist added to the roster but missed in
+# either one produced a pod that came up healthy with that failure mode
+# silently routed to _fallback.
+#
+# The name carries no content hash on purpose (#289). A hashed name
+# would roll the daemon on every apply, and this daemon holds in-flight
+# turns that are spending money, parked approvals waiting on a human,
+# and armed cadences. The cost is that an edit can land on disk and
+# change nothing, so the daemon logs a `workload config identity` line
+# at startup and warns when the mounted files stop matching it:
+# https://go-steer.github.io/mast/install/#config-drift-diagnosed-not-reconciled
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mast.workloadConfigMap" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mast
+    {{- include "mast.labels" . | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob "files/**" }}
+  {{ include "mast.workloadKey" $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

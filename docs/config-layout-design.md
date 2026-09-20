@@ -168,9 +168,9 @@ Hot-reload semantics per file class:
 
 The v0.2 `SIGHUP` row above never shipped, and as of v0.7 it is **not what the daemon does**: `cmd/mast` reads its configuration once, at startup, and reloads nothing. What shipped instead is the diagnosis.
 
-The failure this addresses needs three ingredients and had all three. `deploy/base/kustomization.yaml` sets `disableNameSuffixHash: true`, so editing the workload ConfigMap does not change its name and `kubectl apply` does not roll the pod. Nothing reloads. And nothing said which configuration was in effect — no path, no hash, no mtime — so an operator who applied an edit and saw no change had nothing to grep for. Any one of the three is survivable; together they make *"my change had no effect"* undiagnosable from the logs.
+The failure this addresses needs three ingredients and had all three. The workload ConfigMap's name is stable across edits — the kustomize base set `disableNameSuffixHash: true`, and the chart that replaced it (`charts/mast/`) carries no `checksum/config` pod annotation for the same reason — so changing its contents does not roll the pod. Nothing reloads. And nothing said which configuration was in effect — no path, no hash, no mtime — so an operator who applied an edit and saw no change had nothing to grep for. Any one of the three is survivable; together they make *"my change had no effect"* undiagnosable from the logs.
 
-It is worse in this deployment than in the general case, because `50-statefulset-daemon.yaml` mounts the ConfigMap as a **whole volume rather than through `subPath`** — the case where the kubelet *does* rewrite the files under a running pod. So the bytes on disk change, the parse in memory does not, and the two disagree silently for as long as the pod lives.
+It is worse in this deployment than in the general case, because the daemon StatefulSet mounts the ConfigMap as a **whole volume rather than through `subPath`** — the case where the kubelet *does* rewrite the files under a running pod. So the bytes on disk change, the parse in memory does not, and the two disagree silently for as long as the pod lives.
 
 Two records, answering different halves:
 

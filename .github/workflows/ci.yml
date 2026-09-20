@@ -42,6 +42,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # charts/*_test.go shells out to `helm template` and FAILS rather
+      # than skips when helm is absent (MAST_SKIP_CHART_TESTS is the
+      # local opt-out). Installing it here is what keeps that opt-out
+      # from ever being the reason a run is green: an RBAC test that
+      # skips is indistinguishable from no RBAC test.
+      - uses: azure/setup-helm@v4
       - name: Build
         run: dev/ci/presubmits/build.sh
       - name: Vet

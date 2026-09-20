@@ -1,0 +1,46 @@
+mast {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+The daemon will not become ready until the bearer-token Secret exists.
+The chart does not create it: a chart-authored secret lands in Helm
+release state and in whatever stores your values.
+
+  TOKEN=$(openssl rand -hex 32)
+  kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.auth.injectTokenSecret }} \
+    --from-literal={{ .Values.auth.injectTokenKey }}="$TOKEN"
+{{- if .Values.watcher.enabled }}
+  kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.watcher.tokenSecret }} \
+    --from-literal={{ .Values.watcher.tokenKey }}="$TOKEN"
+
+Both secrets must carry the SAME token — the watcher posts to the
+daemon with it as a bearer.
+{{- end }}
+
+Watch it come up:
+
+  kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "mast.daemonName" . }}
+
+{{ if .Values.remediationNamespaces -}}
+mast may CHANGE these namespaces:
+{{ range .Values.remediationNamespaces }}  - {{ . }}
+{{ end }}
+{{- else -}}
+mast can change NOTHING. It diagnoses cluster-wide and holds no write
+grant anywhere, which is the default. Name the namespaces it may
+remediate when you are ready:
+
+  helm upgrade ... --set 'remediationNamespaces={team-a,team-b}'
+{{- end }}
+
+Two things the manifests cannot do for you:
+
+  1. IAM. scripts/setup-wif.sh binds the roles the daemon's Workload
+     Identity Federation principal needs. Until it runs, mast cannot
+     reach Vertex AI or the GKE MCP server at all. Its default
+     (WRITE_SCOPE=namespaced) is what makes the RBAC split above the
+     real boundary rather than decoration — GKE allows a call if
+     EITHER IAM or RBAC allows it.
+
+  2. Check what you granted, against the cluster rather than the YAML:
+
+       PROJECT_ID={{ include "mast.projectID" . }} \
+       TARGET_NS=<one of the namespaces above> scripts/rbac-matrix.sh
