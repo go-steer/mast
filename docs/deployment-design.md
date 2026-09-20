@@ -271,13 +271,31 @@ The main-push tags are not a convenience. They are what continuously rehearses p
 
 The image also now knows what it is. `VERSION`, `COMMIT` and `BUILD_DATE` build args feed the same three `-X` symbols `.goreleaser.yaml` injects into the released binaries, so `mast --version` inside the image answers with the release rather than with `dev`. A bare `docker build .` passes none of them and still reports `dev`, which is the honest answer for a build with no release to claim.
 
-**What is still open on item 1.** Publishing does not answer chart-versus-kustomization; it makes the question answerable. `deploy/base`'s `:latest` starts resolving at the next release tag, and `:main` is pullable from this change onward.
+Publishing does not answer chart-versus-kustomization; it makes the question answerable. `deploy/base`'s `:latest` starts resolving at the next release tag, and `:main` is pullable from this change onward. The answer is the next section.
+
+### Chart, not kustomization — decided 2026-09-20 ([#342](https://github.com/go-steer/mast/issues/342))
+
+Item 1 asks for one composition an outsider can run without editing it first, and says to pick a form and argue it rather than ship both. **It is a Helm chart.** The existing `deploy/` kustomize tree goes when the chart lands; keeping both would leave two compositions that can disagree about what mast deploys, and "one of them already existed" is not the reason #342 asks for.
+
+The argument is not that charts are conventional. It is that three of the four things this deployment needs are things kustomize either cannot do or can only do by having the operator edit files in this repo.
+
+**1. There is no parameter surface, and the placeholders survive the render.** `kustomize build` takes no values. Measured on the tree as it stands: `deploy/base` renders two unreplaced placeholders into its output, `deploy/overlays/example` three, and `deploy/remediation-target` three across two distinct names. Being fair to kustomize, a `replacements:` block can source a project ID from a ConfigMap and splice it into the RBAC subject string with a delimiter and index — that removes the `sed` the remediation-target header documents. It does not remove the `kustomization.yaml` the operator has to author against our base, and authoring an overlay against a base is reading the base. The "done when" clause is *installs without reading `deploy/` source*.
+
+**2. One list, N remediable namespaces.** The write grant is per-namespace by design, and that design is right. Its expression is not: today an operator applies the same kustomization once per target namespace with a different `namespace:` each time. A chart takes `remediationNamespaces: [team-a, team-b]` and emits the pairs. Verified against a throwaway chart before this was written — two `RoleBinding`s, each carrying both subjects with the project ID substituted into the Workload Identity Federation username.
+
+**3. A missing project ID becomes a refusal to install instead of a successful apply that grants nothing.** This is the argument that decided it. `REPLACE_ME_PROJECT` left unreplaced still renders a syntactically valid `ClusterRoleBinding`; `kubectl apply` accepts it, and the daemon then reaches the cluster over the MCP path as a User that no binding names. That is precisely the [#290](https://github.com/go-steer/mast/issues/290) failure — a boundary that reads as if it exists and grants nothing — and it is the failure mode with no symptom until a tool call comes back `Forbidden`. Helm's `required` makes the same omission a render-time error (`gcp.projectID is required`) with nothing sent to the API server. A placeholder that installs cleanly is worse than no default at all.
+
+**4. The chart rides the pipeline the previous section just built.** Charts publish as OCI artifacts, so `ghcr.io/go-steer/charts/mast` sits beside the image, versions with the release, and is signed and verified by the same keyless cosign identity — the org already publishes `charts/lookout` this way. kustomize's remote form is a git ref against a repo an outside reader currently cannot resolve.
+
+**What it costs, stated rather than discovered later.** `deploy/projection_test.go` and `deploy/rbac_test.go` are 741 lines that parse the manifests as YAML directly, and templated files are not YAML. They get re-pointed at `helm template` output, which does parse — checked, not assumed. That puts `helm` in the Go test path, and the port has one rule: the tests must **fail** when helm is missing, not skip. An RBAC test that skips is indistinguishable from no RBAC test, and this is the boundary where that matters most. The ConfigMap-drift check against `examples/workloads/gke-triage/` survives unchanged in shape — `.Files.Glob` reads the chart's own copy of the bundle, so the copy still needs pinning to its source.
+
+Not decided here: the chart covers the GKE daemon topology only. Cloud Run and Terraform stay separate artifacts, and Homebrew and apt remain behind item 3.
 
 ### Kubernetes manifests
 
 `examples/deploy/gke/` — canonical GKE manifests: Deployment, Service, HPA, ConfigMap (for `.agents/*`), Secrets (for provider creds), NetworkPolicy, PodDisruptionBudget. Kustomize-friendly (base + overlays for common variations).
 
-`examples/deploy/gke-helm/` — Helm chart. *Unbuilt; the v0.2 date lapsed. Whether the packaged install is a chart or a self-sufficient kustomization is now an open choice in [#342](https://github.com/go-steer/mast/issues/342) rather than a settled one — the RBAC split is already expressed in kustomize, which is an argument the original line did not have to weigh.*
+`examples/deploy/gke-helm/` — Helm chart. *Unbuilt; the v0.2 date lapsed. The chart-or-kustomization choice was settled on 2026-09-20 in favour of the chart (see "Chart, not kustomization" above), so this line describes something still owed rather than something undecided — and when it lands it lands as a published OCI chart, not as an example directory.*
 
 The shipped manifests live in `deploy/` (base + `overlays/example` + `remediation-target`), not `examples/deploy/` — see "Cluster permissions" below for the RBAC layout.
 
