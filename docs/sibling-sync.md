@@ -1538,3 +1538,42 @@ not at all.
 
 **Consequence for future triage.** The 2026-07-31 report is now fully discharged and comes off the
 carry-forward list. What remains owed upstream is the peer-lease clamp and the `ef9b9b5` port.
+
+## Found while shipping [#342](https://github.com/go-steer/mast/issues/342), 2026-09-20 — the image pipeline
+
+**A real port, in the direction this ledger usually records — and one finding that travels back.**
+mast published no container image at all: `deploy/base` has named `ghcr.io/go-steer/mast:latest`
+since the fork, the org has never carried that package, and the `Dockerfile` had not built since
+go.mod moved to `go 1.26.6` against a `GO_VERSION=1.26.3` pin. core-agent has published three
+multi-arch images from `.github/workflows/release-images.yml` throughout. That file is the source
+for [`../.github/workflows/release-images.yml`](../.github/workflows/release-images.yml): QEMU +
+buildx, `docker/metadata-action`'s semver tag pyramid with `:latest` guarded off pre-releases,
+`:main-<sha>` on main pushes, keyless signing of the digest rather than of each tag.
+
+**Three deliberate divergences, so a later diff is not read as drift.**
+
+1. **mast verifies what it published; core-agent does not.** Theirs ends at
+   `cosign sign --yes`, which proves the runner signed something, not that a verifier pulling the
+   tag finds a signature — mast's own [#125](https://github.com/go-steer/mast/issues/125) lesson,
+   learned from six releases whose notes were composed correctly and published empty. mast's
+   workflow re-verifies against the registry with the identity pinned exactly (not by wildcard:
+   cosign substring-matches the identity regexp, and `.*` returns `Verified OK` against any
+   workflow in any repository), then pulls the image back and runs it. **This is owed upstream as a
+   suggestion** — it is a gap in their pipeline of exactly the shape #536 was, and the lesson from
+   that thread is that a report is evidence about both repos.
+2. **One image, no variant matrix.** No `no_tui` build tag, no separate TUI client binary; the
+   matrix and its `VARIANT`/`BUILD_TAGS` build args do not port.
+3. **The Go toolchain is resolved differently, and this one is worth watching.** core-agent threads
+   `GO_VERSION` from go.mod through `.github/actions/go-toolchain` and verifies the shipped
+   binary's recorded toolchain, after their #736 shipped images compiled against a stdlib CI had
+   moved off — the inline grep read the `go` directive rather than `toolchain`. mast's go.mod
+   carries no `toolchain` directive, so that specific bug is not reachable here, and the pin stays
+   a literal in the Dockerfile so that `docker build .` works for an outsider with no workflow
+   around it. The drift that pin can suffer is the one mast just had, and it is now closed by
+   `ci-image.yml` building the image on any PR touching go.mod. **If mast ever adds a `toolchain`
+   directive, port their resolution rather than re-deriving it** — take the fix, not the diagnosis.
+
+**Consequence for future triage.** `release-images.yml` and `ci-image.yml` are now shared-shape
+files: a change to either side's image pipeline is a port candidate. The upstream nudge about
+verifying the published signature joins the peer-lease clamp and the `ef9b9b5` port on what is owed
+upstream.

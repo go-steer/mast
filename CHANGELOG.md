@@ -84,6 +84,24 @@
 
 ### Feature
 
+- **There is a mast container image now, it is signed, and it knows its own
+  version.** `ghcr.io/go-steer/mast` publishes for `linux/amd64` and
+  `linux/arm64` on every release tag (`:X.Y.Z`, `:X.Y`, `:X`, and `:latest`
+  for anything that is not a pre-release) and on every push to `main`
+  (`:main`, `:main-<sha>`). Each digest is signed with Sigstore keyless and
+  then **verified against the registry** before the workflow finishes, and the
+  published image is pulled back and run — `cosign sign` exiting 0 on a runner
+  is not evidence that a verifier pulling the tag finds anything. `mast
+  --version` inside the image reports the release rather than `dev`, because
+  the build now injects the same three symbols `.goreleaser.yaml` injects into
+  the released binaries. This had never existed: `deploy/base` has named
+  `ghcr.io/go-steer/mast:latest` since the fork, the org never carried that
+  package, and the `Dockerfile` itself had stopped building when go.mod moved
+  to `go 1.26.6` against a `GO_VERSION=1.26.3` pin — with nothing in CI
+  compiling it to notice. `.github/workflows/ci-image.yml` builds it, runs the
+  binary inside it, and cross-compiles arm64 from now on
+  ([#342](https://github.com/go-steer/mast/issues/342)).
+
 - **Release artifacts are signed, and the release refuses to finish if the
   signature did not reach them.** Every tag from the next release onward ships
   `checksums.txt.sig` and `checksums.txt.pem` beside the checksum file — a
