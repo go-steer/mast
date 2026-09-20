@@ -43,12 +43,14 @@ import (
 // handles concurrent readers natively and serializing reads would
 // defeat the purpose of having an eventlog for live-tail observers.
 //
-// Consistency model for AppendEvent: writes ADK's events table
-// first (so the event has its assigned ID and storage row), then
-// mirrors into the overlay so it picks up a monotonic seq. The
-// overlay table has a unique index on event_id so a retry of the
-// same event is a no-op rather than a duplicate. Eventual-consistency
-// reconciliation across the two tables is out of scope for v1.
+// Consistency model for AppendEvent: the ADK events row and the
+// overlay row that carries the event's monotonic seq are written in
+// one transaction (#450) — the overlay insert runs inside ADK's own
+// event transaction, so the two commit together or not at all and an
+// overlay write that fails rolls the event back with it. See
+// atomic.go for how, and for the two paths that still write after ADK
+// rather than inside it. The overlay table's unique index on event_id
+// keeps a caller's retry a no-op rather than a duplicate.
 type service struct {
 	inner  session.Service
 	stream *gormStream
@@ -89,14 +91,43 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 	return s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
 }
 
-// AppendEvent writes the event through ADK first (so the events row
-// exists), then mirrors it into the overlay so it picks up a
-// monotonic seq. Errors from either layer surface to the caller.
+// AppendEvent writes the event through ADK and mirrors it into the
+// overlay, where it picks up a monotonic seq. Errors from either layer
+// surface to the caller.
+//
+// The two rows go in one transaction where they can (#450): the
+// stashed record below is picked up by a GORM after-create callback
+// running inside ADK's own transaction, so a crash between the writes
+// can no longer leave an event that the overlay — the index every
+// Since and Watch consumer reads — does not have. See atomic.go.
+//
+// Two paths still write after ADK rather than inside it, and both are
+// deliberate. When the callback could not be registered, the fallback
+// is exactly the behaviour that shipped before this: not atomic, but
+// no worse than it was. And when ADK writes nothing at all, neither do
+// we.
 func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *session.Event) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
+	var pending *overlayPending
+	if s.stream != nil && s.stream.overlayInTx && sess != nil && ev != nil {
+		pending = &overlayPending{sess: sess, ev: ev}
+		ctx = withOverlayPending(ctx, pending)
+	}
 	if err := s.inner.AppendEvent(ctx, sess, ev); err != nil {
 		return err
+	}
+	if pending != nil && pending.done {
+		return nil
+	}
+	// ADK drops partial events without writing a row (the runner
+	// filters them too, so this is a direct-caller path). An overlay
+	// row for an event ADK never persisted is the orphan shape
+	// deleteSession calls poison: its seq is real, so every unfiltered
+	// Watch re-queries it and re-fails to hydrate it, forever.
+	if ev != nil && ev.Partial {
+		return nil
 	}
 	if _, err := s.stream.Append(ctx, sess, ev); err != nil {
 		return fmt.Errorf("eventlog: overlay write after ADK AppendEvent: %w", err)

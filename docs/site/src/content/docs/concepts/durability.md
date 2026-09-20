@@ -18,6 +18,18 @@ tool call, tool result, and approval pause is appended and fsynced as it
 happens. Nothing important lives only in process memory, so a process that
 dies loses at most the turn in flight — never the session.
 
+An event is actually two rows: the event itself, and the row that gives it
+the monotonic sequence number every reader walks by. That distinction used
+to matter, because the two were written separately — and the sequence row is
+not a sidecar, it is **the index**. Live tail, attach replay, the spend
+ledger, `/healthz` and the park rows all find an event through it, so an
+event written without one was not late, it was permanently invisible while
+sitting intact in the database. Both rows now go in one transaction: they
+commit together or not at all, and a failure to index an event rolls the
+event back and returns an error, which is the recoverable half of that
+trade. On a store where that wiring cannot be established mast falls back to
+the older two-write path rather than refusing to open.
+
 Both flags are optional, and omitting them means in-memory sessions with no
 durability at all. The one exception is `--attach-listen`: an operator live
 tail reads the event log, so attach mode implies a store rather than
