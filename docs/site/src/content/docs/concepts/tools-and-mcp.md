@@ -45,32 +45,65 @@ tool, because the path is enumerated rather than inferred.
 ## The mutation predicate: unclassified means mutating
 
 Every layer above is a permission question. This is the *classification*
-question, and it is the one the write gate stands on.
+question, and it is the one the write gate stands on. Four sources answer
+it, and they are consulted in this order — the first one that speaks wins:
 
-MCP has an annotation for it — `readOnlyHint` — and the honest situation is
-that mast cannot see it: the substrate's MCP toolset drops tool annotations
-at conversion, so the hint never survives the trip. That left two options:
-infer from the tool's name, or default-deny.
+1. **Engine control calls** (`finish_task`, `transfer_to_agent`, input
+   requests) — part of the loop, never scanned.
+2. **The workload's `tool_catalog.tools[].mutating` declaration** — your
+   word, audit-logged at startup.
+3. **mast's own builtins**, whose implementation is in this repo.
+4. **The MCP server's `readOnlyHint` annotation** — the server's word.
 
-**mast defaults to deny.** Every MCP tool is treated as mutating until the
-workload's catalog says otherwise:
+If none of them speaks, the tool is **mutating**. That default is the whole
+posture: an unclassified tool parks for approval rather than running.
+
+### Your declaration outranks the server's
+
+MCP publishes a per-tool `readOnlyHint`, and mast reads it. A tool whose
+server declares itself read-only is classified read-only and does not park
+under the default [`on_mutation: require_approval`](/reference/write-gate/).
+A tool that declares nothing is unchanged: still mutating, still parks.
+
+That is a remote server's self-description being taken at its word, so the
+order above matters. A `tool_catalog` declaration is read *first* and wins
+in both directions, which is where you go when you do not want to extend
+that trust to a particular tool:
 
 ```yaml
 tool_catalog:
   mcp:
     - server: gke
   tools:
+    - name: delete_cluster
+      mutating: true      # pinned; no server can unpin it
     - name: list_clusters
-      mutating: false     # audit-logged at startup
+      mutating: false     # pinned; needed only if the server is silent
 ```
 
-Name-based inference was rejected on purpose. `get_` and `list_` look safe
-until a server ships `get_recovery_token`, and a predicate that is right
-99% of the time is a predicate that fires a mutation unseen on the
-hundredth call. A declaration is reviewable in a diff; a heuristic is not.
+mast trusts the hint by default because `mcp.json` is control-plane config
+that the [write gate protects](/reference/write-gate/) — wiring a server is
+already the grant, and asking you to re-authorize it tool-by-tool would be
+asking the same question twice. There is deliberately **no config key to
+turn the hint off**; the `tool_catalog` override above is the answer, and it
+is the auditable one. What you get instead is a line in the log per server
+at startup, counting how many of its tools called themselves read-only,
+mutating, and neither — so a server whose annotations you did not expect is
+visible without a debug build.
 
-The cost is real and worth stating: an un-declared read-only tool parks for
-an approval it did not strictly need. That is the failure mode to have.
+Two edges worth knowing. A tool the server annotates as *not* read-only, and
+a tool it does not annotate at all, are indistinguishable on the wire — MCP
+defines the hint as a plain boolean whose default is false — so both stay
+mutating, which is the same answer mast gave before it read the hint. And
+because tool names are not namespaced by server, two servers can publish the
+same name; if they disagree about it, the tool is **mutating** and both
+servers are named in a warning.
+
+Name-based inference remains rejected. `get_` and `list_` look safe until a
+server ships `get_recovery_token`, and a predicate that is right 99% of the
+time is one that fires a mutation unseen on the hundredth call. A
+declaration — yours or the server's — is a statement someone made; a
+heuristic is a guess mast made.
 
 Two other classes exist beside plain `Mutating`. **Spawning** covers tools
 that start sub-runs — `invoke_specialist`, the planner vocabulary — whose

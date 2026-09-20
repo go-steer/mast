@@ -191,7 +191,7 @@ func TestToolsetClientRefusesInputRequiredResults(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			url, calls := inputRequestServer(t, true, tc.req)
 
-			res, err := callInputRequestTool(t, newToolsetClient(), url)
+			res, err := callInputRequestTool(t, newToolsetClient("test", nil), url)
 			if err == nil {
 				t.Fatalf("CallTool succeeded (needsInput=%v); an input request reached the toolset as an ordinary result", res.NeedsInput())
 			}

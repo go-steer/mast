@@ -47,19 +47,24 @@ change my cluster" is a log line, not an intersection of three files.
 ## 2. Mutation classification — declared, never guessed
 
 The gate can only stop calls it knows are mutating, so *how* a tool gets
-classified is load-bearing.
+classified is load-bearing. Two parties can declare it, and **unclassified
+means mutating** if neither does.
 
-MCP publishes a `readOnlyHint` annotation, which sounds like the answer —
-but the substrate's MCP toolset drops annotations at conversion, so the hint
-never reaches mast. Rather than guess from the verb in a tool's name, mast
-takes the honest path: **unclassified means mutating**. A tool is treated as
-read-only only when the workload's `tool_catalog` says so explicitly, and
-every such un-gating is audit-logged at startup.
+The workload's `tool_catalog` is read first and wins: a tool it names is
+classified the way it says, in either direction, and every un-gating is
+audit-logged at startup. Below that, mast reads the `readOnlyHint`
+annotation the MCP server publishes about its own tools, so a server that
+says a tool only reads is believed and that tool does not park. A tool
+neither party has classified is mutating — as is one the server annotates as
+*not* read-only, which on the wire is the same thing.
 
-The failure mode this chooses is the safe one — a misconfigured read-only
-tool parks for an approval that was not strictly needed, rather than a
-misconfigured mutating tool firing unseen. Details, and the reason a
-name-based heuristic was rejected: [tools and MCP](/concepts/tools-and-mcp/).
+What mast will not do is guess from the verb in a tool's name. The failure
+mode it chooses instead is the safe one — a tool nobody classified parks for
+an approval that may not have been needed, rather than a mutating tool
+firing unseen — and where a server's word is not something you want to take,
+the `tool_catalog` override above is how you say so. Details, the full
+precedence order, and the reason a name-based heuristic was rejected: [tools
+and MCP](/concepts/tools-and-mcp/).
 
 ## 3. The write gate — one call, one operator, one answer
 

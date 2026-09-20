@@ -73,5 +73,5 @@ func NewGKEToolset(ctx context.Context, cfg GKEConfig) (tool.Toolset, error) {
 		Transport: TransportHTTP,
 		URL:       endpoint,
 		Auth:      &AuthConfig{GoogleOAuth: &GoogleOAuthConfig{Scopes: scopes}},
-	}, cfg.ToolFilter)
+	}, cfg.ToolFilter, nil)
 }

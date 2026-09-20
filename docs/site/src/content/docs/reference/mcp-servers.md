@@ -314,9 +314,13 @@ credentials, you can drive real tool calls fully offline with
 
 Per-workload and per-specialist allowlists narrow which of a server's tools
 an agent may call; see
-[`tool_catalog`](/reference/workload-bundle/#fields). MCP tools default to
-**mutating** for the recorded-effect outbox unless a `tool_catalog.tools[]`
-override marks them read-only.
+[`tool_catalog`](/reference/workload-bundle/#fields). For the
+recorded-effect outbox, an MCP tool is **read-only** when a
+`tool_catalog.tools[]` override says so, or — failing that — when the server
+publishes `readOnlyHint: true` for it in its `tools/list` response. The
+override is read first and wins either way. Anything neither has classified
+is **mutating**; see [the mutation
+predicate](/concepts/tools-and-mcp/#the-mutation-predicate-unclassified-means-mutating).
 
 A specialist's allowlist names servers by the key they are declared under in
 `mcp.json`:
