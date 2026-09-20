@@ -1611,7 +1611,7 @@ keeps recording under other names: a claim mast makes in text that nothing in th
 | SHA | Subject | Verdict |
 |---|---|---|
 | `92091883` | mcp: believe the server when it says a tool only reads (#1099) | **Port, first.** Falsifies a premise mast wrote down as a fact about the substrate. |
-| `6cab9d67` | attach: a pump's start cursor belongs to the pump (#1076) | **Port, cheapest.** A live data race in ported code, reachable in mast by the same interleaving. |
+| `6cab9d67` | attach: a pump's start cursor belongs to the pump (#1076) | **Ported 2026-09-20** ([#448](https://github.com/go-steer/mast/issues/448)). A live data race in ported code, reachable in mast by the same interleaving; the regression test was confirmed to trip `-race` on both read sites first. |
 | `f93d675d` + `eae797f8` | permissions: a refused call cannot re-open the same prompt; the gate ends a turn the operator already answered | **Port the mechanism; mast already has the words.** |
 | `8303e2f2` | eventlog: one event, one transaction (#1063) | **Port.** mast documents the same non-atomicity as a v1 limitation, in two files. |
 | `a0bcfe66` | permissions: a gated prompt nobody is attached to must tell somebody (#1059) | **Port the notify half only.** mast has the egress; no park ever reaches it. |
@@ -1755,9 +1755,12 @@ Carried forward from 2026-09-20, in the order they are worth doing:
    something mast states as a fact about the substrate, it removes the root cause of a workaround
    mast built a whole bundle leg around, and the client middleware seam it needs is already
    installed.
-2. **[#448](https://github.com/go-steer/mast/issues/448) (`6cab9d67`) — the pump's start cursor.**
-   Cheapest real defect here: a data race in ported code, provable under `-race`, fixable without a
-   design decision.
+2. ~~**[#448](https://github.com/go-steer/mast/issues/448) (`6cab9d67`) — the pump's start cursor.**~~
+   **Done 2026-09-20.** Cheapest real defect in the batch, as predicted: a data race in ported code,
+   fixable without a design decision. It was taken first anyway, ahead of #447, because it needed no
+   decision from anyone. The prediction that held up under test is the one worth keeping: the
+   detector flagged **both** unsynchronized reads — the debug line and the `Watch` argument — on
+   pre-fix code.
 3. **[#449](https://github.com/go-steer/mast/issues/449) (`f93d675d` + `eae797f8` + `4095b15a`) —
    stop asking after a refusal, and end the turn on the gate's own evidence.** Needs a decision mast
    has not made: mast's gate does not prompt, so the suppression key and the turn-boundary clear

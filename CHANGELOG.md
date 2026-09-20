@@ -215,6 +215,27 @@
 
 ### Bug or Regression
 
+- **The attach broadcaster's pump no longer reads its start cursor off a
+  shared field.** `b.startedAt` was written by `register` under `b.mu` and
+  read by the pump goroutine under nothing — once for a debug line, once as
+  the argument to `Stream.Watch`. The interleaving is an ordinary SSE
+  reconnect: `detachLocked` cancels the pump's context and nils `b.cancel`
+  when the last subscriber leaves, so the next registration is a
+  first-subscriber registration again and rewrites the field while the
+  outgoing pump goroutine may not have reached its read yet — a cancelled
+  context does not unschedule a goroutine. The cursor is now a parameter
+  handed to the pump at spawn, which is what it always was semantically:
+  each pump's value is fixed at its own start and was never anyone else's
+  to see. mast's existing `pumpGen` stamp does **not** cover this, and
+  saying so is the point — a generation counter orders a dying pump's
+  teardown sweep against its successor, not a field read, and having fixed
+  the neighbouring bug is not evidence about this one. Found by the
+  2026-09-20 upstream drift triage; core-agent's race detector caught the
+  identical shape on a pull request that does not touch their attach
+  package at all. The regression test reproduces the reconnect from a
+  shared barrier and was **confirmed to trip `-race` on both read sites
+  before the fix** ([#448](https://github.com/go-steer/mast/issues/448)).
+
 - **A2A `message/stream` progress frames skip partial model events, so a
   streamed answer arrives as one agent message rather than N.** A
   `TaskStatusUpdateEvent` carries a whole `Message` with its own `messageId`
