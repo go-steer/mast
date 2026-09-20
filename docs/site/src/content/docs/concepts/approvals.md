@@ -114,6 +114,37 @@ Every outcome lands in the audit log under a fixed vocabulary:
 the change-set outcomes `change_set_approved`, `approved_by_change_set`,
 `change_set_scope_refused`, `change_set_refused`.
 
+### Telling somebody the park happened
+
+Everything above assumes an operator finds out. Four things surface a park —
+`GET /parks`, the attach stream, `mast sessions show`, and the audit log —
+and all four are pulls. For an unattended workload that is a real gap: a
+fifteen-minute cadence can park at 03:00 and sit there until somebody thinks
+to look, and the whole point of a durable park is that nobody has to be
+watching when it opens.
+
+[`--park-notify <conversation>`](/reference/cli/#announcing-a-park) closes it
+by pushing, through the same chat ingress `--notify-url` already configures.
+One message when the park opens, naming the session and the call and ending
+with the command that prints the resume line. Not repeated, budgeted at three
+then one per five minutes, and counted in
+[`mast_park_notifications_total`](/reference/metrics/#park-announcements).
+
+It announces *every* park rather than only the ones nobody is watching. mast
+could check whether an operator is attached at the moment the park opens, but
+that answer has a short shelf life — the park outlives the process, and
+somebody who detaches thirty seconds later would get silence all night. The
+cost of announcing anyway is a redundant message to somebody already looking,
+which is the cheaper of the two mistakes.
+
+Note what the message contains before choosing a channel: the park hint
+renders the call with its argument values, elided at 120 characters each. The
+full arguments stay in the confirmation record.
+
+Whatever the chat ingress does — throttled, failed, misconfigured — the park
+itself is untouched. A failed announcement is an error on the daemon's books
+and never on the turn's.
+
 ### A refusal the model cannot talk its way past
 
 "The agent stops rather than looking for another way" is what the refusal

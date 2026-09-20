@@ -148,6 +148,12 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 *Two outcomes and no more, because mast's half of an ack is two steps with no middle state. It counts acks and not suppressions: how long one lasts belongs to the producer that owns the finding state, and a repeat ack is forwarded and counted rather than judged redundant here. `error` is the alert — an operator who pressed the button and heard nothing believes something is muted that is not — and, as with the egress family, it is not a retry counter: acking again is the recovery, and both attempts are in the audit.)*
 
+*(Shipped v0.10, 2026-09-20 — announcing a durable park (#451). Every other way of discovering a park is a pull — `GET /parks`, the attach stream, `mast sessions show` — so an unattended daemon can park at 03:00 and wait until somebody looks. `--park-notify <conversation>` pushes instead, through the same chat ingress `--notify-url` already configures:*
+
+- *`mast_park_notifications_total{workload, outcome}` — one increment per park the daemon was configured to announce; outcome ∈ `sent` (the ingress took it) / `throttled` (the workload is parking faster than its announcement budget — 3 then 1 per 5m — allows; the park is still recorded and still answerable) / `error` (the send failed; nothing is queued and nothing replays)*
+
+*The denominator is deliberately parks-announced rather than parks-raised, because a daemon with no `--park-notify` increments nothing and its silence is configuration rather than a fault. `error` is the alert: it is the daemon saying it stopped to ask a question and could not reach anybody to ask. `throttled` is the second alert and a different one — it does not mean an announcement was lost so much as that a workload has started parking in a loop, which is the state that ends with an operator muting the channel and thereby missing the park that mattered. Both leave the park itself untouched: a failed or dropped announcement is never an error on the turn's books, only on the daemon's.)*
+
 <!-- shipped-metric-families:end -->
 
 **Session lifecycle:**
