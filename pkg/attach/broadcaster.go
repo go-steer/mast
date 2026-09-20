@@ -134,12 +134,11 @@ type broadcaster struct {
 	stream eventlog.Stream
 	query  []eventlog.QueryOption // ForSession(...) for this entry
 
-	mu        sync.Mutex
-	subs      map[*subscriber]struct{}
-	closed    bool               // set by Close under mu; Subscribe refuses to register after
-	cancel    context.CancelFunc // cancels the pump goroutine
-	pumpGen   uint64             // bumped per pump start; lets a dying pump's sweep recognize a successor (#485)
-	startedAt int64              // last seq the pump has yielded
+	mu      sync.Mutex
+	subs    map[*subscriber]struct{}
+	closed  bool               // set by Close under mu; Subscribe refuses to register after
+	cancel  context.CancelFunc // cancels the pump goroutine
+	pumpGen uint64             // bumped per pump start; lets a dying pump's sweep recognize a successor (#485)
 
 	// wg tracks every goroutine this broadcaster spawns (the pump and
 	// each replayThenTail). Close() waits on it so that, once Close
@@ -315,12 +314,19 @@ func (b *broadcaster) register(sub *subscriber, since int64) (registered, firstS
 	if firstSub {
 		pumpCtx, cancel := context.WithCancel(context.Background())
 		b.cancel = cancel
-		// startedAt is set to the lowest "since" we've ever seen so
-		// the pump pulls from far enough back to satisfy this
-		// subscriber. Subsequent subscribers either find their
-		// since >= startedAt (already in flight) or get a fresh
-		// scan via the replay loop in Subscribe.
-		b.startedAt = since
+		// The start cursor is handed to the pump at spawn rather than
+		// parked on the broadcaster (#448). It used to be a field, and
+		// the pump read it with no lock: detachLocked nils b.cancel
+		// when the last subscriber leaves, so a reconnect takes this
+		// branch again and rewrites the field while the OUTGOING pump
+		// goroutine may not have reached its read yet. A parameter has
+		// no such window — and the value each pump needs is fixed at
+		// its own spawn, so there was never a reason to share it.
+		//
+		// It is this subscriber's "since" so the pump pulls from far
+		// enough back to satisfy it. Subsequent subscribers either
+		// find their since already in flight or get a fresh scan via
+		// the replay loop in Subscribe.
 		// Generation stamp: the pump's deferred death-sweep must only
 		// tear down state that still belongs to THIS pump. Without
 		// it, a stale pump whose sweep runs late (goroutine
@@ -334,7 +340,7 @@ func (b *broadcaster) register(sub *subscriber, since int64) (registered, firstS
 		b.wg.Add(1)
 		go func() {
 			defer b.wg.Done()
-			b.pump(pumpCtx, gen)
+			b.pump(pumpCtx, gen, since)
 		}()
 	}
 	// The caller's replayThenTail slot.
@@ -675,8 +681,11 @@ func (b *broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since
 // eventlog.Stream.Watch and fans out to every subscriber that's
 // attached at the time of the broadcast. Exits when no subscribers
 // remain (set by detach).
-func (b *broadcaster) pump(ctx context.Context, gen uint64) {
-	debugf("broadcaster pump START %s/%s startedAt=%d gen=%d", b.entry.AppName, b.entry.SessionID, b.startedAt, gen)
+//
+// startedAt is the pump's own start cursor, passed at spawn: see the
+// comment in register for why it is a parameter and not a field.
+func (b *broadcaster) pump(ctx context.Context, gen uint64, startedAt int64) {
+	debugf("broadcaster pump START %s/%s startedAt=%d gen=%d", b.entry.AppName, b.entry.SessionID, startedAt, gen)
 	defer debugf("broadcaster pump END %s/%s gen=%d", b.entry.AppName, b.entry.SessionID, gen)
 	// A dying pump must never strand the broadcaster (#485). The
 	// error exit used to just return: subscribers kept their open-
@@ -712,7 +721,7 @@ func (b *broadcaster) pump(ctx context.Context, gen uint64) {
 		}
 		b.mu.Unlock()
 	}()
-	for entry, err := range b.stream.Watch(ctx, b.startedAt, b.query...) {
+	for entry, err := range b.stream.Watch(ctx, startedAt, b.query...) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				log.Printf("attach: broadcaster %s/%s pump error: %v", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry, not request-scoped user input

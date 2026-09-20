@@ -112,14 +112,13 @@ func TestBroadcaster_DualSourceSend_NoRace(t *testing.T) {
 		// Emulate Subscribe's lazy-pump wiring so pump's terminal
 		// "no subscribers left" branch can clear b.cancel cleanly.
 		b.cancel = cancel
-		b.startedAt = 0
 
 		var wg sync.WaitGroup
 		wg.Add(2)
 		// Shared pump: locks b.mu, iterates b.subs, sends.
 		go func() {
 			defer wg.Done()
-			b.pump(ctx, b.pumpGen)
+			b.pump(ctx, b.pumpGen, 0)
 		}()
 		// Per-subscriber replay+tail: the goroutine that used to send
 		// unlocked.
@@ -218,13 +217,12 @@ func TestBroadcaster_BootFramesRaceWithPump(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		b.cancel = cancel
-		b.startedAt = 0
 
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			b.pump(ctx, b.pumpGen)
+			b.pump(ctx, b.pumpGen, 0)
 		}()
 		go func() {
 			defer wg.Done()
@@ -233,5 +231,78 @@ func TestBroadcaster_BootFramesRaceWithPump(t *testing.T) {
 
 		wg.Wait()
 		cancel()
+	}
+}
+
+// TestBroadcaster_PumpStartCursorNotShared pins #448: the pump's start
+// cursor used to be a broadcaster FIELD (b.startedAt), written by
+// register under b.mu and read by the pump goroutine with no lock at
+// all — once for the debug line, once as the argument to Stream.Watch.
+//
+// The interleaving is the reconnect. detachLocked cancels the pump's
+// context and nils b.cancel when the last subscriber leaves, which
+// makes the NEXT register a first-subscriber registration again: it
+// writes the cursor and spawns a successor. The outgoing pump
+// goroutine need not have reached its own read yet — a cancelled
+// context does not unschedule a goroutine, and the read happens before
+// Watch is ever entered. An SSE client that disconnects and
+// reconnects is enough.
+//
+// mast's pumpGen stamp does not cover this. A generation counter
+// orders the dying pump's teardown sweep against its successor's
+// state; it says nothing about an unsynchronized field read, and the
+// gen here is deliberately the pre-register one so the sweep is
+// correctly inert.
+//
+// Pre-fix this trips the race detector (WRITE at register / READ at
+// pump, no happens-before between them) within a handful of the
+// iterations below. Post-fix the cursor is a pump parameter handed
+// over at spawn, so there is no shared location left to race on.
+// Requires -race; without it the test asserts nothing.
+func TestBroadcaster_PumpStartCursorNotShared(t *testing.T) {
+	t.Parallel()
+
+	const iterations = 300
+
+	for run := 0; run < iterations; run++ {
+		b := &broadcaster{
+			entry:  &Entry{AppName: "core-agent", UserID: "u", SessionID: "test"},
+			stream: floodStream{}, // yields nothing, then waits on ctx
+			subs:   map[*subscriber]struct{}{},
+		}
+
+		// The outgoing pump. Its context is already cancelled and
+		// b.cancel is already nil because detachLocked did both when
+		// the last subscriber left — which is precisely why the
+		// register below takes the first-subscriber branch.
+		staleCtx, staleCancel := context.WithCancel(context.Background())
+		staleCancel()
+		staleGen := b.pumpGen
+
+		// Both goroutines are released from one barrier so neither
+		// side's start happens-before the other's.
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			b.pump(staleCtx, staleGen, 0)
+		}()
+		sub := &subscriber{ch: make(chan Frame, 1)}
+		go func() {
+			defer wg.Done()
+			<-start
+			if registered, _ := b.register(sub, 7); registered {
+				// register reserves a replayThenTail slot on b.wg for
+				// its caller; this test is the caller and does not run
+				// one, so release it or Close would wait forever.
+				b.wg.Done()
+			}
+		}()
+		close(start)
+		wg.Wait()
+
+		b.Close() // cancels and drains the successor pump
 	}
 }
