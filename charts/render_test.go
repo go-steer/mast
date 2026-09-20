@@ -16,7 +16,9 @@
 // only these tests, which guard the properties of the deployed bundle
 // that a change elsewhere in the repo can silently break: the RBAC
 // read/write split, the two usernames every daemon binding has to name,
-// and the fact that every file in the workload bundle reaches the pod.
+// the fact that every file in the workload bundle reaches the pod, and
+// that the install instructions in the docs still describe this chart
+// (installpage_test.go).
 //
 // They assert against `helm template` output rather than against the
 // template files, because a template file is not what gets applied.

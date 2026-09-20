@@ -34,7 +34,22 @@
 #
 # #342's "done when" is that the page telling an operator how to
 # install mast is "checked against the release by CI rather than by
-# memory". This is that check.
+# memory". This is half of that check.
+#
+# ## The other half is in charts/installpage_test.go
+#
+# This script covers the download half: the release tarballs, the
+# checksum file and the signature artifacts. It does not look at the
+# chart, which since #443 is the *primary* install instruction on the
+# page. Those claims — the `--set` keys, the `oci://` reference and the
+# image the chart defaults to — are checked by Go tests in `charts/`,
+# next to the `helm template` harness that already knows how to render
+# the chart and to the RBAC assertions they build on.
+#
+# The split is by what the claim is about, not by convenience: a claim
+# about what the *release* publishes is verifiable against `gh` and
+# `.goreleaser.yaml` from a shell script, and a claim about what the
+# *chart* does needs the renderer.
 #
 # ## The two modes are the same comparison against two sources
 #
