@@ -84,6 +84,56 @@
 
 ### Feature
 
+- **A Terraform module installs both halves of mast on GKE, and — unlike
+  `scripts/setup-wif.sh` — can narrow an IAM grant it previously widened.**
+  `examples/deploy/terraform/` composes `modules/wif` (three APIs, three
+  project role bindings on the daemon's Workload Identity Federation
+  principal, `roles/iam.serviceAccountUser` on the node service account) and
+  `modules/release` (the published OCI chart). The module exists for the one
+  thing the shell script structurally cannot do. `setup-wif.sh` is idempotent
+  forwards and not backwards: re-run it with `WRITE_SCOPE=namespaced` and the
+  `roles/container.admin` binding an earlier run created is still bound — its
+  own header says so and tells you to remove it with `gcloud`. While it
+  stands, every per-namespace write `Role` the chart renders is decorative,
+  because GKE authorizes a call if **either** IAM or RBAC allows it. That is
+  [#290](https://github.com/go-steer/mast/issues/290) again: a boundary an
+  operator has read, believes in, and does not have. Under `for_each`,
+  flipping `write_scope` back destroys the binding.
+  - **Two modules, because they are usually two people** — `modules/wif`
+    needs project IAM admin, `modules/release` needs cluster credentials —
+    and one root, because `project_id` and `namespace` must reach both from a
+    single place: the namespace is inside the WIF principal's subject *and*
+    inside the RBAC subject the chart binds, and two copies that drift give
+    you a daemon that is `Forbidden` on every call with both halves reading
+    correctly alone.
+  - **Additive, on purpose.** `google_project_iam_member`, never the
+    authoritative `_binding` or `_policy`, which would delete grants this
+    module never created in a project it is a guest in.
+    `disable_on_destroy = false` for the same reason: destroying mast must
+    not take `container.googleapis.com` down under everything else on the
+    cluster.
+  - **It creates no Secret.** The shared bearer is named in an output and
+    created by nobody: a token Terraform authors lands in the state file in
+    plaintext, and a state bucket is usually readable by more people than a
+    Helm release is. `terraform output next_steps` prints the two `kubectl`
+    commands, and the daemon stays not-ready until they exist — which is the
+    one rollout timeout a first apply is likely to hit.
+  - **It does not create the cluster.** A cluster belongs to a team that is
+    not installing an agent, and a module offering to create one invites an
+    apply that replaces it.
+  - **What checks it:** 26 `terraform test` runs against mocked providers (no
+    credentials, nothing created) as `dev/ci/presubmits/terraform.sh`, which
+    *fails* rather than skips when terraform is absent — same rule as the
+    chart tests and helm. Plus six Go guards in `charts/terraform_test.go`
+    for the claims that span two artifacts and so can only rot in one: the
+    module and `setup-wif.sh` bind the same roles under both write scopes,
+    enable the same APIs and build the same principal string; the hardcoded
+    `mast-daemon` is still the ServiceAccount the chart creates; and the two
+    properties that are about a resource's *type* rather than its values, so
+    no HCL assertion can see them — additive-per-member IAM, and nothing
+    anywhere in the tree that writes a secret into state.
+  ([#342](https://github.com/go-steer/mast/issues/342))
+
 - **A model call that meets a provider's `429` or `503` now waits two seconds
   and tries once more, instead of ending the turn.** mast has shipped a retry
   since 2026-08-21 — in its *evals*, written the night a Vertex quota blip cost

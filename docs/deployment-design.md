@@ -208,7 +208,7 @@ deployment:
 
 ## Packaging
 
-> **Status, 2026-09-11 ([#291](https://github.com/go-steer/mast/issues/291)):** this section is a *target*, and most of it is unbuilt. Shipped today: the container image, the GitHub Release binaries, and — since 2026-09-19 — cosign signatures over the checksum file (see [Signed release artifacts](#signed-release-artifacts--shipped-2026-09-19-342)). **Not shipped:** the Homebrew tap, the Debian/apt repo, `examples/deploy/gke-helm/`, `examples/deploy/terraform/`, and the Cloud Build config — `examples/deploy/gke/` is a README. Read the paragraphs below as the shape being aimed at, not as an inventory; the work is tracked in [#342](https://github.com/go-steer/mast/issues/342) and the lapsed schedule is struck through under [Phasing](#phasing).
+> **Status, updated 2026-09-21 (opened 2026-09-11, [#291](https://github.com/go-steer/mast/issues/291)):** this section was a *target* and most of it was unbuilt; #342 has been closing it item by item. **Shipped:** the container image an operator can actually pull, the GitHub Release binaries, cosign signatures over the checksum file and over the image and chart (2026-09-19/20), SLSA build provenance (2026-09-20), the Helm chart — at `charts/mast/` rather than the `examples/deploy/gke-helm/` this section originally named — and, since 2026-09-21, [the Terraform module](#the-terraform-module--shipped-2026-09-21-342). **Not shipped:** the Homebrew tap, the Debian/apt repo, and the Cloud Build config; `examples/deploy/gke/` is still a README. Read the paragraphs below as the shape being aimed at, not as an inventory; what remains is tracked in [#342](https://github.com/go-steer/mast/issues/342) and the lapsed schedule is struck through under [Phasing](#phasing).
 
 ### Container images
 
@@ -248,7 +248,7 @@ Every release asset, the container image and the Helm chart now carry a [SLSA v1
 
 Two costs stated rather than discovered. The release-asset path is **not credential-free**, unlike `verify-signature.sh`: attestations for loose files are served by the GitHub API, so `gh` must be signed in as some account. The image and chart path has no such requirement in principle — `push-to-registry` stores the attestation as an OCI referrer beside the digest, so it travels with a copy of the artifact — and that is the form an operator pulling from a mirror needs.
 
-Still open on #342: the Homebrew tap, the apt repo, and the Terraform module.
+Still open on #342: the Homebrew tap and the apt repo.
 
 ### The install page is checked against the release — shipped 2026-09-19 ([#342](https://github.com/go-steer/mast/issues/342))
 
@@ -318,6 +318,24 @@ helm install mast oci://ghcr.io/go-steer/charts/mast \
 
 Object names are fixed rather than release-prefixed, against Helm convention and on purpose: `scripts/setup-wif.sh` derives an IAM principal from the daemon's ServiceAccount name, `scripts/rbac-matrix.sh` checks grants by subject name, and the WIF username itself embeds the namespace and the ServiceAccount. A release-name prefix would make all three depend on what the operator typed after `helm install`. Two releases in one cluster is not a supported topology regardless — the ClusterRole names are cluster-scoped and would collide under any prefix.
 
+### The Terraform module — shipped 2026-09-21 ([#342](https://github.com/go-steer/mast/issues/342))
+
+The packaging section has promised `examples/deploy/terraform/` since before the fork, described as "reusable modules for the common cloud shapes". It now exists for the GKE shape: a root configuration composing `modules/wif` (the Google Cloud IAM) and `modules/release` (the published chart).
+
+**A second install path needs a reason, and "some people prefer Terraform" is not one.** The chart plus `scripts/setup-wif.sh` already installs mast. What the script cannot do is *narrow*. It is idempotent forwards and not backwards: re-run it with `WRITE_SCOPE=namespaced` and the `roles/container.admin` binding an earlier `cluster-admin` run created is still bound — its own header says so and tells the operator to remove it with `gcloud`. While that binding stands, every per-namespace write `Role` the chart renders is decorative, because GKE authorizes a call if **either** IAM or RBAC allows it. So the failure is the [#290](https://github.com/go-steer/mast/issues/290) shape once more: a boundary an operator has read, believes in, and does not have. Terraform's `for_each` makes removing the key destroy the binding, which turns the narrowing from a documented manual step into the thing an apply does. That is the whole argument; everything else in the module is parity with the script.
+
+**Two modules, because they are usually two people.** `modules/wif` needs project-level IAM admin and `modules/release` needs cluster credentials, and an operator whose organisation splits those can call one. What the root buys is that `project_id` and `namespace` reach both from a single place: the namespace is inside the WIF principal's subject *and* inside the RBAC subject the chart binds, so two copies that drift produce a daemon that is `Forbidden` on every call with both halves reading correctly in isolation.
+
+**Additive per member, stated as a resource type rather than a value.** The bindings are `google_project_iam_member`. `google_project_iam_binding` is authoritative for a role across every member and `_policy` for the entire project, so either would delete grants this module never created, on the first apply, in somebody else's project — and Terraform would report that as convergence. `disable_on_destroy` and `disable_dependent_services` are `false` for the same reason: destroying mast must not take `container.googleapis.com` down under whatever else runs on that cluster.
+
+**No Secret, and the reason is stronger here than it is for the chart.** The shared bearer every write route requires is named in an output and created by nobody. A token Terraform authors — `random_password`, or one passed in as a variable — is written to the state file in plaintext, and a state bucket is usually readable by more people than a Helm release is. `terraform output next_steps` prints the two `kubectl create secret` commands, and the daemon stays not-ready until they exist, which is the one rollout timeout a first apply is likely to hit.
+
+**Values as one YAML document, not `set` blocks.** `helm --set` accepts a key the chart has never defined, silently, and applies it to nothing — the failure that `charts/installpage_test.go` exists because of. A single `values` document is no stricter, but it puts every override in one place a reader can diff against `values.yaml`, and it reads in the plan as the thing being installed. It also spans both major versions of the `helm` provider, which changed `set` from a block to an attribute in v3.
+
+**What checks it.** `terraform test` against mocked providers — 26 runs across the root and both modules, no credentials, nothing created — wired in as `dev/ci/presubmits/terraform.sh`, which *fails* rather than skips when terraform is absent, for the same reason the chart tests fail without helm. Six further guards are Go tests in `charts/terraform_test.go`, because they are claims spanning two artifacts that no HCL assertion can make: that the module and `setup-wif.sh` bind the same roles for both write scopes, enable the same three APIs, and build the same WIF principal string; that the `mast-daemon` hardcoded in the module is still the ServiceAccount the chart creates; and the two properties that are about a resource's *type* rather than its values — additive-per-member IAM, and no resource anywhere in the tree that writes a secret into state.
+
+**Not shipped, deliberately.** The module does not create the GKE cluster. A cluster is a thing an organisation already has, owned by a team that is not installing an agent, and a module that offers to create one invites an apply that replaces it.
+
 ### Kubernetes manifests
 
 `examples/deploy/gke/` — canonical GKE manifests: Deployment, Service, HPA, ConfigMap (for `.agents/*`), Secrets (for provider creds), NetworkPolicy, PodDisruptionBudget. Kustomize-friendly (base + overlays for common variations).
@@ -351,7 +369,7 @@ Three properties are deliberate and are pinned by `charts/rbac_test.go`:
 
 ### Terraform modules
 
-`examples/deploy/terraform/` — reusable modules for the common cloud shapes (GKE, Cloud Run, EKS-if-community-contributes).
+GKE shipped 2026-09-21 — see [the Terraform module](#the-terraform-module--shipped-2026-09-21-342) above. Cloud Run and EKS-if-community-contributes remain unbuilt; both are shapes, not follow-ups to what shipped.
 
 ## Deployment starter examples
 
@@ -406,7 +424,7 @@ Deployment-cost knobs operators tune:
 | ~~**v0.3**~~ | ~~Spanner adapter (via community contribution or Google-team direct). Timed-pause scheduler (claim-based). Multi-tenant deployment starter. Attach-mode proxy-based affinity. Custom-Kubernetes-metric HPA guide.~~ **Did not ship.** |
 | ~~**v0.4+**~~ | ~~Firestore adapter; multi-region active-active (with Spanner); explicit autonomous-loop load balancing; Debian package.~~ **Did not ship.** |
 
-**The v0.2–v0.4 rows lapsed, and are struck through rather than re-dated (2026-09-11, [#291](https://github.com/go-steer/mast/issues/291)).** Every version row after v0.1 above went unshipped through v0.7.0: there is no Helm chart, no session-ownership handoff, no claim-based scheduler, no multi-tenant starter, no Debian package. The packaging section's Homebrew tap, apt repo, `examples/deploy/gke-helm/` and `examples/deploy/terraform/` do not exist either (cosign signatures did not either, and shipped 2026-09-19 — see [Signed release artifacts](#signed-release-artifacts--shipped-2026-09-19-342)), and `examples/deploy/gke/` is a README.
+**The v0.2–v0.4 rows lapsed, and are struck through rather than re-dated (2026-09-11, [#291](https://github.com/go-steer/mast/issues/291)).** Every version row after v0.1 above went unshipped through v0.7.0: there is no Helm chart, no session-ownership handoff, no claim-based scheduler, no multi-tenant starter, no Debian package. The packaging section's Homebrew tap, apt repo, `examples/deploy/gke-helm/` and `examples/deploy/terraform/` did not exist either, and `examples/deploy/gke/` is still a README. Four of those have since shipped under #342 and are dated in the [status note](#packaging) above — signatures and provenance, the image, the chart (as `charts/mast/`), and the Terraform module. **The rows stay struck through regardless**: the record being kept here is that the schedule lapsed for five releases, and paying part of the bill later does not unlapse it.
 
 They are struck rather than moved because a schedule that slips five releases without anyone noticing is not a schedule, and re-dating it to v0.8 would produce the same artifact — a table that reads like a plan and enforces nothing. This is the failure shape [#300](https://github.com/go-steer/mast/issues/300) found in the stability promise: a corpus commitment repeated for releases, with no mechanism that could ever fail because of it.
 

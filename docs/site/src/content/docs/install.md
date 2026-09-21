@@ -218,7 +218,44 @@ cluster-scoped gains a write verb. See
 [cluster permissions](/reference/cluster-permissions/) for the full grant and
 for how to check it against a live cluster.
 
-There is still no Terraform module and no Homebrew tap. That mast is a thing
+## Terraform
+
+Both halves of the install — the Google Cloud IAM and the chart — in one
+`apply`:
+[`examples/deploy/terraform`](https://github.com/go-steer/mast/tree/main/examples/deploy/terraform).
+
+```sh
+git clone https://github.com/go-steer/mast
+cd mast/examples/deploy/terraform
+cp terraform.tfvars.example terraform.tfvars   # edit project_id
+terraform init && terraform apply
+```
+
+It does not create the cluster. Point your kubeconfig at an existing GKE
+cluster with Workload Identity Federation enabled first.
+
+**Use it instead of `setup-wif.sh` if you expect to change your mind about
+`write_scope`.** The script is idempotent forwards and not backwards: re-run
+it with `WRITE_SCOPE=namespaced` and the `roles/container.admin` binding an
+earlier run created is still there — its own header says so and tells you to
+remove it by hand. While it stands, the per-namespace write `Role`s above bind
+nothing on the path mast actually uses, because GKE authorizes a call if
+*either* IAM or RBAC allows it. With Terraform, setting `write_scope` back to
+`"namespaced"` destroys the binding.
+
+**It creates no Secret.** The bearer token every write route requires is
+yours to create; `terraform output next_steps` prints the two commands. A
+token Terraform authors is stored in the state file in plaintext, and a state
+bucket is usually readable by more people than a Helm release is. The daemon
+stays not-ready until the Secrets exist, so a first `apply` that appears to
+hang waiting for the rollout has usually just skipped this.
+
+**It is additive.** The role bindings are `google_project_iam_member`, never
+the authoritative `google_project_iam_binding` or `google_project_iam_policy`,
+and destroying mast does not disable the project's APIs. A module dropped into
+a project that already runs things must not delete grants it never created.
+
+There is still no Homebrew tap and no apt repo. That mast is a thing
 *you* install rather than a service someone runs for you is a
 [decision](https://github.com/go-steer/mast/blob/main/docs/positioning.md#who-installs-mast-answered-2026-09-11-closing-291),
 and it comes with three things to know before the first install — **run one

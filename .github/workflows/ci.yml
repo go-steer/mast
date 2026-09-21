@@ -105,6 +105,20 @@ jobs:
       - name: docs-lint
         run: dev/ci/presubmits/docs-lint.sh
 
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same reasoning as helm in the test job: terraform.sh FAILS
+      # rather than skips when the binary is absent, so installing it
+      # here is what keeps the local opt-out from ever being why a run
+      # was green.
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: terraform fmt / validate / test
+        run: dev/ci/presubmits/terraform.sh
+
   e2e:
     runs-on: ubuntu-latest
     # The harness drives a real daemon through drains, kills and restarts;

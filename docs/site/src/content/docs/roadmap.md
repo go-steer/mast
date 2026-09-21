@@ -1124,7 +1124,9 @@ deploy rather than after.
 
 - **The install is a Helm chart** — `helm install mast
   oci://ghcr.io/go-steer/charts/mast`, plus `scripts/setup-wif.sh` for the
-  GCP-side IAM. There is still no Terraform module and no Homebrew tap —
+  GCP-side IAM, or a [Terraform module](/install/#terraform) that does both
+  in one `apply` and, unlike the script, can narrow an IAM grant it
+  previously widened. There is still no Homebrew tap and no apt repo —
   [#342](https://github.com/go-steer/mast/issues/342). Releases *are* now
   signed: every tag after v0.9.0 carries a Sigstore keyless signature over
   `checksums.txt`, verifiable against the release workflow's own identity with
