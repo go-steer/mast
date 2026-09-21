@@ -27,6 +27,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/mast/internal/evals"
+	"github.com/go-steer/mast/internal/modelretry"
 )
 
 // scriptedModel answers a fixed sequence of turns. It is not a stand-in
@@ -153,6 +154,22 @@ func TestRig_RunsAScenarioEndToEnd(t *testing.T) {
 		t.Errorf("intent_coverage = 0 despite a triage call: %v", out.summarize())
 	}
 	t.Logf("%s: %s (ceiling %.2f)", out.ID, out.summarize(), out.Ceiling)
+}
+
+// TestNewRigRefusesANilWrappedModel keeps NewRig's "judge: no model"
+// guard honest against the one caller that hands it a wrapper.
+//
+// The harness wraps unconditionally (internal/modelretry), so "no
+// model" arrives here already wrapped. A wrapper returning a typed nil
+// pointer instead of a nil interface would make this guard pass and move
+// the failure to a dereference somewhere with no context attached —
+// which is why modelretry.Policy.Wrap returns model.LLM and short-
+// circuits nil. That is asserted there; this is the guard it protects.
+func TestNewRigRefusesANilWrappedModel(t *testing.T) {
+	wrapped := modelretry.New(modelretry.JudgeConfig()).Wrap(nil)
+	if _, err := NewRig(evals.IntentTable{}, nil, wrapped, t.TempDir()); err == nil {
+		t.Error("NewRig accepted a nil-wrapping model, want the no-model error")
+	}
 }
 
 // TestRig_CeilingExposesTheWriteToolGap pins the one scenario a

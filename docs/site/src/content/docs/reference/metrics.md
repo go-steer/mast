@@ -167,6 +167,45 @@ workload-authored and unbounded, and a label with a workload's vocabulary in
 it is a cardinality bill the operator did not agree to. The specialist is in
 the `WARN` log line the same failure writes, alongside the session id.
 
+### Provider-retry family
+
+One tier below the dispatch family. That one counts what a provider rejection
+did to a *delegation*; this one counts the rejection itself, for every model
+call the process makes — planner, specialist, graph node, plain turn.
+
+A rejection is retryable when the provider says HTTP 429 or 503, read off the
+provider's own error type and never off the message text. (A model grading a
+corpus about exhausted quotas would otherwise retry on its own output.) The
+schedule is deliberately short — one retry, after two seconds — and behind a
+process-wide cooldown of one minute: an unattended turn that waits forty
+seconds has stopped being late and started being wedged, and a fan-out of
+eight calls meeting one shed at the same instant should produce one retry, not
+eight.
+
+| Family | Labels | Meaning |
+|---|---|---|
+| `mast_provider_retries_total` | `workload`, `outcome` | Model calls that met a transient provider rejection, by what the retry did about it. Outcomes: `recovered` (the second attempt returned content), `exhausted` (the schedule ran out; the provider's error is what the caller got), `declined` (the cooldown refused — another call had just taken the window). |
+
+`recovered` is the series worth a dashboard even though nothing went wrong.
+It is the only trace a shed-and-recovered call leaves anywhere: the turn
+completes, returns content, and looks unremarkable except for being two
+seconds slower. A `recovered` rate climbing week over week is a provider under
+worsening pressure, visible before it stops being transient.
+
+`declined` is mast reporting on mast rather than on the provider. Sustained,
+beside `mast_dispatches_total{outcome="rate_limited"}`, it says the fan-out is
+wider than the quota — which no amount of retrying fixes.
+
+A call that met no rejection increments nothing, and neither does one that
+failed some other way: a 400 is not provider pressure and does not belong in
+this family's denominator. The model name is in the `WARN` line rather than in
+a label, for the same cardinality reason as the specialist name above.
+
+Only a running workload retries. mast's own eval harness wraps its model calls
+in a longer, cooldown-free schedule of its own and reports nothing here: a
+measurement that waits four times is still measuring, and a workload that does
+is wedged.
+
 ## Park announcements
 
 A durable [approval park](/concepts/approvals/) is discoverable four ways, and

@@ -165,11 +165,24 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 
 **Internal:** `internal/compose` (model/backend dispatch, shared
 one-shot construction, the `bounded` single-node build),
+`internal/modelretry` (a `model.LLM` decorator that retries a
+provider's `429`/`503` — classified off `genai.APIError` /
+`*anthropic.Error`, never off message text — and stops the moment the
+first response is yielded, because a started stream cannot be replayed.
+Two policies, and the difference is the point: the judged evals wait
+`{3s, 9s, 27s}` with no cooldown, since a measurement that waits is
+still measuring; every runtime model gets one wait of `2s` behind a
+**process-wide** one-minute cooldown, since an unattended turn that
+waits forty seconds is wedged rather than late, and a fan-out of eight
+meeting one shed should produce one retry rather than eight.
+`compose.NewRuntimeModel` is the seam that applies it — and
+`internal/compose/runtimemodel_test.go` walks the repo's AST to fail
+any new `BuildModel` caller that is neither a runtime path nor an eval
+([#452](https://github.com/go-steer/mast/issues/452))),
 `internal/evals` (the deterministic eval suite and the judged
 nightly's scoring, including the tiered-cost check; the judged tier
-retries a provider's `429`/`503` at the `model.LLM` seam so a quota
-blip costs a wait rather than a corpus row, and counts what it
-retried onto the board — plus `internal/evals/outcome`, the **O tier**:
+counts what it retried onto the board — plus
+`internal/evals/outcome`, the **O tier**:
 corpus loader, fixture provisioner, verifiers, board and runner for a
 real model driven against a real `kind` cluster, the only tier that
 gates ([`docs/outcome-evals-design.md`](./docs/outcome-evals-design.md))),

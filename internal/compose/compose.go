@@ -40,6 +40,7 @@ import (
 	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/mast/internal/modelretry"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/effects"
@@ -553,6 +554,42 @@ func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinT
 	}
 }
 
+// NewRuntimeModel is [BuildModel] plus the one thing a running workload
+// needs that a one-shot script does not: a bounded retry on a provider
+// that says "not now" (#452).
+//
+// # Why this is a second constructor and not a flag on the first
+//
+// Every caller of BuildModel that is a running workload should have the
+// retry, and every caller that is a measurement should not — the evals
+// wrap their own models in a policy sized for a nightly, and a model
+// carrying both schedules would serve four waits where its reader
+// expects one and report the count in two places. Two named
+// constructors make which-is-which a thing you read rather than a thing
+// you remember; [TestEveryRuntimeModelPathIsRetrying] makes it a thing
+// CI checks.
+//
+// Offline fakes are returned bare. They cannot produce a provider
+// rejection, so wrapping one would only put an indirection in the path
+// every e2e and UAT run takes.
+//
+// The policy is [modelretry.Shared], process-wide, and that is the
+// point rather than an economy: its cooldown is what turns a fan-out of
+// eight specialists meeting one shed into one retry instead of eight,
+// and a cooldown scoped to a model instance would be no cooldown at all
+// here — [NewModelResolver] builds a separate model per `model:`
+// override.
+func NewRuntimeModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+	m, err := BuildModel(ctx, provider, name, bt)
+	if err != nil {
+		return nil, err
+	}
+	if IsOfflineFake(name) {
+		return m, nil
+	}
+	return modelretry.Shared().Wrap(m), nil
+}
+
 // offlineFakes are the model names that need no credentials and reach
 // no network: the CLI/library spellings BuildModel accepts, plus the
 // instance names it stamps on them (a library caller that constructs
@@ -623,7 +660,7 @@ func NewModelResolver(ctx context.Context, provider, rootName string, root model
 		if m, ok := cache[name]; ok {
 			return m, nil
 		}
-		m, err := BuildModel(ctx, provider, name, bt)
+		m, err := NewRuntimeModel(ctx, provider, name, bt)
 		if err != nil {
 			return nil, err
 		}

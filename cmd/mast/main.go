@@ -1038,6 +1038,10 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	}
 	obs.Prime(workloadName)
 
+	// Now that the workload has a name and a registry, the retry every
+	// runtime model already carries gets somewhere to report (#452).
+	reportProviderRetries(obs, workloadName, logger)
+
 	// The push half of a park (#451). Built here because it needs the
 	// registry above; the write gate already holds a getter for it. The
 	// error is the "configured with nowhere to send" one serve refused
@@ -1877,8 +1881,11 @@ func misplacedFlag(args []string, defined func(string) bool) string {
 // and name, with bt gating the provider's server-side built-in tools.
 // Thin alias over the shared core (internal/compose) so the flag
 // surface and the library surface can't drift.
+//
+// The runtime constructor, not the bare one: a daemon turn that meets a
+// provider's 429 should wait two seconds rather than end short (#452).
 func buildModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
-	return compose.BuildModel(ctx, provider, name, bt)
+	return compose.NewRuntimeModel(ctx, provider, name, bt)
 }
 
 // loadedWorkload is a roster resolved before the root agent is built.
