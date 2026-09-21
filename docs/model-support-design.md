@@ -718,7 +718,18 @@ Apache 2.0, so all of this is portable under [§10.4](#104-license-mechanics).
    that re-runs the pass with a fresh budget and at most once. [#312](https://github.com/go-steer/mast/issues/312)
    names retry posture as an open question and [#239/#240](https://github.com/go-steer/mast/issues/239)
    already reconciled genai-vs-anthropic at `model.LLM`; this is a third answer
-   to read before writing a fourth.
+   to read before writing a fourth. *(Updated 2026-09-21: mast now has its own,
+   at `internal/modelretry` — a `model.LLM` decorator wrapping every runtime
+   model, one retry after 2s on a 429/503 classified off the provider's error
+   type, behind a process-wide one-minute cooldown, reported as
+   `mast_provider_retries_total`; see [#452](https://github.com/go-steer/mast/issues/452).
+   It honours no `Retry-After`, and not by preference: `genai.APIError` is
+   `{Code, Message, Status, Details}` with no response attached, so on the
+   Gemini path the header is gone by the time a `model.LLM` decorator can see
+   it. (`anthropic.Error` does keep its `*http.Response`, but that SDK already
+   backs off on its own.) A uniform header-aware backoff needs the HTTP layer,
+   which is where the dialect work of [§4.1](#41-three-wire-dialects-not-n-providers)
+   puts mast — and that is when this file is worth reading.)*
 3. **`providers/openaicompat/language_model_hooks.go`** (597 lines) and the
    per-provider hook files for openrouter, vercel and azure. This is the
    accumulated list of ways an "OpenAI-compatible" server is not, and it is

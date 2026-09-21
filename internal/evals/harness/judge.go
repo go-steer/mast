@@ -29,6 +29,7 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
+	"github.com/go-steer/mast/internal/modelretry"
 	"github.com/go-steer/mast/pkg/providers/anthropic"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -362,14 +363,28 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 	// Both models, so the rig, the grader and J-cost-tier all survive the
 	// same blip. The tier's expensive failure is a row that never ran, and
 	// a 429 is the provider asking us to wait rather than telling us
-	// anything about mast (#239) — see internal/evals/judge/retry.go.
-	onRetry := func(who string) func(int, time.Duration, error) {
-		return func(attempt int, wait time.Duration, err error) {
-			note("[retry] %s: %v — waiting %s before attempt %d", who, err, wait, attempt+1)
-		}
+	// anything about mast (#239) — see internal/modelretry.
+	//
+	// ONE policy for both, because the board already sums their counters
+	// (below) and because the tier's numbers are per-run rather than
+	// per-model. It is the eval policy rather than the production one on
+	// purpose: this tier can afford to wait out half a minute to keep a
+	// row, and an unattended turn cannot. The two are side by side in
+	// modelretry so the divergence stays a diff.
+	retryCfg := modelretry.JudgeConfig()
+	if cfg.retryBackoff != nil {
+		retryCfg.Backoff = cfg.retryBackoff
 	}
-	under := judge.Retrying(rawUnder, cfg.retryBackoff, onRetry("model under test"))
-	grading := judge.Retrying(rawGrading, cfg.retryBackoff, onRetry("grader"))
+	retryCfg.OnWait = func(model string, attempt int, wait time.Duration, err error) {
+		who := "grader"
+		if model == modelName {
+			who = "model under test"
+		}
+		note("[retry] %s: %v — waiting %s before attempt %d", who, err, wait, attempt+1)
+	}
+	retries := modelretry.New(retryCfg)
+	under := retries.Wrap(rawUnder)
+	grading := retries.Wrap(rawGrading)
 
 	scratch, cleanup, err := scratchDir(cfg)
 	if err != nil {
@@ -476,11 +491,11 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 	// Counted across both models: from the board's point of view a
 	// grader retry and a corpus retry are the same fact about the
 	// provider, and splitting them would only invite reading one and
-	// missing the other.
-	underRetries, underWait := judge.RetriesOf(under)
-	graderRetries, graderWait := judge.RetriesOf(grading)
-	board.Retries = underRetries + graderRetries
-	board.RetryWaitSeconds = (underWait + graderWait).Seconds()
+	// missing the other. One shared policy is what makes that a single
+	// read rather than an addition that can drift.
+	retryCount, _, retryWait := retries.Stats()
+	board.Retries = retryCount
+	board.RetryWaitSeconds = retryWait.Seconds()
 
 	board.Aggregate = aggregate(board.Scenes)
 	board.Validity = summarizeValidity(board.Scenes)

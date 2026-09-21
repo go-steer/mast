@@ -84,6 +84,56 @@
 
 ### Feature
 
+- **A model call that meets a provider's `429` or `503` now waits two seconds
+  and tries once more, instead of ending the turn.** mast has shipped a retry
+  since 2026-08-21 — in its *evals*, written the night a Vertex quota blip cost
+  three of thirty-one judge rows — on calls made through `compose.BuildModel`,
+  the same provider path the product uses. So mast's measurement of mast has
+  been resilient to a shed for a month while the product was not; this promotes
+  the eval's retry to `internal/modelretry` and puts it on every runtime model,
+  via a new `compose.NewRuntimeModel` seam.
+
+  **The judge's numbers do not survive the move, and the reasoning inverts
+  twice.** The eval waits `{3s, 9s, 27s}`; a runtime model waits `2s`, once.
+  The evidence has always been that the next call a few seconds later
+  succeeds — and an unattended turn that has been silent for thirty-nine
+  seconds has stopped being late and started being wedged, which is a judgement
+  a measurement never has to make. The eval has no cooldown; the runtime has a
+  **process-wide** one-minute one, because the judge runs rows one at a time,
+  so "retrying under pressure adds load" bounded itself, and mast dispatches in
+  parallel, where a fan-out of eight meeting one shed would otherwise answer
+  with eight retries. Neither adds jitter, but now for the stronger reason: the
+  cooldown permits at most one retry per window, so there is no fleet left to
+  desynchronize.
+
+  **Nothing is retried on a guess.** A rejection is retryable only if the
+  provider's own error type says `429` or `503` — `genai.APIError` by value,
+  `*anthropic.Error` — with no fallback to matching the message text, which is
+  what a model grading a Kubernetes corpus about exhausted resources would
+  have tripped. `500` is excluded: it is as likely to be a request the model
+  will reject identically forever. The window closes the instant the first
+  response is yielded, because a started stream cannot be replayed and ADK
+  assembles yields into one turn. A cancelled run is not retried.
+
+  Reported as `mast_provider_retries_total{workload, outcome}` — `recovered`,
+  `exhausted`, `declined` — plus a `WARN` line naming the model, the wait and
+  the provider's error. `recovered` is the series that justifies the family: a
+  shed-and-recovered call is otherwise invisible, since the turn completes,
+  returns content, and looks unremarkable except for being two seconds slower.
+  `declined` is the cooldown refusing, and is mast reporting on mast — sustained
+  beside `mast_dispatches_total{outcome="rate_limited"}` it says the fan-out is
+  wider than the quota, which no retry fixes. A call that met no rejection
+  reports nothing, and neither does one that failed some other way: a `400` is
+  not provider pressure and does not belong in the denominator.
+
+  Which models are wrapped is now something CI checks rather than something a
+  reviewer remembers: `internal/compose/runtimemodel_test.go` walks the
+  repository's AST and fails any new `BuildModel` caller that is neither a
+  declared runtime path nor an eval. It was proven to fail on the pre-change
+  tree. Offline fakes are left unwrapped. A library embed gets the retry and no
+  metric, since `pkg/observability` is a daemon concern — unchanged from every
+  other family ([#452](https://github.com/go-steer/mast/issues/452)).
+
 - **A planner delegation that dies under the specialist now says so:
   `mast_dispatches_total{workload, outcome}` plus a `WARN` line naming the
   session and the specialist.** Coordinator, graph and fan-out dispatch funnel

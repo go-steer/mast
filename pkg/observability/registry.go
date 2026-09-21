@@ -230,9 +230,16 @@ const (
 	// is the one dispatch failure that is both transient and the
 	// operator's business: it means capacity, not a broken workload,
 	// and burying it in a general failure count is what made it
-	// invisible. Deliberately NOT a claim that a retry happened —
-	// nothing retries an outbound model call in this module today
-	// (#452 step 2).
+	// invisible.
+	//
+	// Since #452 step 2 an outbound model call IS retried once, so a
+	// dispatch landing here is one the retry did not save: either the
+	// second attempt was rejected too, or the process-wide cooldown
+	// declined it. Which of the two is in
+	// mast_provider_retries_total{outcome}, and the pair is worth
+	// reading together — a rate-limited dispatch alongside a `declined`
+	// retry says the fan-out is wider than the quota, which is a
+	// workload-shape problem rather than a provider problem.
 	DispatchRateLimited = "rate_limited"
 	// DispatchFailed: the sub-runner failed some other way. Excludes
 	// DispatchRateLimited, so the two sum to every failed dispatch.
@@ -247,6 +254,52 @@ var dispatchOutcomes = []string{
 	DispatchHalted,
 	DispatchRateLimited,
 	DispatchFailed,
+}
+
+// Provider-retry outcomes (mast_provider_retries_total{workload,outcome})
+// for the #452 resilience half.
+//
+// One count per model call that met a transient provider rejection —
+// not per call. The denominator is mast_model_calls_total, and an event
+// per successful call would bury the handful that matter: mast's own
+// measurement of this is three rows in thirty-one on one night
+// (internal/modelretry).
+//
+// Distinct from mast_dispatches_total, which counts delegations. A
+// retry happens on any outbound model call — the planner's own turn, a
+// specialist's, a monitoring cycle's — and most of them are not
+// dispatches at all.
+const (
+	// ProviderRetryRecovered: a retry was served and the call then
+	// produced content. The provider's "not now" cost a wait instead of
+	// a result, which is the whole point of the family — without it a
+	// provider under worsening pressure produces green, increasingly
+	// slow turns with nothing to point at.
+	ProviderRetryRecovered = "recovered"
+	// ProviderRetryExhausted: a retry was served and the call failed
+	// anyway. The caller got the provider's error; whatever was
+	// downstream of that call ended short.
+	ProviderRetryExhausted = "exhausted"
+	// ProviderRetryDeclined: the error qualified for a retry and the
+	// process-wide cooldown refused one, because this process already
+	// spent a retry inside the window.
+	//
+	// Its own outcome rather than folded into exhausted because it is a
+	// fact about mast and not about the provider: it means this process
+	// is meeting rejections faster than one a minute, which is what a
+	// fan-out wider than its quota looks like from the inside. An
+	// operator acts on it by narrowing the roster or raising the quota,
+	// neither of which is the response to an exhausted retry.
+	ProviderRetryDeclined = "declined"
+)
+
+// providerRetryOutcomes is the fixed label set primed for
+// mast_provider_retries_total{workload,outcome}, kept beside the
+// vocabulary so Prime and ProviderRetry cannot drift.
+var providerRetryOutcomes = []string{
+	ProviderRetryRecovered,
+	ProviderRetryExhausted,
+	ProviderRetryDeclined,
 }
 
 // Monitoring-ack outcomes (mast_monitor_acks_total{outcome}) for the
@@ -388,6 +441,7 @@ type Registry struct {
 	monitorDigests  *prometheus.CounterVec
 	parkNotifies    *prometheus.CounterVec
 	dispatches      *prometheus.CounterVec
+	providerRetries *prometheus.CounterVec
 	monitorAcks     *prometheus.CounterVec
 	a2aTasks        *prometheus.CounterVec
 	aguiRuns        *prometheus.CounterVec
@@ -486,6 +540,9 @@ func New() *Registry {
 	r.dispatches = counter("mast_dispatches_total",
 		"Planner invoke_specialist dispatches, by how each one ended (ok, halted, rate_limited, failed).",
 		"workload", "outcome")
+	r.providerRetries = counter("mast_provider_retries_total",
+		"Model calls that met a transient provider rejection, by what the bounded retry did about it (recovered, exhausted, declined).",
+		"workload", "outcome")
 	r.monitorAcks = counter("mast_monitor_acks_total",
 		"Operator acknowledgements taken on the daemon ingress and forwarded to the producer that owns the suppression.",
 		"workload", "outcome")
@@ -556,6 +613,9 @@ func (r *Registry) Prime(workload string) {
 	}
 	for _, outcome := range dispatchOutcomes {
 		r.dispatches.WithLabelValues(workload, outcome)
+	}
+	for _, outcome := range providerRetryOutcomes {
+		r.providerRetries.WithLabelValues(workload, outcome)
 	}
 	for _, outcome := range monitorAckOutcomes {
 		r.monitorAcks.WithLabelValues(workload, outcome)
@@ -743,6 +803,22 @@ func (r *Registry) Dispatch(workload, outcome string) {
 		return
 	}
 	r.dispatches.WithLabelValues(workload, outcome).Inc()
+}
+
+// ProviderRetry records one model call's brush with a transient
+// provider rejection (one of the ProviderRetry* constants). Called from
+// the retry policy's observer, which the host installs at startup.
+//
+// Not labelled by model, though the retry policy knows the name. A
+// `model:` override is workload-authored, so the label set would be
+// unbounded in the same way a specialist name is — and the question
+// this family answers is whether this workload is being shed, which the
+// log line names the model for.
+func (r *Registry) ProviderRetry(workload, outcome string) {
+	if r == nil {
+		return
+	}
+	r.providerRetries.WithLabelValues(workload, outcome).Inc()
 }
 
 // MonitorAck records one operator acknowledgement taken on the ingress

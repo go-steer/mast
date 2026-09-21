@@ -52,8 +52,8 @@ import (
 
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/evals"
-	"github.com/go-steer/mast/internal/evals/judge"
 	"github.com/go-steer/mast/internal/evals/outcome"
+	"github.com/go-steer/mast/internal/modelretry"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -207,9 +207,17 @@ func run(ctx context.Context, opt options) error {
 	}
 	// A 429 is the provider asking us to wait, not a finding about mast
 	// (#239). Without this a quota blip presents as a red merge gate.
-	under := judge.Retrying(raw, nil, func(attempt int, wait time.Duration, err error) {
+	//
+	// The judge tier's schedule, not the production one, for the same
+	// reason the judge tier uses it: this pass is metered, sequential and
+	// measured in minutes, so half a minute spent keeping a row is a
+	// bargain, and an unattended turn's arithmetic is the opposite.
+	retryCfg := modelretry.JudgeConfig()
+	retryCfg.OnWait = func(_ string, attempt int, wait time.Duration, err error) {
 		note("[retry] %v — waiting %s before attempt %d", err, wait, attempt+1)
-	})
+	}
+	retries := modelretry.New(retryCfg)
+	under := retries.Wrap(raw)
 
 	// Scratch under TMPDIR, never $HOME (house rule #5).
 	scratch := filepath.Join(os.TempDir(), fmt.Sprintf("mast-outcome-%d", os.Getpid()))
@@ -286,7 +294,7 @@ func run(ctx context.Context, opt options) error {
 	if err != nil {
 		return err
 	}
-	report(pass)
+	report(pass, retries)
 	if red, _ := pass.Board.Red(); red {
 		return errRed
 	}
@@ -294,10 +302,21 @@ func run(ctx context.Context, opt options) error {
 }
 
 // report prints the board and the line that says what produced it.
-func report(pass outcome.Pass) {
+func report(pass outcome.Pass, retries *modelretry.Policy) {
 	fmt.Print(pass.Board.Summary())
 	fmt.Printf("\nmodel %s, surface %s, %s of a %s ceiling\n",
 		pass.Model, pass.Surface, pass.Elapsed.Round(time.Second), pass.Ceiling)
+	// This tier wrapped its model in a retry from the day it was written
+	// and then never read the counter, so a pass that only completed
+	// because it waited out two quota blips was indistinguishable from
+	// one that never met a provider under pressure — and the elapsed
+	// figure above, which the ceiling is judged against, silently
+	// included the waiting. Printed only when non-zero: a healthy pass
+	// should not have to say that nothing went wrong.
+	if n, _, waited := retries.Stats(); n > 0 {
+		fmt.Printf("%d model call(s) only completed after waiting out a transient provider error, costing %s of the elapsed figure above\n",
+			n, waited.Round(time.Second))
+	}
 	if pass.TimedOut() {
 		fmt.Println("the pass hit its ceiling: the roster no longer fits the budget, and the board is short rather than green")
 	}
