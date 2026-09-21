@@ -109,9 +109,11 @@ func NewTaskAgent(cfg TaskAgentConfig) (adkagent.Agent, error) {
 		return nil, fmt.Errorf("agent: TaskAgent %q has no Model", cfg.Name)
 	}
 	return llmagent.New(llmagent.Config{
-		Name:                     cfg.Name,
-		Description:              cfg.Description,
-		Instruction:              effectiveInstruction(cfg.Instruction, DefaultTaskInstruction),
+		Name:        cfg.Name,
+		Description: cfg.Description,
+		// InstructionProvider, not Instruction: the latter is a template
+		// ADK substitutes session state into. See instructionProvider.
+		InstructionProvider:      instructionProvider(effectiveInstruction(cfg.Instruction, DefaultTaskInstruction)),
 		Model:                    cfg.Model,
 		Tools:                    cfg.Tools,
 		Toolsets:                 cfg.Toolsets,
@@ -199,9 +201,11 @@ func NewSingleTurnAgent(cfg SingleTurnAgentConfig) (adkagent.Agent, error) {
 		return nil, fmt.Errorf("agent: SingleTurnAgent %q has no Model", cfg.Name)
 	}
 	return llmagent.New(llmagent.Config{
-		Name:                 cfg.Name,
-		Description:          cfg.Description,
-		Instruction:          effectiveInstruction(cfg.Instruction, DefaultSingleTurnInstruction),
+		Name:        cfg.Name,
+		Description: cfg.Description,
+		// InstructionProvider, not Instruction: the latter is a template
+		// ADK substitutes session state into. See instructionProvider.
+		InstructionProvider:  instructionProvider(effectiveInstruction(cfg.Instruction, DefaultSingleTurnInstruction)),
 		Model:                cfg.Model,
 		InputSchema:          cfg.InputSchema,
 		OutputSchema:         cfg.OutputSchema,

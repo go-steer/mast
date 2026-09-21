@@ -1901,3 +1901,73 @@ which this batch makes more pressing, since four upstream signals now sit behind
 
 Nothing new is owed **upstream** this pass. The carry-forwards there are unchanged: the peer-lease
 clamp, the `ef9b9b5` port, and the signature-verification nudge from the #342 section above.
+
+## Triage of 2026-09-21 — one commit, and only half of it ports
+
+Baseline was `2ad8052` (set 2026-09-20). `git log 2ad8052..origin/main` in core-agent yields exactly
+one commit, **`fa98fe42`**, and `grep -c fa98fe42 docs/sibling-sync.md` was 0 before this section, so
+it had not been seen. It fixes two unrelated things at once, and they land differently here.
+
+### Ported — core-agent#1139, an instruction is not a template
+
+Filed as [#464](https://github.com/go-steer/mast/issues/464) and fixed the same day. Upstream met it
+as an operator's `AGENTS.md` dying on a brace; the mechanism is the substrate's and mast had it in
+full, on three surfaces rather than one.
+
+**This is the only row in the batch that falsified something mast states as a fact about itself**,
+which is why it was worth taking immediately rather than queuing. `docs/specialists-design.md` said
+"the body reaches the agent verbatim as its system prompt," and that sentence was the stated
+justification for renaming 39 files off `.tmpl` in
+[#292](https://github.com/go-steer/mast/issues/292). It was true of mast and false of ADK, which
+resolved `{...}` against session state before every request. The recurring shape in this corpus — a
+capability claim that restates mast's own intent instead of reading what the runtime does — and the
+third instance of it found by reading an upstream commit rather than by a test.
+
+**Port the fix, not the diagnosis**, and here the diagnosis needed real work because mast had
+*already* diagnosed this once. [#272](https://github.com/go-steer/mast/issues/272) found the same
+mechanism a month earlier and chose the conservative fix: refuse braces at load. That was right at
+the time and wrong to leave standing, for three reasons the upstream commit exposes — it ran over
+specialist bodies only, so the coordinator `instruction:` and the planner prompt were unguarded; it
+refused prose that was never dangerous; and it preserved `{project?}` as a documented opt-in whose
+reach was almost nil, since `triage:<name>` and `fanout:synthesis` are not valid ADK state names and
+`mast_route` is the only key mast writes that a prompt could ever have addressed. So the port is
+`InstructionProvider` at all three `llmagent.New` sites, and #272's guard narrows to the one syntax
+whose meaning changed *silently* rather than being deleted outright.
+
+Worth recording for the next person who reads ADK's instruction processor: **the two fields are not
+symmetric on empty text.** `appendInstructions` checks the provider first and returns as soon as it
+has one, so a provider returning `""` reaches `AppendInstructions` and builds a `SystemInstruction`
+holding one empty text part, where the `Instruction` branch would have skipped the append entirely.
+`instructionProvider` returns nil rather than a provider yielding `""` for that reason.
+
+And the manifestation upstream did not have: a **SingleTurn specialist fails silently**. It runs as
+a dynamic child, so its failed instruction build does not end the turn — ADK returns the error as the
+delegation's tool result, the coordinator answers the operator from it, and the run reports success
+with the specialist never having run. Measured, not inferred.
+
+### Not filed — core-agent#1140, "the next turn starts clean"
+
+The other half of `fa98fe42` fixes a refusal message that promises a next turn inside a `-p` one-shot,
+where the process exits instead. mast has the analogous string — `pkg/approval/suppress.go:258`,
+"Nothing was executed and no approval is pending. The refusal stands; the next turn starts clean." —
+ported as part of [#449](https://github.com/go-steer/mast/issues/449), so the surface reads like a
+match.
+
+It is not one, and the difference is structural rather than a matter of degree. The message is part
+of `RefusalLoopError`, which is reachable only through `compose.WriteGate`. mast's one-shot carries
+**no workload bundle** (`cmd/mast/oneshot.go:152-155`, `:200-203`), so `WriteGate` resolves to a nil
+Plugin there and `RefusalLoopError` cannot be constructed on the one path that has no next turn. The
+file's own comments already say this in two places ("there is no workload bundle on the one-shot
+path, so this resolves to no gate today"). Every surface that *can* produce the message has a durable
+session behind it, and therefore a next turn for the sentence to be true about.
+
+Recorded rather than filed-and-closed because the reasoning is the useful artifact: this is the
+standing lesson working correctly. An upstream diagnosis can be sound about a configuration that is
+not the one in front of you, and the check that distinguishes them is reading the call graph, not
+matching the string. **If the one-shot ever gains a bundle, this becomes a real defect** — that is
+the condition to watch, and it is cheaper to write down now than to rediscover.
+
+### Baseline after this triage
+
+`fa98fe42`. Nothing new is owed **upstream** this pass; the carry-forwards there are unchanged (the
+peer-lease clamp, the `ef9b9b5` port, and the signature-verification nudge).

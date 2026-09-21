@@ -144,38 +144,47 @@ reached through a bundle that names it, so [the bundle's
 version](/reference/workload-bundle/#schema_version--and-why-an-unknown-key-is-refused)
 governs the roster.
 
-### Braces in the body are not punctuation
+### Braces in the body are just braces
 
-The one thing that *is* substituted into a body is not yours: ADK resolves
-`{...}` before the prompt is sent, and that is the entire syntax. A
-bare identifier in braces is a **session-state lookup**, and an
-`artifact.`-prefixed one is an artifact load — both resolved before the
-prompt is sent. So a body that says "investigate `{project}`" is asking for
-a state key named `project`, and if nothing set one the run ends with
-`state key does not exist`.
+Write what you want the model to read. The body reaches it byte for byte —
+a shell variable in `"${MAST_HOME}/bin/mast"`, a JSON shape you want
+emitted, a `kubectl -o jsonpath={.status.phase}` — with no syntax of its
+own and nothing substituted in at any layer.
 
-mast refuses those at load instead, naming the file, the line and the key,
-because a prompt full of Kubernetes and GCP examples is exactly where
-braces live and the runtime error names none of it.
+:::note[Prompts were templates through v0.9, and are not any more]
+This was not true before. mast handed prompts to a *template* field of the
+underlying agent runtime, which resolved every `{...}` against session
+state before each request: a bare identifier in braces was a state lookup
+that ended the run with `state key does not exist` when nothing had set
+the key, and injected the value into your prompt when something had. mast
+worked around it by refusing such bodies at load. Both the substitution
+and the refusal are gone — prompts are sent verbatim
+([#464](https://github.com/go-steer/mast/issues/464)).
+:::
 
-Almost nothing you write is affected. Only a valid state name resolves, so
-manifests and jsonpath are literal and always were:
+The one thing that does not survive the change is the **optional marker**.
+`{project?}` used to be the supported way to ask for session state, and
+there is no longer any way to ask: session state is not reachable from a
+prompt. Because it would otherwise go quiet — rendering as the literal
+text `{project?}` rather than doing what the file says — a body that still
+contains one is refused at load, naming the file, the line and the key:
 
 | In the body | What happens |
 | --- | --- |
-| `{"spec":{"replicas":1}}` | literal — not an identifier |
-| `{.status.phase}` | literal — not an identifier |
-| `{app: web}` | literal — the space makes it invalid |
-| `{app:web}` | **refused** — `app:` is a state scope, `web` a key |
-| `{project}` | **refused** — a state lookup |
-| `{artifact.report}` | **refused** — mast runs no artifact service |
+| `{"spec":{"replicas":1}}` | literal |
+| `{.status.phase}` | literal |
+| `{app: web}` | literal |
+| `{app:web}` | literal |
+| `{project}` | literal |
+| `{{project}}` | literal |
+| `{artifact.report}` | literal |
+| `{project?}` | **refused** — used to inject session state; nothing does now |
+| `{artifact.report?}` | **refused** — same, and it never loaded anything either |
 
-Doubling the braces is not an escape: `{{project}}` is trimmed to the same
-key. To write a literal, use another bracket — `<project>`. To genuinely
-ask for session state, mark it optional — `{project?}` renders as nothing
-when the key is unset instead of ending the run. An optional marker does
-*not* rescue an artifact placeholder, which fails for want of a service
-before the marker is consulted.
+To carry a value into a specialist, put it in the request rather than the
+prompt, or have the caller build the instruction with the value already in
+it. If you were relying on `{project?}`, drop the marker and the braces
+and write the text you meant.
 
 ## Four dispatch shapes
 

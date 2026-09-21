@@ -32,9 +32,9 @@ import (
 
 // Extension is the specialist file extension. These files are YAML
 // frontmatter plus a Markdown body and have never been Go templates —
-// nothing substitutes into them, and a `{{ ... }}` in one is refused
-// rather than interpolated (#272, checkPlaceholders below). The name
-// says what they are, and editors highlight them correctly (#292).
+// nothing substitutes into them, at any layer, and since #464 that
+// holds of the substrate as well (placeholders.go). The name says what
+// they are, and editors highlight them correctly (#292).
 const Extension = ".specialist.md"
 
 // legacyExtension is what specialist files were called through v0.8.
@@ -125,10 +125,11 @@ func LoadFile(path string) (Spec, error) {
 	if err != nil {
 		return Spec{}, fmt.Errorf("specialists: %q: %w", path, err)
 	}
-	// Before anything else about the body: braces in it are ADK's, not
-	// the author's. Refused here, where the file is open and the line
-	// number is known, rather than on the first run of the specialist,
-	// where the error names neither (#272, placeholders.go).
+	// Before anything else about the body: an optional-marked brace used
+	// to inject session state and now renders as itself. Reported here,
+	// where the file is open and the line number is known, because at
+	// run time the prompt is simply text and nothing would say so
+	// (#464, placeholders.go).
 	if err := checkPlaceholders(path, body); err != nil {
 		return Spec{}, err
 	}

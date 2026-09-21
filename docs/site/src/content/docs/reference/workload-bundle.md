@@ -333,35 +333,46 @@ for is not a favor. The worked example is
 `examples/workloads/bounded-triage`, on the same `finding.json` report
 contract the [GKE triage bundle](/quickstart/unattended-triage/) uses.
 
-## The prompt body: `{...}` is resolved, not sent
+## The prompt body: sent as written
 
-Everything after the frontmatter is a template. Before the prompt is sent,
-every `{...}` in it is matched by `{+[^{}]*}+`, trimmed of its braces and
-surrounding space, and then:
+Everything after the frontmatter is sent to the model unchanged. There is
+no placeholder syntax, no escape sequence and nothing to quote: braces,
+`${...}`, `{{...}}` and JSON all arrive as typed. The same is true of a
+coordinator's `instruction:` in this file and of the planner's prompt.
 
-| Trimmed contents | Resolution |
-| --- | --- |
-| `artifact.<name>` | artifact load — **always fails**, mast runs no artifact service |
-| a valid state name | session-state lookup; a missing key ends the run with `state key does not exist` |
-| a valid state name + `?` | session-state lookup; a missing key renders as nothing |
-| anything else | returned verbatim |
+:::caution[This section described a template through v0.9]
+Through v0.9 this section described a template. mast passed instructions
+to a field of the underlying agent runtime that resolved every `{...}`
+against session state first, so `{project}` was a state lookup — it ended
+the run with `state key does not exist` when nothing had set the key, and
+substituted the value into your prompt when something had. That applied to
+every prompt mast sent, but only specialist bodies were checked for it;
+a coordinator `instruction:` and the planner's prompt were not.
 
-A **valid state name** is a bare identifier (letter or `_`, then letters,
-digits or `_`), optionally prefixed by exactly one of `app:`, `user:` or
-`temp:`. Nothing else qualifies — so `{"replicas":1}`, `{.status.phase}`,
-`{context.node}`, `{...}`, `{}` and `{app: web}` are all literal, while
-`{app:web}` is a lookup of the `app`-scoped key `web`.
+mast now sends instructions verbatim
+([#464](https://github.com/go-steer/mast/issues/464)). Prompts that used
+to be refused at load — `{project}`, `{app:web}`, `{artifact.report}`,
+`{{project}}` — now load and are sent as literal text.
+:::
 
-A specialist file whose body contains a placeholder that would be resolved and can
-fail is **refused at load**, naming the file, every offending line and the
-key each one looks up. Loading is where the file and its line numbers still
-exist; the runtime error names neither.
+The **optional marker is the one removal**. `{project?}` was the supported
+way to ask for session state, and session state is no longer reachable
+from a prompt by any spelling. A specialist body that still contains one
+is **refused at load**, naming the file, every offending line and the key
+each one asked for — because the alternative is rendering `{project?}` as
+itself and saying nothing:
 
-There is no escape sequence — `{{project}}` is trimmed to the same key as
-`{project}`. Write literals with another bracket (`<project>`), or, if
-session state is genuinely wanted, mark the placeholder optional
-(`{project?}`). The optional marker does not rescue `{artifact.x?}`: the
-missing artifact service is checked first.
+```
+specialists: "Diagnose.specialist.md": a placeholder in the template body no longer
+injects anything — mast sends instructions verbatim
+  line 4: {project?} → asked for session-state key "project"
+```
+
+`{artifact.report?}` is refused on the same grounds, though it never
+loaded anything in the first place: mast runs no artifact service.
+
+To get a value in front of a specialist, put it in the request, or have
+the caller build the instruction with the value already in it.
 
 ## Per-specialist capability
 

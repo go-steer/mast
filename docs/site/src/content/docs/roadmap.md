@@ -836,9 +836,12 @@ production-readiness claim — see [stability](/reference/stability/).
 **Specialist files are `<name>.specialist.md`.** They were `.tmpl` and were
 never Go templates: `text/template` is imported by one package in the module
 and reads none of them. The name was not merely inaccurate — a `{{ ... }}` in
-a body is ADK's placeholder syntax, not the author's, and mast had to add a
-load-time refusal for a defect the extension invited. `.tmpl` still loads with
-a warning through this release and stops loading in v0.9.
+a body was at the time the *runtime's* placeholder syntax, not the author's,
+and mast had to add a load-time refusal for a defect the extension invited.
+`.tmpl` still loads with a warning through this release and stops loading in
+v0.9. (The substitution itself is gone since
+[#464](https://github.com/go-steer/mast/issues/464); prompts are sent
+verbatim, and the refusal narrowed with it.)
 
 **Also:** `gemini-3.8-flash` is priced and classified, and the frontier
 default deliberately stays at `gemini-3.7-flash` — 3.8 costs exactly what 3.7

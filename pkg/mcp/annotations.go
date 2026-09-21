@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Originally derived from go-steer/core-agent@92091883
+// Originally derived from go-steer/core-agent@920918836ddff082289bc0f65bd415923c11f096:pkg/mcp/readonlyhint.go
 
 package mcp
 

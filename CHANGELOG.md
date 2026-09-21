@@ -4,6 +4,41 @@
 
 ### API Change
 
+- **A prompt is text, not a template: mast no longer substitutes anything into
+  an instruction, and `{project?}` is refused at load.** Every prompt mast
+  sends — a specialist body, a bundle's coordinator `instruction:`, the
+  planner's rendered prompt — went into ADK's `llmagent.Config.Instruction`,
+  which is a *template* field: its processor resolved every `{...}` against
+  session state before each request, so a key that was not set ended the whole
+  request with `state key does not exist`, and a key that was set had its value
+  spliced into the operator's prompt. mast passes `InstructionProvider`
+  instead, which ADK forwards unchanged. **Prompts that used to be rejected now
+  load and are sent literally** — `{project}`, `{app:web}`, `{{project}}`,
+  `{artifact.report}`, and the ordinary things that were never worth the
+  trouble in the first place: `"${MAST_HOME}/bin/mast"`, a JSON shape a
+  specialist is told to emit, `kubectl -o jsonpath={.status.phase}`.
+  The removal is the **optional marker**: `{project?}` was the documented way
+  to ask for session state, and session state is no longer reachable from a
+  prompt by any spelling. A body still containing one is refused at load rather
+  than rendering as itself, naming the file, the line and the key; the same
+  goes for `{artifact.report?}`, which never loaded anything because mast runs
+  no artifact service. Nothing shipped used the marker, and the practical reach
+  it had was smaller than it looked — of the four state keys mast writes, only
+  `mast_route` was ever addressable, since `triage:<name>` and
+  `fanout:synthesis` are not valid state names to begin with.
+  [#464](https://github.com/go-steer/mast/issues/464)
+
+  Two notes on scope. The load-time refusal from
+  [#272](https://github.com/go-steer/mast/issues/272) was the right fix while
+  the template field was in use, but it only ever ran over specialist
+  bodies — a coordinator `instruction:` and the planner prompt were never
+  checked, so the failure was live on two surfaces and had no guard on either.
+  And the mode it produced was not always loud: a SingleTurn specialist runs as
+  a dynamic child, so its failed instruction build does not end the turn — ADK
+  hands the coordinator the error as the delegation's tool result, the
+  coordinator answers the operator from it, and the run reports success with
+  the specialist never having run.
+
 - **`mast sessions pause --interrupt` is now `--cancel-turn`, and the old
   spelling is refused.** `--interrupt` meant a bool on `pause` ("also cancel
   the in-flight turn") and a string on `resume` (the InterruptID being

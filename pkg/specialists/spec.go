@@ -20,10 +20,16 @@
 // It is not a Go template and never was: text/template is imported by
 // exactly one package in this module (pkg/planner) and reads none of
 // these. The files carried a `.tmpl` extension through v0.8, which
-// invited exactly that misreading — a `{{ ... }}` in one is refused at
-// load rather than interpolated (#272). Since v0.9 a `.tmpl` file does
-// not load at all: LoadDir refuses the directory and names the rename
+// invited exactly that misreading. Since v0.9 a `.tmpl` file does not
+// load at all: LoadDir refuses the directory and names the rename
 // (#292, #349).
+//
+// Nothing substitutes into a body at any layer, and since #464 that is
+// true of the substrate too: pkg/agent hands every prompt to ADK's
+// InstructionProvider, which forwards it unchanged, rather than to the
+// Instruction field, which resolved `{...}` against session state
+// before every request. A brace is literal. The one syntax that
+// stopped meaning something is refused at load (placeholders.go).
 //
 // Schema follows docs/specialists-design.md. This package implements
 // the spike subset (name, description, mode, instruction, model
