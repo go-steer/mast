@@ -14,6 +14,11 @@
 
 package agent
 
+import (
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+)
+
 // Per-mode default instructions, per docs/positioning.md ("Change
 // shape" -> DefaultInstruction): the single generic-assistant
 // DefaultInstruction of the parent project splits into three
@@ -94,4 +99,51 @@ func effectiveInstruction(explicit, fallback string) string {
 		return explicit
 	}
 	return fallback
+}
+
+// instructionProvider wraps text as an ADK InstructionProvider, which
+// hands the string to the model unchanged.
+//
+// # Why every constructor here uses this instead of Config.Instruction
+//
+// ADK's llmagent.Config.Instruction is a *template*. Its instruction
+// processor runs InjectSessionState over the field before every
+// request: a `{name}` matching ^[a-zA-Z_][a-zA-Z0-9_]*$ is looked up in
+// session state, and a key that is not there returns
+// ErrStateKeyNotExist — which fails the whole request rather than
+// degrading the prompt. A key that *is* there is worse: its value is
+// spliced into the operator's prompt.
+//
+// Everything mast puts in that field is operator-authored prose. A
+// specialist's body reaches it verbatim (pkg/specialists/loader.go), a
+// bundle's coordinator prompt reaches it through pkg/router, the
+// planner's rendered instruction through pkg/planner. Braces are
+// ordinary in all three — a shell variable in `${MAST_HOME}/bin/mast`,
+// a JSON shape the specialist is told to emit, a `kubectl -o jsonpath`
+// — and none of them are a session-state reference. mast has no
+// instruction templating of its own and docs/specialists-design.md
+// says so; the templating was the substrate's, applied to text mast
+// had promised to pass through.
+//
+// ADK documents InstructionProvider as exactly the field for this: it
+// "does not automatically substitute values to {} and treats them as
+// just a raw char", and it takes precedence over Instruction when both
+// are set.
+//
+// # Why nil rather than a provider returning ""
+//
+// The two fields are not symmetric on empty text. appendInstructions
+// checks the provider first and returns as soon as it has one, so a
+// provider yielding "" reaches AppendInstructions, which builds a
+// SystemInstruction holding one empty text part — where the
+// Instruction branch would have skipped the append entirely. An empty
+// system part is a thing a provider forwards. No caller in this
+// package can hit that today (effectiveInstruction always falls back
+// to a non-empty default), so this is a guard on the field, not a
+// live path; agent_test pins both halves.
+func instructionProvider(text string) llmagent.InstructionProvider {
+	if text == "" {
+		return nil
+	}
+	return func(adkagent.ReadonlyContext) (string, error) { return text, nil }
 }

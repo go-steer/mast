@@ -66,11 +66,13 @@ func NewCoordinator(cfg CoordinatorConfig) (adkagent.Agent, error) {
 	return llmagent.New(llmagent.Config{
 		Name:        cfg.Name,
 		Description: cfg.Description,
-		Instruction: effectiveInstruction(cfg.Instruction, DefaultChatInstruction),
-		Model:       cfg.Model,
-		SubAgents:   cfg.SubAgents,
-		Tools:       cfg.Tools,
-		Toolsets:    cfg.Toolsets,
+		// InstructionProvider, not Instruction: the latter is a template
+		// ADK substitutes session state into. See instructionProvider.
+		InstructionProvider: instructionProvider(effectiveInstruction(cfg.Instruction, DefaultChatInstruction)),
+		Model:               cfg.Model,
+		SubAgents:           cfg.SubAgents,
+		Tools:               cfg.Tools,
+		Toolsets:            cfg.Toolsets,
 
 		// gated first; see modes.go. A coordinator declares no
 		// finish_task, so a refusal here ends its turn with the reason

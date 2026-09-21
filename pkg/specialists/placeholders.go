@@ -12,50 +12,60 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Braces in a prompt are not punctuation (#272).
+// Braces in a prompt are literal (#464, narrowing #272).
 //
-// ADK scans every instruction for `{...}` and resolves each hit before
-// the prompt is sent: a bare identifier in braces is a session-state
-// lookup, and `artifact.`-prefixed one is an artifact load. A template
-// that says "the project is {project}" is therefore asking for a state
-// key named project, and when nothing set one the run dies with
+// This file used to refuse a specialist whose body contained `{project}`,
+// because ADK resolved every `{...}` in an instruction before sending it
+// and a missing key killed the run. That was true, and the refusal was
+// the best available fix while mast still handed its prompts to
+// llmagent.Config.Instruction — a template field.
 //
-//	failed to inject session state into instruction: state key does not exist
+// It no longer does. pkg/agent passes every prompt through
+// InstructionProvider, which ADK forwards unchanged, so a brace is a
+// brace on all three surfaces: a specialist body, a bundle's coordinator
+// instruction, and the planner's rendered prompt. Nothing scans them and
+// nothing can fail on them. See pkg/agent/instruction.go.
 //
-// which names neither the template nor the placeholder. That is a bad
-// error for a good rule, and the rule is invisible: template authors
-// write prompts full of Kubernetes and GCP examples, which is exactly
-// where braces live.
+// # What is left to refuse, and why it is only this
 //
-// Worse, there is no escape. The regex matches runs of braces, so
-// doubling them changes nothing — `{{project}}` is trimmed to the same
-// key. Nor does whitespace help: the key is trimmed before it is looked
-// up. A bare identifier in braces is a lookup, always.
+// One syntax changed meaning *silently*, and it is the only thing this
+// check still reports: the optional marker.
 //
-// So the check is at load, where the file is open and the line number
-// is known. It refuses the same templates ADK would have failed on, and
-// it says which one, on what line, and what to write instead.
+//	{project?}        was: inject session-state key "project", or nothing
+//	{app:project?}    was: the same, app-scoped
+//	{artifact.x?}     was: load an artifact (and fail — mast runs none)
 //
-// # What it accepts
+// An author wrote those to ask for injection, and injection is gone.
+// Left alone they would render as the literal text `{project?}`, which
+// is not what the file says and not what the run would do. mast's
+// standing position on a silent downgrade is to fail the load and name
+// the file (#302, and the `.tmpl` removal in #349), so that is what
+// happens here.
 //
-// Only what ADK resolves. `{"replicas": 1}` in a JSON example is not a
-// lookup — the key is not an identifier, and ADK hands those back
-// verbatim — so a template full of manifests is fine. Neither is
-// `{app: web}`: the space makes it a non-identifier too. `{app:web}`
-// without the space IS one, `app:` being one of ADK's three state
-// scopes, which is the asymmetry worth knowing about before it costs
-// someone an afternoon.
+// Everything else now loads, including the shapes this file used to
+// reject. `{project}`, `{app:web}` and `{artifact.report}` are ordinary
+// text today; refusing them would be mast restricting prose it has
+// promised to pass through verbatim, for a runtime hazard that no
+// longer exists. A prompt full of Kubernetes manifests, jsonpath and
+// shell variables — `${MAST_HOME}/bin/mast` — is simply fine, which was
+// always the point.
 //
-// A state placeholder marked optional is accepted, because that marker
-// is what makes state injection safe: `{project?}` resolves to the key
-// when it is set and to nothing when it is not, and cannot fail the
-// run. A template that genuinely wants session state injected says so
-// that way.
+// # Why the refusal is permanent rather than a deprecation window
 //
-// Artifacts get no such reprieve. ADK checks for an artifact service
-// before it consults the optional marker, and mast runs none, so
-// `{artifact.report?}` fails exactly as `{artifact.report}` does. For
-// those the only fix is to stop writing it in braces.
+// Same reasoning as the `.tmpl` constant next door: every bundle written
+// before this change may carry an optional marker, and there is no date
+// after which telling its author that it stopped injecting becomes wrong.
+//
+// # What guards the other direction
+//
+// This file no longer tracks ADK's resolution rule, so it no longer
+// pins itself to ADK's copy of it — the test that did was removed with
+// the coupling it guarded. What must not regress is the *cause*: a
+// future constructor reaching for Config.Instruction would bring the
+// templating back, silently, for every prompt. That is guarded by
+// TestNoShippedCodePassesAPromptThroughADKsTemplateField in pkg/agent,
+// which is an AST check over the whole module rather than a rule
+// restated here.
 
 package specialists
 
@@ -66,102 +76,93 @@ import (
 	"unicode"
 )
 
-// placeholderRegex is ADK's, copied rather than imported: it lives in
-// google.golang.org/adk/v2/internal/llminternal, which no package
-// outside ADK can reach. TestThePlaceholderRuleIsStillADKs pins this
-// copy against that source, so a divergence shows up as a failing test
-// rather than as a template mast accepted and ADK died on.
+// placeholderRegex is ADK's, as it stood when mast used the template
+// field. It is frozen at that shape deliberately: its job is to find
+// what an author wrote back when the marker meant something, so an ADK
+// bump that changes the rule must *not* change this.
 var placeholderRegex = regexp.MustCompile(`{+[^{}]*}+`)
 
-// statePrefixes are the three qualified state scopes ADK recognises.
-// Anything else before a colon makes the whole name invalid, and
-// therefore literal.
+// statePrefixes are the three qualified state scopes ADK recognised.
+// Anything else before a colon made the whole name invalid.
 var statePrefixes = []string{"app:", "user:", "temp:"}
 
-// artifactPrefix marks an artifact load rather than a state lookup.
+// artifactPrefix marked an artifact load rather than a state lookup.
 const artifactPrefix = "artifact."
 
-// badPlaceholder is one lookup a template asked for that will fail the
-// first time the specialist runs.
-type badPlaceholder struct {
+// staleInjection is one optional-marked placeholder: text an author
+// wrote to ask for injection, which now renders as itself.
+type staleInjection struct {
 	// text is the placeholder exactly as written, braces included, so
 	// the author can find it by searching for it.
 	text string
-	// key is what ADK resolves after trimming the braces and the
-	// optional marker.
+	// key is what ADK would have resolved, after the braces and the
+	// marker are trimmed.
 	key string
-	// artifact distinguishes the two failures, which have different
-	// fixes: a state lookup can be made optional, an artifact load
-	// cannot.
+	// artifact distinguishes the two, which get different advice: a
+	// state lookup had a value to lose, an artifact load never did.
 	artifact bool
 	line     int
 }
 
-// checkPlaceholders reports every placeholder in a template body that
-// ADK will try to resolve and fail on, as one error naming all of them.
+// checkPlaceholders reports every optional-marked placeholder in a
+// template body, as one error naming all of them.
 //
 // All of them rather than the first: an author who fixes one and
 // restarts to find the next has learned the rule the slowest possible
 // way, and a prompt with braces in it usually has several.
 func checkPlaceholders(path, body string) error {
-	bad := resolvablePlaceholders(body)
-	if len(bad) == 0 {
+	stale := staleInjections(body)
+	if len(stale) == 0 {
 		return nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "specialists: %q: %s in the template body %s resolved before the prompt is sent, not sent literally",
-		path, plural(len(bad), "placeholder"), verb(len(bad)))
+	fmt.Fprintf(&b, "specialists: %q: %s in the template body no longer %s anything — mast sends instructions verbatim",
+		path, plural(len(stale), "placeholder"), verb(len(stale)))
 	states, artifacts := 0, 0
-	for _, p := range bad {
-		what := fmt.Sprintf("looks up session-state key %q", p.key)
+	for _, p := range stale {
+		what := fmt.Sprintf("asked for session-state key %q", p.key)
 		if p.artifact {
-			what = fmt.Sprintf("loads artifact %q", strings.TrimPrefix(p.key, artifactPrefix))
+			what = fmt.Sprintf("asked for artifact %q", strings.TrimPrefix(p.key, artifactPrefix))
 			artifacts++
 		} else {
 			states++
 		}
 		fmt.Fprintf(&b, "\n  line %d: %s → %s", p.line, p.text, what)
 	}
-	b.WriteString("\n\nADK resolves every {…} in an instruction before the prompt is sent, so a run with no " +
-		"such key fails with \"state key does not exist\". Doubling the braces does not escape it — {{x}} is " +
-		"trimmed to the same key. Write literal text as <x> instead.")
+	b.WriteString("\n\nmast no longer substitutes anything into a prompt: the body reaches the model exactly as " +
+		"written, braces included. Drop the marker and write the text you want the model to read.")
 	if states > 0 {
-		b.WriteString(" If session state really is what you want, mark it optional as {x?}, so an unset key " +
-			"renders as nothing instead of ending the run.")
+		b.WriteString(" Session state is no longer reachable from a prompt at all; pass what the specialist " +
+			"needs to know in the request, or have the caller write it into the instruction.")
 	}
 	if artifacts > 0 {
-		b.WriteString(" The optional marker will not rescue an artifact: mast runs no artifact service, and " +
-			"ADK fails on that before it looks at the marker, so {artifact.x?} fails exactly as {artifact.x} does.")
+		b.WriteString(" The artifact form never loaded anything — mast runs no artifact service — so there is " +
+			"nothing to replace it with.")
 	}
 	return fmt.Errorf("%s", b.String())
 }
 
-// resolvablePlaceholders returns the placeholders in body that ADK will
-// resolve and can fail on, in the order they appear.
-func resolvablePlaceholders(body string) []badPlaceholder {
-	var out []badPlaceholder
+// staleInjections returns the optional-marked placeholders in body, in
+// the order they appear.
+func staleInjections(body string) []staleInjection {
+	var out []staleInjection
 	for _, loc := range placeholderRegex.FindAllStringIndex(body, -1) {
 		match := body[loc[0]:loc[1]]
 		key := strings.TrimSpace(strings.Trim(match, "{}"))
-		optional := strings.HasSuffix(key, "?")
-		key = strings.TrimSuffix(key, "?")
-
-		// Order follows ADK's: artifacts are recognised before the
-		// optional marker is consulted, and before the name is checked
-		// for validity at all.
-		artifact := strings.HasPrefix(key, artifactPrefix)
-		switch {
-		case artifact:
-			// Fails with or without the marker, for want of a service.
-		case optional:
-			// An unset key renders as nothing. Nothing to warn about,
-			// and the escape hatch this error recommends.
-			continue
-		case !isValidStateName(key):
-			// ADK hands these back verbatim: JSON, jsonpath, prose.
+		if !strings.HasSuffix(key, "?") {
+			// Never resolved, or resolved into an error nobody could
+			// have depended on. Literal text now, and left alone.
 			continue
 		}
-		out = append(out, badPlaceholder{
+		key = strings.TrimSuffix(key, "?")
+
+		artifact := strings.HasPrefix(key, artifactPrefix)
+		if !artifact && !isValidStateName(key) {
+			// A trailing "?" does not make prose into a lookup: "{who
+			// knows?}" was literal before and is literal now.
+			continue
+		}
+		out = append(out, staleInjection{
 			text:     match,
 			key:      key,
 			artifact: artifact,
@@ -214,7 +215,7 @@ func plural(n int, word string) string {
 
 func verb(n int) string {
 	if n == 1 {
-		return "is"
+		return "injects"
 	}
-	return "are"
+	return "inject"
 }
