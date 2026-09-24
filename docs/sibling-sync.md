@@ -1971,3 +1971,56 @@ the condition to watch, and it is cheaper to write down now than to rediscover.
 
 `fa98fe42`. Nothing new is owed **upstream** this pass; the carry-forwards there are unchanged (the
 peer-lease clamp, the `ef9b9b5` port, and the signature-verification nudge).
+
+## go-steer/purser — a third repo in the auth code, 2026-09-24
+
+[go-steer/purser](https://github.com/go-steer/purser) (`v0.1.0`) is shared caller identity and
+authorization for go-steer services: SPIFFE and standard-CA mTLS, OIDC, HTTP middleware, an
+`authz` role matrix with rules, and a conformance suite for authenticators. Its phase 2 migrates
+core-agent and mast onto it, and for mast that reads *"mast deletes `pkg/auth/` and the auth slice
+of `pkg/attach/`"*. **mast is a phase-2 consumer, and that is decided.** From here, generic
+identity and authorization work goes to purser, with wrappers or extensions in mast where a surface
+needs one. A fix to `pkg/auth` that core-agent also needs belongs in purser, not in both forks.
+
+**How mast avoids exporting the auth packages.** The rule is recorded in `DESIGN.md`, "Caller
+identity is not in the promise", and in [#467](https://github.com/go-steer/mast/issues/467):
+
+- **Covered packages reach neither auth package.** `pkg/auth` and `pkg/serverauth` are both
+  unsupported, so removing them is a minor. A test holds the six promised packages away from both,
+  and "reach" includes a context key. The root's `ResumeByToken` read `pkg/auth`'s `Caller` off
+  the context; it reads `mast.WithActor` now.
+- **Public signatures name purser, never a mast identity type.** When a server package needs an
+  identity (`inject.Config.Authenticator`, `agui`'s validator, `attachadapter.InjectAs`), it takes
+  `authn.Authenticator` or `purser.Caller`, and mast-specific glue lives in `internal/`. Two
+  constraints on that:
+  - Moving a package to `internal/` does not stop the leak by itself. Go still lets an exported
+    signature return an `internal/` type, which leaves embedders holding values they cannot name.
+    Retyping onto purser comes first.
+  - The root does not name purser until purser reaches v1. Its README says phase 2 is what will
+    move its API.
+- **`serverauth.TokenValidator` → `Principal` is replaced, not ported.** Per-caller
+  authorization comes from purser's `authz` rules. That supersedes
+  [#389](https://github.com/go-steer/mast/issues/389) option 2 (a scoped bearer-token file); purser
+  ships its own static token table as deprecated. The rate limiter stays mast's, because purser
+  left rate limiting behind as consumer-specific.
+- **No alias period.** No sibling repo imports any mast Go package (checked 2026-09-24 across
+  mast-web, core-agent, core-tui, purser). core-agent keeps a release of `type Caller =
+  purser.Caller` because k8s-lookout pins it; mast has no such consumer and deletes outright.
+
+**purser's premise is out of date, and that does not change the plan.** purser's DESIGN says
+mast's fork is "still byte-identical apart from that provenance line", so extraction is "a
+mechanical import rewrite". As of today it is not:
+
+| Where | Drift |
+|---|---|
+| `auth.go` | mast-only `Attribution(ctx, fallback)`, from [#194](https://github.com/go-steer/mast/issues/194): the proxy-qualified audit string. It has consumers in `cmd/mast`, and #467 removed its only use in a promised package. |
+| `authorize.go` | core-agent's `SessionACL.Normalized()` (`6d1afd1`, their #831). **Absorbed, in a different place.** mast shipped the same trim and dedupe as `normalizeIdentities` in `pkg/attach/handlers_session_acl.go` ([#216](https://github.com/go-steer/mast/issues/216)), and it *refuses* a malformed list where upstream silently cleans it. Phase 2 has to pick one behaviour for purser's `authz.ACL`. |
+| `users_mode.go` | [#328](https://github.com/go-steer/mast/issues/328)'s comment cites mast's own StatefulSet `fsGroup`; core-agent's still describes the initContainer workaround. Comment-only. |
+
+The drift is small, and it grows only in mast-native directions, so extraction is still cheap. It
+is no longer mechanical, though: those three rows are the reconciliation list.
+
+**Sequencing.** The purser migration is independent of v1.0, because neither auth package is
+promised. Which server packages stay public is [#301](https://github.com/go-steer/mast/issues/301),
+and the answer does not affect auth: kept public, they name purser types; demoted, they move to
+`internal/` with the rest.

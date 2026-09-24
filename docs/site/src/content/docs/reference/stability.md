@@ -104,6 +104,29 @@ The list is enforced by a test that walks `pkg/transcript`'s exported
 declarations and follows their fields, so a new leak fails the build
 rather than quietly enlarging this page's promise.
 
+### Caller identity stays outside
+
+`auth` and `serverauth` are on the unsupported list for a specific
+reason: caller identity is moving to
+[go-steer/purser](https://github.com/go-steer/purser), a library shared
+with core-agent, and when mast adopts it those two packages are deleted.
+That is meant to happen in a minor release, so nothing covered reaches
+them. A test enforces this, and it counts a context key as well as a
+type in a signature.
+
+For an embedder, that comes down to one call. To have `ResumeByToken`
+record who spent a token, name them on the context:
+
+```go
+ctx = mast.WithActor(ctx, "alice@example.com")
+res, err := mast.ResumeByToken(ctx, cfg, bundle, specs, token, nil)
+```
+
+The name is recorded as you give it. Without one, the audit record
+names the mechanism, `library ResumeByToken`. Setting `auth.WithCaller`
+worked before this change and no longer does: `ResumeByToken` stopped
+reading `pkg/auth` when it moved out of the promise.
+
 ## The ADK version is part of the contract
 
 `mast.Config` takes two types from

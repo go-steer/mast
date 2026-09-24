@@ -72,7 +72,6 @@ import (
 
 	"github.com/go-steer/mast/internal/compose"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/planner"
@@ -366,9 +365,9 @@ func Pause(ctx context.Context, cfg Config, sessionID string, spec transcript.Pa
 // helper). A gate-pause resume clears the gate and runs no turn —
 // nothing was parked; the returned Result carries only the session ID.
 // An interrupt-pause resume drives the normal resume turn (response
-// nil defaults to {"resumed_by": <the ctx Caller, or "library
+// nil defaults to {"resumed_by": <the WithActor name, or "library
 // ResumeByToken">}, the same string recorded as the pause record's
-// ConsumedBy — put a logged-in user on ctx with auth.WithCaller and the
+// ConsumedBy — name a logged-in user on ctx with WithActor and the
 // audit record names them), and the token is
 // consumed once the resume FunctionResponse is durably appended — a
 // turn that fails before the append leaves the token live for retry.
@@ -393,12 +392,13 @@ func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 			rec.ExpiresAt.Format(time.RFC3339), transcript.ErrTokenExpired)
 	}
 	// Who is spending this token. An embedder that has a logged-in user
-	// puts them on ctx with auth.WithCaller and the audit record names
-	// them; one that doesn't gets "library ResumeByToken", which names
-	// the mechanism truthfully rather than guessing at a human. The
-	// daemon's twin resolves the same way from its request context
-	// (cmd/mast/main.go, resumeByToken).
-	by := auth.Attribution(ctx, "library ResumeByToken")
+	// names them on ctx with WithActor and the audit record names them;
+	// one that doesn't gets "library ResumeByToken", which names the
+	// mechanism truthfully rather than guessing at a human. The daemon's
+	// twin resolves from its authenticated request context instead
+	// (cmd/mast/main.go, approverFromContext), which the library has no
+	// business reading: see WithActor for why.
+	by := actorFrom(ctx, "library ResumeByToken")
 	if rec.Plane == transcript.PlaneGate {
 		if _, err := store.ConsumeToken(ctx, token, by); err != nil {
 			return nil, fmt.Errorf("mast: %w", err)

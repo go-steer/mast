@@ -4,6 +4,21 @@
 
 ### API Change
 
+- **`mast.ResumeByToken` records the name you give `mast.WithActor`, and no
+  longer reads `pkg/auth`'s caller off the context.** An embedder with a
+  logged-in user now writes
+  `ctx = mast.WithActor(ctx, "alice@example.com")`; the pause record's
+  `ConsumedBy` and the default `resumed_by` name them, and without it they name
+  the mechanism, `library ResumeByToken`, as before. **An embedder still
+  setting `auth.WithCaller` gets the mechanism instead of the user**, which is
+  the break. The root package is inside the v1.0 promise and `pkg/auth` is not,
+  and a context key is a dependency no signature shows; caller identity is
+  moving to [go-steer/purser](https://github.com/go-steer/purser), which is
+  pre-1.0 itself, so the root owns a plain string rather than naming either
+  package. A test now fails if any promised package imports `pkg/auth` or
+  `pkg/serverauth`. The daemon is unchanged: its resume still attributes from
+  the authenticated request. [#467](https://github.com/go-steer/mast/issues/467)
+
 - **A prompt is text, not a template: mast no longer substitutes anything into
   an instruction, and `{project?}` is refused at load.** Every prompt mast
   sends — a specialist body, a bundle's coordinator `instruction:`, the
