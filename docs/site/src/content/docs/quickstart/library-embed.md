@@ -71,7 +71,10 @@ res, err := mast.RunWorkload(ctx, mast.Config{ModelName: "echo"},
 Durability is one config field: pass a shared ADK `session/database`
 service (SQLite or Postgres) as `Config.Sessions` and you get durable
 pause/resume — `mast.ListSessions` to find pending interrupts,
-`mast.ResumeSession` to feed the operator verdict back. Budgets come from
+`mast.ResumeSession` to feed the operator verdict back. A token-keyed resume
+(`mast.ResumeByToken`) records who spent the token as whatever name you put
+on the context with `mast.WithActor`, and records `library ResumeByToken`
+when there isn't one. Budgets come from
 the bundle's budget block, or override with `Config.Budget`. A session DB
 written by an embedded runtime reads identically through `mast sessions`.
 

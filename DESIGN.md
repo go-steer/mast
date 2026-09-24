@@ -557,6 +557,25 @@ rather than only observed to pass.
 Nothing about `pkg/transcript`'s code changed here, and nothing needed
 to. Task 2 of #338 is a statement of what the freeze already commits.
 
+**Caller identity is not in the promise, and a test holds it out.**
+`pkg/auth` and `pkg/serverauth` are on the unsupported list for a reason
+beyond scope: caller identity is moving to
+[go-steer/purser](https://github.com/go-steer/purser), shared with
+core-agent, and purser's phase 2 deletes mast's `pkg/auth` outright
+([`docs/sibling-sync.md`](./docs/sibling-sync.md)). That has to be a
+minor. So no promised package may reach either one, and "reach" includes
+a context key, which no signature shows and `apidiff` cannot see. The
+root package had exactly one: `ResumeByToken` read `pkg/auth`'s `Caller`
+off the context to fill `ConsumedBy`. It reads a mast-owned string set
+by `mast.WithActor` now
+([#467](https://github.com/go-steer/mast/issues/467)). It does not read
+`purser.Caller` either, because purser is pre-1.0 and says phase 2 is
+what will move its API; that is the rule above for an input from a
+dependency already scheduled to change. `actor_test.go` in the root
+fails if any of the six promised packages imports either auth package.
+Once purser reaches v1, the root can additionally read purser's context
+key, and that is an additive change.
+
 **The two ADK types in the promised surface.** `mast.Config` exposes
 `Model model.LLM` and `Sessions adksession.Service` — deliberate
 injection points, and the only ADK types in the root package's public
