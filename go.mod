@@ -3,7 +3,7 @@ module github.com/go-steer/mast
 go 1.26.6
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.73.0
+	github.com/anthropics/anthropic-sdk-go v1.75.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
