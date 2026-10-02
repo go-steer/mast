@@ -69,8 +69,8 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
+	"github.com/go-steer/mast/internal/eventlog"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/eventlog"
 )
 
 // Session states derived from the event log. See the package doc for
@@ -517,7 +517,7 @@ func (s *Store) ClearInterrupted(ctx context.Context, userID, sessionID string) 
 // AckEffects records the operator's acknowledgement of ambiguous prior
 // effects: dangling mutating tool calls persisted at or before now stop
 // tripping the recorded-effect outbox's ambiguous-effect mode
-// (pkg/effects). The marker is a watermark, not a state — List/Get
+// (internal/effects). The marker is a watermark, not a state — List/Get
 // derivation ignores it. Re-acking overwrites (last write wins); the
 // new watermark also covers intents the first ack already covered.
 func (s *Store) AckEffects(ctx context.Context, userID, sessionID, reason string) error {

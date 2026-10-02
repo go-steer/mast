@@ -13,7 +13,7 @@ Structured to feed the post-spike docs PR in `go-steer/mast` (updates to
   runner drives directly.** The runner's Chat-mode restriction applies only
   when the root IS an `LlmAgent` (`runner.go` `isLlmAgent` branch); any other
   agent — including a wrapped graph — takes the generic root path. Spike 1's
-  `pkg/router` comment ("a bare Workflow cannot be a root agent") was wrong;
+  `internal/router` comment ("a bare Workflow cannot be a root agent") was wrong;
   the SubAgents-coordinator detour was unnecessary. Both shapes now coexist
   behind `--dispatch=coordinator|graph`.
 - The full LLM-as-router shape from workflow-scaffolding-design (#7) runs
@@ -47,7 +47,7 @@ The specialist was not re-invoked on resume.
   *Implication for deployment-design: the SQLite/Postgres session-store
   story largely rides on ADK, and the Cloud-Run-needs-Postgres-in-v0.1
   contradiction is cheaper to fix than the docs assume. Implication for
-  fork-design P1.3: the `pkg/eventlog` port needs re-scoping against
+  fork-design P1.3: the `internal/eventlog` port needs re-scoping against
   what session/database already covers (audit query surface vs. store).*
 - **Resume model (the durable-execution-design open question, now
   concrete):** it is *reconstruct-and-re-execute*, not deterministic
@@ -99,7 +99,7 @@ not by reading.
   receiving specialist still sees the text, as
   `"[<agent>] said: …"` (`ConvertForeignEvent`). This is what made the
   diagnoser→executor handoff's approved call vanish under graph
-  dispatch (`pkg/graph/graph.go` `routeChange`,
+  dispatch (`internal/graph/graph.go` `routeChange`,
   `scripts/uat-v0.4.sh` U-handoff/A).
 - **A mid-turn `StateDelta` is not visible to a later node in the same
   turn.** State reads resolve against the turn's starting snapshot, so a
@@ -113,7 +113,7 @@ not by reading.
 - **A confirmation resume re-enters the graph at START**, so routing
   predicates re-derive from a classifier reply that is now the
   operator's answer rather than an incident. The route has to be durable
-  (`pkg/graph`'s `mast_route`) or the resume lands on a different
+  (`internal/graph`'s `mast_route`) or the resume lands on a different
   specialist than the one that parked — which surfaces as
   `no function call event found for function responses ids`.
 
@@ -125,7 +125,7 @@ not by reading.
   Events also carry `Branch` and `NodeInfo`, giving per-branch
   attribution hooks for the orchestration-design budget-composition
   story (`min(parent-remaining, specialist-cap)`).
-- What ADK does not provide: pricing (port `pkg/pricing`) and
+- What ADK does not provide: pricing (port `internal/pricing`) and
   enforcement. `pkg/budget` demonstrates the minimal mast-side shape —
   per-session meter over the event stream; crossing `max_cost_usd`
   cancels the run context mid-turn (verified: $0.01 cap trips on the
@@ -171,7 +171,7 @@ not by reading.
    ResumedInput-first gate; resolve its open question #2 (gate fires on
    a `needs_approval`-style decision in the dynamic node — spike gates
    unconditionally via `hitl.require_approval`).
-7. `fork-design.md`: re-scope `pkg/eventlog` port vs. ADK
+7. `fork-design.md`: re-scope `internal/eventlog` port vs. ADK
    session/database; P1.2's "root agent" assumptions.
 
 ## What spike 2 deliberately did not touch

@@ -51,7 +51,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/pkg/budget"
 )
 

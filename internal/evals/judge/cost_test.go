@@ -24,10 +24,10 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/mast/internal/compose"
-	"github.com/go-steer/mast/pkg/graph"
-	"github.com/go-steer/mast/pkg/providers/anthropic"
+	"github.com/go-steer/mast/internal/graph"
+	"github.com/go-steer/mast/internal/providers/anthropic"
+	"github.com/go-steer/mast/internal/taskclass"
 	"github.com/go-steer/mast/pkg/specialists"
-	"github.com/go-steer/mast/pkg/taskclass"
 )
 
 // The check itself needs credentials. Its two halves do not: the roster

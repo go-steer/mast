@@ -43,7 +43,7 @@ func TestMeterScopes_OnlyForSpecialistsThatDeclareSomething(t *testing.T) {
 	if got != (budget.Limits{MaxCostUSD: 2.50}) {
 		t.Errorf("scope = %+v, want only the declared cost cap", got)
 	}
-	// max_wallclock_seconds is a node-level knob (pkg/graph maps it onto
+	// max_wallclock_seconds is a node-level knob (internal/graph maps it onto
 	// workflow.NodeConfig.Timeout); a usage meter cannot see wallclock,
 	// so declaring only that must not mint a scope with no ceilings in
 	// it.

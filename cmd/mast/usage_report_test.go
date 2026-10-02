@@ -23,7 +23,7 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/providers/usage"
+	"github.com/go-steer/mast/internal/providers/usage"
 )
 
 // The turns below are the measured Claude fixture pkg/budget prices

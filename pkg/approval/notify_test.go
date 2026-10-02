@@ -30,7 +30,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	"github.com/go-steer/mast/pkg/permissions"
+	"github.com/go-steer/mast/internal/permissions"
 )
 
 // announcement is one call of Config.NotifyPark, with the context the

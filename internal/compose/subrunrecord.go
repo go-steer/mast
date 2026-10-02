@@ -17,12 +17,12 @@ package compose
 import (
 	"context"
 
-	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // SubRunIntentStore joins the two halves of the v0.6 W9.3 seam (#235):
-// pkg/effects decides what counts as a mutating call and when to record
+// internal/effects decides what counts as a mutating call and when to record
 // it, pkg/transcript owns the ops row it lands on, and neither imports
 // the other — effects is the one package in mast's graph with no mast
 // dependencies, and keeping it that way is what lets a slim embed pull

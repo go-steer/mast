@@ -21,7 +21,7 @@
 // the budget runs out mid-investigation, or when the operator says no.
 //
 // Each scenario drives the composed mast runtime — internal/compose's
-// root, the pkg/effects outbox, the pkg/budget meter, a real SQLite
+// root, the internal/effects outbox, the pkg/budget meter, a real SQLite
 // session store — with a scripted model, and checks one invariant.
 //
 // # Three outcomes, not two

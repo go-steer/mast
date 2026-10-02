@@ -24,7 +24,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/observability"
 )
 
 // tracer is mast's own instrumentation scope. ADK owns the spans

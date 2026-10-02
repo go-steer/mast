@@ -66,10 +66,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/permissions"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/permissions"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 
@@ -242,7 +242,7 @@ func (p *parkPerms) pending(ctx context.Context) ([]attach.PromptFrame, bool) {
 // in words, and the only answer this wire carries is a permissions
 // decision — so publishing one would put a prompt in front of an
 // operator whose buttons cannot answer it, which is the same mistake
-// pkg/inject's Hold is careful not to make. Those stay on /parks and
+// internal/inject's Hold is careful not to make. Those stay on /parks and
 // POST /resume, where the answer has somewhere to go.
 func permFrame(park inject.Park) (attach.PromptFrame, bool) {
 	if park.Kind != inject.ParkKindApproval {
@@ -350,7 +350,7 @@ func verdictForDecision(d permissions.Decision) (approval.Verdict, error) {
 
 // decisionWire names a decision for an error message. The inverse of
 // attach.DecisionFromWire, kept here rather than exported from
-// pkg/attach because its only consumer is that message.
+// internal/attach because its only consumer is that message.
 func decisionWire(d permissions.Decision) string {
 	switch d {
 	case permissions.DecisionDeny:

@@ -21,7 +21,7 @@ Public packages under `github.com/go-steer/mast/`:
 > Three things in this table are wrong against the tree and are corrected there rather than
 > here, because #301 is what rewrites the table itself: every path is missing its `pkg/`
 > prefix; `provider` and `tool` name packages that **do not exist** (there is no `pkg/tool`,
-> and `pkg/providers` is four backends with no interface above them — the provider extension
+> and `internal/providers` is four backends with no interface above them — the provider extension
 > point is `mast.Config.Model`, a field typed on ADK's `model.LLM`); and `session`,
 > `specialist`, `permission`, `memory` and `skill` are either renamed or unbuilt. The
 > per-package "stable at v0.2/v0.3" phasing did not happen and is not being resumed — a
@@ -62,7 +62,7 @@ Public packages under `github.com/go-steer/mast/`:
 
 "Library-embedded" is hollow if the minimum viable embed drags in the kitchen sink. The guarantee, as a tested v0.1 property rather than an intention:
 
-*(Shipped 2026-07-26: `examples/deploy/slim/` (the reference consumer) + `scripts/check-slim-deps.sh` (the `go list -deps` denylist check) + the CI step in `.github/workflows/ci.yml` are all in the tree — the guarantee is now enforced, not intended. Two build-verified refinements to the mechanism as sketched below: (1) the check is a **denylist**, not an allowlist — the slim slice (`pkg/agent`, `pkg/specialists`, optionally `pkg/workload`/`pkg/budget`/`pkg/transcript`) must not pull `pkg/inject`, `pkg/observability`, `pkg/mcp`, `pkg/graph`, `pkg/router`, `pkg/config`, nor `github.com/prometheus/...`, the MCP SDK (`github.com/modelcontextprotocol/...`), or the OTel **SDK/exporters**. (2) The OTel entry is deliberately narrowed to SDK/exporters rather than `go.opentelemetry.io` wholesale, because ADK's model path (`google.golang.org/genai`) **structurally imports the OTel API packages** (+`otelhttp`) — no-op stubs without an SDK, and unsheddable without shedding ADK itself; see [`./adk-v2-usage.md`](./adk-v2-usage.md)'s telemetry section. The check also confirmed `pkg/specialists` is MCP-free — it declares MCP *allowlist types* without importing the MCP SDK, so specialists stay inside the slim slice.)*
+*(Shipped 2026-07-26: `examples/deploy/slim/` (the reference consumer) + `scripts/check-slim-deps.sh` (the `go list -deps` denylist check) + the CI step in `.github/workflows/ci.yml` are all in the tree — the guarantee is now enforced, not intended. Two build-verified refinements to the mechanism as sketched below: (1) the check is a **denylist**, not an allowlist — the slim slice (`pkg/agent`, `pkg/specialists`, optionally `pkg/workload`/`pkg/budget`/`pkg/transcript`) must not pull `internal/inject`, `internal/observability`, `internal/mcp`, `internal/graph`, `internal/router`, `internal/config`, nor `github.com/prometheus/...`, the MCP SDK (`github.com/modelcontextprotocol/...`), or the OTel **SDK/exporters**. (2) The OTel entry is deliberately narrowed to SDK/exporters rather than `go.opentelemetry.io` wholesale, because ADK's model path (`google.golang.org/genai`) **structurally imports the OTel API packages** (+`otelhttp`) — no-op stubs without an SDK, and unsheddable without shedding ADK itself; see [`./adk-v2-usage.md`](./adk-v2-usage.md)'s telemetry section. The check also confirmed `pkg/specialists` is MCP-free — it declares MCP *allowlist types* without importing the MCP SDK, so specialists stay inside the slim slice.)*
 
 - **Pay for what you import.** A consumer importing only the loop-and-loaders slice (`agent` + `session` + `provider` + `tool`, optionally `specialist`/`workload`/`budget`) must not pull `attach`, `observability`'s Prometheus/OTel exporters, `mcp`, `a2a`, or `skill` into its module graph. Enforced by package structure (no convenience cross-imports from core packages into subsystem packages; the top-level `mast` convenience package is the one place that imports everything, and slim consumers simply don't use it).
 - **Reference consumer:** `examples/deploy/slim/` — a single-file host service embedding one control loop (classifier → specialist, in-memory or SQLite sessions) with no attach server, no metrics endpoint, no interop surfaces. This is the "I just need a purpose-built control loop in my own binary" on-ramp; the starters in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) are its standalone-binary siblings.
@@ -339,7 +339,7 @@ type Source interface {
 
 ### Attach transport
 
-The attach protocol (HTTP/SSE per `pkg/attach/` port) is the default; consumers wanting to expose mast over a different transport (gRPC, WebSockets, JSON-RPC over Unix socket) implement:
+The attach protocol (HTTP/SSE per `internal/attach/` port) is the default; consumers wanting to expose mast over a different transport (gRPC, WebSockets, JSON-RPC over Unix socket) implement:
 
 ```go
 // github.com/go-steer/mast/attach

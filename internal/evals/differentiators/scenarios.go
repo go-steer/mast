@@ -30,7 +30,7 @@ import (
 
 // delegate is the coordinator's hand-off to the roster's one Task
 // specialist. ADK emits a task delegation as a FunctionCall named
-// after the sub-agent, which is also why pkg/effects excludes those
+// after the sub-agent, which is also why internal/effects excludes those
 // names from its dangling scan.
 func delegate(request string) step {
 	return step{turn: 1, role: coordinatorRole, resp: callTo(specialistName, map[string]any{"request": request})}

@@ -20,7 +20,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -41,7 +41,7 @@ import (
 // an incident can do to a cluster.
 //
 // Three cases count as reaching a mutating tool, and only the first is
-// the obvious one (this mirrors pkg/graph's fan-out branch check, which
+// the obvious one (this mirrors internal/graph's fan-out branch check, which
 // found the other two):
 //
 //  1. the specialist names a tool the predicate does not classify
@@ -180,7 +180,7 @@ func mutatingNames(names []string, pred effects.Predicate) []string {
 // remain there is closed as of v0.6 W9.3: the observer seam writes each
 // dispatched mutating intent and completion to the outer session's
 // companion ops row, and the outbox folds them into its dangling scan
-// (pkg/effects/subrun.go). What `apply` gives up is the stop, not the
+// (internal/effects/subrun.go). What `apply` gives up is the stop, not the
 // record.
 //
 // # Why this check is permanent
@@ -213,7 +213,7 @@ func mutatingNames(names []string, pred effects.Predicate) []string {
 // rather than an approval one and did not inherit the obstacle:
 // recording is one-directional, and SubRunSink sees a mutating
 // FunctionCall before the tool body runs
-// (pkg/planner/outboxseam_test.go). It shipped in v0.6, and closing it
+// (internal/planner/outboxseam_test.go). It shipped in v0.6, and closing it
 // did not delete this check: a record of what a dispatch did is not a
 // chance to say no before it does it.
 func CheckPlannerWriteSurface(b workload.Bundle, specs []specialists.Spec) error {

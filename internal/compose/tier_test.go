@@ -22,9 +22,9 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
+	"github.com/go-steer/mast/internal/taskclass"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/specialists"
-	"github.com/go-steer/mast/pkg/taskclass"
 )
 
 // The portability claim, stated as a test: one roster declaration,

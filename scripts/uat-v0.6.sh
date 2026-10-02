@@ -612,7 +612,7 @@ assert_has "the record names the ceiling that was reached" \
 assert_log_atleast "and the transcript carries the operator-readable refusal" "${LOG}" \
   'STOPPED — this agent reached a cost ceiling.' 1
 # A refusal is not an error and must not arrive as one. ADK puts an
-# error in the field it reserves for a broken tool, and pkg/planner's
+# error in the field it reserves for a broken tool, and internal/planner's
 # dispatch already refused to emit that shape for a crossed cap; a
 # pre-call ceiling one layer down does not get to contradict it.
 assert_no_log "the run reported no error — nothing crashed" "${LOG}" 'runner emitted error'

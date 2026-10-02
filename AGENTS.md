@@ -158,7 +158,7 @@ Typical design-doc PR shapes:
 Phase 1 is complete and the repo is on its regular release cadence — v0.1.0 through v0.7.0 have shipped. Current shape (per [`docs/fork-design.md`](./docs/fork-design.md)):
 
 - `cmd/mast/` — the binary
-- `pkg/agent/`, `pkg/providers/`, `pkg/attach/`, etc. — runtime
+- `pkg/agent/`, `internal/providers/`, `internal/attach/`, etc. — runtime
 - `dev/ci/presubmits/` + `dev/tools/` — same convention as core-agent
 - `.github/workflows/{ci,ci-docs,docs,release}.yml` — same convention as mast-web / core-agent
 - `docs/site/` — Astro + Starlight mirror of core-agent's setup *(corrected 2026-07-26 — the earlier "Hugo + Docsy" reference was stale)*, deployed at [go-steer.github.io/mast](https://go-steer.github.io/mast/) since 2026-07-27

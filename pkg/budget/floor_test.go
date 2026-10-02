@@ -65,7 +65,7 @@ func (p *recordingPricer) PriceCall(_, _ string, c Call) (float64, bool) {
 // surface), and not the buckets handed to a Pricer.
 //
 // Pre-fix this failed on the ledger, the totals and the buckets. The
-// metric is covered separately in pkg/observability — it guarded its
+// metric is covered separately in internal/observability — it guarded its
 // own two counts already, which is exactly the shape #332 warns about:
 // four readers, each deciding for itself.
 func TestNegativeCountsAreFlooredForEveryReader(t *testing.T) {

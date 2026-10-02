@@ -19,8 +19,8 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
-	"github.com/go-steer/mast/pkg/providers/anthropic"
-	geminiprov "github.com/go-steer/mast/pkg/providers/gemini"
+	"github.com/go-steer/mast/internal/providers/anthropic"
+	geminiprov "github.com/go-steer/mast/internal/providers/gemini"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -84,7 +84,7 @@ func anthropicBuiltins(bt workload.BuiltinTools) anthropic.BuiltinTools {
 // names the bundle uses.
 //
 // Owned here, at the consumer, rather than in a provider package:
-// pkg/providers/gemini and pkg/providers/anthropic satisfy it
+// internal/providers/gemini and internal/providers/anthropic satisfy it
 // structurally and import nothing to do so, and the two backends stay
 // unable to see each other. Backends with no such concept (echo,
 // scripted, toolactor) simply do not implement it.

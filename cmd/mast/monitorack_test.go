@@ -23,15 +23,15 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/mast/pkg/auth"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/monitor"
+	"github.com/go-steer/mast/internal/auth"
+	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/monitor"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
 // The ack leg (v0.5 W4.6): attribute, record, forward — in that order.
-// pkg/inject's tests pin where the identity comes from; these pin what
+// internal/inject's tests pin where the identity comes from; these pin what
 // mast does with it.
 
 func testAcker(t *testing.T, rec *recordingRun, ack *workload.MonitorAck) (*monitorAcker, *transcript.Store) {

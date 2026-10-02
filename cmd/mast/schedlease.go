@@ -22,7 +22,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/go-steer/mast/pkg/eventlog"
+	"github.com/go-steer/mast/internal/eventlog"
 )
 
 // Which work this lease governs, and why it is one lease and not three.

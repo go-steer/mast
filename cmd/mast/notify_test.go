@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/mast/pkg/monitor"
-	"github.com/go-steer/mast/pkg/notify"
+	"github.com/go-steer/mast/internal/monitor"
+	"github.com/go-steer/mast/internal/notify"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -151,7 +151,7 @@ func TestNotifySpeaksWhenSomethingChanged(t *testing.T) {
 // A workload that names no transitions source has told mast nothing
 // about what "unchanged" means, so mast has no basis to be quiet — and
 // inventing one (diffing the collected results itself) is the domain
-// knowledge pkg/monitor refuses to hold.
+// knowledge internal/monitor refuses to hold.
 func TestNotifyWithoutAClassificationSpeaksEveryCycle(t *testing.T) {
 	n, _, _ := testNotifier(t, time.Hour)
 	if speech, _ := n.decide(nil); speech != speechSpeak {

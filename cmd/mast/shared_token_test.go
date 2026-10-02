@@ -18,8 +18,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/a2a"
-	"github.com/go-steer/mast/pkg/agui"
+	"github.com/go-steer/mast/internal/a2a"
+	"github.com/go-steer/mast/internal/agui"
 )
 
 // The daemon's own bearer validators mint ONE principal holding the union of

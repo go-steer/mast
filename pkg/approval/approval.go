@@ -18,7 +18,7 @@
 //
 // It is deliberately two halves that meet here and nowhere else:
 //
-//   - pkg/permissions decides POLICY — may this call proceed without
+//   - internal/permissions decides POLICY — may this call proceed without
 //     asking, must it ask, or is it refused outright. That package is
 //     ADK-independent and stays that way.
 //   - ADK's tool-confirmation flow performs the PAUSE. It is durable:
@@ -31,7 +31,7 @@
 // The seam itself is an ADK runner plugin's BeforeToolCallback, which
 // is the only place that sees every tool call — builtin, MCP, or
 // specialist-scoped — before it runs. Registration order matters and is
-// settled: the pkg/effects outbox plugin goes first, this one second, so
+// settled: the internal/effects outbox plugin goes first, this one second, so
 // a replayed call is answered from the outbox without asking an operator
 // to approve a mutation that already happened (resolved-decision 144).
 //

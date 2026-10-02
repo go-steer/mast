@@ -6,7 +6,7 @@ sidebar:
 ---
 
 mast's metric registry is **fixed**: every family name lives in
-`pkg/observability` and only there. Callers increment pre-declared families
+`internal/observability` and only there. Callers increment pre-declared families
 through typed methods and cannot mint new names or labels — that's the
 cardinality-control point. Session IDs are never metric labels;
 correlation at session grain goes through logs and traces.

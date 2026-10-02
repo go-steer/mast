@@ -167,9 +167,9 @@ func TestANilLoggerFiltersTheSameAndSaysNothing(t *testing.T) {
 }
 
 func TestTheServerKeySurvivesTheWrap(t *testing.T) {
-	// pkg/mcp's digest wrap and pkg/graph's fan-out check both match
+	// internal/mcp's digest wrap and internal/graph's fan-out check both match
 	// toolsets by Name(). A wrap that renamed one would silently unmatch
-	// them — see pkg/mcp/toolset.go's note on the same hazard.
+	// them — see internal/mcp/toolset.go's note on the same hazard.
 	gke := &staticToolset{name: "gke", tools: []tool.Tool{mkTool(t, "get_k8s_resource")}}
 	spec := Spec{Name: "s", Tools: ToolAllowlist{MCP: []MCPAllowlist{
 		{Server: "gke", Tools: []string{"get_k8s_resource"}},

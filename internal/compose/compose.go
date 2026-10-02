@@ -40,17 +40,17 @@ import (
 	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/graph"
 	"github.com/go-steer/mast/internal/modelretry"
+	"github.com/go-steer/mast/internal/planner"
+	"github.com/go-steer/mast/internal/pricing"
+	"github.com/go-steer/mast/internal/providers/anthropic"
+	geminiprov "github.com/go-steer/mast/internal/providers/gemini"
+	"github.com/go-steer/mast/internal/providers/mock"
+	"github.com/go-steer/mast/internal/router"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/graph"
-	"github.com/go-steer/mast/pkg/planner"
-	"github.com/go-steer/mast/pkg/pricing"
-	"github.com/go-steer/mast/pkg/providers/anthropic"
-	geminiprov "github.com/go-steer/mast/pkg/providers/gemini"
-	"github.com/go-steer/mast/pkg/providers/mock"
-	"github.com/go-steer/mast/pkg/router"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -60,14 +60,14 @@ type Dispatch string
 
 const (
 	// DispatchCoordinator is the spike-1 SubAgents pattern: a
-	// Chat-mode coordinator with the roster as SubAgents (pkg/router).
+	// Chat-mode coordinator with the roster as SubAgents (internal/router).
 	DispatchCoordinator Dispatch = "coordinator"
 
 	// DispatchGraph is the spike-2 workflow-graph LLM-as-router shape
-	// (pkg/graph). Requires a SingleTurn classifier in the roster.
+	// (internal/graph). Requires a SingleTurn classifier in the roster.
 	DispatchGraph Dispatch = "graph"
 
-	// DispatchFanout is the W3 fan-out shape (pkg/graph.BuildFanout):
+	// DispatchFanout is the W3 fan-out shape (internal/graph.BuildFanout):
 	// the roster's Task specialists run concurrently as read-only
 	// analysts and a graph.SynthesisName specialist merges what they
 	// return. Requires that specialist, and refuses to build an analyst
@@ -93,11 +93,11 @@ const (
 )
 
 // Provider aliases for the Gemini family. The Anthropic pair lives in
-// pkg/providers/anthropic (ProviderName / VertexProviderName); these
+// internal/providers/anthropic (ProviderName / VertexProviderName); these
 // two have no provider package of their own because both backends are
 // the same genai client under different configuration.
 //
-// The names match pkg/taskclass.Providers(), which has carried a
+// The names match internal/taskclass.Providers(), which has carried a
 // "vertex" family since the port — the tier table could always resolve
 // against it, there was just no way to ask for it. They also match
 // core-agent's config.ProviderVertex, which is where the pattern comes
@@ -270,16 +270,16 @@ type RootConfig struct {
 // hold — see CheckCapabilitySplit.
 //
 //   - bundle.Planner.Enabled → the supervisor-body planner root
-//     (pkg/planner); Dispatch is ignored.
-//   - DispatchGraph → the workflow graph (pkg/graph); errors without
+//     (internal/planner); Dispatch is ignored.
+//   - DispatchGraph → the workflow graph (internal/graph); errors without
 //     a SingleTurn classifier.
 //   - DispatchFanout → the concurrent-analysts fan-out shape
-//     (pkg/graph.BuildFanout); errors without a graph.SynthesisName
+//     (internal/graph.BuildFanout); errors without a graph.SynthesisName
 //     specialist, or if any analyst can reach a mutating tool.
 //   - DispatchBounded → the one-call shape (bounded.go); errors unless
 //     the roster is exactly one SingleTurn specialist declaring an
 //     output_schema.
-//   - DispatchCoordinator → the SubAgents coordinator (pkg/router).
+//   - DispatchCoordinator → the SubAgents coordinator (internal/router).
 //   - DispatchAuto/empty → the bundle's own `dispatch:` when it names
 //     one (see Dispatch.Resolve); otherwise fanout when the roster has
 //     a synthesis specialist, graph when it has both a SingleTurn
@@ -480,7 +480,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 // mast's default-deny-unknown stance, narrowed by the workload's
 // audited tool_catalog.tools overrides.
 //
-// The conversion exists because pkg/effects deliberately does not
+// The conversion exists because internal/effects deliberately does not
 // import pkg/workload (that would drag the YAML loader into every
 // library embed that only wants the guard), so somebody who imports
 // both has to bridge the two ToolPolicy types. compose imports both.
@@ -503,14 +503,14 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //     tool calls deterministically (pkg/agent/toolactor.go); the v0.2
 //     UAT harness uses it to exercise the crash/drain/abort legs against
 //     a real blocking MCP tool. No credentials required.
-//   - "scripted": JSONL recorded-turn replay via pkg/providers/mock;
+//   - "scripted": JSONL recorded-turn replay via internal/providers/mock;
 //     the recording path comes from MAST_SCRIPT, and
 //     MAST_SCRIPT_STRICT=1 enables strict Contents matching.
-//   - "gemini-*": ADK's Gemini model wrapped in pkg/providers/gemini's
+//   - "gemini-*": ADK's Gemini model wrapped in internal/providers/gemini's
 //     builtin-tool layer. `--provider=vertex` names the Vertex backend
 //     outright; with no alias it stays genai's env-driven selection.
 //     See geminiClientConfig.
-//   - "claude-*": pkg/providers/anthropic; see anthropicProvider for
+//   - "claude-*": internal/providers/anthropic; see anthropicProvider for
 //     backend selection.
 //
 // bt gates the provider's server-side built-in tools. Its zero value is
@@ -813,7 +813,7 @@ func Backend(provider, modelName string) string {
 	}
 }
 
-// builtinCatalog is the compiled-in pricing catalog (pkg/pricing's
+// builtinCatalog is the compiled-in pricing catalog (internal/pricing's
 // builtin layer only — no config overrides or pricing.json files are
 // wired into the daemon yet). Built once; catalog construction with
 // empty Options cannot fail.
@@ -828,7 +828,7 @@ var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
 	return c
 })
 
-// catalogPricer adapts a pkg/pricing catalog to budget.Pricer, and is
+// catalogPricer adapts a internal/pricing catalog to budget.Pricer, and is
 // the only place the two meet.
 //
 // The seam is one-directional on purpose: pkg/budget names no rate type,
@@ -880,7 +880,7 @@ func builtinPricer() budget.Pricer { return catalogPricer{cat: builtinCatalog()}
 // re-deriving the backend, and Backend is shared with the code that
 // builds the client so the two cannot drift.
 //
-// Gemini and Claude rates come from pkg/pricing's builtin catalog
+// Gemini and Claude rates come from internal/pricing's builtin catalog
 // (longest-prefix lookup, so dated/suffixed IDs land). The catalog prices
 // input and output tokens separately, but the budget meter only sees
 // UsageMetadata.TotalTokenCount, so the flat rate is the plain
@@ -970,7 +970,7 @@ func MeterLimits(provider, modelName string) budget.Limits {
 // provider the run was started with is a parameter here.
 //
 // max_wallclock_seconds is deliberately absent: it is a node-level knob
-// (pkg/graph maps it onto workflow.NodeConfig.Timeout), not something a
+// (internal/graph maps it onto workflow.NodeConfig.Timeout), not something a
 // usage meter can see.
 //
 // Pricing collapses under an offline fake, on the same condition

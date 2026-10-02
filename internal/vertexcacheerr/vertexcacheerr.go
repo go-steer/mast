@@ -16,9 +16,9 @@
 // is the explicit context cache we hold a handle to still there?
 //
 // It exists because two packages have to agree on the answer and
-// neither should import the other. pkg/providers/vertexcache owns the
+// neither should import the other. internal/providers/vertexcache owns the
 // cache's lifecycle and sees the question on a Caches.Update; the
-// pkg/providers/gemini wrapper sees it on a GenerateContent that
+// internal/providers/gemini wrapper sees it on a GenerateContent that
 // stamped the cache reference, and reaches the manager through a
 // callback precisely so it does not depend on it. When the two
 // disagree — which is what #325 was — the manager keeps handing out a

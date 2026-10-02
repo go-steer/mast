@@ -21,7 +21,7 @@
 //
 // Why this seam and not a model.LLM wrapper is settled in v0.6 W10.1
 // (docs/README.md's resolved-decisions table, measured in
-// pkg/planner/precallseam_test.go). The short version: both reach a
+// internal/planner/precallseam_test.go). The short version: both reach a
 // planner-dispatched specialist, but a ceiling is keyed on the agent
 // name, and a callback is handed agent.Context as a declared parameter
 // while a wrapper would have to recover the name by asserting on a
@@ -51,7 +51,7 @@
 // genuinely pre-call, but an error returned from here reaches the
 // caller in the field ADK uses for a tool that broke — measured on the
 // dispatch path, a refusal returned as an error arrives at the planner
-// as {"error": "... workflow: dynamic child failed: ..."}. pkg/planner
+// as {"error": "... workflow: dynamic child failed: ..."}. internal/planner
 // already refused to emit that shape for a crossed cap, on the grounds
 // that a cap that fires must not look like a broken tool, and a check
 // one layer down should not contradict it.

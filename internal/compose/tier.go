@@ -23,8 +23,8 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
+	"github.com/go-steer/mast/internal/taskclass"
 	"github.com/go-steer/mast/pkg/specialists"
-	"github.com/go-steer/mast/pkg/taskclass"
 )
 
 // Tier resolution — the portable half of a specialist's model override.
@@ -38,7 +38,7 @@ import (
 // is the objection that kept `model:` off them through v0.3
 // (docs/v0.3-plan.md W1.1, finding (b)).
 //
-// The mapping itself is pkg/taskclass.ModelForTier — the same table
+// The mapping itself is internal/taskclass.ModelForTier — the same table
 // `--task` already resolves through, so `--task=debug` and
 // `tier: frontier` cannot disagree about what the frontier model is.
 

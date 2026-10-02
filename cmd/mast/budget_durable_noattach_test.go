@@ -30,9 +30,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/eventlog"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/eventlog"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 

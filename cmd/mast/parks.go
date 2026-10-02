@@ -13,10 +13,10 @@
 // limitations under the License.
 
 // The park read (#314): projecting a transcript.Detail onto the wire
-// types in pkg/inject.
+// types in internal/inject.
 //
 // This file is the only place both vocabularies are in scope, and that
-// is deliberate. pkg/inject declares a JSON contract and must not
+// is deliberate. internal/inject declares a JSON contract and must not
 // import pkg/transcript or pkg/approval; pkg/transcript is frozen at
 // v1.0 and must not learn a wire string. So the translation lives in
 // package main, the same layering #313 used for turn_state — and the
@@ -25,7 +25,7 @@
 // reach the wire by accident.
 //
 // What it copies, and what it does not, is the point. See parks.go in
-// pkg/inject for the contract; the omissions are enforced here.
+// internal/inject for the contract; the omissions are enforced here.
 
 package main
 
@@ -39,8 +39,8 @@ import (
 
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 

@@ -38,7 +38,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-steer/mast/pkg/inject"
+	"github.com/go-steer/mast/internal/inject"
 )
 
 // stopFlagSet builds `mast stop`'s flag surface. Split out of runStop

@@ -20,10 +20,10 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/observability"
-	"github.com/go-steer/mast/pkg/planner"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/observability"
+	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 
@@ -203,7 +203,7 @@ type daemonSubRun struct {
 // The intent recorder (#235) goes LAST, and inverts the metrics-first
 // rule on purpose. Every consumer above it can still stop the sub-run,
 // and a mutating FunctionCall reaches this sink BEFORE the tool body
-// runs (pkg/planner/outboxseam_test.go) — so recording earlier would
+// runs (internal/planner/outboxseam_test.go) — so recording earlier would
 // leave a durable "this may have mutated" record for a call that a
 // watchdog trip or a budget ceiling then prevented, wedging the session
 // into ambiguous-effect mode over an effect that never happened.

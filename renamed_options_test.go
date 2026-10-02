@@ -29,7 +29,7 @@ import (
 // A comment in this module may *record* an API name that no longer
 // resolves. It may not *instruct* a reader to call one.
 //
-// The distinction is the whole check. pkg/attach/prompter.go names
+// The distinction is the whole check. internal/attach/prompter.go names
 // `agent.WithAttachPromptBroker` deliberately, because a reader who
 // remembers it from v0.8 needs to be told where it went — and it names
 // `attachadapter.WithPromptBroker` beside it, because that is the one
@@ -44,7 +44,7 @@ import (
 // This is a guard rather than a one-time fix because the source of the
 // bad comment is still upstream: core-agent renamed the option when it
 // split pkg/agent, four of its own comments still name the old one, and
-// pkg/attach is ported code. The next sync can carry the instruction
+// internal/attach is ported code. The next sync can carry the instruction
 // straight back in. The port is the event this test is waiting for —
 // see docs/sibling-sync.md, `532f7c75`, which is mast's own finding
 // taken upstream; the guard is the half that did not come back.
@@ -79,7 +79,7 @@ var renamedOptions = []renamedOption{{
 	live: "attachadapter.WithPromptBroker",
 	note: "This one arrives by port, not by typo: core-agent renamed the\n" +
 		"\toption when it split pkg/agent and four of its own comments still\n" +
-		"\tname the old spelling, so any sync that touches pkg/attach can\n" +
+		"\tname the old spelling, so any sync that touches internal/attach can\n" +
 		"\tbring it back. It never existed in this repo under either name.\n" +
 		"\tSee docs/sibling-sync.md (`532f7c75`) and #364.",
 }}
@@ -150,7 +150,7 @@ func renamedOptionProblems(label, src string) ([]string, map[string]int) {
 				"\tTwo ways out. Delete the mention if nobody is owed it. Or keep\n"+
 				"\tit as a record — say the old name is the old name and put the\n"+
 				"\tworking spelling beside it — which is what\n"+
-				"\tpkg/attach/prompter.go does.\n"+
+				"\tinternal/attach/prompter.go does.\n"+
 				"\n"+
 				"\t"+opt.note+"\n"+
 				"\n"+
@@ -312,7 +312,7 @@ type T struct{}
 	got, _ := renamedOptionProblems("x.go", instruction)
 	for _, want := range []string{
 		"attachadapter.WithPromptBroker",
-		"pkg/attach/prompter.go",
+		"internal/attach/prompter.go",
 		"docs/sibling-sync.md",
 		"#364",
 		"Wire via agent.WithAttachPromptBroker",
@@ -323,17 +323,17 @@ type T struct{}
 	}
 }
 
-// The record in pkg/attach/prompter.go is the reason this check has to
+// The record in internal/attach/prompter.go is the reason this check has to
 // accept anything at all, and it is one port away from being rewritten.
 // Pin it: if it goes, the check still passes, and nothing else would
 // notice that the v0.8 spelling stopped being explained anywhere.
 func TestThePrompterRecordStillExplainsTheOldName(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("pkg", "attach", "prompter.go"))
+	src, err := os.ReadFile(filepath.Join("internal", "attach", "prompter.go"))
 	if err != nil {
 		t.Fatalf("read prompter.go: %v", err)
 	}
 	if !strings.Contains(string(src), "agent.WithAttachPromptBroker") {
-		t.Error("pkg/attach/prompter.go no longer records the v0.8 spelling.\n" +
+		t.Error("internal/attach/prompter.go no longer records the v0.8 spelling.\n" +
 			"\tIf that was deliberate — the name is old enough that nobody is\n" +
 			"\towed it any more — delete the renamedOptions row in the same\n" +
 			"\tchange, because it now guards a mention that is not in the tree.\n" +

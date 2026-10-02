@@ -236,7 +236,7 @@ memory:
 
 | Version | Scope |
 |---|---|
-| **v0.1** | Substrate: bucket 2 port of `pkg/eventlog/` with v2 event fields. Basic per-session reducers (turn_count, cost_usd_so_far, elapsed_seconds). State-bound node consumer path. Library API read/register surface. No per-tenant reducers yet (needs shared-memory-stack derivation infrastructure). |
+| **v0.1** | Substrate: bucket 2 port of `internal/eventlog/` with v2 event fields. Basic per-session reducers (turn_count, cost_usd_so_far, elapsed_seconds). State-bound node consumer path. Library API read/register surface. No per-tenant reducers yet (needs shared-memory-stack derivation infrastructure). |
 | **v0.2** | Per-tenant reducers as shared-memory-stack matures in core-agent (available via port). Workload_stats, cost_percentile, specialist_cooccurrence. Multi-instance reducer scheduling. |
 | **v0.3** | Global reducers with per-tenant opt-in. Bundle-learning consumer (per orchestration-design). Full audit-derived memory story end-to-end. Cross-tenant contribution enforcement. |
 | **v0.4+** | Custom reducer packaging (plugin-shaped); memory query API for ad-hoc analytics; long-term retention tiering (cold storage for expired scope-day values). |

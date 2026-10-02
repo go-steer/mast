@@ -322,7 +322,7 @@ func TestBuild_ResolverUnusedWithoutOverride(t *testing.T) {
 }
 
 // A Task specialist must not be offered transfer_to_agent. Under a Chat
-// coordinator — the topology pkg/router builds — the coordinator is its only
+// coordinator — the topology internal/router builds — the coordinator is its only
 // possible destination, since ADK's transferTargets skips Task-mode peers,
 // and taking it aborts the run: the transfer is forwarded in-process, so the
 // coordinator's runChat executes under the specialist's node context and

@@ -27,7 +27,7 @@ import (
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/mast/pkg/planner"
+	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

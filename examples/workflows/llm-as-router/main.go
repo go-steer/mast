@@ -23,7 +23,7 @@
 //
 // The domain here is deliberately generic — support-ticket routing —
 // so the shape is easy to gut and refill. The GKE-flavoured instance
-// of the same shape lives in pkg/graph (the triage anchor workload);
+// of the same shape lives in internal/graph (the triage anchor workload);
 // this file intentionally does NOT import it. Starters are
 // self-contained by design (workflow-scaffolding-design.md, "Shapes
 // are forkable starters, not demonstrations"): copy this directory,
@@ -189,7 +189,7 @@ func buildRoot() (adkagent.Agent, error) {
 		// RunNode call and stash the specialist's result in session
 		// state before interrupting — dynamic-node bodies re-execute on
 		// resume and RunNode does not cache child results across the
-		// pause turn. pkg/graph carries the full worked gate.
+		// pause turn. internal/graph carries the full worked gate.
 		handle := workflow.NewDynamicNode[any, any]("handle_"+c.name,
 			func(ctx adkagent.Context, _ any, _ func(*session.Event) error) (any, error) {
 				return workflow.RunNode[any](ctx, spNode, ticketText(ctx))
@@ -219,7 +219,7 @@ func newRunner(root adkagent.Agent) (*runner.Runner, error) {
 		Agent:   root,
 		// In-memory sessions: this starter has no pause/resume, so
 		// nothing needs to survive a restart. For durable HITL, swap in
-		// session/database.NewSessionService (see pkg/graph + cmd/mast).
+		// session/database.NewSessionService (see internal/graph + cmd/mast).
 		SessionService:    session.InMemoryService(),
 		AutoCreateSession: true,
 	})

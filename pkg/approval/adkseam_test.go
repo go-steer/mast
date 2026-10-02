@@ -73,7 +73,7 @@ func sqliteServiceAt(t *testing.T, dir string) adksession.Service {
 	t.Helper()
 	// Silent logger: ADK's default GORM logger writes every statement to
 	// stderr, which buries a probe's own output (a W0.4 finding — the
-	// quiet logger is mast's, in pkg/eventlog, not ADK's).
+	// quiet logger is mast's, in internal/eventlog, not ADK's).
 	quiet := &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)}
 	svc, err := database.NewSessionService(sqlite.Open(filepath.Join(dir, "sessions.db")), quiet)
 	if err != nil {
@@ -253,7 +253,7 @@ func confirmationRequest(t *testing.T, svc adksession.Service) (id, hint string)
 }
 
 // verdictResponse builds the operator's turn: a FunctionResponse under
-// the confirmation call's ID. This is the wire shape pkg/inject's
+// the confirmation call's ID. This is the wire shape internal/inject's
 // /resume will have to produce, so the probe writes it by hand rather
 // than through a helper that could hide a field.
 func verdictResponse(confID string, response map[string]any) *genai.Content {

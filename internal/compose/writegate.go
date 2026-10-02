@@ -24,10 +24,10 @@ import (
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/plugin"
 
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/graph"
+	"github.com/go-steer/mast/internal/permissions"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/graph"
-	"github.com/go-steer/mast/pkg/permissions"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -164,7 +164,7 @@ func WriteGate(cfg WriteGateConfig) (WriteGateResult, error) {
 	gate := cfg.Gate
 	if gate == nil && policy == approval.OnMutationRequireApproval {
 		// mast has no permissions config surface yet (see
-		// pkg/permissions/settings.go's port note), so the default gate
+		// internal/permissions/settings.go's port note), so the default gate
 		// carries no deny patterns and runs in ask mode. That is enough
 		// for the write gate, which asks regardless of mode; the deny
 		// policy and plan-first pre-check become reachable the moment a
@@ -478,10 +478,10 @@ func onMutation(v workload.OnMutation) (approval.OnMutation, error) {
 
 // ApprovedChangeSet reads back what the write gate recorded when a
 // specialist's finding proposed an executable change (v0.4 W7.0), for
-// pkg/graph's diagnoser→executor routing predicate.
+// internal/graph's diagnoser→executor routing predicate.
 //
-// This function is the seam between the two packages. pkg/graph cannot
-// read the record itself — pkg/approval's own tests import pkg/graph,
+// This function is the seam between the two packages. internal/graph cannot
+// read the record itself — pkg/approval's own tests import internal/graph,
 // so the import can only go one way — and internal/compose is the one
 // place that already imports both.
 //

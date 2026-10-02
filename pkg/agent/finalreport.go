@@ -122,7 +122,7 @@ func applyFinalReport(req *model.LLMRequest, tools []*genai.Tool, reason string)
 	// answers this instruction in prose produces no report, and the
 	// grant — a real model call, charged past a ceiling the operator
 	// declared — buys nothing. Both providers honour a single allowed
-	// name: pkg/providers/anthropic maps it to a specific tool choice,
+	// name: internal/providers/anthropic maps it to a specific tool choice,
 	// and Gemini takes it directly.
 	//
 	// This can still fail, and the failure is bounded rather than
@@ -142,7 +142,7 @@ func applyFinalReport(req *model.LLMRequest, tools []*genai.Tool, reason string)
 	// instruction, because it is news: it describes what just happened
 	// to this request, not a standing fact about the agent. A system
 	// instruction assembled before the turn began is also the one thing
-	// a provider cache may be holding (pkg/providers/gemini/builtins.go),
+	// a provider cache may be holding (internal/providers/gemini/builtins.go),
 	// and rewriting it here would miss the cache for a single call whose
 	// entire point is to be cheap.
 	text := FinalReportInstruction
@@ -161,7 +161,7 @@ func applyFinalReport(req *model.LLMRequest, tools []*genai.Tool, reason string)
 // It rebuilds rather than filtering in place: the slice and the
 // declarations under it are assembled per-request by ADK, but a
 // provider-side builtin loader appends to the same slice
-// (pkg/providers/gemini/builtins.go) and saves it for restore, so
+// (internal/providers/gemini/builtins.go) and saves it for restore, so
 // mutating the backing array would edit what that restore hands back.
 //
 // Non-function tools — a provider builtin like Google Search — are

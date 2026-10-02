@@ -47,28 +47,28 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
+	"github.com/go-steer/mast/internal/a2a"
+	"github.com/go-steer/mast/internal/agui"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/auth"
 	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/internal/config"
+	"github.com/go-steer/mast/internal/digest"
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/envelope"
+	"github.com/go-steer/mast/internal/eventlog"
+	"github.com/go-steer/mast/internal/inject"
+	mastmcp "github.com/go-steer/mast/internal/mcp"
 	"github.com/go-steer/mast/internal/modeltext"
+	"github.com/go-steer/mast/internal/observability"
+	"github.com/go-steer/mast/internal/planner"
+	"github.com/go-steer/mast/internal/taskclass"
 	"github.com/go-steer/mast/internal/usagetrack"
 	buildversion "github.com/go-steer/mast/internal/version"
-	"github.com/go-steer/mast/pkg/a2a"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/agui"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/auth"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/config"
-	"github.com/go-steer/mast/pkg/digest"
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/envelope"
-	"github.com/go-steer/mast/pkg/eventlog"
-	"github.com/go-steer/mast/pkg/inject"
-	mastmcp "github.com/go-steer/mast/pkg/mcp"
-	"github.com/go-steer/mast/pkg/observability"
-	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/specialists"
-	"github.com/go-steer/mast/pkg/taskclass"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
@@ -237,10 +237,10 @@ type resumeOpts struct {
 // registerRunFlags declares the serve/one-shot flags on fs.
 func registerRunFlags(fs *flag.FlagSet) *runFlags {
 	return &runFlags{
-		workload:         fs.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see pkg/config), or a path to a workload directory (containing workload.yaml + specialists/)"),
+		workload:         fs.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see internal/config), or a path to a workload directory (containing workload.yaml + specialists/)"),
 		dispatch:         fs.String("dispatch", "", "dispatch shape: `coordinator` (spike-1 SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (concurrent read-only analysts + a _synthesis merge), `bounded` (one SingleTurn specialist, one model call, a report forced to a schema), or `auto` (read the shape off the roster; never picks `bounded`). Unset takes the workload's own `dispatch:`, then coordinator"),
 		model:            fs.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`"),
-		provider:         fs.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `vertex`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via pkg/taskclass) when --model is unset. The alias also picks the backend within a family: `vertex` runs gemini-* against Vertex AI (GOOGLE_CLOUD_PROJECT, ADC) without GOOGLE_GENAI_USE_VERTEXAI, and `anthropic` / `anthropic-vertex` pick first-party or Vertex for claude-*"),
+		provider:         fs.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `vertex`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via internal/taskclass) when --model is unset. The alias also picks the backend within a family: `vertex` runs gemini-* against Vertex AI (GOOGLE_CLOUD_PROJECT, ADC) without GOOGLE_GENAI_USE_VERTEXAI, and `anthropic` / `anthropic-vertex` pick first-party or Vertex for claude-*"),
 		task:             fs.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)"),
 		listen:           fs.String("listen", ":7777", "HTTP inject endpoint bind address"),
 		attachListen:     fs.String("attach-listen", "", "operator attach surface bind address: a TCP address (e.g. `127.0.0.1:8484`) or a Unix socket path prefixed `unix:`; empty disables the surface. Implies a durable --session-db at ~/.mast/sessions.db when you name none (live-tail pumps from the eventlog). Non-loopback TCP binds are refused without auth — set MAST_ATTACH_TOKEN"),
@@ -255,7 +255,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		autoResume:       fs.Bool("auto-resume", true, "serve mode: on boot, scan for sessions a prior shutdown interrupted and drive a continuation turn for each eligible one (coordinator dispatch only in v0.2). --auto-resume=false disables"),
 		autoResumeWindow: fs.Duration("auto-resume-window", time.Hour, "serve mode: only auto-resume sessions interrupted within this window; older interruptions are left for an operator (0 disables the freshness gate)"),
 		watchdog:         fs.String("watchdog", "", "behavioral watchdog posture, a ladder where each rung includes the one before it: `warn` (log a detected tool loop and let the turn run), `feedback` (also tell the model, on its next turn, what it is doing), or `enforce` (also cancel the turn in flight on a Critical alert and refuse the session's next turn until POST /sessions/{id}/guardrails/reset). Detection is identical in all three. Unset takes the workload's own safety.watchdog, then mast's default (feedback) — the startup line says which"),
-		mcpDigest:        fs.Bool("mcp-digest", true, "route MCP tool responses through the structural digest (pkg/digest) before they reach the model: JSON is pruned deterministically (identifier keys kept, long strings truncated, long arrays collapsed head+tail), prose is passed through bounded. Responses under 8000 bytes are untouched. Also registers `retrieve_raw` so a specialist can fetch the un-digested payload back when a digest dropped something it needs. --mcp-digest=false is the kill switch; per-server opt-out is `no_digest: true` in mcp.json"),
+		mcpDigest:        fs.Bool("mcp-digest", true, "route MCP tool responses through the structural digest (internal/digest) before they reach the model: JSON is pruned deterministically (identifier keys kept, long strings truncated, long arrays collapsed head+tail), prose is passed through bounded. Responses under 8000 bytes are untouched. Also registers `retrieve_raw` so a specialist can fetch the un-digested payload back when a digest dropped something it needs. --mcp-digest=false is the kill switch; per-server opt-out is `no_digest: true` in mcp.json"),
 		version:          fs.Bool("version", false, "print version and exit"),
 	}
 }
@@ -554,7 +554,7 @@ func newResumeByToken(
 	resumeByInterrupt func(context.Context, inject.ResumeRequest) error,
 ) func(context.Context, inject.ResumeRequest) error {
 	return func(reqCtx context.Context, req inject.ResumeRequest) error {
-		// Who is spending this token. pkg/inject resolves the caller onto
+		// Who is spending this token. internal/inject resolves the caller onto
 		// the request context before it reaches us (handleResume →
 		// callerContext), so on this path `by` is a real identity — or
 		// "shared-bearer-token" when the daemon runs without a user
@@ -718,7 +718,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// Session backend, built BEFORE the root agent: the planner's
 	// pause_session tool needs the transcript store at construction
 	// time (v0.2 pause/abort). With --attach-listen the store opens
-	// through pkg/eventlog instead of raw session/database: same ADK
+	// through internal/eventlog instead of raw session/database: same ADK
 	// tables, plus the seq-overlay the attach broadcaster live-tails.
 	// Without attach the plain service keeps the pre-P1.3c shape
 	// (including in-memory sessions when --session-db is empty).
@@ -963,7 +963,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// Both durable stores live on whichever connection the session
 	// backend opened — the eventlog overlay's under --attach-listen, ADK's
 	// own otherwise. They are tables mast owns either way; what differs is
-	// only who else is on the connection (pkg/attach's session ACL store,
+	// only who else is on the connection (internal/attach's session ACL store,
 	// on the overlay side).
 	//
 	// The two are wired on DIFFERENT conditions, and #274 is what happens
@@ -1027,7 +1027,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		}
 	}
 
-	// Fixed metric registry (pkg/observability owns every family name;
+	// Fixed metric registry (internal/observability owns every family name;
 	// nothing here can mint new ones). Single-workload process in v0.1,
 	// so the workload label is resolved once. Built before the tracker
 	// so the shutdown-drain marker-failure counter can flow through it.
@@ -1919,7 +1919,7 @@ func (w *loadedWorkload) builtinTools() workload.BuiltinTools {
 //     layout (workload.yaml + specialists/ inside that directory).
 //     scripts/demo-spike2.sh depends on this shape; unchanged.
 //   - Name mode: anything else is a workload name resolved via the
-//     .agents/ discovery rules in pkg/config (exclusive
+//     .agents/ discovery rules in internal/config (exclusive
 //     single-location; see docs/config-layout-design.md).
 //
 // resolveWorkload loads a workload bundle + its specialist roster. The
@@ -1971,9 +1971,9 @@ func workloadNames(cfg *config.Config) []string {
 // the workload bundle + specialists + tool catalog and hands the
 // loaded roster to the shared core (internal/compose.BuildRoot — the
 // same code the library-facing mast.RunWorkload uses) to construct
-// the dispatch shape: the spike-1 SubAgents coordinator (pkg/router),
-// the spike-2 workflow graph (pkg/graph), or the W3 fan-out shape
-// (pkg/graph.BuildFanout). Without --workload it constructs a trivial
+// the dispatch shape: the spike-1 SubAgents coordinator (internal/router),
+// the spike-2 workflow graph (internal/graph), or the W3 fan-out shape
+// (internal/graph.BuildFanout). Without --workload it constructs a trivial
 // single-agent coordinator (useful for pure inject-endpoint smoke).
 //
 // The shape comes from --dispatch when the operator typed one, from the
@@ -2055,7 +2055,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, mdl mode
 
 	// A declared HTTP trigger is informational — the inject server
 	// declares its routes globally and reads nothing from the bundle
-	// (pkg/workload's HTTPTrigger says so; pkg/inject's fixed route
+	// (pkg/workload's HTTPTrigger says so; internal/inject's fixed route
 	// table is where it does not happen). Silence made that
 	// indistinguishable, from outside, from a field that works: the
 	// declared path answered 405, which reads as a verb mistake, and
@@ -2222,7 +2222,7 @@ func resolveDispatch(flagValue string, bundle *workload.Bundle) string {
 // catalog is a fatal error rather than a silently-dropped tool.
 //
 // digestOpts, when non-nil, routes every wired server's tool responses
-// through pkg/digest (#221) and the second return value carries the
+// through internal/digest (#221) and the second return value carries the
 // retrieve_raw escape hatch that makes that safe. The two travel
 // together deliberately: a digest with no way back to the raw payload
 // is a lossy compression the model cannot appeal. A server that set
@@ -3029,7 +3029,7 @@ func prependFeedback(fb *watchdog.Feedback, msg *genai.Content) *genai.Content {
 }
 
 // toolPolicies converts the bundle's tool_catalog per-tool overrides
-// into the shape pkg/effects consumes (nil bundle = no overrides).
+// into the shape internal/effects consumes (nil bundle = no overrides).
 func toolPolicies(bundle *workload.Bundle) []effects.ToolPolicy {
 	if bundle == nil {
 		return nil
@@ -3184,7 +3184,7 @@ func verdictFor(ctx context.Context, req inject.ResumeRequest) (approval.Verdict
 }
 
 // approverFromContext names the authenticated caller behind a resume.
-// The empty string is impossible on the /resume path (pkg/inject always
+// The empty string is impossible on the /resume path (internal/inject always
 // attributes at least the shared credential) but reachable from the
 // in-process callers — the timed-pause scheduler, boot-time auto-resume
 // — where naming the mechanism is the truthful answer.

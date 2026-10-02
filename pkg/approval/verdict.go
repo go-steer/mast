@@ -22,7 +22,7 @@ import (
 
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
-	"github.com/go-steer/mast/pkg/permissions"
+	"github.com/go-steer/mast/internal/permissions"
 )
 
 // Outcome is the operator's answer to a parked mutating call.

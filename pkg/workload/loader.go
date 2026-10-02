@@ -25,7 +25,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/go-steer/mast/pkg/monitor"
+	"github.com/go-steer/mast/internal/monitor"
 )
 
 // Load reads a workload bundle YAML file, parses it, validates required

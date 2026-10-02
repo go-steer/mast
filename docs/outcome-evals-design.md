@@ -133,7 +133,7 @@ question and never the verdict**, including on a call the operator refused. See 
 
 ### 3.2 `reverts_to_captured_state` has nothing behind it
 
-No revert, undo, prior-state or captured-state concept exists in `pkg/effects` — verified by grep,
+No revert, undo, prior-state or captured-state concept exists in `internal/effects` — verified by grep,
 which returns nothing relevant. The v0.4 typed change set (`pkg/approval/changeset.go`'s
 `ProposedChange`) is a forward tool-plus-arguments, not a transaction with an inverse.
 

@@ -202,7 +202,7 @@ All in `internal/compose`, all run before the first turn:
 | `CheckMCPServerNames` | A specialist naming an MCP server the workload never wired — so a typo is a refusal rather than a silently empty allowlist |
 | `CheckRoster` | An unknown `dispatch:` value, and a `bounded` roster that does not satisfy the bounded contract |
 
-A sixth lives in `pkg/effects` and is called by `cmd/mast` and by every
+A sixth lives in `internal/effects` and is called by `cmd/mast` and by every
 library entrypoint rather than by compose: `CheckNameCollisions` refuses
 a sub-agent named after a mutating or spawning tool. ADK emits a task
 delegation and a genuine tool call as the same `FunctionCall` shape, and
@@ -399,7 +399,7 @@ key changed.
 
 The allowlist direction is the whole control. Session state is not a
 curated view of the run: it is whatever the runtime wrote there, and that
-includes `pkg/graph`'s node results and judge verdicts and `pkg/approval`'s
+includes `internal/graph`'s node results and judge verdicts and `pkg/approval`'s
 grants and captured change sets. Under a denylist, every state key added
 later would silently become a publication decision taken by whoever added
 it — a placement this document refuses everywhere else. The enabled list

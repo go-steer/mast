@@ -21,7 +21,7 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/agui"
+	"github.com/go-steer/mast/internal/agui"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

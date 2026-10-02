@@ -115,15 +115,31 @@ var skipDirs = map[string]bool{
 
 // dirRewrites map a mast directory onto its upstream counterpart where
 // the fork renamed it. Longest match wins. Anything not listed here is
-// assumed to sit at the same path upstream, which holds for the large
-// majority (pkg/attach, pkg/permissions, pkg/pricing, ...).
+// assumed to sit at the same path upstream (pkg/agent, pkg/watchdog,
+// ...).
 //
-// Keep this table small. A file that needs a one-off mapping should
+// Most of the table is one move: #301 took every package outside the
+// v1.0 surface from pkg/ to internal/, and core-agent still has them
+// under pkg/. Those rows are whole directories, not one-off files, so
+// they belong here rather than in each file's trailer. Beyond them,
+// keep the table small — a file that needs a one-off mapping should
 // carry the `@<sha>:<path>` form in its own trailer instead, so the
 // fact travels with the file rather than living in a lookup here.
 var dirRewrites = map[string]string{
-	"pkg/providers/vertexcache": "internal/vertexcache",
-	"pkg/providers":             "pkg/models",
+	"internal/providers/vertexcache": "internal/vertexcache",
+	"internal/providers":             "pkg/models",
+
+	"internal/attach":        "pkg/attach",
+	"internal/attachadapter": "pkg/attachadapter",
+	"internal/auth":          "pkg/auth",
+	"internal/digest":        "pkg/digest",
+	"internal/eventlog":      "pkg/eventlog",
+	"internal/instruction":   "pkg/instruction",
+	"internal/mcp":           "pkg/mcp",
+	"internal/modeltier":     "pkg/modeltier",
+	"internal/permissions":   "pkg/permissions",
+	"internal/pricing":       "pkg/pricing",
+	"internal/taskclass":     "pkg/taskclass",
 }
 
 type attribution struct {

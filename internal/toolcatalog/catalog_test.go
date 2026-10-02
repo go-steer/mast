@@ -18,8 +18,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/internal/toolcatalog"
-	"github.com/go-steer/mast/pkg/planner"
 )
 
 // The provider tests below this package assert that every catalogued
@@ -76,7 +76,7 @@ func TestBuild_CoversEveryConstructionPath(t *testing.T) {
 		t.Errorf("no ParametersJsonSchema tool in the catalog; this is the branch #154 broke\n%s", toolcatalog.Summary(cat))
 	}
 	if mcpTools != 2 {
-		t.Errorf("got %d MCP tools, want 2; the pkg/mcp construction path is not in the catalog\n%s", mcpTools, toolcatalog.Summary(cat))
+		t.Errorf("got %d MCP tools, want 2; the internal/mcp construction path is not in the catalog\n%s", mcpTools, toolcatalog.Summary(cat))
 	}
 	if plannerTools == 0 {
 		t.Errorf("the planner rig contributed nothing\n%s", toolcatalog.Summary(cat))

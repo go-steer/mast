@@ -16,10 +16,10 @@
 //
 // TrippedError implements attach.SelfClassifyingError by returning a
 // bare string, because pkg/watchdog is stdlib-only and importing
-// pkg/attach — and with it auth, eventlog and permissions — to spell
+// internal/attach — and with it auth, eventlog and permissions — to spell
 // one constant is not a trade worth making for a leaf guardrail
 // package. A bare string is a weaker contract than a type, so the
-// obligation lands here: this file is a test-only import of pkg/attach,
+// obligation lands here: this file is a test-only import of internal/attach,
 // and it fails if the two sides ever stop agreeing.
 
 package watchdog_test
@@ -29,7 +29,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 
@@ -39,7 +39,7 @@ func TestTrippedErrorDeclaresTheAttachKind(t *testing.T) {
 	t.Parallel()
 	got := (&watchdog.TrippedError{}).TurnErrorKind()
 	if got != attach.TurnErrorWatchdogHalt {
-		t.Errorf("TurnErrorKind() = %q, want attach.TurnErrorWatchdogHalt (%q) — a halt that names a kind pkg/attach does not ship falls back to substring-scanning its own reason, which is the #208 defect",
+		t.Errorf("TurnErrorKind() = %q, want attach.TurnErrorWatchdogHalt (%q) — a halt that names a kind internal/attach does not ship falls back to substring-scanning its own reason, which is the #208 defect",
 			got, attach.TurnErrorWatchdogHalt)
 	}
 }

@@ -13,7 +13,7 @@ under `docs/` alongside [`./triage-demo-plan.md`](./triage-demo-plan.md) and
 The v0.2 durable-execution spine has shipped in four merged slices — the recorded-effect
 outbox (#70), programmatic pause/abort (#42), boot-time auto-resume (#41), and the
 observability fixed-registry pass (#50). Each landed with unit and integration coverage
-(`pkg/transcript`, `pkg/effects`, `cmd/mast` `newTurnHarness`/`httptest`), and
+(`pkg/transcript`, `internal/effects`, `cmd/mast` `newTurnHarness`/`httptest`), and
 [`./triage-demo-plan.md`](./triage-demo-plan.md) plus `scripts/demo-spike2.sh` already prove
 the v0.1 graph/HITL/budget path end-to-end against a running binary.
 
@@ -46,7 +46,7 @@ dangling effect for the outbox to catch. It cannot. ADK persists the `FunctionCa
 before dispatch (`base_flow.go:612`), but for an **unregistered** tool name it synthesizes an
 error `FunctionResponse` **in the same turn** (`base_flow.go:1090-1211`) — the call is *paired*,
 never dangling, so no ambiguous-effect mode is ever entered. The effects predicate
-(`pkg/effects/effects.go:118-134`) classifies by name (default-deny-unknown → mutating), and the
+(`internal/effects/effects.go:118-134`) classifies by name (default-deny-unknown → mutating), and the
 outbox refusal (`ambiguous_prior_effect`) fires in `beforeTool`, which only runs for **registered**
 `FunctionTool`s. Getting a genuine dangling intent therefore requires a **real registered
 blocking tool** plus an interruption landed between the two persists — which the offline
@@ -56,7 +56,7 @@ echo/scripted models cannot provide.
 
 > **Prerequisite met (#87, 2026-08-09).** mast now parses `mcp.json` and wires MCP servers
 > generically by transport, including local **stdio** (`command:`) servers, with the old
-> `gke`-only guard removed (`pkg/mcp`; see [`./mcp-catalog-design.md`](./mcp-catalog-design.md)
+> `gke`-only guard removed (`internal/mcp`; see [`./mcp-catalog-design.md`](./mcp-catalog-design.md)
 > "Implementation status"). A credential-free offline UAT can therefore wire a controllable
 > blocking tool by pointing the fixture at a small stdio MCP server under `--model scripted`.
 > Implementing the deferred legs below against such a server is the remaining follow-on; the

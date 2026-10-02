@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/observability"
-	"github.com/go-steer/mast/pkg/planner"
+	"github.com/go-steer/mast/internal/observability"
+	"github.com/go-steer/mast/internal/planner"
 )
 
 // reportingObserver builds a sub-run observer wired to a real registry

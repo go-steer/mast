@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/digest"
-	"github.com/go-steer/mast/pkg/mcp"
+	"github.com/go-steer/mast/internal/digest"
+	"github.com/go-steer/mast/internal/mcp"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

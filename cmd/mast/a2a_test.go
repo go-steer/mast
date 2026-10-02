@@ -25,9 +25,9 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/a2a"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/a2a"
+	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -456,7 +456,7 @@ func TestA2ABackendCancelTask(t *testing.T) {
 
 // TestA2AOutcomeVocabularyMatchesTaskStates pins the "must not drift"
 // contract between the observability outcome constants (the primed label
-// set for mast_a2a_server_tasks_total) and the pkg/a2a TaskState wire
+// set for mast_a2a_server_tasks_total) and the internal/a2a TaskState wire
 // values the server records through them.
 func TestA2AOutcomeVocabularyMatchesTaskStates(t *testing.T) {
 	pairs := []struct {

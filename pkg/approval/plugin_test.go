@@ -33,8 +33,8 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/permissions"
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/permissions"
 )
 
 // alwaysMutating is the predicate the gate is built with in most of

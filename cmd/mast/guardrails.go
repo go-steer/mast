@@ -20,7 +20,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/pkg/budget"
 )
 

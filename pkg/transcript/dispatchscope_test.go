@@ -21,7 +21,7 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 )
 
-// dispatchApp is the AppName pkg/planner gives the runner it builds
+// dispatchApp is the AppName internal/planner gives the runner it builds
 // inside invoke_specialist. Duplicated as a literal rather than imported
 // so this package stays dependency-light and so a rename upstream shows
 // up here as a failing probe rather than as silent agreement.

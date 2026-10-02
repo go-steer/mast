@@ -18,7 +18,7 @@
 // prompt, and it is named `<name>.specialist.md`.
 //
 // It is not a Go template and never was: text/template is imported by
-// exactly one package in this module (pkg/planner) and reads none of
+// exactly one package in this module (internal/planner) and reads none of
 // these. The files carried a `.tmpl` extension through v0.8, which
 // invited exactly that misreading. Since v0.9 a `.tmpl` file does not
 // load at all: LoadDir refuses the directory and names the rename
@@ -45,7 +45,7 @@
 // that puts its twelve diagnosers on the cheap tier still runs on
 // whichever provider the operator points mast at. It resolves through
 // BuildOptions.ResolveTier (internal/compose maps tier → model ID for
-// the running provider via pkg/taskclass.ModelForTier) and fails the
+// the running provider via internal/taskclass.ModelForTier) and fails the
 // build the same way `model:` does when it cannot be resolved.
 // Declaring both on one spec is a load error: they are two answers to
 // one question, and picking a winner silently would mean the loser's
@@ -63,7 +63,7 @@
 //
 // Budget fields are parsed here but enforced elsewhere, per field:
 //
-//   - max_wallclock_seconds — enforced in graph dispatch: pkg/graph
+//   - max_wallclock_seconds — enforced in graph dispatch: internal/graph
 //     maps it to workflow.NodeConfig.Timeout on the specialist's
 //     AgentNode (the sanctioned per-node wallclock knob).
 //   - max_turns and max_cost_usd — enforced by the session meter, not
@@ -121,7 +121,7 @@ const (
 // Budget captures the per-specialist runtime bounds. See
 // docs/specialists-design.md schema for field semantics, and the
 // package doc above for where each is enforced: MaxWallclockSeconds by
-// graph dispatch (pkg/graph → NodeConfig.Timeout), MaxTurns and
+// graph dispatch (internal/graph → NodeConfig.Timeout), MaxTurns and
 // MaxCostUSD by the session meter (pkg/budget scopes).
 type Budget struct {
 	MaxTurns            int     `yaml:"max_turns,omitempty"`
@@ -157,7 +157,7 @@ type ToolAllowlist struct {
 	//
 	// What reads it are the checks that treat a declaration as a claim
 	// to be held to: internal/compose.CheckCapabilitySplit and
-	// pkg/graph.checkBranchTools refuse a read_only specialist or a
+	// internal/graph.checkBranchTools refuse a read_only specialist or a
 	// fan-out branch that names a mutating tool here, and the
 	// capability startup log reports it as declared write surface.
 	// Those all run in the refusing direction, which is safe under

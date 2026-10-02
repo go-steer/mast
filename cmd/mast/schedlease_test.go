@@ -31,7 +31,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
-	"github.com/go-steer/mast/pkg/eventlog"
+	"github.com/go-steer/mast/internal/eventlog"
 )
 
 func schedLeaseDB(t *testing.T) *gorm.DB {

@@ -8,9 +8,9 @@ specialist — with a `Default` fallback for everything the classifier can't
 place.
 
 The domain here is generic on purpose (support-ticket routing). The
-GKE-flavoured instance of the same shape is `pkg/graph` + the
+GKE-flavoured instance of the same shape is `internal/graph` + the
 `examples/workloads/gke-triage` workload; this starter does **not** import
-`pkg/graph` — it copy-adapts the pattern, because starters are self-contained
+`internal/graph` — it copy-adapts the pattern, because starters are self-contained
 by design (see "Fork it" below).
 
 ## The graph
@@ -81,7 +81,7 @@ Per the fork-and-forget lifecycle
 demonstrations"): copy this directory out, and it's your code — no upgrade
 path, no compatibility promise; mast's CI only keeps this in-repo original
 building. The starter imports mast `pkg/agent` (mode constructors + the
-fake-model idiom) and ADK — never another starter and never `pkg/graph`.
+fake-model idiom) and ADK — never another starter and never `internal/graph`.
 
 Customization points, in the order you'll hit them:
 
@@ -100,7 +100,7 @@ Customization points, in the order you'll hit them:
    check `ctx.ResumedInput(id)` before any `RunNode` call and stash the
    specialist result in session state before interrupting. Dynamic-node
    bodies re-execute on resume and `RunNode` does **not** cache child results
-   across the pause turn (spike-2 finding). `pkg/graph` carries the full
+   across the pause turn (spike-2 finding). `internal/graph` carries the full
    worked gate; also switch the runner to `session/database.NewSessionService`
    so the pause survives a restart.
 

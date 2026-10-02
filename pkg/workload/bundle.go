@@ -500,7 +500,7 @@ type Fanout struct {
 // land (v0.2 per the phasing table).
 type Planner struct {
 	// Enabled switches the workload's root agent to the supervisor-body
-	// planner (pkg/planner) with the bundle's specialists as its
+	// planner (internal/planner) with the bundle's specialists as its
 	// invoke_specialist roster. When false (the default), dispatch is
 	// unchanged: the --dispatch coordinator/graph shapes drive the
 	// roster directly.
@@ -716,7 +716,7 @@ func (c MonitorCollect) Key() string {
 //
 // And the transition vocabulary. transitions_from names WHERE the
 // classification comes from; what the classes are, and which findings
-// deserve which one, belongs to the tool that answers — see pkg/monitor
+// deserve which one, belongs to the tool that answers — see internal/monitor
 // for why mast holds no opinion about it.
 type Monitor struct {
 	// Collect is the ordered list of calls one cycle opens with. Order
@@ -746,7 +746,7 @@ type Monitor struct {
 	// It is optional, and a workload that collects raw facts and lets
 	// the model read them is a supported shape — but a workload that
 	// wants to notify on change needs the classification named, because
-	// mast will not derive one. See pkg/monitor.
+	// mast will not derive one. See internal/monitor.
 	TransitionsFrom string `yaml:"transitions_from,omitempty"`
 
 	// Notify is where a cycle speaks, and how long it may stay silent
@@ -1040,7 +1040,7 @@ type AGUI struct {
 	// (the default) emits no StateDelta at all.
 	//
 	// It is an allowlist rather than a denylist because session state is
-	// whatever the runtime put there — pkg/graph writes routing keys, node
+	// whatever the runtime put there — internal/graph writes routing keys, node
 	// results and judge verdicts; pkg/approval writes grants and change sets —
 	// and the AG-UI client is a browser, not an operator. Publishing by default
 	// would make every future state key an exfiltration decision taken by
@@ -1064,7 +1064,7 @@ type AGUI struct {
 	// It turns on a deliberate read of thinking parts at the emitter
 	// (internal/modeltext.Thought), never the removal of a filter — and it
 	// never publishes a thinking block's provider signature, which has no
-	// frame at all (see pkg/agui's wire vocabulary).
+	// frame at all (see internal/agui's wire vocabulary).
 	EmitReasoning bool `yaml:"emit_reasoning,omitempty"`
 
 	// RunQueue bounds how many runs may be in flight on one AG-UI thread

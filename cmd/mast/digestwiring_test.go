@@ -21,8 +21,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/go-steer/mast/internal/attach"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/attach"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

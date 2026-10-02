@@ -46,7 +46,7 @@ func TestLegacyExtensionIsRefusedNotSkipped(t *testing.T) {
 	specs, err := specialists.LoadDir(dir)
 	if err == nil {
 		t.Fatalf("LoadDir accepted a %s roster (returned %d spec(s)) instead of refusing it; "+
-			"measured on pkg/config, the operator's next error is "+
+			"measured on internal/config, the operator's next error is "+
 			`config: workload %%q references specialist "OOMKilled" not found in <dir>`+
 			" — about a missing specialist, not a renamed one", legacySuffix, len(specs))
 	}

@@ -29,7 +29,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
-	"github.com/go-steer/mast/pkg/permissions"
+	"github.com/go-steer/mast/internal/permissions"
 )
 
 // PluginName is the registered name of the write gate's runner plugin.
@@ -174,7 +174,7 @@ type Config struct {
 
 // New builds the write gate as an ADK runner plugin.
 //
-// Register it AFTER the pkg/effects outbox plugin at every runner
+// Register it AFTER the internal/effects outbox plugin at every runner
 // construction site. ADK runs before-tool callbacks in registration
 // order and the first non-nil response wins, so outbox-first is what
 // makes a replayed effect skip the gate: the mutation already happened,

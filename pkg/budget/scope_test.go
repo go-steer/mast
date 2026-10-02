@@ -82,7 +82,7 @@ func TestScopeReportsFalseForAWorkloadCeiling(t *testing.T) {
 
 // The wrapper is invisible to everything that read these errors before
 // it existed. Both are load-bearing outside this package: turn drivers
-// match the sentinel with errors.Is, and pkg/attach's classifier matches
+// match the sentinel with errors.Is, and internal/attach's classifier matches
 // the message prefix (a weak contract kept on purpose — #135/#208).
 func TestScopingAnErrorChangesNeitherSentinelNorText(t *testing.T) {
 	inner := fmt.Errorf("%w: specialist %q: over", ErrRefused, "sp")
@@ -95,7 +95,7 @@ func TestScopingAnErrorChangesNeitherSentinelNorText(t *testing.T) {
 		t.Errorf("message changed: %q, was %q", wrapped, inner)
 	}
 	if !strings.HasPrefix(wrapped.Error(), "budget refused") {
-		t.Errorf("message %q no longer carries the prefix pkg/attach classifies on", wrapped)
+		t.Errorf("message %q no longer carries the prefix internal/attach classifies on", wrapped)
 	}
 	if got := scopedTo("", inner); got != inner {
 		t.Errorf("scopedTo(\"\") wrapped anyway: %v", got)

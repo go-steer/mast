@@ -26,8 +26,8 @@ import (
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 

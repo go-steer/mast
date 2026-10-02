@@ -4,6 +4,24 @@
 
 ### API Change
 
+- **Thirty packages moved from `pkg/` to `internal/` and can no longer be
+  imported from outside the module:** `a2a`, `agui`, `attach`,
+  `attachadapter`, `auth`, `config`, `digest`, `effects`, `envelope`,
+  `eventlog`, `federation`, `graph`, `inject`, `instruction`, `mcp`,
+  `modeltier`, `monitor`, `notify`, `observability`, `permissions`, `planner`,
+  `pricing`, `providers/anthropic`, `providers/gemini`, `providers/mock`,
+  `providers/usage`, `providers/vertexcache`, `router`, `serverauth` and
+  `taskclass`. None was in the v1.0 promise, and nothing outside this
+  repository imported any of them. The direction is that you customize mast by
+  writing your own `main.go` around the binary, not by importing its runtime.
+  A `cli` package whose `Main` *is* the binary, with options for models,
+  tools and sessions, follows in the same issue. Nothing that was promised
+  moved, and the binary is unchanged. **One capability has no caller now:**
+  Vertex context caching was only ever wired by an embedder constructing
+  `pkg/providers/vertexcache` itself, and that is no longer possible; open an
+  issue if a workload needs it.
+  [#301](https://github.com/go-steer/mast/issues/301)
+
 - **`mast.ResumeByToken` records the name you give `mast.WithActor`, and no
   longer reads `pkg/auth`'s caller off the context.** An embedder with a
   logged-in user now writes

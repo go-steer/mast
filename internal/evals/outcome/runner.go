@@ -73,9 +73,9 @@ import (
 	"google.golang.org/adk/v2/session/database"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/evals"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/effects"
 )
 
 const (
@@ -452,7 +452,7 @@ func (r *Runner) one(ctx context.Context, ts tool.Toolset, cs Case, index int) R
 	sessionID := fmt.Sprintf("%s-%d", cs.ID, index)
 	svc, err := database.NewSessionService(
 		sqlite.Open(filepath.Join(r.scratch, sessionID+".db")),
-		// Silenced the way pkg/eventlog.Open does it; left at ADK's
+		// Silenced the way internal/eventlog.Open does it; left at ADK's
 		// default the run buries its own report in SQL chatter.
 		&gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)},
 	)

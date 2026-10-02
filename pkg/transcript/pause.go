@@ -177,7 +177,7 @@ type PauseRecord struct {
 	// pass the mechanism instead — "mast:scheduler", "library
 	// ResumeByToken", "operator resume --token --session-db". Never a
 	// client-supplied string: an attribution a caller writes about
-	// itself proves nothing. See pkg/auth.Attribution.
+	// itself proves nothing. See internal/auth.Attribution.
 	ConsumedBy string `json:"consumed_by,omitempty"`
 }
 

@@ -116,8 +116,8 @@ func effectiveInstruction(explicit, fallback string) string {
 //
 // Everything mast puts in that field is operator-authored prose. A
 // specialist's body reaches it verbatim (pkg/specialists/loader.go), a
-// bundle's coordinator prompt reaches it through pkg/router, the
-// planner's rendered instruction through pkg/planner. Braces are
+// bundle's coordinator prompt reaches it through internal/router, the
+// planner's rendered instruction through internal/planner. Braces are
 // ordinary in all three — a shell variable in `${MAST_HOME}/bin/mast`,
 // a JSON shape the specialist is told to emit, a `kubectl -o jsonpath`
 // — and none of them are a session-state reference. mast has no

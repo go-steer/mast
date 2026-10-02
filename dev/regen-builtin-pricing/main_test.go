@@ -386,7 +386,7 @@ func TestRender_ProducesCompilableGoWithExpectedShape(t *testing.T) {
 		}
 	}
 	// Windows are a property of the model, not of the backend serving
-	// it, and pkg/pricing's invariant tests require a window row for
+	// it, and internal/pricing's invariant tests require a window row for
 	// every key in the bare table. A qualified key here would demand a
 	// duplicate row keyed on a name nothing looks up.
 	if strings.Contains(windows, "fake/") {
@@ -754,4 +754,23 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatalf("close pipe: %v", err)
 	}
 	return <-done
+}
+
+// TestDefaultOutPathIsTheCheckedInCatalog pins the file the weekly regen
+// overwrites to the one the build compiles. When the pricing package
+// moved from pkg/ to internal/ (#301) this path did not move with it,
+// and nothing would have failed: the generator writes a fresh file
+// wherever it is pointed, the workflow commits whatever changed, and the
+// catalog the daemon prices with would quietly have stopped updating.
+func TestDefaultOutPathIsTheCheckedInCatalog(t *testing.T) {
+	t.Parallel()
+	// Tests run in this directory; the generator runs from the repo root.
+	p := filepath.Join("..", "..", defaultOutPath())
+	src, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("defaultOutPath() = %q, which is not a checked-in file: %v", defaultOutPath(), err)
+	}
+	if !bytes.Contains(src, []byte("package pricing")) || !bytes.Contains(src, []byte("builtinContextWindows")) {
+		t.Fatalf("%s exists but is not the generated pricing catalog", defaultOutPath())
+	}
 }

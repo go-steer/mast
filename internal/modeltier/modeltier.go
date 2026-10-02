@@ -1,0 +1,211 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Originally derived from go-steer/core-agent@cafe3106cf61cb7c1edbb39c2ce446dd87358747
+
+// Package modeltier classifies LLM model IDs into capability tiers
+// (frontier / mid / small) used to tune behavior whose right setting
+// depends on how powerfully the model reasons.
+//
+// First consumer: the compactor (pkg/agent). A single
+// utilization-threshold (0.85) is fine for frontier models — they
+// reason coherently with 850k tokens of context. Small models
+// degrade much earlier (Flash gets unreliable somewhere in the
+// 200-300k range on a 1M window), so the compaction trigger needs
+// to fire well before 85% to keep the session functional.
+//
+// Future consumers: anything that wants a tier label (per-tier
+// budget caps, per-tier loop-detection sensitivity, per-tier UI
+// hints in `/stats`). Add lookups here so the model→tier table
+// stays in one place.
+//
+// Classification is by substring match against the model ID.
+// Unknown models classify as "" — callers should treat the empty
+// string as "skip the tier-specific behavior" rather than guess.
+//
+// Maintenance: when a new model ships, add it to one of the case
+// branches in Classify. Substring patterns let the lookup land
+// regardless of date suffix (`-20251001`, `@20251101`, etc.).
+// This table moves with two others: internal/pricing's builtin and
+// internal/taskclass's ModelForTier. The first of those is generated
+// weekly from a RULE, not a hand-kept list, so a model can arrive
+// here without anyone deciding to add it — internal/pricing's
+// TestBuiltinModelsKnownToCompanionTables fails the build when a
+// newly-priced model has no case here, which is the only thing that
+// makes this file's maintenance visible rather than overdue.
+package modeltier
+
+import "strings"
+
+// Tier labels. Use these constants rather than string literals so
+// future tier renames are mechanically findable.
+const (
+	// TierFrontier covers the most capable models in each provider's
+	// lineup — Opus, Pro at the latest generation. They reason
+	// coherently with most of their context window full.
+	TierFrontier = "frontier"
+
+	// TierMid covers mid-class models — Sonnet, older Pro, GPT-4.1-ish.
+	// Better than small at deep reasoning, but degrade past ~60% context
+	// utilization.
+	TierMid = "mid"
+
+	// TierSmall covers the cheap-tier models — Flash, Haiku, mini.
+	// Excellent for digesting tool output and short-question Q&A;
+	// degrade fast past ~30% context utilization on long sessions.
+	TierSmall = "small"
+)
+
+// DefaultCompactionThresholds is the per-tier compaction utilization
+// table consumed by pkg/agent's DefaultCompactor. Values are
+// fractions of the model's context window — compaction fires when
+// `used / window >= threshold`.
+//
+// The numbers are starting points, not measured optima — they're
+// the design doc's best-guess defaults for v2.5. Tune from
+// telemetry once we have it. Frontier stays at 0.85 to match the
+// historical universal default so existing operators on frontier
+// models see no behavior change. Mid and small drop because
+// reasoning quality on those tiers falls off well before they hit
+// the 0.85 line.
+func DefaultCompactionThresholds() map[string]float64 {
+	return map[string]float64{
+		TierFrontier: 0.85,
+		TierMid:      0.65,
+		TierSmall:    0.35,
+	}
+}
+
+// Classify returns the tier label for modelID, or "" when the
+// model isn't recognized. Substring match — model IDs come in many
+// flavors (date suffixes, "-1m" capacity tags, vertex publication
+// names) and we want the lookup to land regardless.
+//
+// The classifier is intentionally hand-maintained rather than
+// derived from price metadata. Provider pricing changes
+// independently from the underlying model's reasoning class, and
+// the price-to-tier mapping would drift in ways that don't reflect
+// what we actually care about here.
+func Classify(modelID string) string {
+	m := strings.ToLower(modelID)
+	switch {
+	// Anthropic Claude 5.x. Fable is the Mythos-class tier above
+	// Opus — frontier a fortiori. LiteLLM publishes that tier under
+	// three ids at identical rates (claude-fable-5, claude-mythos-5,
+	// claude-mythos-preview); all three are priced, so all three must
+	// classify or TestBuiltinModelsKnownToCompanionTables fails. No
+	// 5-generation Haiku exists yet; when one ships, add it (unknown
+	// ids conservatively classify "" rather than small, so nothing
+	// misfires meanwhile). Without these cases the whole family
+	// classified "" and Claude 5 sessions ran the universal 0.85
+	// compaction threshold on a 1M window instead of their tier's.
+	case containsAny(m, "claude-fable-5", "claude-mythos", "claude-opus-5"):
+		return TierFrontier
+	case containsAny(m, "claude-sonnet-5"):
+		return TierMid
+
+	// Anthropic Claude 4.x.
+	case containsAny(m, "claude-opus-4"):
+		return TierFrontier
+	case containsAny(m, "claude-sonnet-4"):
+		return TierMid
+	case containsAny(m, "claude-haiku-4"):
+		return TierSmall
+
+	// Anthropic Claude 3.x (Sonnet/Haiku still in active use in
+	// some setups; Opus 3 is end-of-life).
+	case containsAny(m, "claude-3-5-sonnet", "claude-3-7-sonnet"):
+		return TierMid
+	case containsAny(m, "claude-3-5-haiku", "claude-3-haiku"):
+		return TierSmall
+
+	// Google Gemini flash-lite line — the budget/speed tier by
+	// Google's own naming, every generation. MUST precede the base
+	// flash cases: "gemini-3.5-flash-lite" substring-contains
+	// "gemini-3.5-flash", and letting it fall through would classify
+	// a lite model at its base model's tier (mid for the 3.5 line,
+	// frontier for a future 3.6 lite) — hiding it from the
+	// small-tier-parent guard. One generic case instead of
+	// per-generation entries so the next lite release can't
+	// reintroduce the hole.
+	case containsAny(m, "flash-lite"):
+		return TierSmall
+
+	// Google Gemini 3.x. gemini-3.7-flash is taskclass's gemini
+	// frontier default as of 2026-08-17 (the two tables move
+	// together; see ModelForTier), and 3.6-flash stays classified
+	// behind it — a demoted default is still a model operators have
+	// pinned in bundles, and dropping the case would fall it through
+	// to "" (unclassified: the small-tier-parent guard can't reason
+	// about it, and the compaction threshold reverts to the universal
+	// 0.85). Classify must know a model BEFORE ModelForTier picks it,
+	// so a successor lands here first and gets promoted separately.
+	//
+	// gemini-3.8-flash is exactly that case: priced by the 2026-09-09
+	// regen, classified here, and deliberately NOT the frontier
+	// default — nothing has run it live (see deferredPromotions in
+	// internal/taskclass). It is reachable today with --model, and that
+	// path is what needs a tier: without this case an operator who
+	// pins it gets the universal 0.85 compaction threshold instead of
+	// frontier's, which is the same number by coincidence and would
+	// stop being so the moment the frontier row moves.
+	case containsAny(m, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"):
+		return TierFrontier
+	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro"):
+		return TierFrontier
+	// gemini-3.5-flash was Google's headline agentic release at I/O
+	// 2026 (May 20, 2026). Beats gemini-3.1-pro on agent + coding
+	// benchmarks per Google's own scorecards; pitched as the default
+	// choice for agentic loops. Classifying it as small-tier fires
+	// the small-tier-parent guard (#121) on every session and forces
+	// recipes to ship --small-tier-parent=allow to suppress a warning
+	// that isn't real. Reclassified to TierMid to match its actual
+	// capability profile. See go-steer/core-agent#210.
+	case containsAny(m, "gemini-3.5-flash"):
+		return TierMid
+	case containsAny(m, "gemini-3-flash", "gemini-3.1-flash"):
+		return TierSmall
+
+	// Google Gemini 2.x. The 2.5-pro / 2.0-pro line is mid-tier
+	// today — capable, but Gemini 3 Pro is the current frontier.
+	case containsAny(m, "gemini-2.5-pro", "gemini-2.0-pro"):
+		return TierMid
+	case containsAny(m, "gemini-2.5-flash", "gemini-2.0-flash"):
+		return TierSmall
+	}
+	return ""
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSmall reports whether modelID classifies as TierSmall. Unknown
+// models return false rather than guessing — "don't fire the
+// small-tier guard on something we can't classify" is the safer
+// default (the alternative would fire false-positive warnings on
+// every newly-released model the operator picks up before
+// internal/modeltier catches up).
+//
+// Used by the small-tier-parent guard (#121) at startup; cheaper
+// than callers re-implementing the Classify == TierSmall check
+// and clearer at the call site.
+func IsSmall(modelID string) bool {
+	return Classify(modelID) == TierSmall
+}

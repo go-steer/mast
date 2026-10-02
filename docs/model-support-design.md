@@ -12,7 +12,7 @@ shape of problem and is deliberately out of scope for this pass (see
 
 mast serves Gemini (API key or Vertex) and Claude (first-party or Vertex). Two
 vendors, four backends, and both of them have a hand-written adapter under
-[`../pkg/providers/`](../pkg/providers/). That has been enough, and it is
+[`../internal/providers/`](../internal/providers/). That has been enough, and it is
 running out: the models a platform team wants to point an unattended agent at
 now include OpenAI's, xAI's, and — for anyone with a GPU budget or a data-egress
 rule — an open-weight model on their own hardware.
@@ -57,7 +57,7 @@ returns text is not a provider that works.
 | **R1** | **Resolvable** from `--model`, a specialist `model:`, and a specialist `tier:` — and unresolvable *fails at construction*, never at the incident | The property `NewModelResolver` and `TierModelName` already enforce; a new provider must not become the first quiet downgrade |
 | **R2** | **Agent-loop correct**: tool calls round-trip with their real input schema, multi-turn tool loops survive, reasoning/thinking blocks round-trip where the API requires echoing them, streaming accumulates, finish reasons map | The empty-schema P0 above. Measured, not eyeballed — see R8 |
 | **R3** | **Usage measured per turn**: prompt, completion, total, cache-read, cache-write, reasoning — each either a number or an explicit *not reported*, never a zero standing in for unknown | "Same usage/stats as Gemini and Claude" is the ask; the zero-vs-unknown distinction is what makes a cost figure auditable. **The carrier for it landed in M0** ([§4.3](#43-usage-one-normalized-record-carried-beside-the-genai-one), [#352](https://github.com/go-steer/mast/issues/352)); an adapter meets R3 by attaching a `usage.Detail` and leaving nil what its provider does not report |
-| **R4** | **Priced, or explicitly unpriced**: a catalog entry keyed to the backend that actually served the tokens, or a rendered `$—` | `pkg/pricing` already refuses to render `$0` for an unknown rate. A new backend must not silently inherit a wrong rate — [#178](https://github.com/go-steer/mast/issues/178)'s case, Claude on Vertex, and the symmetric one nobody filed: Gemini on the Developer API priced off Vertex's row. Both closed by v0.6 W10.0; the *requirement* stands, and what a new backend now owes is its rows and its name in the backend allowlist |
+| **R4** | **Priced, or explicitly unpriced**: a catalog entry keyed to the backend that actually served the tokens, or a rendered `$—` | `internal/pricing` already refuses to render `$0` for an unknown rate. A new backend must not silently inherit a wrong rate — [#178](https://github.com/go-steer/mast/issues/178)'s case, Claude on Vertex, and the symmetric one nobody filed: Gemini on the Developer API priced off Vertex's row. Both closed by v0.6 W10.0; the *requirement* stands, and what a new backend now owes is its rows and its name in the backend allowlist |
 | **R5** | **Tiered in both directions**: `modeltier.Classify` knows the model, `taskclass.ModelForTier` can name it | Without the reverse direction `--task` is inert and the small-tier-parent guard goes quiet; without the forward direction `tier:` rosters cannot run on the provider at all |
 | **R6** | **Budget-enforceable**: `RatePer1K` resolves and `budget.Meter` prices the turn from the catalog rather than the flat fallback | A `max_cost_usd` ceiling on an unpriced model is a ceiling in name only |
 | **R7** | **Observable**: `/usage` per-turn rows, `/stats`, `mast_*` metrics, and the per-specialist cost attribution `MeterScopes` produces | v0.4's `J-cost-tier` check asserts tier resolution against *reported* `ModelVersion`; a provider that doesn't populate it can't be checked. Note that `/usage`'s per-turn rows do not exist yet for *any* provider — the tracker behind them was never ported ([#356](https://github.com/go-steer/mast/issues/356)), so this half of R7 is mast's debt rather than a bar a new adapter can clear |
@@ -77,7 +77,7 @@ ones still required, and with each argument's own schema intact.
 An adapter supplies one thing: a reader that pulls its own wire spelling out
 of a captured request body (`input_schema` for Anthropic,
 `parameters`/`parametersJsonSchema` for Gemini) and hands it over as a
-`toolcatalog.Wire`. See `pkg/providers/anthropic/toolwire_test.go` for the
+`toolcatalog.Wire`. See `internal/providers/anthropic/toolwire_test.go` for the
 pattern. Writing that reader is an hour; it is the difference between an
 adapter that has been asserted against every construction path mast uses and
 one that has been asserted against whichever tool its author happened to
@@ -104,15 +104,15 @@ restated as work.
 | Backend selection | `internal/compose/compose.go:529` `anthropicProvider` | one env-var probe order picks first-party vs Vertex | Every new family needs its own credential-detection story, and env-var probing does not scale to N endpoints |
 | Tier family | `internal/compose/tier.go:54` `providerFamily` | explicit `--provider`, else the root id's prefix | Errors out on any id it doesn't recognize — correct behavior, wrong coverage |
 | CLI validation | `cmd/mast/oneshot.go:322`, `cmd/mast/main.go:112` | `--provider` is a closed enum of five, each validating a model-id prefix | Enum grows per provider; prefix validation is not expressible for self-hosted names |
-| Tier → model | `pkg/taskclass/taskclass.go:232` `ModelForTier` + `Providers()` | hand-kept per-provider table of three tiers | One new column per provider, and `TestModelForTier_ReturnsLatestInLine` needs the pricing catalog to know the family |
-| Model → tier | `pkg/modeltier/modeltier.go:100` `Classify` | hand-kept substring table | Same, in reverse, and an unclassified model silently reverts to the universal 0.85 compaction threshold |
-| Price catalog | `pkg/pricing/builtin.go` + `dev/regen-builtin-pricing/main.go:117` | `familyPrefixes = ["gemini-", "claude-"]`, and **ids containing `/` are dropped as router noise** (`main.go:451`) | The `/` rule drops exactly the ids the new backends use; the prefix list drops everything else |
+| Tier → model | `internal/taskclass/taskclass.go:232` `ModelForTier` + `Providers()` | hand-kept per-provider table of three tiers | One new column per provider, and `TestModelForTier_ReturnsLatestInLine` needs the pricing catalog to know the family |
+| Model → tier | `internal/modeltier/modeltier.go:100` `Classify` | hand-kept substring table | Same, in reverse, and an unclassified model silently reverts to the universal 0.85 compaction threshold |
+| Price catalog | `internal/pricing/builtin.go` + `dev/regen-builtin-pricing/main.go:117` | `familyPrefixes = ["gemini-", "claude-"]`, and **ids containing `/` are dropped as router noise** (`main.go:451`) | The `/` rule drops exactly the ids the new backends use; the prefix list drops everything else |
 | Flat rate fallback | `internal/compose/compose.go:579` `RatePer1K` | prefix switch with per-family fallbacks | A third family lands in `default: 0.001`, an invented number |
-| Usage projection | `pkg/providers/anthropic/stream.go:106`, `pkg/providers/gemini` | provider usage folds into `genai.GenerateContentResponseUsageMetadata` | That struct has no cache-**write** bucket (documented undercount, `stream.go:123`), and nothing at all for KV-cache stats |
+| Usage projection | `internal/providers/anthropic/stream.go:106`, `internal/providers/gemini` | provider usage folds into `genai.GenerateContentResponseUsageMetadata` | That struct has no cache-**write** bucket (documented undercount, `stream.go:123`), and nothing at all for KV-cache stats |
 | The cost check's own matcher | `internal/evals/judge/cost.go:403` | reported `ModelVersion` relates to the resolved id by `HasPrefix` in either direction — right for Vertex's date suffixes (`claude-opus-5@20251101`) | A backend that reports an unrelated string (a Vertex MaaS `deepseek-ai/…-maas` id, an Azure deployment name, a vLLM local weights path) fails the *resolved-is-not-the-same-claim-as-ran* assertion and so **fails the nightly**. That is the check refusing to certify what it cannot verify — correct behavior — but it needs a per-profile identity rule rather than a prefix |
 
 One instance of the last row is closed at the source rather than in the
-check (#210, 2026-08-20): `pkg/providers/anthropic/llm.go` now refuses an
+check (#210, 2026-08-20): `internal/providers/anthropic/llm.go` now refuses an
 echoed **resource path** and stamps the requested id instead. That is not a
 general answer — it is the one backend mast actually ships against Vertex,
 where the `/` shape is reachable today and where the catalog's own regen
@@ -144,8 +144,8 @@ Two of the five are already built:
 
 | Dialect | Who speaks it | Status |
 |---|---|---|
-| `genai` | Gemini (API key + Vertex) | shipped — `pkg/providers/gemini` wraps ADK's `model/gemini` |
-| `anthropic` | Claude on first-party, Vertex, and **Bedrock** | shipped for two of three — `pkg/providers/anthropic` |
+| `genai` | Gemini (API key + Vertex) | shipped — `internal/providers/gemini` wraps ADK's `model/gemini` |
+| `anthropic` | Claude on first-party, Vertex, and **Bedrock** | shipped for two of three — `internal/providers/anthropic` |
 | `openai-chat` (`/v1/chat/completions`) | Vertex MaaS partner models, xAI, vLLM, SGLang, Ollama, llama.cpp, NIM, Groq, Together, Fireworks, DeepSeek, Mistral, Moonshot, OpenRouter, a LiteLLM proxy | **not built — the whole of this proposal's leverage** |
 | `openai-responses` (`/v1/responses`) | OpenAI first-party, xAI | **not built**; ADK ships an experimental one |
 | `bedrock-converse` | Bedrock's non-Anthropic models (Nova, Llama) | not built; P1 at best ([§5](#5-the-prioritized-lists)) |
@@ -159,7 +159,7 @@ Chat Completions endpoint at
 under ADC — the credential mast already resolves for Gemini-on-Vertex and
 Claude-on-Vertex.
 
-**Decision proposed:** mast owns a `pkg/providers/openai` package implementing
+**Decision proposed:** mast owns a `internal/providers/openai` package implementing
 **both** OpenAI-shaped dialects, with `openai-chat` as the default and
 `openai-responses` opt-in per profile.
 
@@ -167,7 +167,7 @@ The alternative — adopt ADK's `model/openaimodel` and call it done — fails o
 coverage. That package is Responses-only and marked `EXPERIMENTAL`, so it
 reaches OpenAI and xAI and nothing else on the list. It is still worth wrapping
 rather than reimplementing for the first-party OpenAI path, exactly as
-`pkg/providers/gemini` wraps ADK's Gemini model rather than forking it; its
+`internal/providers/gemini` wraps ADK's Gemini model rather than forking it; its
 usage conversion already maps `cached_tokens` and `reasoning_tokens`, and it
 already parks provider ids in `LLMResponse.CustomMetadata`, which is the seam
 [§4.3](#43-usage-one-normalized-record-carried-beside-the-genai-one) builds on.
@@ -241,7 +241,7 @@ owns that call.
 
 **Shipped 2026-09-13 as [#352](https://github.com/go-steer/mast/issues/352)** —
 M0, before any new provider, exactly as the sequencing below asks. What landed
-is the M0 subset of the sketch: `pkg/providers/usage.Detail` with the four token
+is the M0 subset of the sketch: `internal/providers/usage.Detail` with the four token
 pointers, `ServedModel` and `ProviderRequestID`; `budget.Detailer`/`Buckets` as
 the read side; the Anthropic and Gemini adapters attaching it; and
 `catalogPricer` routing the write bucket to `CostUSDWithCacheWrites`. `Backend`,
@@ -268,7 +268,7 @@ nearly enough for Claude, and not enough for the rest:
 ADK's `model.LLMResponse` already carries `CustomMetadata map[string]any`, and
 `openaimodel` already writes provider ids into it. So:
 
-**Decided, and shipped:** define `pkg/providers/usage.Detail`, attach it under a
+**Decided, and shipped:** define `internal/providers/usage.Detail`, attach it under a
 stable key (`mast.usage_detail`) from every provider adapter, and have
 `budget.Meter` and the `/usage` projection read it when present and fall back to
 the genai fields when absent.
@@ -278,7 +278,7 @@ nothing else in this module and must keep not doing so — v1.0 freezes its
 exported surface and a freeze is transitive, so a `*usage.Detail` in a budget
 signature would commit this package too ([`../DESIGN.md`](../DESIGN.md), #338).
 So budget owns the read side: a one-method `Detailer` returning a budget-owned
-`Buckets`, and `pkg/providers/usage` names budget rather than the reverse. It is
+`Buckets`, and `internal/providers/usage` names budget rather than the reverse. It is
 the same remedy `Pricer` got, for the same reason, in the same direction.
 
 ```go
@@ -303,7 +303,7 @@ existing bugs this closes rather than new features:
 - The Anthropic cache-write undercount can finally be priced, and the fix was
   **smaller than the code comment describing it said**. That comment called for
   "a new `Rates.CacheCreationInputPerMTok` field, a `CostUSDWithCache` signature
-  bump, and a sidecar" — the first two had shipped since (`pkg/pricing` carries
+  bump, and a sidecar" — the first two had shipped since (`internal/pricing` carries
   the rate, populated for every Claude row and refreshed from LiteLLM), leaving
   only the sidecar, plus one line in `catalogPricer` where the sole caller of
   `CostUSDWithCacheWrites` was passing a hard-coded zero. The stale comment was
@@ -354,7 +354,7 @@ the bug reports that show `prompt_tokens_details: null` also show
 
 ### 4.5 Pricing, and the self-hosted cost fiction
 
-Four changes to `pkg/pricing` + the generator, in dependency order:
+Four changes to `internal/pricing` + the generator, in dependency order:
 
 1. **Key rates by (profile, model), falling back to bare model.** Same model,
    different backend, different price — Claude on Vertex vs first-party is the
@@ -382,7 +382,7 @@ Four changes to `pkg/pricing` + the generator, in dependency order:
    each mast backend to its LiteLLM prefix, `qualifyByBackend` walks it, and the
    emitted rows land in a **second** map, `builtinByBackend`, rather than in
    `builtin`. The split is not cosmetic — the tier and context-window tables are
-   keyed on bare model ids and `pkg/pricing`'s cross-table invariants demand a
+   keyed on bare model ids and `internal/pricing`'s cross-table invariants demand a
    row in each for every key in `builtin`, so a qualified key there would demand
    a duplicate tier and window for a name nothing looks up. `NewCatalog` merges
    the two into one layer, which is what lets an operator override a single
@@ -405,7 +405,7 @@ Four changes to `pkg/pricing` + the generator, in dependency order:
    see. So: no catalog entry, `$—` in every display, and `RatePer1K` returns
    zero-with-unpriced rather than falling into today's invented `default: 0.001`.
    An operator who wants a number declares `rates:` in the profile, which feeds
-   `pkg/pricing`'s existing `cfg-override` layer and is labelled `operator
+   `internal/pricing`'s existing `cfg-override` layer and is labelled `operator
    declared` in `/pricing` output. A budget ceiling against an unpriced model
    must fail loudly at startup, not silently never trip — that is R6, and it is
    the one place this design refuses a convenient default.
@@ -430,7 +430,7 @@ So capabilities are declared per profile (`server_tools`, `response_schema`,
 `reasoning_echo`, `parallel_tool_calls`, `streaming`) and `internal/compose`
 refuses a bundle that needs one the profile does not have — at startup, naming
 the profile and the capability. The precedent is `builtinsCompatible` in
-`pkg/providers/gemini`, which silently dropped grounding on incompatible model
+`internal/providers/gemini`, which silently dropped grounding on incompatible model
 versions and cost a live debugging session for it
 (`taskclass.go:253`'s note about research being unable to search).
 
@@ -545,7 +545,7 @@ Six slices. Each names its exit criterion; none is "the code compiles".
 | **M0** | Usage detail sidecar ([§4.3](#43-usage-one-normalized-record-carried-beside-the-genai-one)) + the meter reading it. **Before any new provider**, retrofitted onto Anthropic. **Done — [#352](https://github.com/go-steer/mast/issues/352), 2026-09-13** | The cache-write undercount is gone: a cache-warming Claude turn prices at the rate card's own figure, pinned by a fixture test built from a measured turn and verified to fail on pre-fix code. Zero-vs-unreported is distinguishable **on the persisted event** — the sidecar's pointers omit what was never reported and serialize a reported zero. Not in `/usage`, which reports turns and cost and has never populated the seven token fields `attach.UsageTotals` declares; that gap is [#356](https://github.com/go-steer/mast/issues/356) and is a projection problem, not a measurement one |
 | **M1** | Provider profiles ([§4.2](#42-a-model-is-named-by-profile-model-id)): registry, config surface, `--provider` opens up, `providerFamily` and `BuildModel` resolve through it | The four shipped backends run unchanged through profiles, with the prefix path kept only as a compat fallback. A bogus profile fails at construction naming the profile |
 | **M2** | Pricing by (profile, model) ([§4.5](#45-pricing-and-the-self-hosted-cost-fiction) 1–2). **Done for the four shipped backends** — v0.6 W10.0, 2026-09-01 | **Closes [#178](https://github.com/go-steer/mast/issues/178)**: Claude-on-Vertex prices off the Vertex table. Generator emits profile-qualified keys; cross-table invariant tests extended to every profile with a tier map. Met for `anthropic`/`anthropic-vertex`/`gemini`/`vertex`; what M2 still owes is the profile-registry spelling of the key once M1 lands, since W10.0 keys on the backend name and a profile is the more general thing |
-| **M3** | `pkg/providers/openai` — `openai-chat` first, `openai-responses` wrapping ADK's | A recorded-turn fixture drives a full tool loop offline in the U/E tiers for both dialects, and the E-tier differentiator evals (exactly-once, refusal, rejection, budget) pass against it. Then a J-tier live run against OpenAI + Vertex MaaS + xAI, with tool-calling metrics from [#168–#172](https://github.com/go-steer/mast/issues/172) at parity with the Claude baseline — **that parity is the gate on calling any of them supported**. `J-cost-tier` needs the per-profile identity rule of [§3](#3-what-the-code-assumes-today)'s tenth seam before a MaaS id can pass it |
+| **M3** | `internal/providers/openai` — `openai-chat` first, `openai-responses` wrapping ADK's | A recorded-turn fixture drives a full tool loop offline in the U/E tiers for both dialects, and the E-tier differentiator evals (exactly-once, refusal, rejection, budget) pass against it. Then a J-tier live run against OpenAI + Vertex MaaS + xAI, with tool-calling metrics from [#168–#172](https://github.com/go-steer/mast/issues/172) at parity with the Claude baseline — **that parity is the gate on calling any of them supported**. `J-cost-tier` needs the per-profile identity rule of [§3](#3-what-the-code-assumes-today)'s tenth seam before a MaaS id can pass it |
 | **M4** | Self-hosted: capability declaration, `metrics_url` scrape, unpriced-by-default, `cached_tokens` reliability flag | A vLLM profile runs the triage bundle end to end; `/usage` shows tokens per turn, `$—` for cost, and a session-scoped prefix-cache-hit-rate labelled fleet-level |
 | **M5** | Claude on Bedrock; the built-in long-tail profiles; Azure | Each ships with a tier map, catalog rows, and a live smoke, or it ships as a documented profile template with no support claim |
 
@@ -558,7 +558,7 @@ seams and inheriting three copies of #178.
 addition worth naming: a **per-dialect conformance corpus** — recorded turns
 covering a tool call, a parallel tool call, a reasoning round-trip, a refusal, a
 max-tokens stop, and a cache hit — replayed offline in the U tier for every
-dialect. The precedent is `pkg/attach/testdata/conformance`, and the reason is
+dialect. The precedent is `internal/attach/testdata/conformance`, and the reason is
 that the failure mode we have actually shipped (an empty tool schema) is
 invisible to a smoke test that only checks the model answered.
 
@@ -572,7 +572,7 @@ invisible to a smoke test that only checks the model answered.
 - **Reasoning round-trip differs per dialect and fails loudly only sometimes.**
   Claude requires thinking blocks echoed with their signature or the second
   request of every tool loop 400s — the reason
-  `pkg/providers/anthropic/stream.go:48` round-trips them through
+  `internal/providers/anthropic/stream.go:48` round-trips them through
   `genai.Part.ThoughtSignature`, and the reason redacted thinking gets a marker
   prefix rather than being dropped. OpenAI's Responses API
   preserves reasoning via `previous_response_id` or
@@ -584,7 +584,7 @@ invisible to a smoke test that only checks the model answered.
   matching risk on the way out is that one vendor can carry two incompatible
   request shapes at once. Anthropic replaced `thinking.type=enabled` with
   `thinking.type=adaptive` at the 4-6 generation and removed the old one at
-  4-7, so from #369 `pkg/providers/anthropic` picks by model ID and an unknown
+  4-7, so from #369 `internal/providers/anthropic` picks by model ID and an unknown
   model takes the newer shape — the migration runs one way, so guessing the
   older one guesses wrong. Two things generalize to the M1 providers. A
   capability flag keyed on the *provider* is the wrong grain for this: the
@@ -659,7 +659,7 @@ local models — and it implements **both** OpenAI dialects, Chat Completions in
 and deserves a measured answer rather than a reflex.
 
 **Decision proposed:** no. fantasy is adopted as **prior art and a test
-pattern, not as a dependency**; `pkg/providers/openai` stays mast's own per
+pattern, not as a dependency**; `internal/providers/openai` stays mast's own per
 §4.1, and three specific things are lifted with attribution
 ([§10.2](#102-what-is-worth-taking)).
 
@@ -696,7 +696,7 @@ The dependency arithmetic, measured rather than assumed:
 | Duplicate infrastructure | That same slice adds a **second JSON-schema library** (`kaptinlin/jsonschema`) beside `google/jsonschema-go`, and a **second YAML parser** (`goccy/go-yaml`) beside `yaml.v3` |
 | Go floor | fantasy's `go.mod` says `go 1.27.0`; mast's says `go 1.26.6`. Importing it raises the minimum for every embedder |
 | **Forced SDK upgrades under the shipped adapters** | MVS would take `genai` v1.66.0 → **v1.70.0** and `anthropic-sdk-go` v1.43.0 → **v1.68.0**. This is the sharpest one: adding the *third* provider would move the two SDKs the *first two* adapters are tested against, on someone else's release cadence |
-| API clock | v0.43.0, pre-1.0, moving at the pace its consumer needs, against the [#300](https://github.com/go-steer/mast/issues/300) freeze. Containable — `pkg/providers/*` is named unsupported there — but it is a v0.x dependency under a v1.0 claim |
+| API clock | v0.43.0, pre-1.0, moving at the pace its consumer needs, against the [#300](https://github.com/go-steer/mast/issues/300) freeze. Containable — `internal/providers/*` is named unsupported there — but it is a v0.x dependency under a v1.0 claim |
 
 None of these is individually disqualifying. Together, against a middle hop
 that has to be unwound to satisfy R3 anyway, they say the import buys less
@@ -738,7 +738,7 @@ Apache 2.0, so all of this is portable under [§10.4](#104-license-mechanics).
    evidence for the (profile, model) cut of [§4.2](#42-a-model-is-named-by-profile-model-id).
 4. **`providers/bedrock/bedrock.go` is 87 lines** — a naming wrapper that calls
    its own anthropic provider with `WithBedrock()`, exactly the shape of mast's
-   `pkg/providers/anthropic/vertex.go`. That is corroboration for
+   `internal/providers/anthropic/vertex.go`. That is corroboration for
    [§5.1](#51-managed-providers) P1 #4 ("the cheapest item on this page") and it
    holds whether or not anything else here is taken: `anthropic-sdk-go@v1.43.0`
    already ships the `bedrock` subpackage mast has in its graph today.
@@ -767,7 +767,7 @@ compatible and portable. Two conditions on any lifted code: the Charm copyright
 stays on the file — house rule #2's `Copyright 2026 Google LLC` header alone
 would be **wrong** on a derived file — and the `NOTICE` obligation is carried.
 The convention already exists in this repo: the `// Originally derived from
-go-steer/core-agent@<sha>` line at `../pkg/providers/anthropic/llm.go:15`. A
+go-steer/core-agent@<sha>` line at `../internal/providers/anthropic/llm.go:15`. A
 checklist, not a blocker.
 
 ---

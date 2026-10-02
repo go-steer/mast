@@ -25,7 +25,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	mastmcp "github.com/go-steer/mast/pkg/mcp"
+	mastmcp "github.com/go-steer/mast/internal/mcp"
 )
 
 // declaringTool is catalogTool plus the one thing the producer contract
@@ -219,7 +219,7 @@ func TestToolSchemasReadRunsTheTool(t *testing.T) {
 }
 
 // declaringRunnableTool is a runnableTool that also declares itself, so
-// pkg/mcp's digest wrap will take it.
+// internal/mcp's digest wrap will take it.
 type declaringRunnableTool struct {
 	runnableTool
 }
@@ -229,14 +229,14 @@ func (d *declaringRunnableTool) Declaration() *genai.FunctionDeclaration {
 }
 
 // TestToolSchemasReadRunsUnderneathTheDigestWrap: the wired toolsets
-// carry pkg/mcp's digesting wrap, which exists to shrink what a model
+// carry internal/mcp's digesting wrap, which exists to shrink what a model
 // reads. This read is not a model's — it goes into a digest and a field
 // comparison — so it must reach the tool itself. A digest envelope here
 // would drop the fields the operator's approval was recorded against
 // and stamp a fresh call id on every call, voiding every grant taken
 // over a status big enough to digest.
 func TestToolSchemasReadRunsUnderneathTheDigestWrap(t *testing.T) {
-	// Comfortably over pkg/mcp's 8000-byte threshold, so a read that
+	// Comfortably over internal/mcp's 8000-byte threshold, so a read that
 	// went through the wrap would come back as a digest.
 	pods := make([]any, 0, 400)
 	for i := 0; i < 400; i++ {

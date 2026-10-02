@@ -21,7 +21,7 @@ import (
 
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/internal/effects"
 )
 
 // callsTo builds a Trace of completed read-only calls, the shape almost

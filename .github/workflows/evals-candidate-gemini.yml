@@ -17,7 +17,7 @@
 #
 # ## Why this exists
 #
-# pkg/taskclass.ModelForTier names one model per tier, and
+# internal/taskclass.ModelForTier names one model per tier, and
 # TestModelForTier_ReturnsLatestInLine holds it to the newest model in
 # that line unless `deferredPromotions` records a reason to wait. The
 # reason recorded on 2026-09-09 for holding gemini-3.7-flash while
@@ -182,7 +182,7 @@ jobs:
               echo "> Candidate \`${MAST_EVALS_MODEL}\`, graded by the incumbent \`${MAST_EVALS_GRADER}\`, against the latest nightly board."
               echo "> The delta's \"not comparable\" caption is expected here — two models is the measurement."
               echo ">"
-              echo "> This board is half the bar in \`deferredPromotions\` (pkg/taskclass/latest_in_line_test.go)."
+              echo "> This board is half the bar in \`deferredPromotions\` (internal/taskclass/latest_in_line_test.go)."
               echo "> The other half is the outcome tier on the same model, which has to be started by hand:"
               echo ">"
               echo ">     gh workflow run outcome.yml -f model=${MAST_EVALS_MODEL}"

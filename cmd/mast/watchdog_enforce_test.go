@@ -32,9 +32,9 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 
@@ -125,7 +125,7 @@ func TestWatchdogEnforceCutsAnIntraTurnLoopShort(t *testing.T) {
 // place of the runner's "context canceled", and that error goes
 // straight to attach.ClassifyTurnError on the way to a turn-error
 // frame — so this is the last link in the chain pkg/watchdog and
-// pkg/attach each pin from their own side (#208).
+// internal/attach each pin from their own side (#208).
 //
 // Both halt-shaped errors are checked: the turn that trips, and the
 // refusal every turn after it gets, which arrives wrapped in

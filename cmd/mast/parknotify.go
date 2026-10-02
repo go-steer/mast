@@ -25,9 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-steer/mast/internal/notify"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/notify"
-	"github.com/go-steer/mast/pkg/observability"
 )
 
 // The push half of a durable park (#451).

@@ -161,7 +161,7 @@ so at startup. Name a path to put it anywhere else.
 
 Prose is not a contract. The JSON these routes return is pinned as
 fixtures in
-[`pkg/attach/testdata/conformance/`](https://github.com/go-steer/mast/tree/main/pkg/attach/testdata/conformance) —
+[`internal/attach/testdata/conformance/`](https://github.com/go-steer/mast/tree/main/internal/attach/testdata/conformance) —
 `rest-*-v1.json` for the plain HTTP bodies, the SSE event fixtures beside
 them for the stream. Write a client against those, not against a mock you
 wrote yourself: mast-web's bundled mock invented snake_case names for the
@@ -185,7 +185,7 @@ fixtures:
   that warmed the cache and has not reused it yet reports a reference
   *below* its cost. That is correct, not a rounding error to hide.
 
-The fixtures' own [README](https://github.com/go-steer/mast/blob/main/pkg/attach/testdata/conformance/README.md)
+The fixtures' own [README](https://github.com/go-steer/mast/blob/main/internal/attach/testdata/conformance/README.md)
 lists which routes are pinned and, more usefully, which are not.
 
 ### What `turn_state` says

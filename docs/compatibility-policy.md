@@ -48,7 +48,7 @@ surface it names.
    ([#338](https://github.com/go-steer/mast/issues/338),
    [#352](https://github.com/go-steer/mast/issues/352)).
    `federation.Adapter` is the module's other consumer-implemented
-   interface and this policy does **not** bind it: `pkg/federation` is
+   interface and this policy does **not** bind it: `internal/federation` is
    uncovered, and `DESIGN.md`'s package map calling that interface
    "frozen" is a pre-#300 use of the word meaning its shape is settled,
    not a v1.0 commitment.
@@ -285,7 +285,7 @@ feature-detects correctly still cannot detect a field that started
 lying.
 
 **Metric names.** Not promised, and this document does not promise
-them. `pkg/observability` holds a fixed registry and the reference page
+them. `internal/observability` holds a fixed registry and the reference page
 is held to a real scrape in both directions, but that gate keeps the
 *documentation* honest — it is not a compatibility rule and does not
 protect a dashboard. A rename ships with a CHANGELOG entry and nothing

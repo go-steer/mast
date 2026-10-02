@@ -36,10 +36,10 @@ import (
 	"google.golang.org/adk/v2/session/database"
 
 	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/internal/graph"
+	"github.com/go-steer/mast/internal/taskclass"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/specialists"
-	"github.com/go-steer/mast/pkg/taskclass"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -349,7 +349,7 @@ func judgeCost(b *CostBoard) (findings, notes []string) {
 		}
 		if s.WantRate <= 0 {
 			findings = append(findings, fmt.Sprintf(
-				"%s resolved to %s, which pkg/pricing has no rate for — a priced run cannot be checked against an unpriced model", s.Name, s.Resolved))
+				"%s resolved to %s, which internal/pricing has no rate for — a priced run cannot be checked against an unpriced model", s.Name, s.Resolved))
 			continue
 		}
 		if math.Abs(s.GotRate-s.WantRate) > costRateTolerance {

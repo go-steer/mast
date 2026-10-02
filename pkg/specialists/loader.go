@@ -27,7 +27,7 @@ import (
 	"google.golang.org/genai"
 	"gopkg.in/yaml.v3"
 
-	"github.com/go-steer/mast/pkg/taskclass"
+	"github.com/go-steer/mast/internal/taskclass"
 )
 
 // Extension is the specialist file extension. These files are YAML

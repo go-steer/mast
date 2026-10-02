@@ -335,7 +335,7 @@ Migration is intentional per-workload, not automatic. There's no `migrate-to-wor
 
 ## Spike-2 verification notes (2026-07-25)
 
-The LLM-as-router shape (#7) was built and run end-to-end against ADK v2.1.0 in the `mast-prototype` repo (`pkg/graph`; see its `FINDINGS.md`), against the GKE-triage anchor workload. Facts the shape library must build on:
+The LLM-as-router shape (#7) was built and run end-to-end against ADK v2.1.0 in the `mast-prototype` repo (`internal/graph`; see its `FINDINGS.md`), against the GKE-triage anchor workload. Facts the shape library must build on:
 
 - **Root-agent rules.** A `workflowagent.New`-wrapped graph runs as the runner's **root agent** directly. The runner's Chat-mode restriction applies only when the root *is* an `LlmAgent` (non-LlmAgent roots take a generic path). An earlier spike-1 conclusion that "a bare Workflow cannot be a root agent" was wrong; graphs do not need a coordinator above them. The SubAgents-dispatch pattern (Chat coordinator + auto-installed `task`/`single_turn` tools per sub-agent) remains a valid *alternative* shape — the prototype keeps both behind a flag for comparison — but it routes by tool-description reading on a frontier coordinator rather than by typed `Event.Routes`, with the cost and legibility differences that implies.
 - **Task-mode specialists in graphs.** Wrap in `workflow.NewAgentNode`, invoke via `RunNode` from a `DynamicNode` body. `finish_task` is auto-installed and its argument becomes the node output.
@@ -350,7 +350,7 @@ The suppression noted inline in shape #1 is stronger than "intermediate events a
 
 In ADK v2.1.0, `runWrappedOnce` (`workflow/parallel_worker.go:213-230`) iterates the wrapped node's events and keeps **only** those for which `extractOutput(ev)` succeeds; everything else is discarded rather than forwarded. What the worker emits is `makeWorkerOutputEvent` (`:232-243`) — `&session.Event{Output: output}`, an event carrying `Output` and nothing else. It has no `Content`, therefore no `FunctionCall` or `FunctionResponse` parts. **Nothing a branch does with tools reaches the session event log.** The doc comment at `:69` says as much: *"Intermediate non-output events emitted by the wrapped node are suppressed."*
 
-Both of the recorded-effect outbox's read paths are log-derived — `scanHistory` off `sess.Events()` (`pkg/effects/effects.go:314`) and `ScanDangling` (`:569`), sharing `pairScan`. So inside a parallel branch the outbox splits in half:
+Both of the recorded-effect outbox's read paths are log-derived — `scanHistory` off `sess.Events()` (`internal/effects/effects.go:314`) and `ScanDangling` (`:569`), sharing `pairScan`. So inside a parallel branch the outbox splits in half:
 
 - **Refusal still works.** `beforeTool` is a runner plugin bracketing the `callTool` seam, which is crossed regardless of the graph shape wrapped around it, and the turn-start snapshot was computed from pre-parallel history. A pre-existing dangling mutating call still blocks tools inside a branch.
 - **Recording does not.** A `FunctionCall` issued *inside* a branch never lands in the log, so the next turn's snapshot and boot-time auto-resume are blind to it, and call-level replay (`st.completions[FunctionCallID]`) cannot fire because completions are read from the same log.
@@ -372,11 +372,11 @@ Everything above is verified and still true of `workflow.NewParallelWorker`. Wha
 
 Consequences for the two rules above, for any shape built on parallelagent:
 
-- **Rule 1 becomes a choice, not a constraint.** Branch events are in the log, so a downstream node *can* read them. `pkg/graph/fanout.go` still merges payloads only — a report should quote what an analyst chose to report — but it is a contract now, not a limitation.
+- **Rule 1 becomes a choice, not a constraint.** Branch events are in the log, so a downstream node *can* read them. `internal/graph/fanout.go` still merges payloads only — a report should quote what an analyst chose to report — but it is a contract now, not a limitation.
 - **Rule 2 survives on a different reason.** A mutation in a branch is no longer invisible to crash recovery. It is still refused at construction in `dispatch: fanout`, because every branch runs *before* that shape's single post-synthesis approval gate: a mutating analyst is an unapproved mutation, N of them concurrently.
 - **A third rule appears.** `request_operator_input` is classified read-only and passes any mutation check, but a branch is a nested workflowagent with its own scheduler — an interrupt raised inside one has no pause the outer graph can record. Refuse it by name.
 
-Shipped shape and evidence: `pkg/graph/fanout.go`, `TestFanoutSubstrate` (one branch body under both primitives, opposite outcomes), and `docs/v0.3-plan.md` W3 findings (a)–(g).
+Shipped shape and evidence: `internal/graph/fanout.go`, `TestFanoutSubstrate` (one branch body under both primitives, opposite outcomes), and `docs/v0.3-plan.md` W3 findings (a)–(g).
 
 ## Open questions
 

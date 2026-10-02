@@ -95,7 +95,7 @@ func StartStubMCP() (endpoint string, stop func()) {
 		func(*http.Request) *mcpsdk.Server { return srv }, nil))
 	// ADK's connectionRefresher never closes the MCP session it opens,
 	// so the SSE stream outlives the caller and a plain Close blocks on
-	// it — same wrinkle pkg/mcp's own fixtures work around.
+	// it — same wrinkle internal/mcp's own fixtures work around.
 	return hs.URL, func() {
 		hs.CloseClientConnections()
 		hs.Close()

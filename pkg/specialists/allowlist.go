@@ -58,8 +58,8 @@ type reportingToolset struct {
 	once sync.Once
 }
 
-// Name is the server key the allowlist matched on, unchanged: pkg/mcp's
-// digest wrap and pkg/graph's fan-out check both match toolsets by it.
+// Name is the server key the allowlist matched on, unchanged: internal/mcp's
+// digest wrap and internal/graph's fan-out check both match toolsets by it.
 func (r *reportingToolset) Name() string { return r.inner.Name() }
 
 // Tools lists the inner toolset, reports whatever the allowlist named

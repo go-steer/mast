@@ -25,8 +25,8 @@ import (
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )

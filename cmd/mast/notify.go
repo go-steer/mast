@@ -24,9 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/mast/pkg/monitor"
-	"github.com/go-steer/mast/pkg/notify"
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/monitor"
+	"github.com/go-steer/mast/internal/notify"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -60,7 +60,7 @@ import (
 // after calm is a new incident, and it gets a new message. The ingress
 // can answer an append with "I no longer remember that message" or with
 // "that message is full, here is its continuation", and both are
-// handled rather than surfaced: see pkg/notify.
+// handled rather than surfaced: see internal/notify.
 //
 // SILENCE IS BOUNDED BY A DEADMAN, NOT BY A COUNT. `digest_after` is
 // wall-clock: after that long without saying anything, the next cycle
@@ -143,7 +143,7 @@ func buildNotifyClient(logger *slog.Logger, baseURL string, inbound map[string]s
 	return c, nil
 }
 
-// notifySender is the slice of pkg/notify.Client this file uses, named
+// notifySender is the slice of internal/notify.Client this file uses, named
 // so the timeline can be tested without an HTTP server standing in for
 // a chat platform.
 type notifySender interface {
@@ -253,7 +253,7 @@ func (n *notifier) enabled() bool { return n != nil && n.client != nil && n.conv
 // A nil set is "this workload does not classify", and it speaks every
 // cycle: without a transitions source mast has no basis for calling a
 // cycle quiet, and inventing one — diffing the collected results
-// itself, say — is exactly the domain knowledge pkg/monitor refuses to
+// itself, say — is exactly the domain knowledge internal/monitor refuses to
 // hold. An empty set is the classifier saying nothing changed, which is
 // the answer this whole leg is built to act on.
 func (n *notifier) decide(t *monitor.Set) (cycleSpeech, string) {
