@@ -583,6 +583,18 @@
 
 ### Bug or Regression
 
+- **`mast --version` names the version for a `go install` and for a custom
+  binary, not just for the release tarballs.**
+  `go install github.com/go-steer/mast/cmd/mast@v1.0.0-rc.2` printed
+  `mast dev`, because only the release's `-ldflags` set the version, and so
+  did every custom `main.go` built on the `cli` package. The same `dev` went
+  out in the attach capabilities frame and the agent card. An unstamped build
+  now reports the mast module version the Go toolchain recorded: the main
+  module's for `go install`, or the dependency's for a custom binary. A
+  checkout's own `go build` still says `dev`, because the version Go 1.24+
+  derives from the repository's tags is a pseudo-version, not a release.
+  Stamped release builds are unchanged.
+
 - **`mast` with no `--workload` starts again.** The CLI reference documents
   an empty `--workload` as the trivial single-agent coordinator, for
   inject-endpoint smoke tests. Serve mode read the workload's monitor, cadence

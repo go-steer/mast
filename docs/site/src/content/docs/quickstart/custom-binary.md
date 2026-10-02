@@ -131,8 +131,13 @@ an allowlist applies:
 
 ## Version stamping
 
-`--version` reports what the build was stamped with. To stamp your
-binary the way mast's release does:
+Without any stamping, `--version` — and the version the attach
+capabilities frame and the agent card report — is the mast module your
+binary was built against: `mast 1.0.0` for a `go.mod` requiring
+`github.com/go-steer/mast v1.0.0`. (With mast replaced by a local
+directory there is no version to report, and it says `dev`.) To put
+your own release identity there instead, stamp it the way mast's
+release does:
 
 ```sh
 go build -ldflags "\
