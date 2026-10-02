@@ -72,6 +72,7 @@ type daemon struct {
 	resumes      resumeOpts
 	watchdogFlag string
 	mcpDigest    bool
+	ext          Options
 
 	// Set by checkIngress.
 	bearer       string
@@ -161,12 +162,13 @@ type daemon struct {
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the teardown runs.
-func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listenOpts, sessions sessionOpts, resumes resumeOpts, watchdogFlag string, mcpDigest bool) error {
-	d := &daemon{
-		parent: parent, logger: logger, wl: wl, mdl: mdl, listeners: listeners,
-		sessions: sessions, resumes: resumes, watchdogFlag: watchdogFlag, mcpDigest: mcpDigest,
-		disarmTeardown: func() {},
-	}
+//
+// d arrives with only its inputs set, built by run() as a struct
+// literal. That is #293's grouping carried one step further: the
+// function had sixteen positional parameters, then nine grouped ones,
+// and a caller now names every input it sets.
+func (d *daemon) serve() error {
+	d.disarmTeardown = func() {}
 	// Deferred once, before anything can register a step, so it runs
 	// whatever happens below — and disarms the teardown watchdog only
 	// after every Close and flush has returned. A teardown that wedges
@@ -310,7 +312,7 @@ func (d *daemon) buildModel() error {
 		d.roster = &loadedWorkload{bundle: bundle, specs: specs, cfgDir: cfgDir}
 	}
 
-	d.llm, err = buildModel(d.turnCtx, d.mdl.provider, d.mdl.name, d.roster.builtinTools())
+	d.llm, err = buildModel(d.turnCtx, d.ext, d.mdl.provider, d.mdl.name, d.roster.builtinTools())
 	if err != nil {
 		d.logger.Error("failed to construct model", "model", d.mdl.name, "error", err.Error())
 		return err
@@ -414,7 +416,7 @@ func (d *daemon) openSessions() error {
 func (d *daemon) buildRoot() error {
 	var err error
 	d.built, err = buildRoot(d.turnCtx, d.logger, d.llm, d.mdl, d.wl, d.roster,
-		hostSeams{pause: d.pauseRec, subRun: d.subObs, digest: newDigestOptions(d.logger, d.mcpDigest)})
+		hostSeams{pause: d.pauseRec, subRun: d.subObs, digest: newDigestOptions(d.logger, d.mcpDigest), ext: d.ext})
 	if err != nil {
 		d.logger.Error("failed to construct root agent", "error", err.Error())
 		return err

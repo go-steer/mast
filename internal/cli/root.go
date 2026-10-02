@@ -44,7 +44,13 @@ import (
 //
 // The runtime constructor, not the bare one: a daemon turn that meets a
 // provider's 429 should wait two seconds rather than end short (#452).
-func buildModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+// A model the binary supplies (cli.WithModels) wins over mast's own
+// providers, and is used as given: no retry decorator, because the
+// binary owns that client.
+func buildModel(ctx context.Context, ext Options, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+	if m, ok := ext.lookupModel(name); ok {
+		return m, nil
+	}
 	return compose.NewRuntimeModel(ctx, provider, name, bt)
 }
 
@@ -160,6 +166,9 @@ type hostSeams struct {
 	// with no MCP surface — every test that builds a root without one —
 	// passes by leaving the zero value alone.
 	digest *mastmcp.DigestOptions
+	// ext is what a custom main.go added: models asked before mast's
+	// providers, and toolsets reached through tools.mcp allowlists.
+	ext Options
 }
 
 func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, mdl modelOpts, wl workloadOpts, pre *loadedWorkload, seams hostSeams) (rootBuild, error) {
@@ -258,7 +267,13 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, mdl mode
 		return rootBuild{}, err
 	}
 
+	var lookup func(string) (model.LLM, bool)
+	if seams.ext.Models != nil {
+		lookup = seams.ext.lookupModel
+	}
 	a, builtin, err := compose.BuildRoot(ctx, compose.RootConfig{
+		HostToolsets:    seams.ext.Toolsets,
+		ModelLookup:     lookup,
 		Bundle:          bundle,
 		Specs:           loaded,
 		Model:           llm,
@@ -278,7 +293,7 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, mdl mode
 		agent:    a,
 		bundle:   &bundle,
 		specs:    loaded,
-		toolsets: toolsets,
+		toolsets: append(toolsets, seams.ext.Toolsets...),
 		// retrieve_raw joins the planner's vocabulary in the catalog:
 		// /tools answers "what can this daemon do" (#205), and a tool
 		// specialists can actually call is part of that answer whether

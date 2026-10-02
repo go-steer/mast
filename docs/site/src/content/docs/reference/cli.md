@@ -11,6 +11,10 @@ versioning](/reference/stability/#the-cli-is-covered) for what that
 covers and what it deliberately leaves out. mast is pre-1.0 today, so
 they can still move.
 
+Everything here holds for a binary you [build
+yourself](/quickstart/custom-binary/) from the `cli` package as well:
+it runs this exact command line, with your models and tools added.
+
 ## `mast` (the daemon)
 
 `mast --workload=...` runs the daemon: the HTTP inject endpoint, the

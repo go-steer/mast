@@ -45,11 +45,12 @@ import (
 // these should mean extending the struct that already holds the related
 // arguments, and if it genuinely does not belong in any of them, bumping
 // the number here is the moment to say so.
+//
+// serve left this table in #301: it is a method on the daemon struct
+// now, taking no parameters, and run() names every input it sets in a
+// struct literal — the transposition #293 guarded against cannot be
+// written.
 var groupedFuncs = map[string]int{
-	// 9 since #301: the leading context.Context Main hands it, which is
-	// Go's convention for the first parameter and belongs to no
-	// options struct.
-	"serve":      9,
 	"buildRoot":  7,
 	"dispatch":   4,
 	"resume":     5,

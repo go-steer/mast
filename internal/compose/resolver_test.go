@@ -32,7 +32,7 @@ func TestNewModelResolver_OfflineFakeRootCollapses(t *testing.T) {
 	for _, rootName := range []string{"echo", "mast-echo", "toolactor", "mast-toolactor", "scripted"} {
 		t.Run(rootName, func(t *testing.T) {
 			root := mastagent.NewEchoModel(rootName)
-			resolve := NewModelResolver(context.Background(), "", rootName, root, workload.BuiltinTools{}, nil)
+			resolve := NewModelResolver(context.Background(), "", rootName, root, workload.BuiltinTools{}, nil, nil)
 			got, err := resolve("claude-haiku-4-5")
 			if err != nil {
 				t.Fatalf("resolve under offline root: %v", err)
@@ -48,7 +48,7 @@ func TestNewModelResolver_OfflineFakeRootCollapses(t *testing.T) {
 // second client for the tier the parent already runs on.
 func TestNewModelResolver_MatchingNameReusesRoot(t *testing.T) {
 	root := mastagent.NewEchoModel("gemini-3.5-flash")
-	resolve := NewModelResolver(context.Background(), "", "gemini-3.5-flash", root, workload.BuiltinTools{}, nil)
+	resolve := NewModelResolver(context.Background(), "", "gemini-3.5-flash", root, workload.BuiltinTools{}, nil, nil)
 	got, err := resolve("gemini-3.5-flash")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -63,7 +63,7 @@ func TestNewModelResolver_MatchingNameReusesRoot(t *testing.T) {
 func TestNewModelResolver_Memoizes(t *testing.T) {
 	// A non-fake root name so the collapse path is not what's under
 	// test; "echo" as the override keeps the resolution credential-free.
-	resolve := NewModelResolver(context.Background(), "", "gemini-3.5-flash", mastagent.NewEchoModel("root"), workload.BuiltinTools{}, nil)
+	resolve := NewModelResolver(context.Background(), "", "gemini-3.5-flash", mastagent.NewEchoModel("root"), workload.BuiltinTools{}, nil, nil)
 	first, err := resolve("echo")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -80,7 +80,7 @@ func TestNewModelResolver_Memoizes(t *testing.T) {
 // TestNewModelResolver_UnknownModel keeps a typo in frontmatter loud at
 // construction rather than at first call mid-incident.
 func TestNewModelResolver_UnknownModel(t *testing.T) {
-	resolve := NewModelResolver(context.Background(), "", "gemini-3.5-flash", mastagent.NewEchoModel("root"), workload.BuiltinTools{}, nil)
+	resolve := NewModelResolver(context.Background(), "", "gemini-3.5-flash", mastagent.NewEchoModel("root"), workload.BuiltinTools{}, nil, nil)
 	if _, err := resolve("clod-hakiu-4-5"); err == nil {
 		t.Fatal("expected an error for an unknown model id, got nil")
 	}

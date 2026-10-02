@@ -72,6 +72,7 @@ type oneShotOptions struct {
 	Prompt     string
 	Timeout    time.Duration      // whole-turn deadline; 0 = none
 	Watchdog   watchdogResolution // resolved posture + where it came from
+	Ext        Options            // what a custom main.go added
 }
 
 // runOneShot runs one turn of the class-shaped agent to completion and
@@ -96,7 +97,7 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// baseline (#324). That is the whole reason the baseline is off
 	// rather than the vendor's: this path has nowhere to write the key,
 	// so the safe posture has to be the one you get by saying nothing.
-	llm, err := buildModel(ctx, opts.Provider, opts.Model, workload.BuiltinTools{})
+	llm, err := buildModel(ctx, opts.Ext, opts.Provider, opts.Model, workload.BuiltinTools{})
 	if err != nil {
 		return fmt.Errorf("construct model %q: %w", opts.Model, err)
 	}

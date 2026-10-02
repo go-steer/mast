@@ -16,7 +16,7 @@ how long a release is supported.
 
 ## Today, before v1.0
 
-Every exported path may change in any release. In practice the six
+Every exported path may change in any release. In practice the
 paths listed below are the ones under active compatibility discipline
 and the ones least likely to move; the rest have changed between minor
 releases and will again.
@@ -29,11 +29,12 @@ number will mean.
 
 ## What v1.0 will cover
 
-Six import paths follow [semver](https://semver.org) from v1.0:
+These import paths follow [semver](https://semver.org) from v1.0:
 
 | Path | What lives there |
 |---|---|
 | `github.com/go-steer/mast` | The library front door: `Run`, `RunWorkload`, `ListSessions`, `ResumeSession`, `ResumeByToken`, `Pause`, `AckEffects`. |
+| `github.com/go-steer/mast/cli` | The binary, for [building your own](/quickstart/custom-binary/): `Main`, and the options that add your models and tools. |
 | `github.com/go-steer/mast/pkg/agent` | Agent-mode constructors and `Config`. |
 | `github.com/go-steer/mast/pkg/transcript` | The operator projection over sessions. |
 | `github.com/go-steer/mast/pkg/workload` | Bundle types — the Go form of `workload.yaml`. |

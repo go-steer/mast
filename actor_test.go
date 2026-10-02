@@ -99,6 +99,7 @@ var promised = []string{
 	".",
 	"pkg/agent",
 	"pkg/transcript",
+	"cli",
 	"pkg/workload",
 	"pkg/specialists",
 	"pkg/budget",
