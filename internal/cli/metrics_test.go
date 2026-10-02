@@ -32,7 +32,7 @@ import (
 
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/observability"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // primedObs returns a registry with the "(test)" workload's families

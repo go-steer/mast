@@ -33,7 +33,7 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/internal/observability"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // anchorTime is a fixed, boring instant. UTC and on a second boundary

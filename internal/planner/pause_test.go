@@ -24,7 +24,7 @@ import (
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/internal/planner"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // TestPauseSessionParksAndRecordsToken pins the plane-A contract

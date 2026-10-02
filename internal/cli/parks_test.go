@@ -27,8 +27,8 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // The end-to-end claim #314 makes, read out of a real store: a parked

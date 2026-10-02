@@ -27,8 +27,8 @@ import (
 	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/graph"
 	"github.com/go-steer/mast/internal/planner"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/specialists"
-	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

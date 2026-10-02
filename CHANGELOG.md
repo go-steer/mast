@@ -4,6 +4,25 @@
 
 ### API Change
 
+- **`pkg/transcript` is the read half of the operator store; the writes and
+  the daemon's bookkeeping moved under `internal/`.** `Store` keeps `List`,
+  `Get`, `Decisions`, `ExportDecisions` and `FindToken`, and the records they
+  return keep their names. The records are now aliases of the internal
+  store's, so a value from `mast.ListSessions` or `mast.Pause` is the same
+  type.
+  - **Gone from the package:** `Open`, `IsReservedSessionID`,
+    `ErrAlreadyAborted`, the interrupt and auto-resume bookkeeping, sub-run
+    intents, schedule and ack records, and every write method (abort, pause,
+    token consumption and extension, effect acks).
+  - **For Go embedders:** pause and resume through `mast.Pause`,
+    `mast.ResumeSession`, `mast.ResumeByToken` and `mast.AckEffects`.
+  - **Why:** v1.0 freezes every exported name, and these were public only
+    because the binary used to need them. `IsReservedSessionID` would have
+    frozen a session-naming convention that is meant to go away
+    ([#51](https://github.com/go-steer/mast/issues/51)).
+
+  [#301](https://github.com/go-steer/mast/issues/301)
+
 - **`pkg/agent` and `pkg/watchdog` moved under `internal/`; recognize a
   halted turn with `mast.IsWatchdogHalt`.**
   - **`pkg/agent`:** `specialists.Build` covers what an embedder built

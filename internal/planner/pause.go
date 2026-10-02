@@ -22,7 +22,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // PauseRecorder mints the durable pause record + resume token for a

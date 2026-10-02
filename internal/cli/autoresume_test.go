@@ -32,7 +32,7 @@ import (
 
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/observability"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // erroringModel fails every generation — drives a turn to a non-conflict

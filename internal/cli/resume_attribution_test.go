@@ -30,7 +30,7 @@ import (
 
 	"github.com/go-steer/mast/internal/auth"
 	"github.com/go-steer/mast/internal/inject"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // callerCtx is what internal/inject's handleResume hands the daemon.

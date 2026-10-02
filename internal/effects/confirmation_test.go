@@ -30,7 +30,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // confirmProbe runs the ADK tool-confirmation HITL shape

@@ -18,7 +18,7 @@ import (
 	"context"
 
 	"github.com/go-steer/mast/internal/effects"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // SubRunIntentStore joins the two halves of the v0.6 W9.3 seam (#235):

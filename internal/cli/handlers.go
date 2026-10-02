@@ -23,7 +23,7 @@ import (
 
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/observability"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // recordAbort performs a terminal abort's durable write and, on

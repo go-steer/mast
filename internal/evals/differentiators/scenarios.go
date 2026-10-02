@@ -21,10 +21,10 @@ import (
 	"strings"
 
 	"github.com/go-steer/mast/internal/evals"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
-	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

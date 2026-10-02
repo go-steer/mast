@@ -38,8 +38,8 @@ import (
 
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/observability"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/internal/watchdog"
-	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // blockableModel yields one text response, optionally parking until

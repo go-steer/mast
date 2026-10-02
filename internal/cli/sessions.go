@@ -58,8 +58,8 @@ import (
 	"time"
 
 	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // sessionsCmd is the parsed form of a `mast sessions ...` invocation.

@@ -69,8 +69,8 @@ import (
 	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/permissions"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // promptKindWriteGate is the PromptFrame.Kind a write-gate park travels

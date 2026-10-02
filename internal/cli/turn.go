@@ -35,10 +35,10 @@ import (
 	"github.com/go-steer/mast/internal/envelope"
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/observability"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
