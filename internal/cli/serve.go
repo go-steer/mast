@@ -31,12 +31,15 @@ import (
 
 	"gorm.io/gorm"
 
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/internal/a2a"
 	"github.com/go-steer/mast/internal/agui"
+	"github.com/go-steer/mast/internal/auth"
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/envelope"
@@ -44,39 +47,196 @@ import (
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/approval"
+	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
+// daemon is serve()'s state: one field per value that crosses from one
+// startup phase to the next. serve() was a single function of about 1,250 lines
+// (#293); each phase is now a method, run in the order the function ran
+// its sections, reading what earlier phases built and setting what later
+// ones need.
+//
+// Closures handed to servers capture d rather than locals, so a field
+// assigned after its closure is built (parkNotices, resumeForPerms) is
+// read at call time exactly as the captured variable used to be.
+type daemon struct {
+	// Main's context; the signal context's parent.
+	parent       context.Context
+	logger       *slog.Logger
+	wl           workloadOpts
+	mdl          modelOpts
+	listeners    listenOpts
+	sessions     sessionOpts
+	resumes      resumeOpts
+	watchdogFlag string
+	mcpDigest    bool
+
+	// Set by checkIngress.
+	bearer       string
+	injectAuthn  auth.Authenticator
+	notifyClient notifySender
+
+	// Set by startLifetimes.
+	ctx         context.Context
+	stop        context.CancelFunc
+	turnCtx     context.Context
+	cancelTurns context.CancelFunc
+
+	// Set by buildModel.
+	roster *loadedWorkload
+	llm    model.LLM
+
+	// Set by openSessions.
+	sessionSvc session.Service
+	elHandle   *eventlog.Handle
+	durableDB  *gorm.DB
+	store      *transcript.Store
+	pauseRec   *daemonPauseRecorder
+	subObs     *daemonSubRunObserver
+
+	// Set by buildRoot.
+	built        rootBuild
+	root         adkagent.Agent
+	bundle       *workload.Bundle
+	specs        []specialists.Spec
+	dispatchMode string
+	declared     workload.Bundle
+
+	// Set by buildGovernance.
+	effPred      effects.Predicate
+	effSubAgents map[string]bool
+	subIntents   compose.SubRunIntentStore
+	wdRes        watchdogResolution
+	wds          *watchdogPool
+	toolSchemas  *toolSchemas
+	parkNotices  *parkNotifier
+	writeGate    compose.WriteGateResult
+	r            *runner.Runner
+
+	// Set by buildMetering.
+	meters       *meterPool
+	obs          *observability.Registry
+	workloadName string
+	tracker      *turnTracker
+	turnLocks    *sessionTurnLocks
+	deps         turnDeps
+
+	// Set by buildOperatorSurfaces.
+	att            *attachDeps
+	resumeForPerms func(context.Context, inject.ResumeRequest) error
+	a2aSrv         *a2a.Server
+	a2aLn          net.Listener
+	aguiSrv        *agui.Server
+	aguiLn         net.Listener
+
+	// Set by buildRequestHandlers.
+	drain             time.Duration
+	handler           func(context.Context, envelope.InjectPayload) error
+	resumeByInterrupt func(context.Context, inject.ResumeRequest) error
+	resumeHandler     func(context.Context, inject.ResumeRequest) error
+	abortHandler      func(context.Context, inject.AbortRequest) error
+	ackHandler        func(context.Context, inject.AckEffectsRequest) error
+
+	// Set by startScheduling.
+	schedLease        *schedulingLease
+	sched             *pauseScheduler
+	bootDone          chan struct{}
+	schedDone         chan struct{}
+	stopScheduled     func()
+	monitorAckHandler inject.MonitorAckHandler
+
+	// Set by buildInjectServer.
+	srv *inject.Server
+
+	// teardown holds what serve() used to defer, in registration order;
+	// runTeardown unwinds it last-in first-out.
+	teardown []func()
+	// disarmTeardown is the teardown watchdog's disarm; serveUntilShutdown
+	// arms the watchdog and runTeardown calls this after every step.
+	disarmTeardown func()
+}
+
 // serve runs the daemon: inject endpoint + runner + session store.
 // Fatal startup errors are logged in place and returned (not
-// os.Exit'd) so the deferred cleanups run.
+// os.Exit'd) so the teardown runs.
 func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listenOpts, sessions sessionOpts, resumes resumeOpts, watchdogFlag string, mcpDigest bool) error {
-	// The teardown watchdog's disarm. Deferred first so it runs last,
-	// after every other deferred Close and flush below has returned —
-	// a teardown that wedges never reaches it, which is the case the
-	// watchdog is armed for. Nothing arms it until the drain is done.
-	disarmTeardown := func() {}
-	defer func() { disarmTeardown() }()
+	d := &daemon{
+		parent: parent, logger: logger, wl: wl, mdl: mdl, listeners: listeners,
+		sessions: sessions, resumes: resumes, watchdogFlag: watchdogFlag, mcpDigest: mcpDigest,
+		disarmTeardown: func() {},
+	}
+	// Deferred once, before anything can register a step, so it runs
+	// whatever happens below — and disarms the teardown watchdog only
+	// after every Close and flush has returned. A teardown that wedges
+	// never reaches the disarm, which is the case the watchdog is for.
+	defer d.runTeardown()
+	for _, phase := range []func() error{
+		d.checkIngress,
+		d.startLifetimes,
+		d.buildModel,
+		d.openSessions,
+		d.buildRoot,
+		d.buildGovernance,
+		d.buildMetering,
+		d.buildOperatorSurfaces,
+		d.buildRequestHandlers,
+		d.startScheduling,
+		d.buildInjectServer,
+	} {
+		if err := phase(); err != nil {
+			return err
+		}
+	}
+	return d.serveUntilShutdown()
+}
 
-	bearer := os.Getenv("MAST_INJECT_TOKEN")
+// onTeardown registers f to run when serve() returns, before everything
+// registered earlier — the order a defer at the same point would have run
+// it in.
+func (d *daemon) onTeardown(f func()) { d.teardown = append(d.teardown, f) }
+
+// runTeardown unwinds onTeardown's registrations last-in first-out, then
+// disarms the teardown watchdog. Each step is deferred in turn, so one
+// that panics does not skip those registered before it: the guarantee
+// the defers it replaced gave.
+func (d *daemon) runTeardown() {
+	defer func() { d.disarmTeardown() }()
+	unwind(d.teardown)
+}
+
+func unwind(fs []func()) {
+	if len(fs) == 0 {
+		return
+	}
+	defer unwind(fs[:len(fs)-1])
+	fs[len(fs)-1]()
+}
+
+// checkIngress checks the inject bind policy and builds the inject
+// listener's user table and the chat ingress — configuration errors an
+// operator should hear about before anything expensive runs.
+func (d *daemon) checkIngress() error {
+	var err error
+	d.bearer = os.Getenv("MAST_INJECT_TOKEN")
 	// Checked here rather than left to inject.New, which does not run
 	// until provider detection, MCP loading and workload resolution are
 	// all behind us. A bind that is going to be refused should be
 	// refused before the operator pays for a boot that cannot finish.
-	if err := inject.CheckBindPolicy(listeners.inject, bearer != ""); err != nil {
-		logger.Error(err.Error())
+	if err := inject.CheckBindPolicy(d.listeners.inject, d.bearer != ""); err != nil {
+		d.logger.Error(err.Error())
 		return err
 	}
-	if bearer == "" {
-		logger.Warn("MAST_INJECT_TOKEN not set; inject endpoint is unauthenticated (loopback only)")
+	if d.bearer == "" {
+		d.logger.Warn("MAST_INJECT_TOKEN not set; inject endpoint is unauthenticated (loopback only)")
 	}
 	// Who an approval names (#198). Nil unless the operator configured a
 	// user table, in which case a resume records the person rather than
 	// the shared credential.
-	injectAuthn, err := injectAuthenticator(logger, bearer)
+	d.injectAuthn, err = injectAuthenticator(d.logger, d.bearer)
 	if err != nil {
-		logger.Error("failed to build the inject listener's user table", "error", err.Error())
+		d.logger.Error("failed to build the inject listener's user table", "error", err.Error())
 		return err
 	}
 
@@ -85,61 +245,74 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// errors an operator should hear about at startup rather than on the
 	// first cycle that had something to report — including the one that
 	// matters: the outbound token must not be an inbound one.
-	notifyClient, err := buildNotifyClient(logger, listeners.notify, map[string]string{
-		"MAST_INJECT_TOKEN": bearer,
+	d.notifyClient, err = buildNotifyClient(d.logger, d.listeners.notify, map[string]string{
+		"MAST_INJECT_TOKEN": d.bearer,
 		"MAST_ATTACH_TOKEN": os.Getenv("MAST_ATTACH_TOKEN"),
 		"MAST_A2A_TOKEN":    os.Getenv("MAST_A2A_TOKEN"),
 		"MAST_AGUI_TOKEN":   os.Getenv("MAST_AGUI_TOKEN"),
 	})
 	if err != nil {
-		logger.Error("failed to configure the chat ingress", "error", err.Error())
+		d.logger.Error("failed to configure the chat ingress", "error", err.Error())
 		return err
 	}
+	return nil
+}
 
+// startLifetimes starts the two lifetimes — the signal context that
+// starts the drain, and the turn context that outlives it — and OTel
+// export.
+func (d *daemon) startLifetimes() error {
+	var err error
 	// Two lifetimes (docs/durable-execution-design.md, "Shutdown
 	// contract"): ctx ends when a shutdown SIGNAL arrives and triggers
 	// the drain; turnCtx is what turns, toolsets, and the eventlog
 	// actually live on, and ends only when the drain window elapses —
 	// so an in-flight turn keeps its tools and its context for up to
 	// its own budget ceiling after SIGTERM instead of dying instantly.
-	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	turnCtx, cancelTurns := context.WithCancel(context.Background())
-	defer cancelTurns()
+	d.ctx, d.stop = signal.NotifyContext(d.parent, syscall.SIGINT, syscall.SIGTERM)
+	d.onTeardown(func() { d.stop() })
+	d.turnCtx, d.cancelTurns = context.WithCancel(context.Background())
+	d.onTeardown(func() { d.cancelTurns() })
 
 	// Env-gated OTel trace export: a no-op unless OTEL_EXPORTER_OTLP_*
 	// endpoints are set. mast opens no spans of its own in v0.1 — ADK
 	// v2's runner emits the span tree; this only exports it.
-	otelShutdown, otelEnabled, err := observability.SetupOTel(turnCtx)
+	otelShutdown, otelEnabled, err := observability.SetupOTel(d.turnCtx)
 	if err != nil {
-		logger.Error("failed to configure OTel trace export", "error", err.Error())
+		d.logger.Error("failed to configure OTel trace export", "error", err.Error())
 		return err
 	}
-	defer func() {
+	d.onTeardown(func() {
 		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = otelShutdown(flushCtx)
-	}()
+	})
 	if otelEnabled {
-		logger.Info("OTel trace export enabled", "endpoint_source", "OTEL_EXPORTER_OTLP_* env")
+		d.logger.Info("OTel trace export enabled", "endpoint_source", "OTEL_EXPORTER_OTLP_* env")
 	}
+	return nil
+}
 
+// buildModel resolves the workload roster, then builds the model, which
+// reads the roster's builtin_tools block.
+func (d *daemon) buildModel() error {
+	var err error
 	// The roster is resolved here rather than inside buildRoot because
 	// the model is constructed first and the bundle's `builtin_tools:`
 	// block is what gates the provider's server-side tools (#324).
-	var roster *loadedWorkload
-	if wl.arg != "" {
-		bundle, specs, cfgDir, err := resolveWorkload(logger, wl.arg)
+
+	if d.wl.arg != "" {
+		bundle, specs, cfgDir, err := resolveWorkload(d.logger, d.wl.arg)
 		if err != nil {
-			logger.Error("failed to load workload", "workload", wl.arg, "error", err.Error())
+			d.logger.Error("failed to load workload", "workload", d.wl.arg, "error", err.Error())
 			return err
 		}
-		roster = &loadedWorkload{bundle: bundle, specs: specs, cfgDir: cfgDir}
+		d.roster = &loadedWorkload{bundle: bundle, specs: specs, cfgDir: cfgDir}
 	}
 
-	llm, err := buildModel(turnCtx, mdl.provider, mdl.name, roster.builtinTools())
+	d.llm, err = buildModel(d.turnCtx, d.mdl.provider, d.mdl.name, d.roster.builtinTools())
 	if err != nil {
-		logger.Error("failed to construct model", "model", mdl.name, "error", err.Error())
+		d.logger.Error("failed to construct model", "model", d.mdl.name, "error", err.Error())
 		return err
 	}
 	// The server-side built-ins are named here or nowhere: they never
@@ -148,12 +321,17 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// rather than off the bundle, which is what makes this line able to
 	// answer "did my key take" — a misspelled YAML key is discarded in
 	// silence. Absent for a backend with no such concept.
-	if bt := compose.BuiltinToolsSummary(llm); bt != "" {
-		logger.Info("model constructed", "name", llm.Name(), "builtin_tools", bt)
+	if bt := compose.BuiltinToolsSummary(d.llm); bt != "" {
+		d.logger.Info("model constructed", "name", d.llm.Name(), "builtin_tools", bt)
 	} else {
-		logger.Info("model constructed", "name", llm.Name())
+		d.logger.Info("model constructed", "name", d.llm.Name())
 	}
+	return nil
+}
 
+// openSessions opens the session backend and the transcript store over
+// it, and builds the two sinks the root agent needs at construction.
+func (d *daemon) openSessions() error {
 	// Session backend, built BEFORE the root agent: the planner's
 	// pause_session tool needs the transcript store at construction
 	// time (v0.2 pause/abort). With --attach-listen the store opens
@@ -161,57 +339,54 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// tables, plus the seq-overlay the attach broadcaster live-tails.
 	// Without attach the plain service keeps the pre-P1.3c shape
 	// (including in-memory sessions when --session-db is empty).
-	var (
-		sessionSvc session.Service
-		elHandle   *eventlog.Handle
-		// The connection the durable stores go on, from whichever
-		// backend opened one. Nil only when sessions are in-memory,
-		// which is the one configuration with nothing to persist to.
-		durableDB *gorm.DB
-	)
-	if listeners.attach != "" {
+
+	// The connection the durable stores go on, from whichever
+	// backend opened one. Nil only when sessions are in-memory,
+	// which is the one configuration with nothing to persist to.
+
+	if d.listeners.attach != "" {
 		// No "requires --session-db" gate here any more: resolveSessionDB
 		// implies one for attach mode before serve is entered (#329), and
 		// refuses by name the two shapes it cannot imply — an explicitly
 		// empty --session-db, and a Postgres driver with no DSN. This
 		// branch is unreachable with an empty sessions.db, which is why
 		// the checks below are on elHandle rather than on the string.
-		if sessions.implied {
+		if d.sessions.implied {
 			// Said before the file is created, not after: a database
 			// appearing under a home directory the operator never named
 			// is the surprise, and the line that prevents it has to name
 			// both the cause and the way out.
-			logger.Info("session db implied by --attach-listen (attach live-tail pumps from the eventlog overlay)",
-				"path", sessions.db, "relocate_with", "--session-db=PATH")
+			d.logger.Info("session db implied by --attach-listen (attach live-tail pumps from the eventlog overlay)",
+				"path", d.sessions.db, "relocate_with", "--session-db=PATH")
 		}
-		dial, err := sessionDialector(sessions.driver, sessions.db)
+		dial, err := sessionDialector(d.sessions.driver, d.sessions.db)
 		if err != nil {
-			if sessions.implied {
+			if d.sessions.implied {
 				// The bare "create session-db directory ...: permission
 				// denied" is true and useless to someone who never asked
 				// for a session db. The fix has to be in the error.
-				logger.Error("attach mode needs a durable session db and the implied location is not usable",
-					"path", sessions.db, "error", err.Error(),
+				d.logger.Error("attach mode needs a durable session db and the implied location is not usable",
+					"path", d.sessions.db, "error", err.Error(),
 					"fix", "pass --session-db=/some/writable/path/sessions.db")
 				return err
 			}
-			logger.Error("failed to construct session service", "error", err.Error())
+			d.logger.Error("failed to construct session service", "error", err.Error())
 			return err
 		}
-		elHandle, err = eventlog.Open(turnCtx, dial)
+		d.elHandle, err = eventlog.Open(d.turnCtx, dial)
 		if err != nil {
-			logger.Error("failed to open eventlog-backed session store", "error", err.Error())
+			d.logger.Error("failed to open eventlog-backed session store", "error", err.Error())
 			return err
 		}
-		defer func() { _ = elHandle.Close() }()
-		sessionSvc = elHandle.Service
-		durableDB = elHandle.DB
-		logger.Info("session db opened (eventlog overlay for attach)", "driver", sessions.driver)
+		d.onTeardown(func() { _ = d.elHandle.Close() })
+		d.sessionSvc = d.elHandle.Service
+		d.durableDB = d.elHandle.DB
+		d.logger.Info("session db opened (eventlog overlay for attach)", "driver", d.sessions.driver)
 	} else {
 		var err error
-		sessionSvc, durableDB, err = buildSessionService(turnCtx, sessions.driver, sessions.db, logger)
+		d.sessionSvc, d.durableDB, err = buildSessionService(d.turnCtx, d.sessions.driver, d.sessions.db, d.logger)
 		if err != nil {
-			logger.Error("failed to construct session service", "error", err.Error())
+			d.logger.Error("failed to construct session service", "error", err.Error())
 			return err
 		}
 	}
@@ -220,25 +395,31 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// surface"): /abort appends the durable abort marker, and /resume
 	// refuses sessions that carry one. Built before the runner because
 	// the outbox plugin reads the effects-ack watermark through it.
-	store := transcript.NewStore(sessionSvc, appName)
+	d.store = transcript.NewStore(d.sessionSvc, appName)
 
 	// pause_session's record sink: the store, plus a timer push into
 	// the scheduler once it exists (attached below — the scheduler
 	// needs the runner, which needs the root).
-	pauseRec := &daemonPauseRecorder{store: store}
+	d.pauseRec = &daemonPauseRecorder{store: d.store}
 
 	// Where a planner dispatch's private sub-run reports its spend.
 	// Also built empty and attached below: the meter pool and the
 	// metric registry both need the bundle this call is about to load.
-	subObs := &daemonSubRunObserver{}
+	d.subObs = &daemonSubRunObserver{}
+	return nil
+}
 
-	built, err := buildRoot(turnCtx, logger, llm, mdl, wl, roster,
-		hostSeams{pause: pauseRec, subRun: subObs, digest: newDigestOptions(logger, mcpDigest)})
+// buildRoot builds the root agent and makes the startup refusals that
+// need the loaded bundle.
+func (d *daemon) buildRoot() error {
+	var err error
+	d.built, err = buildRoot(d.turnCtx, d.logger, d.llm, d.mdl, d.wl, d.roster,
+		hostSeams{pause: d.pauseRec, subRun: d.subObs, digest: newDigestOptions(d.logger, d.mcpDigest)})
 	if err != nil {
-		logger.Error("failed to construct root agent", "error", err.Error())
+		d.logger.Error("failed to construct root agent", "error", err.Error())
 		return err
 	}
-	root, bundle, specs, dispatchMode := built.agent, built.bundle, built.specs, built.dispatch
+	d.root, d.bundle, d.specs, d.dispatchMode = d.built.agent, d.built.bundle, d.built.specs, d.built.dispatch
 	// declared is what the workload declares, for the reads below that
 	// only want a block's settings: the bundle when there is one, and
 	// the zero bundle when the daemon was started without --workload to
@@ -248,13 +429,13 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// bundle directly crashed that documented mode at boot. Reads that
 	// must tell "no workload" from "a workload that declares nothing"
 	// (the workload name, its budget) still test bundle itself.
-	var declared workload.Bundle
-	if bundle != nil {
-		declared = *bundle
+
+	if d.bundle != nil {
+		d.declared = *d.bundle
 	}
-	logger.Info("root agent constructed",
-		"name", root.Name(),
-		"sub_agents", len(root.SubAgents()),
+	d.logger.Info("root agent constructed",
+		"name", d.root.Name(),
+		"sub_agents", len(d.root.SubAgents()),
 	)
 
 	// A ConfigMap edit rewrites the mounted files under a running pod
@@ -262,7 +443,7 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// parsed at boot. Nothing reloads that; this says so out loud
 	// instead of leaving the operator with a change that had no effect
 	// and no line to grep for (#289).
-	go watchConfig(turnCtx, logger, built.config, configWatchInterval)
+	go watchConfig(d.turnCtx, d.logger, d.built.config, configWatchInterval)
 
 	// Refused as early as the bundle is readable (v0.5 W4.5): a
 	// workload whose entire output is a chat message, started against a
@@ -270,10 +451,10 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// is reporting. The scheduled trigger checks this again when it arms
 	// — this one is here so the answer arrives before the listeners bind
 	// rather than after.
-	if declared.Monitor.Notify != nil && notifyClient == nil {
+	if d.declared.Monitor.Notify != nil && d.notifyClient == nil {
 		err := fmt.Errorf("workload %q posts monitoring notices to %q but no chat ingress is configured; set --notify-url and %s",
-			bundle.Name, bundle.Monitor.NotifyTarget(), notifyTokenEnv)
-		logger.Error("refusing to start", "error", err.Error())
+			d.bundle.Name, d.bundle.Monitor.NotifyTarget(), notifyTokenEnv)
+		d.logger.Error("refusing to start", "error", err.Error())
 		return err
 	}
 
@@ -284,11 +465,17 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// here rather than where the notifier is built, which is after the
 	// metric registry it needs — and startup errors belong before the
 	// listeners bind.
-	if err := parkNotifyConfigError(listeners.parkNotify, notifyClient); err != nil {
-		logger.Error("refusing to start", "error", err.Error())
+	if err := parkNotifyConfigError(d.listeners.parkNotify, d.notifyClient); err != nil {
+		d.logger.Error("refusing to start", "error", err.Error())
 		return err
 	}
+	return nil
+}
 
+// buildGovernance builds the effect outbox, resolves the watchdog
+// posture, builds the write gate, and builds the runner they plug into.
+func (d *daemon) buildGovernance() error {
+	var err error
 	// Recorded-effect outbox (docs/durable-execution-design.md): the
 	// runner plugin that refuses mutating tool calls while a session
 	// carries unacknowledged dangling intents from an interrupted turn,
@@ -296,14 +483,14 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// runner construction path attaches it (#53's lesson).
 	// Built once and shared with the boot-time auto-resume pass so its
 	// eligibility gate classifies dangling calls exactly as the outbox does.
-	effPred := effects.NewPredicateWithHints(effects.Overrides(logger, toolPolicies(bundle)), built.mcpAnnotations.ReadOnly)
-	effSubAgents := effects.SubAgentNames(root)
+	d.effPred = effects.NewPredicateWithHints(effects.Overrides(d.logger, toolPolicies(d.bundle)), d.built.mcpAnnotations.ReadOnly)
+	d.effSubAgents = effects.SubAgentNames(d.root)
 	// A sub-agent name that also names a mutating tool is ambiguous in the
 	// session log and makes a genuine effect invisible to the outbox (gate
 	// finding N2). Refuse to start rather than run with the fail-open hole;
 	// the operator renames one side.
-	if hits := effects.CheckNameCollisions(effSubAgents, effPred, toolPolicies(bundle)); len(hits) > 0 {
-		logger.Error("sub-agent/tool name collision", "names", hits)
+	if hits := effects.CheckNameCollisions(d.effSubAgents, d.effPred, toolPolicies(d.bundle)); len(hits) > 0 {
+		d.logger.Error("sub-agent/tool name collision", "names", hits)
 		return fmt.Errorf("composition names both a sub-agent and a mutating tool %q: a mutating tool sharing a specialist's name is invisible to the effect outbox — rename the specialist or the tool", strings.Join(hits, ", "))
 	}
 	// Where a planner dispatch's mutating calls are recorded, since the
@@ -311,25 +498,25 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// bound here rather than resolved per write: the store can find one
 	// by scanning the app's session list, but that scan would sit in
 	// front of every dispatched mutating call.
-	subIntents := compose.SubRunIntentStore{Store: store, UserID: defaultUserID}
-	subObs.attachRecording(subIntents, effPred, effSubAgents)
+	d.subIntents = compose.SubRunIntentStore{Store: d.store, UserID: defaultUserID}
+	d.subObs.attachRecording(d.subIntents, d.effPred, d.effSubAgents)
 
 	outboxPlugin, err := effects.New(effects.Config{
-		Predicate:     effPred,
-		SubAgentNames: effSubAgents,
+		Predicate:     d.effPred,
+		SubAgentNames: d.effSubAgents,
 		// A dispatched specialist's mutating calls are in neither this
 		// session's log nor any log this process will ever scan, so the
 		// outbox is told about them out of band — the same way its spend
 		// crosses the boundary (#226). Merged before the ack filter, so
 		// `mast sessions ack-effects` clears these too.
-		ExternalDangling: subIntents.Dangling,
+		ExternalDangling: d.subIntents.Dangling,
 		AckedAt: func(ctx context.Context, sid string) (time.Time, bool) {
-			return store.EffectsAckedAt(ctx, "", sid)
+			return d.store.EffectsAckedAt(ctx, "", sid)
 		},
-		Logger: logger,
+		Logger: d.logger,
 	})
 	if err != nil {
-		logger.Error("failed to construct effects outbox", "error", err.Error())
+		d.logger.Error("failed to construct effects outbox", "error", err.Error())
 		return err
 	}
 
@@ -345,13 +532,13 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// suppressing a refused call and the watchdog forgetting the call
 	// the gate disposed of, and a gate constructed before the pool
 	// exists can only reach it through a variable assigned later.
-	wdRes, err := resolveWatchdog(watchdogInputs{Flag: watchdogFlag, Bundle: bundleWatchdog(bundle)})
+	d.wdRes, err = resolveWatchdog(watchdogInputs{Flag: d.watchdogFlag, Bundle: bundleWatchdog(d.bundle)})
 	if err != nil {
-		logger.Error("invalid watchdog posture", "error", err.Error())
+		d.logger.Error("invalid watchdog posture", "error", err.Error())
 		return err
 	}
-	logger.Info("watchdog posture resolved", "mode", string(wdRes.Mode), "source", wdRes.Source)
-	wds := newWatchdogPool(wdRes.Mode)
+	d.logger.Info("watchdog posture resolved", "mode", string(d.wdRes.Mode), "source", d.wdRes.Source)
+	d.wds = newWatchdogPool(d.wdRes.Mode)
 
 	// Pre-call write gate (docs/v0.3-plan.md W2). Registered *after*
 	// the outbox: a replayed result performs no new effect and needs no
@@ -360,21 +547,21 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// Name → input schema over the same wired toolsets /tools reports
 	// from, so the producer contract checks a proposed change against
 	// the tool that would actually run it (v0.4 W7.0).
-	toolSchemas := newToolSchemas(logger, built.toolsets)
+	d.toolSchemas = newToolSchemas(d.logger, d.built.toolsets)
 	// Assigned once, below, as soon as the metric registry exists. The
 	// gate reads it through the closure it is handed, never here.
-	var parkNotices *parkNotifier
+
 	gateCfg := compose.WriteGateConfig{
-		Bundle:      bundle,
-		Predicate:   effPred,
-		Specs:       specs,
-		ToolSchemas: toolSchemas.lookup,
-		ToolRead:    toolSchemas.read,
+		Bundle:      d.bundle,
+		Predicate:   d.effPred,
+		Specs:       d.specs,
+		ToolSchemas: d.toolSchemas.lookup,
+		ToolRead:    d.toolSchemas.read,
 		// The gate's cut has to scrub the watchdog's evidence, or the
 		// calls it already disposed of stay on the books and the next
 		// identical one is the fifth in a row (#449).
-		ForgetToolRun: wds.forgetToolRun,
-		Logger:        logger,
+		ForgetToolRun: d.wds.forgetToolRun,
+		Logger:        d.logger,
 	}
 	// Installed only when an operator asked for it, so an unconfigured
 	// daemon spends no goroutine and no context per park — and resolved
@@ -383,34 +570,41 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// hundred lines below. Reading it at wiring time is how core-agent's
 	// port of this shipped a nil dereference at startup with the feature
 	// switched off (their #647 follow-up); a getter cannot have that bug.
-	if listeners.parkNotify != "" {
+	if d.listeners.parkNotify != "" {
 		gateCfg.NotifyPark = func(ctx context.Context, n approval.ParkNotice) {
-			parkNotices.announce(ctx, n)
+			d.parkNotices.announce(ctx, n)
 		}
 	}
-	writeGate, err := compose.WriteGate(gateCfg)
+	d.writeGate, err = compose.WriteGate(gateCfg)
 	if err != nil {
-		logger.Error("failed to construct write gate", "error", err.Error())
+		d.logger.Error("failed to construct write gate", "error", err.Error())
 		return err
 	}
-	if writeGate.Plugin != nil {
-		plugins = append(plugins, writeGate.Plugin)
-		logger.Info("write gate registered", "on_mutation", declared.HITL.EffectiveOnMutation())
+	if d.writeGate.Plugin != nil {
+		plugins = append(plugins, d.writeGate.Plugin)
+		d.logger.Info("write gate registered", "on_mutation", d.declared.HITL.EffectiveOnMutation())
 	}
 
-	r, err := runner.New(runner.Config{
+	d.r, err = runner.New(runner.Config{
 		AppName:           appName,
-		Agent:             root,
-		SessionService:    sessionSvc,
+		Agent:             d.root,
+		SessionService:    d.sessionSvc,
 		AutoCreateSession: true,
 		PluginConfig:      runner.PluginConfig{Plugins: plugins},
 	})
 	if err != nil {
-		logger.Error("failed to construct runner", "error", err.Error())
+		d.logger.Error("failed to construct runner", "error", err.Error())
 		return err
 	}
+	return nil
+}
 
-	meters := newMeterPool(bundle, specs, mdl.provider, mdl.name)
+// buildMetering builds the budget meters and their durable stores, the
+// metric registry, the park notifier, the turn tracker, and the turn
+// dependencies every surface shares.
+func (d *daemon) buildMetering() error {
+	var err error
+	d.meters = newMeterPool(d.bundle, d.specs, d.mdl.provider, d.mdl.name)
 
 	// Both durable stores live on whichever connection the session
 	// backend opened — the eventlog overlay's under --attach-listen, ADK's
@@ -421,10 +615,10 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// The two are wired on DIFFERENT conditions, and #274 is what happens
 	// when they share one.
 	var gstore *eventlog.GuardrailStore
-	if durableDB != nil {
-		gstore, err = eventlog.NewGuardrailStore(turnCtx, durableDB)
+	if d.durableDB != nil {
+		gstore, err = eventlog.NewGuardrailStore(d.turnCtx, d.durableDB)
 		if err != nil {
-			logger.Error("failed to open the durable guardrail store", "error", err.Error())
+			d.logger.Error("failed to open the durable guardrail store", "error", err.Error())
 			return err
 		}
 	}
@@ -437,12 +631,12 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// short of deleting a row. Don't durably latch what nobody can
 	// unlatch. --attach-listen implies --session-db (#329), so the store
 	// exists exactly when the reset that clears it does.
-	if elHandle != nil {
-		wds.durable(gstore, logger)
-	} else if wdRes.Mode.Enforces() {
+	if d.elHandle != nil {
+		d.wds.durable(gstore, d.logger)
+	} else if d.wdRes.Mode.Enforces() {
 		// Said once, at startup, rather than discovered after a restart
 		// silently disarmed the backstop.
-		logger.Warn("watchdog is in enforce mode without --attach-listen: a halt will not survive a restart, and there is no reset endpoint to clear one")
+		d.logger.Warn("watchdog is in enforce mode without --attach-listen: a halt will not survive a restart, and there is no reset endpoint to clear one")
 	}
 
 	// The ledger (#175) needs a database and nothing else. It is not a
@@ -461,21 +655,21 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// a later run that has no attach surface, or the restored spend wedges
 	// a session they already rescued. With no attach listener there are
 	// simply no grants to fold, and Fold says so cheaply.
-	if durableDB != nil {
-		sstore, serr := eventlog.NewSpendStore(turnCtx, durableDB)
+	if d.durableDB != nil {
+		sstore, serr := eventlog.NewSpendStore(d.turnCtx, d.durableDB)
 		if serr != nil {
-			logger.Error("failed to open the durable budget spend ledger", "error", serr.Error())
+			d.logger.Error("failed to open the durable budget spend ledger", "error", serr.Error())
 			return serr
 		}
-		meters.durable(sstore, gstore, logger)
-	} else if bundle != nil && (bundle.Budget.MaxCostUSD > 0 || bundle.Budget.MaxTurns > 0) {
+		d.meters.durable(sstore, gstore, d.logger)
+	} else if d.bundle != nil && (d.bundle.Budget.MaxCostUSD > 0 || d.bundle.Budget.MaxTurns > 0) {
 		// Two ways to arrive here, and they are not the same operator
 		// mistake. Naming the wrong one is what #274 did.
-		if sessions.db == "" {
-			logger.Warn("budget ceilings without --session-db: sessions are in-memory, so spend is not persisted and a restart hands this workload its full budget back")
+		if d.sessions.db == "" {
+			d.logger.Warn("budget ceilings without --session-db: sessions are in-memory, so spend is not persisted and a restart hands this workload its full budget back")
 		} else {
-			logger.Warn("budget ceilings without a durable ledger: the session backend opened no connection to write one to, so a restart hands this workload its full budget back",
-				"driver", sessions.driver)
+			d.logger.Warn("budget ceilings without a durable ledger: the session backend opened no connection to write one to, so a restart hands this workload its full budget back",
+				"driver", d.sessions.driver)
 		}
 	}
 
@@ -483,25 +677,25 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// nothing here can mint new ones). Single-workload process in v0.1,
 	// so the workload label is resolved once. Built before the tracker
 	// so the shutdown-drain marker-failure counter can flow through it.
-	obs := observability.New()
-	workloadName := "(none)"
-	if bundle != nil {
-		workloadName = bundle.Name
+	d.obs = observability.New()
+	d.workloadName = "(none)"
+	if d.bundle != nil {
+		d.workloadName = d.bundle.Name
 	}
-	obs.Prime(workloadName)
+	d.obs.Prime(d.workloadName)
 
 	// Now that the workload has a name and a registry, the retry every
 	// runtime model already carries gets somewhere to report (#452).
-	reportProviderRetries(obs, workloadName, logger)
+	reportProviderRetries(d.obs, d.workloadName, d.logger)
 
 	// The push half of a park (#451). Built here because it needs the
 	// registry above; the write gate already holds a getter for it. The
 	// error is the "configured with nowhere to send" one serve refused
 	// long before this, kept because a constructor that can fail should
 	// say so rather than rely on a caller having checked.
-	parkNotices, err = buildParkNotifier(logger, obs, workloadName, listeners.parkNotify, notifyClient)
+	d.parkNotices, err = buildParkNotifier(d.logger, d.obs, d.workloadName, d.listeners.parkNotify, d.notifyClient)
 	if err != nil {
-		logger.Error("failed to configure park announcements", "error", err.Error())
+		d.logger.Error("failed to configure park announcements", "error", err.Error())
 		return err
 	}
 
@@ -509,42 +703,47 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// the pre-mark/clear ordering for their interruption markers. The
 	// tracker owns the drain-time marker writes, so it emits the
 	// marker-failure and planned-stop gate-pause counters (#50).
-	tracker := newTurnTracker(store, logger, obs, workloadName)
+	d.tracker = newTurnTracker(d.store, d.logger, d.obs, d.workloadName)
 
 	// Every sink now exists, so a planner dispatch's sub-run has
 	// somewhere to report — and, through the tracker, a way to cancel
 	// the turn it is running inside when the watchdog halts the session
 	// (#226). Before this line no turn has started, so no dispatch can
 	// be in flight to miss it.
-	subObs.attach(meters, obs, wds, tracker, workloadName, logger)
+	d.subObs.attach(d.meters, d.obs, d.wds, d.tracker, d.workloadName, d.logger)
 
 	// One turn per session at a time (#62): a second runner turn on
 	// the same session row dies on ADK's stale-session check, so
 	// same-session injects/resumes queue behind the in-flight turn
 	// (bounded by the workload wallclock budget) instead of losing it.
-	turnLocks := newSessionTurnLocks()
+	d.turnLocks = newSessionTurnLocks()
 
 	// Everything a turn needs that is fixed for the daemon's lifetime,
 	// assembled once. Every surface that starts a turn takes this, so
 	// "which objects does a turn run against" has one answer rather
 	// than six threaded argument lists.
-	deps := turnDeps{
-		r:            r,
-		logger:       logger,
-		store:        store,
-		meters:       meters,
-		wds:          wds,
-		obs:          obs,
-		tracker:      tracker,
-		turnLocks:    turnLocks,
-		workloadName: workloadName,
+	d.deps = turnDeps{
+		r:            d.r,
+		logger:       d.logger,
+		store:        d.store,
+		meters:       d.meters,
+		wds:          d.wds,
+		obs:          d.obs,
+		tracker:      d.tracker,
+		turnLocks:    d.turnLocks,
+		workloadName: d.workloadName,
 	}
+	return nil
+}
 
+// buildOperatorSurfaces builds and binds the attach, A2A and AG-UI
+// surfaces; serveUntilShutdown serves them once the inject server is up.
+func (d *daemon) buildOperatorSurfaces() error {
+	var err error
 	// Operator attach surface (--attach-listen): registry + resumer +
 	// per-session adapters over the same runTurn path the inject
 	// endpoint drives. Bound here (fail-fast), served after the inject
 	// server is up.
-	var att *attachDeps
 
 	// resumeForPerms is assigned once the resume path below exists.
 	//
@@ -557,30 +756,29 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// adapter, and no session registers until serve is listening — but
 	// the nil check is kept because that ordering is a fact about a
 	// hundred lines of this function rather than about this line.
-	var resumeForPerms func(context.Context, inject.ResumeRequest) error
 
-	if listeners.attach != "" {
-		grView := &guardrailView{meters: meters, wds: wds, logger: logger}
+	if d.listeners.attach != "" {
+		grView := &guardrailView{meters: d.meters, wds: d.wds, logger: d.logger}
 		wiring := attachWiring{
 			appName:     appName,
 			userID:      defaultUserID,
-			eventLog:    elHandle,
-			baseContext: turnCtx,
-			modelName:   llm.Name(),
-			description: attachDescription(bundle),
+			eventLog:    d.elHandle,
+			baseContext: d.turnCtx,
+			modelName:   d.llm.Name(),
+			description: attachDescription(d.bundle),
 			// GET /sessions/{sid}/tools, off what buildRoot wired — the
 			// only place a tool's attribution still exists (#133, #137).
-			tools: built.catalog(logger, effPred),
+			tools: d.built.catalog(d.logger, d.effPred),
 			// GET /sessions/{sid}/subagents: the roster the daemon
 			// loaded, which is what "what can this thing do" asks for —
 			// /agents answers "what is running", and that is empty most
 			// of the time (#134).
-			subagents: subagentCatalog(bundle, specs, built.dispatch),
+			subagents: subagentCatalog(d.bundle, d.specs, d.built.dispatch),
 			// The turn_state projection: a session parked on the write
 			// gate reported `idle` — the string a finished turn gets —
 			// for every release the attach surface has existed (#313).
-			store:  store,
-			logger: logger,
+			store:  d.store,
+			logger: d.logger,
 			// GET /perms, which answered 200 with the zero value — a
 			// daemon that gates nothing — on every release since the
 			// route was ported (#375). The gate comes back from
@@ -588,25 +786,25 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 			// an operator reads is the object the write gate consults;
 			// it is nil exactly when the policy builds none, and the
 			// projection omits mode rather than inventing one.
-			gate:       writeGate.Gate,
-			onMutation: string(declared.HITL.EffectiveOnMutation()),
+			gate:       d.writeGate.Gate,
+			onMutation: string(d.declared.HITL.EffectiveOnMutation()),
 			// GET /perms/stream + POST /perms/respond, answered from
 			// the durable park instead of 501 (#364). Same resume path
 			// POST /resume takes, so the approver is the authenticated
 			// caller and the audit row is the one an operator gets from
 			// the CLI.
 			resume: func(ctx context.Context, req inject.ResumeRequest) error {
-				if resumeForPerms == nil {
+				if d.resumeForPerms == nil {
 					return errors.New("resume path is not wired yet")
 				}
-				return resumeForPerms(ctx, req)
+				return d.resumeForPerms(ctx, req)
 			},
 			// GET /usage, which declared an eight-field token breakdown
 			// and filled in two of them on every release the route has
 			// existed (#356). The counts come off the same OnSpend hook
 			// the durable ledger does, so what an operator reads is the
 			// split the money was computed from.
-			usage: meters.usageInfo,
+			usage: d.meters.usageInfo,
 			// GET /guardrails + POST /guardrails/reset: which backstop
 			// stopped this session, and the only thing that unsticks
 			// it. A budget trip is otherwise permanent — the meter
@@ -620,27 +818,27 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 				// drain so operators can live-tail finishing turns —
 				// but NEW work is refused once draining (#48), or an
 				// operator could burn the whole grace period.
-				if tracker.isDraining() {
+				if d.tracker.isDraining() {
 					return errors.New("daemon is shutting down; not accepting new turns")
 				}
 				// Same wallclock ceiling as the inject dispatch
 				// path — operator turns are not budget-exempt.
-				if bundle != nil && bundle.Budget.MaxWallclockSeconds > 0 {
+				if d.bundle != nil && d.bundle.Budget.MaxWallclockSeconds > 0 {
 					var cancel context.CancelFunc
-					turnCtx, cancel = context.WithTimeout(turnCtx, time.Duration(bundle.Budget.MaxWallclockSeconds)*time.Second)
+					turnCtx, cancel = context.WithTimeout(turnCtx, time.Duration(d.bundle.Budget.MaxWallclockSeconds)*time.Second)
 					defer cancel()
 				}
 				msg := genai.NewContentFromText(message, genai.RoleUser)
-				return runTurn(turnCtx, deps, sid, msg, "attach:inject")
+				return runTurn(turnCtx, d.deps, sid, msg, "attach:inject")
 			},
 		}
 		var err error
-		att, err = buildAttach(logger, listeners.attach, os.Getenv("MAST_ATTACH_TOKEN"), store, wiring.adapterFor)
+		d.att, err = buildAttach(d.logger, d.listeners.attach, os.Getenv("MAST_ATTACH_TOKEN"), d.store, wiring.adapterFor)
 		if err != nil {
-			logger.Error("failed to construct attach surface", "error", err.Error())
+			d.logger.Error("failed to construct attach surface", "error", err.Error())
 			return err
 		}
-		defer func() { _ = att.srv.Close() }()
+		d.onTeardown(func() { _ = d.att.srv.Close() })
 	}
 
 	// A2A server surface (--a2a-listen): agent card + JSON-RPC endpoint
@@ -650,24 +848,21 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// (GetTask) and the same abort machinery the /abort door uses
 	// (CancelTask); message/send turn execution through runTurnPre is
 	// Stage B (docs/a2a-design.md).
-	var (
-		a2aSrv *a2a.Server
-		a2aLn  net.Listener
-	)
-	if listeners.a2a != "" {
-		backend := &a2aBackend{turnDeps: deps, bundle: bundle, reg: newTaskRegistry()}
-		a2aSrv, err = buildA2AServer(logger, listeners.a2a, bundle, backend, obs, turnCtx)
+
+	if d.listeners.a2a != "" {
+		backend := &a2aBackend{turnDeps: d.deps, bundle: d.bundle, reg: newTaskRegistry()}
+		d.a2aSrv, err = buildA2AServer(d.logger, d.listeners.a2a, d.bundle, backend, d.obs, d.turnCtx)
 		if err != nil {
-			logger.Error("failed to construct A2A server", "error", err.Error())
+			d.logger.Error("failed to construct A2A server", "error", err.Error())
 			return err
 		}
-		if a2aSrv != nil {
-			a2aLn, err = a2aListener(listeners.a2a)
+		if d.a2aSrv != nil {
+			d.a2aLn, err = a2aListener(d.listeners.a2a)
 			if err != nil {
-				logger.Error("failed to bind A2A listener", "addr", listeners.a2a, "error", err.Error())
+				d.logger.Error("failed to bind A2A listener", "addr", d.listeners.a2a, "error", err.Error())
 				return err
 			}
-			defer func() { _ = a2aSrv.Close() }()
+			d.onTeardown(func() { _ = d.a2aSrv.Close() })
 		}
 	}
 
@@ -676,47 +871,49 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// Bound here (fail-fast), served after the inject server is up. The Backend
 	// drives each run through the same runTurnPre chokepoint as inject/a2a,
 	// translating mast events into AG-UI frames (internal/cli/agui.go).
-	var (
-		aguiSrv *agui.Server
-		aguiLn  net.Listener
-	)
-	if listeners.agui != "" {
-		backend := &aguiBackend{turnDeps: deps, bundle: bundle}
-		aguiSrv, err = buildAGUIServer(logger, listeners.agui, bundle, backend, obs, turnCtx)
+
+	if d.listeners.agui != "" {
+		backend := &aguiBackend{turnDeps: d.deps, bundle: d.bundle}
+		d.aguiSrv, err = buildAGUIServer(d.logger, d.listeners.agui, d.bundle, backend, d.obs, d.turnCtx)
 		if err != nil {
-			logger.Error("failed to construct AG-UI server", "error", err.Error())
+			d.logger.Error("failed to construct AG-UI server", "error", err.Error())
 			return err
 		}
-		if aguiSrv != nil {
-			aguiLn, err = aguiListener(listeners.agui)
+		if d.aguiSrv != nil {
+			d.aguiLn, err = aguiListener(d.listeners.agui)
 			if err != nil {
-				logger.Error("failed to bind AG-UI listener", "addr", listeners.agui, "error", err.Error())
+				d.logger.Error("failed to bind AG-UI listener", "addr", d.listeners.agui, "error", err.Error())
 				return err
 			}
-			defer func() { _ = aguiSrv.Close() }()
+			d.onTeardown(func() { _ = d.aguiSrv.Close() })
 		}
 	}
+	return nil
+}
 
+// buildRequestHandlers builds the inject, resume, abort and ack
+// handlers.
+func (d *daemon) buildRequestHandlers() error {
 	// Drain bound, needed by the stop handler's response before the
 	// shutdown goroutine exists.
-	drain := drainBound(bundle)
+	d.drain = drainBound(d.bundle)
 
-	handler := func(reqCtx context.Context, p envelope.InjectPayload) error {
+	d.handler = func(reqCtx context.Context, p envelope.InjectPayload) error {
 		// Drain gate (#58): a request that made it past accept before
 		// the listener closed must not start a fresh turn mid-drain.
-		if tracker.isDraining() {
+		if d.tracker.isDraining() {
 			return inject.ErrUnavailable
 		}
 		if err := reservedPayloadErr(p); err != nil {
 			return err
 		}
-		att.ensure(sessionIDFor(p))
-		return dispatch(reqCtx, deps, bundle, p)
+		d.att.ensure(sessionIDFor(p))
+		return dispatch(reqCtx, d.deps, d.bundle, p)
 	}
 	// resumeByInterrupt is the shared inner resume path (operator
 	// interrupt keying, token keying, and the timed-pause scheduler all
 	// land here).
-	resumeByInterrupt := func(reqCtx context.Context, req inject.ResumeRequest) error {
+	d.resumeByInterrupt = func(reqCtx context.Context, req inject.ResumeRequest) error {
 		// Companion ops rows are marker storage, not sessions (#56):
 		// resuming one would drive a runner turn into the marker row.
 		if transcript.IsReservedSessionID(req.SessionID) {
@@ -724,8 +921,8 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		}
 		// Fast-path refusal for a clearer message; the runTurnPre
 		// chokepoint is the authoritative check (under the turn lock).
-		if d, err := store.Get(reqCtx, "", req.SessionID); err == nil && d.State == transcript.StateAborted {
-			return fmt.Errorf("session %q is aborted (%s); refusing resume: %w", req.SessionID, d.AbortReason, inject.ErrConflict)
+		if det, err := d.store.Get(reqCtx, "", req.SessionID); err == nil && det.State == transcript.StateAborted {
+			return fmt.Errorf("session %q is aborted (%s); refusing resume: %w", req.SessionID, det.AbortReason, inject.ErrConflict)
 		}
 		// The ack watermark is written under the session's turn lock
 		// (runTurn's preTurn hook), AFTER any in-flight turn on the
@@ -739,30 +936,30 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		var preTurn func(context.Context) error
 		if req.AckEffects {
 			preTurn = func(ctx context.Context) error {
-				if err := store.AckEffects(ctx, "", req.SessionID, "operator resume --ack-effects"); err != nil {
+				if err := d.store.AckEffects(ctx, "", req.SessionID, "operator resume --ack-effects"); err != nil {
 					return fmt.Errorf("record effects acknowledgement for session %q: %w", req.SessionID, err)
 				}
 				return nil
 			}
 		}
-		att.ensure(req.SessionID)
-		return resume(reqCtx, deps, bundle, req, preTurn)
+		d.att.ensure(req.SessionID)
+		return resume(reqCtx, d.deps, d.bundle, req, preTurn)
 	}
-	resumeByToken := newResumeByToken(store, logger, resumeByInterrupt)
-	resumeHandler := func(reqCtx context.Context, req inject.ResumeRequest) error {
-		if tracker.isDraining() {
+	resumeByToken := newResumeByToken(d.store, d.logger, d.resumeByInterrupt)
+	d.resumeHandler = func(reqCtx context.Context, req inject.ResumeRequest) error {
+		if d.tracker.isDraining() {
 			return inject.ErrUnavailable
 		}
 		if req.Token != "" {
 			return resumeByToken(reqCtx, req)
 		}
-		return resumeByInterrupt(reqCtx, req)
+		return d.resumeByInterrupt(reqCtx, req)
 	}
 	// Close the cycle declared above: the attach /perms routes now have
 	// the same resume path POST /resume uses, draining check included.
-	resumeForPerms = resumeHandler
+	d.resumeForPerms = d.resumeHandler
 
-	abortHandler := func(reqCtx context.Context, req inject.AbortRequest) error {
+	d.abortHandler = func(reqCtx context.Context, req inject.AbortRequest) error {
 		if transcript.IsReservedSessionID(req.SessionID) {
 			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not an abortable session: %w", req.SessionID, inject.ErrBadPayload)
 		}
@@ -771,7 +968,7 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		// no turn lock here: abort must not queue behind the very turn
 		// it cancels (the register-before-check handshake in runTurnPre
 		// closes the ordering window instead).
-		if err := recordAbort(reqCtx, store, obs, workloadName, req.SessionID, req.Reason); err != nil {
+		if err := recordAbort(reqCtx, d.store, d.obs, d.workloadName, req.SessionID, req.Reason); err != nil {
 			// A second abort of an already-terminal session is a state
 			// conflict, not a daemon fault — map to 409, mirroring /pause
 			// (and the idempotent durable marker keeps the counter at 1).
@@ -782,8 +979,8 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 			}
 			return err
 		}
-		if tracker.cancelSession(req.SessionID) {
-			logger.Info("abort cancelled in-flight turn", "session", req.SessionID)
+		if d.tracker.cancelSession(req.SessionID) {
+			d.logger.Info("abort cancelled in-flight turn", "session", req.SessionID)
 		}
 		return nil
 	}
@@ -793,25 +990,25 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// cannot reach it. Same daemon-routed shape as abort (single
 	// writer). Serialized against in-flight turns via the turn lock so
 	// the watermark cannot cover intents still being persisted.
-	ackHandler := func(reqCtx context.Context, req inject.AckEffectsRequest) error {
+	d.ackHandler = func(reqCtx context.Context, req inject.AckEffectsRequest) error {
 		// Same drain contract as inject/resume (#58/#65): refuse new
 		// work while shutting down, and map a drain-cancelled lock wait
 		// to 503 rather than a bare 500.
-		if tracker.isDraining() {
+		if d.tracker.isDraining() {
 			return inject.ErrUnavailable
 		}
 		if transcript.IsReservedSessionID(req.SessionID) {
 			return fmt.Errorf("session ID %q uses the reserved ops-row suffix; not a session: %w", req.SessionID, inject.ErrBadPayload)
 		}
-		unlock, err := turnLocks.lock(reqCtx, req.SessionID)
+		unlock, err := d.turnLocks.lock(reqCtx, req.SessionID)
 		if err != nil {
-			if tracker.isDraining() {
+			if d.tracker.isDraining() {
 				return fmt.Errorf("%w (queued ack cancelled: %v)", inject.ErrUnavailable, err)
 			}
 			return err
 		}
 		defer unlock()
-		if err := store.AckEffects(reqCtx, "", req.SessionID, req.Reason); err != nil {
+		if err := d.store.AckEffects(reqCtx, "", req.SessionID, req.Reason); err != nil {
 			// An operator typo is a client error, not a daemon fault.
 			if errors.Is(err, transcript.ErrNotFound) {
 				return fmt.Errorf("%v: %w", err, inject.ErrBadPayload)
@@ -820,26 +1017,32 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		}
 		return nil
 	}
+	return nil
+}
 
+// startScheduling acquires the scheduling lease and starts the loops it
+// governs — timed pauses, boot-time auto-resume, the scheduled trigger —
+// and arms the monitor ack leg.
+func (d *daemon) startScheduling() error {
 	// One lease over every loop that starts a turn nobody asked for
 	// (#345). See schedlease.go for what it governs and what it
 	// deliberately is not. schedCtx cancels those loops without
 	// cancelling the request-driven daemon around them, which is what a
 	// lease lost mid-life has to do: stop acting on our own, keep
 	// serving.
-	schedLease := acquireSchedulingLease(turnCtx, durableDB, workloadName, logger)
-	defer func() { _ = schedLease.release() }()
-	schedCtx, stopSchedulingWork := context.WithCancel(turnCtx)
-	defer stopSchedulingWork()
+	d.schedLease = acquireSchedulingLease(d.turnCtx, d.durableDB, d.workloadName, d.logger)
+	d.onTeardown(func() { _ = d.schedLease.release() })
+	schedCtx, stopSchedulingWork := context.WithCancel(d.turnCtx)
+	d.onTeardown(func() { stopSchedulingWork() })
 	go func() {
 		select {
 		case <-schedCtx.Done():
-		case <-schedLease.lost():
+		case <-d.schedLease.lost():
 			// Another instance took the lease because our heartbeat
 			// lapsed past the staleness window. It is now also firing,
 			// so the safe move is to stop rather than to race it.
-			logger.Error("scheduling lease lost to another instance; this one stops firing scheduled triggers, timed-pause resumes and auto-resume, and will not take them back without a restart",
-				"workload", workloadName)
+			d.logger.Error("scheduling lease lost to another instance; this one stops firing scheduled triggers, timed-pause resumes and auto-resume, and will not take them back without a restart",
+				"workload", d.workloadName)
 			stopSchedulingWork()
 		}
 	}()
@@ -851,16 +1054,16 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// scheduler whose loop never runs is not a harmless spare: pushes
 	// would pile up in a map nothing drains, and — worse for whoever
 	// reads this next — the code would look like the timer was armed.
-	var sched *pauseScheduler
-	if schedLease.drivesScheduledWork() {
-		sched = newPauseScheduler(store, logger,
-			newTimedFireCallback(store, tracker, obs, workloadName, resumeByInterrupt, logger))
-		go sched.run(schedCtx)
+
+	if d.schedLease.drivesScheduledWork() {
+		d.sched = newPauseScheduler(d.store, d.logger,
+			newTimedFireCallback(d.store, d.tracker, d.obs, d.workloadName, d.resumeByInterrupt, d.logger))
+		go d.sched.run(schedCtx)
 		go func() {
 			// Boot scan: seeds timers minted before this process started —
 			// including ones that expired while the daemon was down.
-			if err := sched.seed(schedCtx); err != nil {
-				logger.Error("timed-pause boot scan failed; pre-existing timers will not fire until restart", "error", err.Error())
+			if err := d.sched.seed(schedCtx); err != nil {
+				d.logger.Error("timed-pause boot scan failed; pre-existing timers will not fire until restart", "error", err.Error())
 			}
 		}()
 		// And a rescan on a cadence, because the boot scan only covers
@@ -871,10 +1074,10 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		// idempotent by construction: entries is keyed by token and
 		// fireDue re-fetches, so re-arming a consumed token is a silent
 		// drop rather than a second fire.
-		go sched.runRescan(schedCtx)
+		go d.sched.runRescan(schedCtx)
 		// pause_session records minted mid-serve push their timers
 		// straight in.
-		pauseRec.attach(sched)
+		d.pauseRec.attach(d.sched)
 	}
 
 	// Boot-time auto-resume (#41): scan sessions a prior shutdown cut
@@ -893,28 +1096,28 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// (#345). The issue names the scheduler and the timed-pause path;
 	// this is the third loop of the same shape and leaving it out would
 	// have made the headline false.
-	bootDone := make(chan struct{})
-	if resumes.auto && sessions.db != "" && schedLease.drivesScheduledWork() {
+	d.bootDone = make(chan struct{})
+	if d.resumes.auto && d.sessions.db != "" && d.schedLease.drivesScheduledWork() {
 		ar := &autoResumer{
-			turnDeps:     deps,
-			bundle:       bundle,
-			dispatchMode: dispatchMode,
-			pred:         effPred,
-			subAgents:    effSubAgents,
-			external:     subIntents.Dangling,
-			window:       resumes.window,
+			turnDeps:     d.deps,
+			bundle:       d.bundle,
+			dispatchMode: d.dispatchMode,
+			pred:         d.effPred,
+			subAgents:    d.effSubAgents,
+			external:     d.subIntents.Dangling,
+			window:       d.resumes.window,
 		}
 		go func() {
-			defer close(bootDone)
+			defer close(d.bootDone)
 			ar.run(schedCtx)
 		}()
 	} else {
-		close(bootDone)
+		close(d.bootDone)
 		// Only the store explains itself here. A lease refusal has
 		// already said, at ERROR, everything it stops — repeating one of
 		// the three at INFO would read like a different cause.
-		if resumes.auto && sessions.db == "" {
-			logger.Info("auto-resume enabled but --session-db is empty (in-memory sessions); nothing to resume")
+		if d.resumes.auto && d.sessions.db == "" {
+			d.logger.Info("auto-resume enabled but --session-db is empty (in-memory sessions); nothing to resume")
 		}
 	}
 
@@ -924,9 +1127,9 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// wait for it, so a tick cannot start a turn after the drain has
 	// sampled "all turns finished" (closed immediately when the
 	// workload declares no cadence).
-	schedDone := make(chan struct{})
-	stopScheduled := func() {}
-	if sched := declared.EdgeTrigger.Scheduled; sched != nil && schedLease.drivesScheduledWork() {
+	d.schedDone = make(chan struct{})
+	d.stopScheduled = func() {}
+	if sched := d.declared.EdgeTrigger.Scheduled; sched != nil && d.schedLease.drivesScheduledWork() {
 		// Both already validated at load; re-resolved here because the
 		// daemon reads the cadence from the bundle, not from its own
 		// durable record — editing the bundle is how an operator
@@ -934,71 +1137,71 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		interval, ierr := sched.EffectiveInterval()
 		jitter, jerr := sched.EffectiveJitter()
 		if ierr != nil || jerr != nil {
-			close(schedDone)
-			logger.Error("scheduled trigger not armed; its cadence does not parse",
+			close(d.schedDone)
+			d.logger.Error("scheduled trigger not armed; its cadence does not parse",
 				"error", errors.Join(ierr, jerr).Error())
 		} else {
 			// The collection leg rides the same seam the write gate's
 			// precondition read does — the same wired toolsets, the
 			// same direct-run assertion — because there is exactly one
 			// door for a tool call no model asked for (v0.5 W4.2).
-			collector := newMonitorCollector(logger, bundle.Monitor, toolSchemas.collect, appName, defaultUserID)
+			collector := newMonitorCollector(d.logger, d.bundle.Monitor, d.toolSchemas.collect, appName, defaultUserID)
 			if collector.enabled() {
 				// transitions_from is on the line because it changes what
 				// a failed cycle means: the named result is parsed, and a
 				// classifier that answers badly stops the fire rather than
 				// reaching the model as an absence (v0.5 W4.4).
-				args := []any{"workload", workloadName, "collect", bundle.Monitor.CollectTools()}
-				if key := bundle.Monitor.TransitionsKey(); key != "" {
+				args := []any{"workload", d.workloadName, "collect", d.bundle.Monitor.CollectTools()}
+				if key := d.bundle.Monitor.TransitionsKey(); key != "" {
 					args = append(args, "transitions_from", key)
 				}
-				logger.Info("monitoring cycle armed; these calls run before the model is woken", args...)
+				d.logger.Info("monitoring cycle armed; these calls run before the model is woken", args...)
 			}
 			// The egress leg (v0.5 W4.5). A bundle that declares where to
 			// speak and a daemon with no ingress to speak through is a
 			// refusal, not a warning: the workload's whole output is the
 			// message it was going to send.
-			nf, nerr := newNotifier(logger, obs, workloadName, bundle.Monitor, notifyClient)
+			nf, nerr := newNotifier(d.logger, d.obs, d.workloadName, d.bundle.Monitor, d.notifyClient)
 			if nerr != nil {
-				close(schedDone)
-				logger.Error("monitoring notifications not armed", "workload", workloadName, "error", nerr.Error())
+				close(d.schedDone)
+				d.logger.Error("monitoring notifications not armed", "workload", d.workloadName, "error", nerr.Error())
 				return nerr
 			}
 			if nf.enabled() {
-				args := []any{"workload", workloadName, "conversation", nf.conv}
+				args := []any{"workload", d.workloadName, "conversation", nf.conv}
 				if nf.digest > 0 {
 					args = append(args, "digest_after", nf.digest.String())
 				}
-				if bundle.Monitor.TransitionsKey() == "" {
+				if d.bundle.Monitor.TransitionsKey() == "" {
 					// Worth saying out loud, because the operator who wrote
 					// the notify block probably wanted the other thing.
 					args = append(args, "speaks_every_cycle", true)
 				}
-				logger.Info("monitoring notifications armed; a cycle that changes nothing will not wake the model", args...)
+				d.logger.Info("monitoring notifications armed; a cycle that changes nothing will not wake the model", args...)
 			}
-			st := newScheduledTrigger(store, logger, obs, tracker, workloadName, defaultUserID, interval, jitter,
-				newScheduledFireCallback(deps, bundle, collector, nf, att.ensure))
-			if sessions.db == "" {
+			st := newScheduledTrigger(d.store, d.logger, d.obs, d.tracker, d.workloadName, defaultUserID, interval, jitter,
+				newScheduledFireCallback(d.deps, d.bundle, collector, nf, d.att.ensure))
+			if d.sessions.db == "" {
 				// The anchor lands in an in-memory store that dies with
 				// the process, so the cadence re-phases on every restart.
 				// Worth saying out loud: "the schedule survives a restart"
 				// is the claim W4.1 makes, and without --session-db it
 				// does not hold.
-				logger.Warn("scheduled trigger has no durable store (--session-db is empty); its cadence will re-anchor on every restart",
-					"workload", workloadName, "interval", interval.String())
+				d.logger.Warn("scheduled trigger has no durable store (--session-db is empty); its cadence will re-anchor on every restart",
+					"workload", d.workloadName, "interval", interval.String())
 			}
-			if err := st.seed(turnCtx); err != nil {
-				logger.Error("scheduled trigger could not persist its anchor; the cadence runs but will re-phase if this process restarts",
-					"workload", workloadName, "error", err.Error())
+			if err := st.seed(d.turnCtx); err != nil {
+				d.logger.Error("scheduled trigger could not persist its anchor; the cadence runs but will re-phase if this process restarts",
+					"workload", d.workloadName, "error", err.Error())
 			}
-			stopScheduled = st.stop
+			d.stopScheduled = st.stop
 			go func() {
-				defer close(schedDone)
+				defer close(d.schedDone)
 				st.run(schedCtx)
 			}()
 		}
 	} else {
-		close(schedDone)
+		close(d.schedDone)
 	}
 
 	// The ack leg (v0.5 W4.6), armed outside the scheduled-trigger branch
@@ -1007,24 +1210,30 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// POSTs rather than a cadence takes acks exactly like one that fires
 	// on a clock. Tying it to the cadence would make "can this be
 	// acknowledged?" depend on how the cycle happens to be triggered.
-	acker := newMonitorAcker(logger, obs, store, declared.Monitor, toolSchemas.ack, workloadName, appName, defaultUserID)
-	var monitorAckHandler inject.MonitorAckHandler
+	acker := newMonitorAcker(d.logger, d.obs, d.store, d.declared.Monitor, d.toolSchemas.ack, d.workloadName, appName, defaultUserID)
+
 	if acker.enabled() {
-		monitorAckHandler = acker.forward
-		logger.Info("operator acknowledgements armed; they are attributed here and suppressed by the producer",
-			"workload", workloadName, "tool", acker.tool)
-		if sessions.db == "" {
+		d.monitorAckHandler = acker.forward
+		d.logger.Info("operator acknowledgements armed; they are attributed here and suppressed by the producer",
+			"workload", d.workloadName, "tool", acker.tool)
+		if d.sessions.db == "" {
 			// The attribution is the half mast alone holds, and without a
 			// durable store it dies with the process — leaving the
 			// producer's suppression in place with no record of who asked
 			// for it. Worth refusing? No: the forward still works, and a
 			// daemon run without --session-db has already accepted that
 			// nothing it writes survives. Worth saying, loudly.
-			logger.Warn("operator acknowledgements have no durable record (--session-db is empty); the suppression will outlive mast's note of who asked for it",
-				"workload", workloadName)
+			d.logger.Warn("operator acknowledgements have no durable record (--session-db is empty); the suppression will outlive mast's note of who asked for it",
+				"workload", d.workloadName)
 		}
 	}
+	return nil
+}
 
+// buildInjectServer builds the pause, extend and stop handlers, the
+// readiness checks, and the inject server itself.
+func (d *daemon) buildInjectServer() error {
+	var err error
 	pauseHandler := func(reqCtx context.Context, req inject.PauseRequest) (inject.PauseResult, error) {
 		// No drain gate, like abort: a gate pause is a marker write,
 		// and pausing during a drain is a legitimate operator move.
@@ -1050,7 +1259,7 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 			}
 			spec.TokenTTL = ttl
 		}
-		h, err := openGatePause(reqCtx, store, obs, workloadName, req.SessionID, spec)
+		h, err := openGatePause(reqCtx, d.store, d.obs, d.workloadName, req.SessionID, spec)
 		if err != nil {
 			switch {
 			case errors.Is(err, transcript.ErrAlreadyAborted):
@@ -1066,15 +1275,15 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		if req.Interrupt {
 			// Hard pause: marker durably landed (PauseGate returned), now
 			// sweep — the same mark-then-sweep handshake abort uses.
-			if tracker.cancelSession(req.SessionID) {
-				logger.Info("hard pause cancelled in-flight turn", "session", req.SessionID)
+			if d.tracker.cancelSession(req.SessionID) {
+				d.logger.Info("hard pause cancelled in-flight turn", "session", req.SessionID)
 			}
 		}
-		if !spec.ResumeAt.IsZero() && sched != nil {
+		if !spec.ResumeAt.IsZero() && d.sched != nil {
 			// nil on a passive replica (#345). The record is durable
 			// either way, so the leader's rescan arms it within a minute
 			// — that is the whole reason the rescan exists.
-			sched.push(h.Token, spec.ResumeAt)
+			d.sched.push(h.Token, spec.ResumeAt)
 		}
 		return inject.PauseResult{
 			Token:     h.Token,
@@ -1087,7 +1296,7 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		if err != nil {
 			return inject.ExtendTokenResult{}, fmt.Errorf("ttl %q is not a duration: %w", req.TTL, inject.ErrBadPayload)
 		}
-		rec, err := store.ExtendToken(reqCtx, req.Token, ttl)
+		rec, err := d.store.ExtendToken(reqCtx, req.Token, ttl)
 		if err != nil {
 			switch {
 			case errors.Is(err, transcript.ErrAlreadyResumed):
@@ -1108,11 +1317,11 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		if req.Reason != "" {
 			reason += ": " + req.Reason
 		}
-		tracker.planStop(reason, req.PauseSessions)
-		logger.Info("planned stop initiated",
-			"reason", reason, "pause_sessions", req.PauseSessions, "drain_bound", drain.String())
-		stop() // cancels the signal context; the shutdown goroutine drains
-		return inject.StopResult{DrainBound: drain.String()}, nil
+		d.tracker.planStop(reason, req.PauseSessions)
+		d.logger.Info("planned stop initiated",
+			"reason", reason, "pause_sessions", req.PauseSessions, "drain_bound", d.drain.String())
+		d.stop() // cancels the signal context; the shutdown goroutine drains
+		return inject.StopResult{DrainBound: d.drain.String()}, nil
 	}
 
 	// Readiness, as opposed to "the process is accepting connections",
@@ -1120,39 +1329,44 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	// (#326). An in-memory daemon has no durable store to vouch for, so
 	// it reports no checks rather than a check that cannot fail.
 	healthChecks := map[string]inject.HealthCheck{}
-	if durableDB != nil {
-		db := durableDB
+	if d.durableDB != nil {
+		db := d.durableDB
 		healthChecks["session_db"] = func(ctx context.Context) error {
 			return eventlog.CheckSessionDB(ctx, db)
 		}
 	}
 
-	srv, err := inject.New(inject.Config{
-		Listen:             listeners.inject,
+	d.srv, err = inject.New(inject.Config{
+		Listen:             d.listeners.inject,
 		HealthChecks:       healthChecks,
-		BearerToken:        bearer,
-		Authenticator:      injectAuthn,
-		Handler:            handler,
-		ResumeHandler:      resumeHandler,
-		AbortHandler:       abortHandler,
-		AckEffectsHandler:  ackHandler,
-		MonitorAckHandler:  monitorAckHandler,
+		BearerToken:        d.bearer,
+		Authenticator:      d.injectAuthn,
+		Handler:            d.handler,
+		ResumeHandler:      d.resumeHandler,
+		AbortHandler:       d.abortHandler,
+		AckEffectsHandler:  d.ackHandler,
+		MonitorAckHandler:  d.monitorAckHandler,
 		PauseHandler:       pauseHandler,
 		ExtendTokenHandler: extendHandler,
 		StopHandler:        stopHandler,
-		ParksHandler:       parksHandler(store, logger),
-		Logger:             logger,
-		Metrics:            obs.Handler(),
+		ParksHandler:       parksHandler(d.store, d.logger),
+		Logger:             d.logger,
+		Metrics:            d.obs.Handler(),
 		// Request contexts derive from the turn lifetime, so when the
 		// drain window elapses the surviving handler turns are
 		// cancelled (and unwind) rather than dying at process exit.
-		BaseContext: turnCtx,
+		BaseContext: d.turnCtx,
 	})
 	if err != nil {
-		logger.Error("failed to construct inject server", "error", err.Error())
+		d.logger.Error("failed to construct inject server", "error", err.Error())
 		return err
 	}
+	return nil
+}
 
+// serveUntilShutdown serves every bound surface, waits for the drain the
+// signal context starts, and returns the status the drain earned.
+func (d *daemon) serveUntilShutdown() error {
 	// Shutdown sequence (#38/#39): pre-mark in-flight sessions durably,
 	// then drain up to the bound, then cancel survivors. The attach
 	// surface deliberately stays up through the drain — operators
@@ -1163,11 +1377,11 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
-		<-ctx.Done()
-		logger.Info("shutdown signal received; draining in-flight turns", "drain_bound", drain.String())
+		<-d.ctx.Done()
+		d.logger.Info("shutdown signal received; draining in-flight turns", "drain_bound", d.drain.String())
 		// Detached from parent on purpose: parent being cancelled is what
 		// started the drain, and the drain must still get its full bound.
-		drainCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), drain)
+		drainCtx, cancel := context.WithTimeout(context.WithoutCancel(d.parent), d.drain)
 		defer cancel()
 		// Close the inject listener FIRST (#58): Shutdown stops
 		// accepting immediately and then waits for handlers, so
@@ -1175,10 +1389,10 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		// arrive while markers are being written. The drain-gate in
 		// the handlers covers requests already past accept.
 		shutdownErr := make(chan error, 1)
-		go func() { shutdownErr <- srv.Shutdown(drainCtx) }()
+		go func() { shutdownErr <- d.srv.Shutdown(drainCtx) }()
 		// Pre-mark BEFORE waiting: a SIGKILL mid-drain must find the
 		// interruption markers already on disk.
-		tracker.beginDrain(drainCtx)
+		d.tracker.beginDrain(drainCtx)
 		// Shutdown waits for inject handlers; tracker.wait additionally
 		// covers attach-driven turns, which run outside HTTP handlers.
 		// Both share the one deadline.
@@ -1191,7 +1405,7 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		// by the shared drain deadline; a mid-flight boot turn past the
 		// deadline is handled as a survivor like any other.
 		select {
-		case <-bootDone:
+		case <-d.bootDone:
 		case <-drainCtx.Done():
 		}
 		// And the scheduled trigger, for the same reason and with the
@@ -1199,110 +1413,111 @@ func serve(parent context.Context, logger *slog.Logger, wl workloadOpts, mdl mod
 		// hours, so it is told to stop rather than merely asked to
 		// notice: the fire path's drain check would not run until the
 		// tick came due, which may be long after the process is gone.
-		stopScheduled()
+		d.stopScheduled()
 		select {
-		case <-schedDone:
+		case <-d.schedDone:
 		case <-drainCtx.Done():
 		}
-		remaining := tracker.wait(drainCtx)
+		remaining := d.tracker.wait(drainCtx)
 		if len(remaining) == 0 {
 			if errShutdown != nil {
 				// No turns in flight — the listener just has lingering
 				// non-turn connections (an SSE scrape, a slow client).
-				logger.Warn("inject server still draining connections at the deadline; no turns were in flight", "error", errShutdown.Error())
+				d.logger.Warn("inject server still draining connections at the deadline; no turns were in flight", "error", errShutdown.Error())
 				return
 			}
-			logger.Info("drain complete; all in-flight turns finished")
+			d.logger.Info("drain complete; all in-flight turns finished")
 			return
 		}
 		// Freeze before cancelling: the surviving turns ARE interrupted,
 		// and their unwinding must not clear the markers that say so.
-		tracker.freeze()
-		cancelTurns()
+		d.tracker.freeze()
+		d.cancelTurns()
 		// Give the cancelled turns a short beat to unwind before the
 		// deferred teardown (attach close, eventlog close) yanks their
 		// dependencies — cancellation is useless if the process exits
 		// before the cancelled goroutines observe it (#48).
-		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
+		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(d.parent), 3*time.Second)
 		defer graceCancel()
-		tracker.wait(graceCtx)
+		d.tracker.wait(graceCtx)
 		// Honest split (#58/#63): marked survivors truly carry durable
 		// markers; unmarked survivors are turns whose mark write failed
 		// or never ran — the log must not assert durability for them.
-		markedSurvivors, unmarkedSurvivors := tracker.survivors()
+		markedSurvivors, unmarkedSurvivors := d.tracker.survivors()
 		drainExpired = true
-		logger.Warn("drain window elapsed; sessions cut short",
+		d.logger.Warn("drain window elapsed; sessions cut short",
 			"sessions_with_durable_marker", markedSurvivors,
 			"sessions_without_marker", unmarkedSurvivors,
-			"drain_bound", drain.String())
+			"drain_bound", d.drain.String())
 	}()
 
-	if att != nil {
+	if d.att != nil {
 		go func() {
 			// The listener is already bound (buildAttach); Serve only
 			// returns on Close or a hard accept failure. A hard failure
 			// takes the daemon down — a half-alive daemon whose operator
 			// surface silently died is worse than a restart.
-			if err := att.srv.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
-				logger.Error("attach server terminated", "error", err.Error())
-				stop()
+			if err := d.att.srv.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) && d.ctx.Err() == nil {
+				d.logger.Error("attach server terminated", "error", err.Error())
+				d.stop()
 			}
 		}()
 	}
 
-	if a2aSrv != nil {
+	if d.a2aSrv != nil {
 		go func() {
 			// The listener is already bound (a2aListener); Serve only
 			// returns on Close or a hard accept failure. As with attach, a
 			// hard failure takes the daemon down — a half-alive daemon
 			// whose A2A surface silently died is worse than a restart.
-			if err := a2aSrv.Serve(a2aLn); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
-				logger.Error("a2a server terminated", "error", err.Error())
-				stop()
+			if err := d.a2aSrv.Serve(d.a2aLn); err != nil && !errors.Is(err, http.ErrServerClosed) && d.ctx.Err() == nil {
+				d.logger.Error("a2a server terminated", "error", err.Error())
+				d.stop()
 			}
 		}()
 	}
 
-	if aguiSrv != nil {
+	if d.aguiSrv != nil {
 		go func() {
 			// The listener is already bound (aguiListener); Serve only
 			// returns on Close or a hard accept failure. As with attach/a2a, a
 			// hard failure takes the daemon down — a half-alive daemon whose
 			// AG-UI surface silently died is worse than a restart.
-			if err := aguiSrv.Serve(aguiLn); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
-				logger.Error("agui server terminated", "error", err.Error())
-				stop()
+			if err := d.aguiSrv.Serve(d.aguiLn); err != nil && !errors.Is(err, http.ErrServerClosed) && d.ctx.Err() == nil {
+				d.logger.Error("agui server terminated", "error", err.Error())
+				d.stop()
 			}
 		}()
 	}
 
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := d.srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		// Startup/hard failure: the shutdown goroutine is still parked
 		// on ctx.Done, so return without waiting on it.
-		logger.Error("inject server terminated", "error", err.Error())
+		d.logger.Error("inject server terminated", "error", err.Error())
 		return err
 	}
 	// ListenAndServe returns ErrServerClosed the moment Shutdown BEGINS;
 	// the drain (and its marker bookkeeping) completes in the shutdown
 	// goroutine. Returning before it finishes was #38.
 	<-shutdownDone
-	// The drain is done; only the deferred teardown (OTel flush, eventlog
-	// and attach Close, context cancels) remains as serve() unwinds. Arm
+	// The drain is done; only the teardown (OTel flush, eventlog and
+	// attach Close, context cancels) remains as serve() unwinds. Arm
 	// a watchdog so a wedged Close or an unkillable goroutine surfaces a
 	// stack dump and a distinct exit code instead of hanging until the
 	// supervisor SIGKILLs the process with no diagnostic. A healthy
-	// teardown disarms it through the first defer above.
-	disarmTeardown = armTeardownWatchdog(teardownWatchdogTimeout, dumpGoroutines, os.Exit, logger)
+	// teardown disarms it: runTeardown calls the disarm after its last
+	// step has returned.
+	d.disarmTeardown = armTeardownWatchdog(teardownWatchdogTimeout, dumpGoroutines, os.Exit, d.logger)
 	if drainExpired {
 		// Exit-code contract (issue #42): 3 = the drain window expired
 		// with interrupted survivors — work was cut short, whoever
 		// initiated the stop. Restart=on-failure supervision revives
 		// the daemon exactly when the boot pass has repair work (#41);
 		// a clean drain exits 0 and such a unit stays down.
-		logger.Warn("shutdown complete; drain expired with interrupted sessions (exit 3)")
+		d.logger.Warn("shutdown complete; drain expired with interrupted sessions (exit 3)")
 		return errDrainExpired
 	}
-	logger.Info("shutdown complete")
+	d.logger.Info("shutdown complete")
 	return nil
 }
 

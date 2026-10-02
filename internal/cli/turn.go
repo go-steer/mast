@@ -348,47 +348,8 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	refused.arm(cancel)
 	ctx = approval.WithTurnStop(ctx, refused)
 
-	// Chokepoint check, after registration. A read failure skips the
-	// check (fail-open): the refusals are availability guards, and an
-	// unreadable ops overlay must not wedge every session — the
-	// fail-closed safety guard is the effects outbox. ErrNotFound is
-	// the normal fresh-session case (the runner auto-creates).
-	if d, derr := d.store.Get(ctx, "", sessionID); derr == nil {
-		if d.State == transcript.StateAborted {
-			return fmt.Errorf("session %q is aborted (%s); session_aborted: %w", sessionID, d.AbortReason, inject.ErrConflict)
-		}
-		if d.GatePause.Active() {
-			return fmt.Errorf("session %q is gate-paused (%s: %s); session_paused — resume with the pause token: %w",
-				sessionID, d.PauseReason, d.PauseMessage, inject.ErrConflict)
-		}
-	}
-
-	// Adopt a halt a previous process recorded, before the preflight
-	// that has to honor it. A daemon that crashed mid-loop restarts with
-	// an empty watchdogPool, and the restart is automatic: without this
-	// the loop → halt → crash → restart cycle enforce mode exists to
-	// break just resumes, each restart handing the loop a clean
-	// backstop. One fold per session per process; fails open.
-	d.wds.restore(ctx, sessionID)
-
-	// Watchdog halt (--watchdog=enforce): refuse before any model
-	// call. The refusal has to be structural — auto-resume, a
-	// scheduled fire, and an attach inject all land here, and each of
-	// them would otherwise re-drive the loop that tripped it. Placed
-	// after the chokepoint checks so an aborted or gate-paused session
-	// still reports the state an operator set deliberately.
-	if err := d.wds.preflight(sessionID); err != nil {
-		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
-	}
-
-	// What this session already spent, before the ceiling check that has
-	// to honor it (#175). Same placement and same fail-open posture as
-	// the watchdog pair above: one fold per session per process, and a
-	// storage fault leaves the ceiling armed against this process's own
-	// spend rather than refusing the turn.
-	d.meters.restore(ctx, sessionID)
-	if err := d.meters.preflight(sessionID); err != nil {
-		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
+	if err := admitTurn(ctx, d, sessionID); err != nil {
+		return err
 	}
 
 	if preTurn != nil {
@@ -416,78 +377,10 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	// session id and would miss a meter looked up by session.
 	ctx = mastagent.WithCallGate(ctx, meter)
 
-	// What the meter had already refused before this turn. A refusal is a
-	// synthesized answer rather than an error, so a turn the ceiling
-	// stopped would otherwise complete looking like a turn that finished;
-	// the delta is what tells the caller which it was.
-	//
-	// Two counts, because the two have different outcomes (W10.3). Every
-	// refusal is worth reporting; only the workload's own stops the turn.
-	refusalsBefore, _ := meter.Refusals()
-	sessionRefusalsBefore, _ := meter.SessionRefusals()
-
-	// A ceiling stopped the turn itself. Same outcome and the same counter
-	// as the post-hoc fold, because from an operator's side they are the
-	// same event; the error is budget.ErrRefused rather than ErrExceeded
-	// because nothing was spent crossing anything.
-	sessionRefused := func() error {
-		n, first := meter.SessionRefusals()
-		if n <= sessionRefusalsBefore {
-			return nil
-		}
-		tokens, cost, calls := meter.Snapshot()
-		d.logger.Error("BUDGET CEILING — refused a model call before it was made",
-			"turn", label, "session", sessionID,
-			"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
-			"refusals", n-sessionRefusalsBefore, "reason", first.Error(),
-		)
-		d.obs.BudgetTrip(d.workloadName)
-		ts.complete(observability.OutcomeBudgetExceeded, first)
-		return first
-	}
-
-	// And a specialist's own ceiling, which is not a stop: the refusal went
-	// back to whoever dispatched it as an answer it can route around, and
-	// the turn carried on. It still trips the counter and still says so in
-	// the log, because "one of this workload's specialists can no longer be
-	// used" is exactly the thing an operator alerting on budget trips wants
-	// to hear about, and the turn finishing is what makes it easy to miss.
-	noteScopedRefusals := func() {
-		n, first := meter.Refusals()
-		sn, _ := meter.SessionRefusals()
-		scopedNew := (n - refusalsBefore) - (sn - sessionRefusalsBefore)
-		if scopedNew <= 0 {
-			return
-		}
-		d.logger.Warn("BUDGET CEILING — a specialist was refused; the turn routed on",
-			"turn", label, "session", sessionID,
-			"refusals", scopedNew, "reason", first.Error(),
-		)
-		d.obs.BudgetTrip(d.workloadName)
-	}
-
-	// Export the turn's cost delta whichever way the turn ends. The
-	// meter's session-cumulative cost is authoritative (pricing lives
-	// in pkg/budget); the counter only ever sees per-turn deltas.
-	_, costBefore, _ := meter.Snapshot()
-	// And the overshoot, on the same "whichever way the turn ends"
-	// footing. budget.final_report buys a stopped specialist one model
-	// call past its ceiling, and a cap that was exceeded on purpose has
-	// to say so out loud rather than arrive as a number that does not
-	// add up (pkg/budget/finalreport.go).
-	grantsBefore := meter.FinalReportsTaken()
-	defer func() {
-		_, costAfter, _ := meter.Snapshot()
-		d.obs.AddCost(d.workloadName, costAfter-costBefore)
-		// Same delta onto the span. Registered after the span's own
-		// defer, so it runs first and the span is still open.
-		ts.cost(costAfter - costBefore)
-		if granted := meter.FinalReportsTaken() - grantsBefore; granted > 0 {
-			d.logger.Warn("BUDGET CEILING — a stopped specialist bought its final report",
-				"turn", label, "session", sessionID, "grants", granted,
-				"note", "budget.final_report: one model call past the ceiling, report tool only")
-		}
-	}()
+	// What the meter had already refused and spent before this turn, so
+	// what the turn itself did is a delta (see turnBudget).
+	tb := newTurnBudget(meter)
+	defer tb.finish(d, ts, label, sessionID)
 
 	// Feedback mode (--watchdog=feedback and up): whatever the session's
 	// previous turns tripped goes in front of this turn's prompt. Every
@@ -502,37 +395,7 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	// #363).
 	enf := d.wds.enforcer(sessionID)
 	fb := d.wds.feedback(sessionID)
-	onAlert := func(a watchdog.Alert) {
-		// Retained as well as logged: GET /guardrails answers "has this
-		// session been misbehaving?", and the alert is gone from the
-		// watchdog the moment Tap hands it here.
-		d.wds.note(sessionID, a)
-		d.logger.Warn("watchdog alert",
-			"turn", label, "session", sessionID,
-			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
-		// Queue the model-facing half for the next turn. Not this one:
-		// the prompt was assembled before Run and the turn is already
-		// streaming. Under enforce that next turn is the one after an
-		// operator reset, which is exactly the turn that would
-		// otherwise re-issue the call that halted it.
-		fb.Queue([]watchdog.Alert{a})
-		// Enforce mode halts the turn in flight. Tap drains as soon as
-		// an observation lands, so this runs while the loop is looping
-		// rather than after it finishes — cancel() is the same handle
-		// a budget trip and an operator abort use, so the turn unwinds
-		// the one way the daemon already knows how to unwind.
-		if enf.Observe(a) {
-			_, reason := enf.Tripped()
-			d.logger.Error("WATCHDOG HALT — cancelling the turn",
-				"turn", label, "session", sessionID,
-				"signal", a.Signal, "reason", reason)
-			// Persist before cancelling. The halt has to outlive this
-			// process, and the crash it is most needed for is the one
-			// that follows the loop it just stopped.
-			d.wds.recordTrip(sessionID, a, reason)
-			cancel()
-		}
-	}
+	onAlert := watchdogAlertHandler(d, label, sessionID, enf, fb, cancel)
 
 	events := 0
 	for event, err := range watchdog.Tap(d.r.Run(ctx, defaultUserID, sessionID, msg, adkagent.RunConfig{
@@ -610,7 +473,7 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 		// specialist leaves the coordinator holding an answer and a roster,
 		// and what bounds *that* loop is the coordinator's own calls, which
 		// are real and priced against the very ceiling checked here.
-		if rerr := sessionRefused(); rerr != nil {
+		if rerr := tb.sessionRefused(d, ts, label, sessionID); rerr != nil {
 			cancel()
 			return rerr
 		}
@@ -635,17 +498,202 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	// cleanly, because that is what a refusal is. The caller asked for
 	// work that did not happen; reporting OK would hide a budget stop
 	// behind an answer that says "I am out of budget" in prose.
-	if rerr := sessionRefused(); rerr != nil {
+	if rerr := tb.sessionRefused(d, ts, label, sessionID); rerr != nil {
 		return rerr
 	}
 	// The turn is finishing, so anything left over was a specialist's and
 	// the workload worked around it. Reported once, here, rather than per
 	// event: the meter keeps the first reason, and a fan-out refused ten
 	// times says the same thing ten times.
-	noteScopedRefusals()
+	tb.noteScopedRefusals(d, label, sessionID)
 	tokens, cost, calls := meter.Snapshot()
 	d.logger.Info("turn complete", "turn", label, "session", sessionID, "events", events,
 		"session_tokens", tokens, "session_cost_usd", fmt.Sprintf("%.4f", cost), "session_model_calls", calls)
 	ts.complete(observability.OutcomeOK, nil)
 	return nil
+}
+
+// admitTurn is the chokepoint half of runTurnPre: the refusals every turn
+// kind passes before it may start, in the order an operator's deliberate
+// state outranks a backstop's. It runs after the turn's cancel handle is
+// registered (the register-before-check handshake) and under the turn
+// lock.
+func admitTurn(ctx context.Context, d turnDeps, sessionID string) error {
+	// Chokepoint check, after registration. A read failure skips the
+	// check (fail-open): the refusals are availability guards, and an
+	// unreadable ops overlay must not wedge every session — the
+	// fail-closed safety guard is the effects outbox. ErrNotFound is
+	// the normal fresh-session case (the runner auto-creates).
+	if det, derr := d.store.Get(ctx, "", sessionID); derr == nil {
+		if det.State == transcript.StateAborted {
+			return fmt.Errorf("session %q is aborted (%s); session_aborted: %w", sessionID, det.AbortReason, inject.ErrConflict)
+		}
+		if det.GatePause.Active() {
+			return fmt.Errorf("session %q is gate-paused (%s: %s); session_paused — resume with the pause token: %w",
+				sessionID, det.PauseReason, det.PauseMessage, inject.ErrConflict)
+		}
+	}
+
+	// Adopt a halt a previous process recorded, before the preflight
+	// that has to honor it. A daemon that crashed mid-loop restarts with
+	// an empty watchdogPool, and the restart is automatic: without this
+	// the loop → halt → crash → restart cycle enforce mode exists to
+	// break just resumes, each restart handing the loop a clean
+	// backstop. One fold per session per process; fails open.
+	d.wds.restore(ctx, sessionID)
+
+	// Watchdog halt (--watchdog=enforce): refuse before any model
+	// call. The refusal has to be structural — auto-resume, a
+	// scheduled fire, and an attach inject all land here, and each of
+	// them would otherwise re-drive the loop that tripped it. Placed
+	// after the chokepoint checks so an aborted or gate-paused session
+	// still reports the state an operator set deliberately.
+	if err := d.wds.preflight(sessionID); err != nil {
+		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
+	}
+
+	// What this session already spent, before the ceiling check that has
+	// to honor it (#175). Same placement and same fail-open posture as
+	// the watchdog pair above: one fold per session per process, and a
+	// storage fault leaves the ceiling armed against this process's own
+	// spend rather than refusing the turn.
+	d.meters.restore(ctx, sessionID)
+	if err := d.meters.preflight(sessionID); err != nil {
+		return fmt.Errorf("%w: %w", inject.ErrConflict, err)
+	}
+	return nil
+}
+
+// turnBudget is what a turn has to remember about its meter from the
+// moment before it ran: the refusal counts and the cost, so what the turn
+// itself did is the difference. The meter is session-cumulative, and every
+// report below is about this turn.
+type turnBudget struct {
+	meter *budget.Meter
+
+	// What the meter had already refused before this turn. A refusal is a
+	// synthesized answer rather than an error, so a turn the ceiling
+	// stopped would otherwise complete looking like a turn that finished;
+	// the delta is what tells the caller which it was.
+	//
+	// Two counts, because the two have different outcomes (W10.3). Every
+	// refusal is worth reporting; only the workload's own stops the turn.
+	refusalsBefore        int
+	sessionRefusalsBefore int
+
+	// Export the turn's cost delta whichever way the turn ends. The
+	// meter's session-cumulative cost is authoritative (pricing lives
+	// in pkg/budget); the counter only ever sees per-turn deltas.
+	costBefore float64
+	// And the overshoot, on the same "whichever way the turn ends"
+	// footing. budget.final_report buys a stopped specialist one model
+	// call past its ceiling, and a cap that was exceeded on purpose has
+	// to say so out loud rather than arrive as a number that does not
+	// add up (pkg/budget/finalreport.go).
+	grantsBefore int
+}
+
+func newTurnBudget(meter *budget.Meter) *turnBudget {
+	tb := &turnBudget{meter: meter}
+	tb.refusalsBefore, _ = meter.Refusals()
+	tb.sessionRefusalsBefore, _ = meter.SessionRefusals()
+	_, tb.costBefore, _ = meter.Snapshot()
+	tb.grantsBefore = meter.FinalReportsTaken()
+	return tb
+}
+
+// sessionRefused reports a ceiling that stopped the turn itself. Same
+// outcome and the same counter as the post-hoc fold, because from an
+// operator's side they are the same event; the error is budget.ErrRefused
+// rather than ErrExceeded because nothing was spent crossing anything.
+func (tb *turnBudget) sessionRefused(d turnDeps, ts *turnSpan, label, sessionID string) error {
+	meter := tb.meter
+	n, first := meter.SessionRefusals()
+	if n <= tb.sessionRefusalsBefore {
+		return nil
+	}
+	tokens, cost, calls := meter.Snapshot()
+	d.logger.Error("BUDGET CEILING — refused a model call before it was made",
+		"turn", label, "session", sessionID,
+		"tokens", tokens, "cost_usd", fmt.Sprintf("%.4f", cost), "model_calls", calls,
+		"refusals", n-tb.sessionRefusalsBefore, "reason", first.Error(),
+	)
+	d.obs.BudgetTrip(d.workloadName)
+	ts.complete(observability.OutcomeBudgetExceeded, first)
+	return first
+}
+
+// noteScopedRefusals reports a specialist's own ceiling, which is not a
+// stop: the refusal went back to whoever dispatched it as an answer it can
+// route around, and the turn carried on. It still trips the counter and
+// still says so in the log, because "one of this workload's specialists
+// can no longer be used" is exactly the thing an operator alerting on
+// budget trips wants to hear about, and the turn finishing is what makes
+// it easy to miss.
+func (tb *turnBudget) noteScopedRefusals(d turnDeps, label, sessionID string) {
+	meter := tb.meter
+	n, first := meter.Refusals()
+	sn, _ := meter.SessionRefusals()
+	scopedNew := (n - tb.refusalsBefore) - (sn - tb.sessionRefusalsBefore)
+	if scopedNew <= 0 {
+		return
+	}
+	d.logger.Warn("BUDGET CEILING — a specialist was refused; the turn routed on",
+		"turn", label, "session", sessionID,
+		"refusals", scopedNew, "reason", first.Error(),
+	)
+	d.obs.BudgetTrip(d.workloadName)
+}
+
+// finish exports the turn's cost delta and any final-report overshoot,
+// whichever way the turn ended. runTurnPre defers it after the span's own
+// defer, so it runs first and the span is still open.
+func (tb *turnBudget) finish(d turnDeps, ts *turnSpan, label, sessionID string) {
+	meter := tb.meter
+	_, costAfter, _ := meter.Snapshot()
+	d.obs.AddCost(d.workloadName, costAfter-tb.costBefore)
+	ts.cost(costAfter - tb.costBefore)
+	if granted := meter.FinalReportsTaken() - tb.grantsBefore; granted > 0 {
+		d.logger.Warn("BUDGET CEILING — a stopped specialist bought its final report",
+			"turn", label, "session", sessionID, "grants", granted,
+			"note", "budget.final_report: one model call past the ceiling, report tool only")
+	}
+}
+
+// watchdogAlertHandler is what runTurnPre hands watchdog.Tap: retain the
+// alert, log it, queue its model-facing half for the next turn, and under
+// enforce halt the turn in flight through cancel — the same handle a
+// budget trip and an operator abort use.
+func watchdogAlertHandler(d turnDeps, label, sessionID string, enf *watchdog.Enforcer, fb *watchdog.Feedback, cancel context.CancelFunc) func(watchdog.Alert) {
+	return func(a watchdog.Alert) {
+		// Retained as well as logged: GET /guardrails answers "has this
+		// session been misbehaving?", and the alert is gone from the
+		// watchdog the moment Tap hands it here.
+		d.wds.note(sessionID, a)
+		d.logger.Warn("watchdog alert",
+			"turn", label, "session", sessionID,
+			"signal", a.Signal, "severity", string(a.Severity), "reason", a.Reason)
+		// Queue the model-facing half for the next turn. Not this one:
+		// the prompt was assembled before Run and the turn is already
+		// streaming. Under enforce that next turn is the one after an
+		// operator reset, which is exactly the turn that would
+		// otherwise re-issue the call that halted it.
+		fb.Queue([]watchdog.Alert{a})
+		// Enforce mode halts the turn in flight. Tap drains as soon as
+		// an observation lands, so this runs while the loop is looping
+		// rather than after it finishes — cancel() is the same handle
+		// a budget trip and an operator abort use, so the turn unwinds
+		// the one way the daemon already knows how to unwind.
+		if enf.Observe(a) {
+			_, reason := enf.Tripped()
+			d.logger.Error("WATCHDOG HALT — cancelling the turn",
+				"turn", label, "session", sessionID,
+				"signal", a.Signal, "reason", reason)
+			// Persist before cancelling. The halt has to outlive this
+			// process, and the crash it is most needed for is the one
+			// that follows the loop it just stopped.
+			d.wds.recordTrip(sessionID, a, reason)
+			cancel()
+		}
+	}
 }
