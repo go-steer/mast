@@ -24,6 +24,7 @@ import (
 	"go/token"
 	"iter"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -181,19 +182,37 @@ func TestTheDaemonsStartupActuallyWiresTheProcessPolicy(t *testing.T) {
 // TestStartupInstallsTheReporterWhereItPrimesTheRegistry closes the last
 // gap in the chain the test above walks: that test proves the reporter
 // works when installed, and this one proves the daemon installs it.
-// Without this, deleting the one line in main.go leaves every test in
-// this file green while the shipped binary reports nothing.
+// Without this, deleting the one line in the daemon's startup leaves every
+// test in this file green while the shipped binary reports nothing.
+//
+// It reads every non-test file in the package rather than one by name:
+// the startup moved out of main.go when #301 split it, and a test pinned
+// to a file name would have failed on the move, not on the regression.
 //
 // It asserts co-location with obs.Prime rather than mere presence,
 // because those two calls have to happen in the same place for the same
 // reason — the reporter needs the workload name and the registry, and
 // priming is what proves both exist by then.
 func TestStartupInstallsTheReporterWhereItPrimesTheRegistry(t *testing.T) {
-	src, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	files, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("parsing main.go: %v", err)
+		t.Fatalf("listing package files: %v", err)
 	}
-	for _, decl := range src.Decls {
+	var decls []ast.Decl
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+		decls = append(decls, src.Decls...)
+	}
+	if len(decls) < 100 {
+		t.Fatalf("parsed only %d declarations from %d files; the scan is not seeing the package", len(decls), len(files))
+	}
+	for _, decl := range decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
@@ -220,5 +239,5 @@ func TestStartupInstallsTheReporterWhereItPrimesTheRegistry(t *testing.T) {
 				fn.Name.Name, primes, reports)
 		}
 	}
-	t.Fatal("no function in main.go both primes the registry and installs the provider-retry reporter")
+	t.Fatal("no function in package cli both primes the registry and installs the provider-retry reporter")
 }
