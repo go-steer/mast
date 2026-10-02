@@ -61,22 +61,28 @@ const teardownWatchdogTimeout = 15 * time.Second
 // drain-expired); this is the next free code.
 const teardownHangExitCode = 4
 
-// armTeardownWatchdog starts a detached goroutine that, if serve()'s
-// teardown has not finished within d, dumps every goroutine's stack (so
-// the wedged Close or leaked goroutine is named in the logs) and forces
-// the process to exit. No disarm is needed: a healthy teardown returns
-// from serve(), run() calls os.Exit with the real status, and that kills
-// this sleeping goroutine before its timer elapses. The dump/exit
-// functions are injected so the fire path is unit-testable without
-// actually terminating the test process.
-func armTeardownWatchdog(d time.Duration, dump func(io.Writer), exit func(int), logger *slog.Logger) {
-	go func() {
-		time.Sleep(d)
+// armTeardownWatchdog starts a timer that, if serve()'s teardown has not
+// finished within d, dumps every goroutine's stack (so the wedged Close
+// or leaked goroutine is named in the logs) and forces the process to
+// exit. The dump/exit functions are injected so the fire path is
+// unit-testable without actually terminating the test process.
+//
+// It returns the disarm, and serve() calls it once its deferred
+// teardown has finished. This used to rely on run()'s os.Exit killing
+// the timer first, which holds in the binary and nowhere else: a test
+// that drove serve() to a clean return was killed fifteen seconds later
+// with exit 4, and so would any program that keeps running after serve
+// returns. Disarming after a teardown that completed changes nothing
+// about the hang it exists to catch, because a wedged teardown never
+// reaches the disarm.
+func armTeardownWatchdog(d time.Duration, dump func(io.Writer), exit func(int), logger *slog.Logger) (disarm func()) {
+	t := time.AfterFunc(d, func() {
 		logger.Error("teardown exceeded deadline; dumping goroutine stacks and force-exiting",
 			"deadline", d.String(), "exit_code", teardownHangExitCode)
 		dump(os.Stderr)
 		exit(teardownHangExitCode)
-	}()
+	})
+	return func() { t.Stop() }
 }
 
 // dumpGoroutines writes every goroutine's stack (debug level 2) to w.

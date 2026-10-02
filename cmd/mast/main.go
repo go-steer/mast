@@ -619,6 +619,12 @@ func newResumeByToken(
 // Fatal startup errors are logged in place and returned (not
 // os.Exit'd) so the deferred cleanups run.
 func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listenOpts, sessions sessionOpts, resumes resumeOpts, watchdogFlag string, mcpDigest bool) error {
+	// The teardown watchdog's disarm. Deferred first so it runs last,
+	// after every other deferred Close and flush below has returned —
+	// a teardown that wedges never reaches it, which is the case the
+	// watchdog is armed for. Nothing arms it until the drain is done.
+	disarmTeardown := func() {}
+	defer func() { disarmTeardown() }()
 
 	bearer := os.Getenv("MAST_INJECT_TOKEN")
 	// Checked here rather than left to inject.New, which does not run
@@ -800,6 +806,19 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 		return err
 	}
 	root, bundle, specs, dispatchMode := built.agent, built.bundle, built.specs, built.dispatch
+	// declared is what the workload declares, for the reads below that
+	// only want a block's settings: the bundle when there is one, and
+	// the zero bundle when the daemon was started without --workload to
+	// serve the trivial coordinator. Every zero block means "declares
+	// none" — no monitor, no cadence, the default HITL policy — which is
+	// the honest answer for a daemon with no workload. Reading the nil
+	// bundle directly crashed that documented mode at boot. Reads that
+	// must tell "no workload" from "a workload that declares nothing"
+	// (the workload name, its budget) still test bundle itself.
+	var declared workload.Bundle
+	if bundle != nil {
+		declared = *bundle
+	}
 	logger.Info("root agent constructed",
 		"name", root.Name(),
 		"sub_agents", len(root.SubAgents()),
@@ -818,7 +837,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// is reporting. The scheduled trigger checks this again when it arms
 	// — this one is here so the answer arrives before the listeners bind
 	// rather than after.
-	if bundle.Monitor.Notify != nil && notifyClient == nil {
+	if declared.Monitor.Notify != nil && notifyClient == nil {
 		err := fmt.Errorf("workload %q posts monitoring notices to %q but no chat ingress is configured; set --notify-url and %s",
 			bundle.Name, bundle.Monitor.NotifyTarget(), notifyTokenEnv)
 		logger.Error("refusing to start", "error", err.Error())
@@ -943,7 +962,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	}
 	if writeGate.Plugin != nil {
 		plugins = append(plugins, writeGate.Plugin)
-		logger.Info("write gate registered", "on_mutation", bundle.HITL.EffectiveOnMutation())
+		logger.Info("write gate registered", "on_mutation", declared.HITL.EffectiveOnMutation())
 	}
 
 	r, err := runner.New(runner.Config{
@@ -1137,7 +1156,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 			// it is nil exactly when the policy builds none, and the
 			// projection omits mode rather than inventing one.
 			gate:       writeGate.Gate,
-			onMutation: string(bundle.HITL.EffectiveOnMutation()),
+			onMutation: string(declared.HITL.EffectiveOnMutation()),
 			// GET /perms/stream + POST /perms/respond, answered from
 			// the durable park instead of 501 (#364). Same resume path
 			// POST /resume takes, so the approver is the authenticated
@@ -1474,7 +1493,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// workload declares no cadence).
 	schedDone := make(chan struct{})
 	stopScheduled := func() {}
-	if sched := bundle.EdgeTrigger.Scheduled; sched != nil && schedLease.drivesScheduledWork() {
+	if sched := declared.EdgeTrigger.Scheduled; sched != nil && schedLease.drivesScheduledWork() {
 		// Both already validated at load; re-resolved here because the
 		// daemon reads the cadence from the bundle, not from its own
 		// durable record — editing the bundle is how an operator
@@ -1555,7 +1574,7 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// POSTs rather than a cadence takes acks exactly like one that fires
 	// on a clock. Tying it to the cadence would make "can this be
 	// acknowledged?" depend on how the cycle happens to be triggered.
-	acker := newMonitorAcker(logger, obs, store, bundle.Monitor, toolSchemas.ack, workloadName, appName, defaultUserID)
+	acker := newMonitorAcker(logger, obs, store, declared.Monitor, toolSchemas.ack, workloadName, appName, defaultUserID)
 	var monitorAckHandler inject.MonitorAckHandler
 	if acker.enabled() {
 		monitorAckHandler = acker.forward
@@ -1836,9 +1855,9 @@ func serve(logger *slog.Logger, wl workloadOpts, mdl modelOpts, listeners listen
 	// and attach Close, context cancels) remains as serve() unwinds. Arm
 	// a watchdog so a wedged Close or an unkillable goroutine surfaces a
 	// stack dump and a distinct exit code instead of hanging until the
-	// supervisor SIGKILLs the process with no diagnostic. No disarm: a
-	// healthy teardown reaches run()'s os.Exit first and kills the timer.
-	armTeardownWatchdog(teardownWatchdogTimeout, dumpGoroutines, os.Exit, logger)
+	// supervisor SIGKILLs the process with no diagnostic. A healthy
+	// teardown disarms it through the first defer above.
+	disarmTeardown = armTeardownWatchdog(teardownWatchdogTimeout, dumpGoroutines, os.Exit, logger)
 	if drainExpired {
 		// Exit-code contract (issue #42): 3 = the drain window expired
 		// with interrupted survivors — work was cut short, whoever
