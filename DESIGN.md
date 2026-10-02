@@ -135,7 +135,8 @@ runtime. See [the v1.0 stability promise](#the-v10-stability-promise).
 
 | Package | Role |
 |---|---|
-| `pkg/transcript` | Operator surface over the ADK session store: list/show summaries, pending-interrupt scan, durable abort/pause markers, resume-token records, and the durable decision records (`approve`/`reject`/`edit`) that `mast sessions export-decisions` writes out as JSONL. (Named `session` pre-v0.1.0; renamed to end the alias collision with ADK's `session`.) |
+| `internal/transcript` | The operator store over the ADK session store: list/show summaries, pending-interrupt scan, durable abort/pause markers, interrupt and auto-resume bookkeeping, sub-run intents, schedule anchors, monitor acks, resume-token records, and the durable decision records (`approve`/`reject`/`edit`) that `mast sessions export-decisions` writes out as JSONL. (Named `session` pre-v0.1.0; renamed to end the alias collision with ADK's `session`.) |
+| `pkg/transcript` | The promised **read** half of that store (#301): `Store` with `List`, `Get`, `Decisions`, `ExportDecisions` and `FindToken`, and the records they return, aliased from `internal/transcript` so a value from `mast.ListSessions` or `mast.Pause` is the same type. The writes and the daemon's bookkeeping stay internal; an embedder pauses and resumes through the root package. |
 | `internal/eventlog` | Seq-overlay + `Since`/`Watch` stream + audit metadata sidecar layered **on** ADK `session/database` (ADK owns the tables), plus two mast-owned append-only logs folded forward across restarts: `GuardrailStore` (trips and resets, so an `enforce` halt outlives the process that observed it) and `SpendStore` (one row per priced model call, so a cost ceiling does too). Ported from core-agent. |
 | `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. Metering stays in memory and database-free; durability is a two-part seam — `Config.OnSpend` writes each priced call out, `Meter.Restore` folds a previous process's spend back in — which `cmd/mast` wires to `eventlog.SpendStore`. Token buckets come from the ADK usage record, overridden per bucket by the provider sidecar when the adapter attached one (`budget.Detailer`, #352); an over-reported count is fitted to the room the prompt leaves rather than credited. |
 | `internal/effects` | The recorded-effect outbox: the session event log **is** the outbox (durable `FunctionCall` = intent, paired `FunctionResponse` = completion), read once per turn in an ADK runner plugin's `BeforeRun`. A dangling mutating intent puts the turn in fail-closed ambiguous-effect mode until an operator acks. |
@@ -564,6 +565,24 @@ approve ([#296](https://github.com/go-steer/mast/issues/296)), and
 wire — but it was reached by resolving the closure rather than by
 reading the issue, which is the habit #300 was written to install.
 
+**Inside the promised packages, too, a name has to earn it.** #301
+decided which packages are public, and then had to look inside them:
+v1.0 freezes every exported declaration, field and method, and the
+promised set held about 490. `pkg/transcript` was the outlier, at 169 —
+the operator store's whole write side and the daemon's bookkeeping
+(interrupt markers, auto-resume attempts, sub-run intents, schedule
+anchors, acks), public only because `cmd/mast` once needed it.
+`IsReservedSessionID` alone would have frozen the companion ops-row
+convention that #51 exists to delete. The store moved to
+`internal/transcript` and `pkg/transcript` became its read facade, at
+112. The other three were read the same way and kept:
+- `pkg/budget`'s daemon-only `Meter` methods are the meter's own
+  semantics (operator grants, per-scope ceilings, the durability seam an
+  embedder's ledger plugs into), not plumbing.
+- `pkg/workload` is the Go form of `workload.yaml`, so its types are
+  public whether or not this repository constructs them.
+- `pkg/specialists` is the authoring model, the same way.
+
 **The promise is a gate, not only a table.** `dev/api-surface.txt` is
 the machine-readable form of the table above: every importable package,
 each `promised` or `unsupported`. Three things hold it.
@@ -581,10 +600,12 @@ packages so that `pkg/approval`'s unsupported remainder can move
 without ceremony.
 
 **The closure is a test, not only a paragraph.**
-`pkg/transcript/freeze_test.go` parses this package's exported
-declarations, collects every in-module qualified type reachable through
-one, closes over those types' exported fields to a fixed point, and
-fails against a checked-in list. Adding a field of an unsupported type
+`pkg/transcript/freeze_test.go` type-checks the package, walks
+everything its exported API reaches — through the aliases into
+`internal/transcript`, over exported fields and methods to a fixed
+point — and fails against a checked-in list of the in-module types it
+finds. (It parsed source until #301 made the records aliases, which an
+AST walk cannot follow.) Adding a field of an unsupported type
 to an exported struct here otherwise compiles, passes every behavioural
 test, and silently enlarges what v1.0 promises. The test was verified
 to detect in both directions — dropping an entry, and adding a leak —

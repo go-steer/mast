@@ -27,7 +27,7 @@ import (
 	"github.com/go-steer/mast/internal/eventlog"
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/permissions"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

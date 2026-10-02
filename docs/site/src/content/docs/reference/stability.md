@@ -35,7 +35,7 @@ These import paths follow [semver](https://semver.org) from v1.0:
 |---|---|
 | `github.com/go-steer/mast` | The library front door: `Run`, `RunWorkload`, `ListSessions`, `ResumeSession`, `ResumeByToken`, `Pause`, `AckEffects`, `WithActor`, `IsWatchdogHalt`. |
 | `github.com/go-steer/mast/cli` | The binary, for [building your own](/quickstart/custom-binary/): `Main`, and the options that add your models and tools. |
-| `github.com/go-steer/mast/pkg/transcript` | The operator projection over sessions. |
+| `github.com/go-steer/mast/pkg/transcript` | The operator's read projection over sessions: list, show, export decisions, look up a resume token. Pausing and resuming go through the root package. |
 | `github.com/go-steer/mast/pkg/workload` | Bundle types — the Go form of `workload.yaml`. |
 | `github.com/go-steer/mast/pkg/specialists` | Specialist spec, registry and loader. |
 | `github.com/go-steer/mast/pkg/budget` | Limits and the usage meter. |

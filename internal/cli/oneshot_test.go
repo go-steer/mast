@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // TestRunOneShot_EchoDebugPersistsSession is the one-shot e2e: echo

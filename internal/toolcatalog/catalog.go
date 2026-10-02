@@ -71,7 +71,7 @@ import (
 	"github.com/go-steer/mast/internal/federation"
 	"github.com/go-steer/mast/internal/mcp"
 	"github.com/go-steer/mast/internal/planner"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // Entry is one tool as the model was offered it, plus what its own

@@ -66,7 +66,7 @@ import (
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/modeltext"
 	"github.com/go-steer/mast/internal/serverauth"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

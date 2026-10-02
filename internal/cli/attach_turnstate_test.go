@@ -24,7 +24,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/mast/internal/attach"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // seedParked creates a session and appends events to it, returning a

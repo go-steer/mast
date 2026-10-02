@@ -27,8 +27,8 @@ import (
 
 	"github.com/go-steer/mast/internal/auth"
 	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // The two pause primitives that share POST /resume answer to different

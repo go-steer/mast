@@ -74,6 +74,7 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/planner"
+	itranscript "github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
@@ -258,7 +259,7 @@ func ListSessions(ctx context.Context, cfg Config) ([]transcript.Summary, error)
 	if cfg.Sessions == nil {
 		return nil, errors.New("mast: ListSessions requires Config.Sessions (sessions from a nil service are per-call and never listable)")
 	}
-	return transcript.NewStore(cfg.Sessions, appName).List(ctx, "")
+	return itranscript.NewStore(cfg.Sessions, appName).List(ctx, "")
 }
 
 // ResumeSession feeds an operator verdict back into a session that
@@ -277,7 +278,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 	if cfg.Sessions == nil {
 		return nil, errors.New("mast: ResumeSession requires Config.Sessions (the service holding the paused session)")
 	}
-	store := transcript.NewStore(cfg.Sessions, appName)
+	store := itranscript.NewStore(cfg.Sessions, appName)
 	if d, err := store.Get(ctx, "", sessionID); err != nil {
 		return nil, fmt.Errorf("mast: resume session %q: %w", sessionID, err)
 	} else if d.State == transcript.StateAborted {
@@ -328,7 +329,7 @@ func AckEffects(ctx context.Context, cfg Config, sessionID, reason string) error
 	if cfg.Sessions == nil {
 		return errors.New("mast: AckEffects requires Config.Sessions (acks on a nil service could never be read back)")
 	}
-	return transcript.NewStore(cfg.Sessions, appName).AckEffects(ctx, "", sessionID, reason)
+	return itranscript.NewStore(cfg.Sessions, appName).AckEffects(ctx, "", sessionID, reason)
 }
 
 // pauseRecorder returns the pause_session record sink for library
@@ -339,7 +340,7 @@ func pauseRecorder(cfg Config) planner.PauseRecorder {
 	if cfg.Sessions == nil {
 		return nil
 	}
-	return transcript.NewStore(cfg.Sessions, appName)
+	return itranscript.NewStore(cfg.Sessions, appName)
 }
 
 // Pause gate-pauses a session (plane B of the v0.2 pause/abort
@@ -356,7 +357,7 @@ func Pause(ctx context.Context, cfg Config, sessionID string, spec transcript.Pa
 	if cfg.Sessions == nil {
 		return transcript.PauseHandle{}, errors.New("mast: Pause requires Config.Sessions (a pause on a nil service could never be resumed)")
 	}
-	h, _, err := transcript.NewStore(cfg.Sessions, appName).PauseGate(ctx, "", sessionID, spec)
+	h, _, err := itranscript.NewStore(cfg.Sessions, appName).PauseGate(ctx, "", sessionID, spec)
 	return h, err
 }
 
@@ -378,7 +379,7 @@ func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 	if cfg.Sessions == nil {
 		return nil, errors.New("mast: ResumeByToken requires Config.Sessions (the service holding the paused session)")
 	}
-	store := transcript.NewStore(cfg.Sessions, appName)
+	store := itranscript.NewStore(cfg.Sessions, appName)
 	rec, err := store.FindToken(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("mast: %w", err)
@@ -659,7 +660,7 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	// Recorded-effect outbox (docs/durable-execution-design.md): same
 	// guard as cmd/mast — every runner construction path attaches it.
 	// The ack watermark reads through the same store AckEffects writes.
-	ackStore := transcript.NewStore(svc, appName)
+	ackStore := itranscript.NewStore(svc, appName)
 	var policies []effects.ToolPolicy
 	if bundle != nil {
 		for _, p := range bundle.ToolCatalog.Tools {

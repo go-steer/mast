@@ -22,8 +22,8 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/internal/permissions"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // The GET /perms projection (#375). TestAttachWiringLeavesNoCapability

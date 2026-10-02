@@ -36,7 +36,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 
 	mastagent "github.com/go-steer/mast/internal/agent"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 const (

@@ -33,8 +33,8 @@ import (
 	"github.com/go-steer/mast/internal/agui"
 	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/internal/planner"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/internal/watchdog"
-	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

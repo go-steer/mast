@@ -30,7 +30,7 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // listFailingService is a session service whose List can be switched

@@ -40,8 +40,8 @@ import (
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
 	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/transcript"
 )
 
 // parksReader answers GET /parks and GET /parks/{session} out of the

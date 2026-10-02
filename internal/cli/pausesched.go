@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 )
 
 // daemonPauseRecorder is the pause_session record sink for serve mode:

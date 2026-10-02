@@ -28,7 +28,7 @@ import (
 	"github.com/go-steer/mast/internal/a2a"
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/observability"
-	"github.com/go-steer/mast/pkg/transcript"
+	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
