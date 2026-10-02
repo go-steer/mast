@@ -30,7 +30,7 @@ import (
 // It carries the kind and nothing else on purpose. Code, hint and
 // retryability are wire text, and wire text belongs here: a raiser
 // would have to import this package to name a TurnError, and the two
-// raisers that matter are leaf packages that shouldn't. pkg/watchdog is
+// raisers that matter are leaf packages that shouldn't. internal/watchdog is
 // stdlib-only; pulling in internal/attach — and with it auth, eventlog and
 // permissions — to spell one constant is the same coupling
 // ClassifyTurnError already refused in the other direction for

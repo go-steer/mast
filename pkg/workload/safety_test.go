@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -54,8 +54,8 @@ func TestLoad_SafetyWatchdog(t *testing.T) {
 
 // The tripwire for the vocabulary copy. pkg/workload is stdlib-only by
 // design, so its Watchdog* constants are string copies of
-// pkg/watchdog's Mode constants rather than the constants themselves.
-// This test lives in the test binary, where importing pkg/watchdog
+// internal/watchdog's Mode constants rather than the constants themselves.
+// This test lives in the test binary, where importing internal/watchdog
 // costs the production dependency graph nothing, and fails the moment
 // the two lists disagree in either direction.
 func TestSafetyWatchdogVocabularyMatchesTheWatchdog(t *testing.T) {
@@ -74,7 +74,7 @@ func TestSafetyWatchdogVocabularyMatchesTheWatchdog(t *testing.T) {
 		}
 	}
 
-	// Backward: a fourth rung added to pkg/watchdog changes ParseMode's
+	// Backward: a fourth rung added to internal/watchdog changes ParseMode's
 	// "want" list, and this comparison is what notices. Without it, the
 	// new posture would be a value the runtime honors and every bundle
 	// declaring it is refused at load.

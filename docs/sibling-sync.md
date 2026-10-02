@@ -236,7 +236,7 @@ C, the posture that reads it, rather than with PR A as an unread field.
 Alert prose is rewritten for mast's affordances. Upstream's reasons point an operator at a
 `/interrupt` slash command and `--max-turn-cost-usd`; mast has neither — its interrupt is
 `POST /sessions/{id}/interrupt` on the attach surface and its ceilings come from the workload
-bundle. `pkg/watchdog/cycle_test.go` asserts on that directly, so the text cannot drift back.
+bundle. `internal/watchdog/cycle_test.go` asserts on that directly, so the text cannot drift back.
 
 **PR D diverges twice, deliberately.** *The default posture is `feedback`, not upstream's
 `enforce`.* Upstream's premise is right — an unattended run with a warn-only watchdog has no
@@ -284,13 +284,13 @@ could have produced, which would otherwise make the posture change unreachable. 
 **fails open, loudly**: an unreadable table logs and continues, because a storage fault must not
 halt every session in the deployment with no trip behind it.
 
-With PR E the cluster is closed, so `pkg/watchdog` moves to a single `6510a65` baseline —
+With PR E the cluster is closed, so `internal/watchdog` moves to a single `6510a65` baseline —
 every file, not just `watchdog.go` and `bridge.go`. The earlier note here named only those two;
 that was under-specified. The detector maps upstream `pkg/agent/watchdog*.go` commits onto the
 package, so the package reports zero only when no file trails the newest of them, and a mixed
 set of baselines inside a package whose port is a re-implementation rather than a file-for-file
 copy says less than one baseline does. The seven commits it was reporting are exactly the seven
-PRs A–E ported; `6510a65` is the newest of them that touches `pkg/agent/watchdog.go`. That drops
+PRs A–E ported; `6510a65` is the newest of them that touches `internal/agent/watchdog.go`. That drops
 the report from 40 commits / 49 files to **36 / 44**.
 
 `cmd/mast` still reports `e42a511` afterwards, and that one is a mapping artifact rather than a
@@ -566,7 +566,7 @@ name — the same posture applies to one-shot mode, where the halt just ends the
 
 Severity moves with this PR, not against it: `repeated-tool-call` and `alternating-tool-cycle`
 become Critical, `tool-failure-streak` stays Warn per the adaptation above. Severity is a property
-of the pattern, so it is asserted in `pkg/watchdog` tests independently of any posture.
+of the pattern, so it is asserted in `internal/watchdog` tests independently of any posture.
 
 Both arms were checked against pre-fix behavior. Neutering the in-turn drain (`if false &&
 observed`) makes the drain tests fail on timing rather than on outcome — the alert arrives at
@@ -691,7 +691,7 @@ The watchdog cluster did not move the count until it closed, on purpose. PRs A t
 SHAs as their own baselines, while every file the detector maps those commits onto stayed at its
 pre-cluster trailer. A partial port does not bump a baseline; bumping mid-cluster would have
 silenced the commits still outstanding, which is precisely the lie the trailer scheme exists to
-prevent. **PR E closed it**, and `pkg/watchdog` went to zero in one bump to `6510a65` — taking the
+prevent. **PR E closed it**, and `internal/watchdog` went to zero in one bump to `6510a65` — taking the
 report from 40 commits / 49 files to **36 / 44**.
 
 `b1101f9` came off next, moving `internal/mcp` to a single `b1101f9` baseline and the report to **35 /
@@ -729,7 +729,7 @@ these apart and neither can a reader who only has the count** — that is what t
 
 `6d30f9b` is worth recording as a *shape* divergence rather than a clean port. Upstream's
 `SelfClassifyingError` returns a full classified error because its raisers already import the
-attach package. mast's do not: `pkg/watchdog` is stdlib-only, and dragging `auth`, `eventlog` and
+attach package. mast's do not: `internal/watchdog` is stdlib-only, and dragging `auth`, `eventlog` and
 `permissions` into a leaf guardrail package to name one constant is the coupling
 `internal/attach/errors.go` already refused in the other direction for `pkg/budget`
 ([#135](https://github.com/go-steer/mast/issues/135)). mast's interface therefore carries the kind
@@ -898,7 +898,7 @@ Each was checked against mast's code; every row below is a finding, not a candid
 | SHA | Upstream | The mast finding |
 |---|---|---|
 | `57ac01c` + `f71c685` | bill a synchronously-invoked subagent's turns to the parent (#849); a declared budget that binds on both delegation doors (#850) | **Worse here, and it is three consumers rather than one** — [#226](https://github.com/go-steer/mast/issues/226). `invoke_specialist` runs each specialist on a private runner with an in-memory session (`internal/planner/dispatch.go:202`), so nothing riding the outer event stream sees a single event it emits: not the budget meter, not the metrics registry, not the watchdog (`internal/cli/main.go:2536`–`2568`). A planner-dispatched specialist can spend without limit, report no tokens, and loop without being halted. Coordinator and graph dispatch are unaffected — `parallelagent` funnels sub-agent events upward — so an operator reads one bundle and gets two different enforcement stories depending on `dispatch:`. `MeterScopes`' per-specialist ceilings are unenforceable on this door for the same reason |
-| `6813f6d` | add the dominant-tool-call density detector (#847) | **Same hole between the same two detectors** — [#227](https://github.com/go-steer/mast/issues/227). `RepeatedToolCallSignal` resets its run on any non-matching call; `AlternatingCycleSignal` skips near-uniform windows by construction (`uniform(tail[:p])`, `pkg/watchdog/cycle.go:165`). `a a a b a a a c a a a` trips neither until the interleaves happen to stop. The port's real work is de-duplication, not detection: mast appends every signal's alert, and under the `feedback` default three overlapping detectors on one loop is three paragraphs of steering for one behavior |
+| `6813f6d` | add the dominant-tool-call density detector (#847) | **Same hole between the same two detectors** — [#227](https://github.com/go-steer/mast/issues/227). `RepeatedToolCallSignal` resets its run on any non-matching call; `AlternatingCycleSignal` skips near-uniform windows by construction (`uniform(tail[:p])`, `internal/watchdog/cycle.go:165`). `a a a b a a a c a a a` trips neither until the interleaves happen to stop. The port's real work is de-duplication, not detection: mast appends every signal's alert, and under the `feedback` default three overlapping detectors on one loop is three paragraphs of steering for one behavior |
 | `661f278` | a metrics page written from the code, plus a drift gate (#854) | **Half absorbed, half missing** — [#228](https://github.com/go-steer/mast/issues/228). mast is *ahead* on the page: `reference/metrics.md` lists exactly the sixteen families `internal/observability` constructs, with labels and vocabularies. Nothing keeps it that way, and the same pipeline already carries the drift — `mast_scheduled_fires_total` and `mast_a2a_server_tasks_total` ship, are on the site page, and appear in neither the shipped nor the design-target column of `docs/observability-design.md` |
 | `f90bc65` | a scripted provider that gives every Model call its own cursor (#853) | **Same defect, different door** — [#229](https://github.com/go-steer/mast/issues/229). `mock.NewScripted` returns one cursor, offline fakes collapse every per-specialist override back to that one instance (a documented feature of `BuildModel`), and fan-out runs its branches concurrently. Three branches then walk one script between them. The cursor is mutex-guarded, so `-race` stays silent while the replay is nondeterministic |
 
@@ -973,7 +973,7 @@ example is covered by existing.
 The count went **54 → 57** with no port, which is the instrument working as designed: nine upstream
 commits landed and six of them touch packages mast carries a copy of. **Nothing here will move the
 number, either.** The examples gate is mast-side and touches no ported file; the four filed issues
-are fixes whose landing place is `internal/planner`, `pkg/watchdog`, `internal/observability` and
+are fixes whose landing place is `internal/planner`, `internal/watchdog`, `internal/observability` and
 `internal/providers/mock`, and — as the 2026-08-17 and 2026-08-20 sections both record — a fix that does
 not *re-port* a file does not bump the file's derivation trailer.
 
@@ -1022,7 +1022,7 @@ Every row is a finding read out of mast's source, not a guess from upstream's co
 ### Latent, not reachable, and worth pinning — `dd2007f`, filed as [#331](https://github.com/go-steer/mast/issues/331)
 
 `fix(watchdog): count a streamed tool call once, on the event ADK runs it from (#925)` is a real trap
-in mast's `pkg/watchdog/bridge.go`, which has no `ev.Partial` check anywhere in the file. It is
+in mast's `internal/watchdog/bridge.go`, which has no `ev.Partial` check anywhere in the file. It is
 unreachable **only** because mast runs `StreamingModeNone` at every runner site — `internal/cli/main.go:2920`,
 `internal/cli/oneshot.go:231`, and `internal/planner/dispatch.go:310`'s zero-value `RunConfig{}`. That is
 three coincidences rather than a decision, and `internal/cli/a2a.go:206` names `StreamingModeSSE` as the
@@ -1124,8 +1124,8 @@ unused until it ships a prompt-cache TTL knob. Unchanged.
 |---|---|---|
 | `a8be5a3` | core-tui v0.24.0 (#863) | core-tui stays paired with core-agent, not mast — the sibling table in [`../AGENTS.md`](../AGENTS.md) is explicit. mast has no `internal/coretuiremote` |
 | `fcdd597` | allocate a plan sequence per plan, not per `record_plan` call (#912) | mast has no `pkg/tools` and no plan-first subsystem. The `internal/permissions/gate.go` slice of the diff hangs off `record_plan`'s existence |
-| `a0b282d` | name, retry, and surface an empty summarizer response (#908) | mast has no compactor, no summarizer and no checkpointer in `pkg/agent`; context reduction is not in the lean scope |
-| `4a770bf` | report what a subagent stop actually did (#941) | mast exposes no `POST /sessions/{sid}/agents/{name}/stop` and has no `pkg/agent/background` manager. mast's delegation is planner dispatch and graph fan-out, neither of which hands an operator a stop door |
+| `a0b282d` | name, retry, and surface an empty summarizer response (#908) | mast has no compactor, no summarizer and no checkpointer in `internal/agent`; context reduction is not in the lean scope |
+| `4a770bf` | report what a subagent stop actually did (#941) | mast exposes no `POST /sessions/{sid}/agents/{name}/stop` and has no `internal/agent/background` manager. mast's delegation is planner dispatch and graph fan-out, neither of which hands an operator a stop door |
 | `b265a03` | an inject queues; only a resume opens the gate (#879) | mast has no `releaseHold` and no `Agent.Resume()` — nothing in mast conflates an inject with a hold release, because mast has no operator hold to release. Worth noting that mast reached the same rule from the other direction and wrote it down first: v0.5's **"an ack is not an approval"** is the same principle on the acknowledgement door |
 
 `8dfa240` (`/btw`) is **n/a on its headline and a watch on its tail**: mast has no `/btw` slash
@@ -1671,7 +1671,7 @@ by-another-route escape upstream's wording does not, and it has been there since
 `internal/permissions/gate.go` remembers approvals — `sessionAllow`, `sessionAllowTools`,
 `sessionAllowVerbs` — and remembers no refusals at all. There is no key under which a denied
 `tool|detail` is recorded, and no pre-turn boundary step to clear one at; mast has no
-`pkg/agent/preturn.go` analogue. So after a reject, an identical proposal takes the same path
+`internal/agent/preturn.go` analogue. So after a reject, an identical proposal takes the same path
 through the write gate and parks again.
 
 **mast's version of the loop is worse than the one upstream measured, and the reason is the

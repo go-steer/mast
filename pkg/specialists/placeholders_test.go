@@ -22,7 +22,7 @@ import (
 )
 
 // These tests describe a migration, not a rule. mast sends instructions
-// verbatim (pkg/agent/instruction.go), so the only thing left to say
+// verbatim (internal/agent/instruction.go), so the only thing left to say
 // about a brace is that one spelling of it used to mean something and
 // stopped. Everything else loads, which is most of what this file
 // checks.
@@ -31,7 +31,7 @@ import (
 // coupling it guarded: mast no longer follows ADK's resolution rule, so
 // an ADK bump that changed the rule would have failed a test demanding
 // mast track a field it does not use. What must not regress is the
-// cause, and pkg/agent's
+// cause, and internal/agent's
 // TestNoShippedCodePassesAPromptThroughADKsTemplateField guards that
 // across the whole module.
 

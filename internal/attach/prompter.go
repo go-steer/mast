@@ -56,7 +56,7 @@ import (
 // (The option this comment named through v0.8 —
 // agent.WithAttachPromptBroker — never existed in this repo. It does
 // not exist upstream either: core-agent renamed it to
-// attachadapter.WithPromptBroker when it split pkg/agent, and four of
+// attachadapter.WithPromptBroker when it split internal/agent, and four of
 // its own comments still name the old one. Inherited drift, logged in
 // docs/sibling-sync.md.)
 type PromptBroker struct {

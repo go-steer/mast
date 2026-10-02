@@ -26,7 +26,7 @@ import (
 
 	"github.com/go-steer/mast/internal/agui"
 	"github.com/go-steer/mast/internal/serverauth"
-	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

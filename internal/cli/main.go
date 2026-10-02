@@ -31,7 +31,7 @@ import (
 
 	"github.com/go-steer/mast/internal/taskclass"
 	buildversion "github.com/go-steer/mast/internal/version"
-	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/internal/watchdog"
 )
 
 const (

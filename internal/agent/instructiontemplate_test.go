@@ -34,7 +34,7 @@ import (
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 )
 
 // A system prompt is text, not a template.
@@ -170,7 +170,7 @@ func TestASpecialistPromptMayDescribeAJSONShape(t *testing.T) {
 Answer with one JSON object: {"severity": "...", "owner": "..."}.
 Use {finding} as the key when you have no owner.`
 
-	// One model per agent, as pkg/agent's other tree tests do: a shared
+	// One model per agent, as internal/agent's other tree tests do: a shared
 	// model would try to delegate from inside the delegate.
 	rootM := &braceModel{name: "root-m", delegate: "triage"}
 	subM := &braceModel{name: "sub-m"}
@@ -344,10 +344,10 @@ func TestNoShippedCodePassesAPromptThroughADKsTemplateField(t *testing.T) {
 	// would report a clean tree for the wrong reason — a moved package,
 	// a renamed import alias, a root that resolved somewhere else.
 	if checked < 3 {
-		t.Fatalf("found %d llmagent.Config literals in shipped code, want at least the 3 in pkg/agent: this guard is not looking at what it thinks it is", checked)
+		t.Fatalf("found %d llmagent.Config literals in shipped code, want at least the 3 in internal/agent: this guard is not looking at what it thinks it is", checked)
 	}
 	if len(offenders) > 0 {
-		t.Errorf("shipped code passes a prompt through ADK's templated Instruction field, so a brace in it becomes a session-state lookup:\n\t%s\n\nUse InstructionProvider — see instructionProvider in pkg/agent/instruction.go.",
+		t.Errorf("shipped code passes a prompt through ADK's templated Instruction field, so a brace in it becomes a session-state lookup:\n\t%s\n\nUse InstructionProvider — see instructionProvider in internal/agent/instruction.go.",
 			strings.Join(offenders, "\n\t"))
 	}
 }

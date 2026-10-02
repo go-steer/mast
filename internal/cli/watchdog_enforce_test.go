@@ -34,8 +34,8 @@ import (
 
 	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/watchdog"
 )
 
 // loopingModel is a stuck agent: the same tool call, the same
@@ -124,7 +124,7 @@ func TestWatchdogEnforceCutsAnIntraTurnLoopShort(t *testing.T) {
 // What the operator is actually handed. runTurn returns the halt in
 // place of the runner's "context canceled", and that error goes
 // straight to attach.ClassifyTurnError on the way to a turn-error
-// frame — so this is the last link in the chain pkg/watchdog and
+// frame — so this is the last link in the chain internal/watchdog and
 // internal/attach each pin from their own side (#208).
 //
 // Both halt-shaped errors are checked: the turn that trips, and the

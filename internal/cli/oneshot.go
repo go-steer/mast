@@ -44,9 +44,9 @@ import (
 	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/internal/taskclass"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/transcript"
-	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -211,7 +211,7 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// One turn to completion: iterate the full event stream, keeping
 	// the last structured output (Task-mode finish_task value) and the
 	// last text part as the printable result.
-	// Watchdog tap (pkg/watchdog): one turn, so a fresh watchdog per
+	// Watchdog tap (internal/watchdog): one turn, so a fresh watchdog per
 	// invocation; alerts are logged on stderr like every other log line.
 	//
 	// --watchdog=enforce applies here too. A one-shot is a single turn,

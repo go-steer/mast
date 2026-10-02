@@ -303,7 +303,7 @@ func TestProtocolV1_7_0_IsAdditive(t *testing.T) {
 // its own kind. The tests below use it rather than *watchdog.TrippedError
 // so internal/attach keeps no dependency on the watchdog, even in test
 // builds; that the real type says the same thing is pinned from the
-// other side, in pkg/watchdog/enforce_test.go.
+// other side, in internal/watchdog/enforce_test.go.
 type declaredKindError struct {
 	kind string
 	msg  string

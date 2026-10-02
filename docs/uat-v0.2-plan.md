@@ -95,7 +95,7 @@ crash/restart leg restarts the daemon mid-flight, where the model-call count dif
 after the restart (auto-resume drives a continuation; an ambiguous session refuses the call).
 A positional script and the live call sequence therefore drift apart at exactly the
 crash-restart boundary under test. The harness instead drives these legs with a **request-driven
-offline fake** (`pkg/agent/toolactor.go`, `--model=toolactor`): it decides purely from the
+offline fake** (`internal/agent/toolactor.go`, `--model=toolactor`): it decides purely from the
 current request (delegate if the delegation tool is unanswered; call the reason-selected MCP tool
 if unanswered; else finish), so it is **restart-safe, session-independent, and needs no per-leg
 JSONL**. The blocking tool itself is a small stdio MCP server (`testdata/uat/blocker`) wired

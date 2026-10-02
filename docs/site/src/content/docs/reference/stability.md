@@ -33,9 +33,8 @@ These import paths follow [semver](https://semver.org) from v1.0:
 
 | Path | What lives there |
 |---|---|
-| `github.com/go-steer/mast` | The library front door: `Run`, `RunWorkload`, `ListSessions`, `ResumeSession`, `ResumeByToken`, `Pause`, `AckEffects`. |
+| `github.com/go-steer/mast` | The library front door: `Run`, `RunWorkload`, `ListSessions`, `ResumeSession`, `ResumeByToken`, `Pause`, `AckEffects`, `WithActor`, `IsWatchdogHalt`. |
 | `github.com/go-steer/mast/cli` | The binary, for [building your own](/quickstart/custom-binary/): `Main`, and the options that add your models and tools. |
-| `github.com/go-steer/mast/pkg/agent` | Agent-mode constructors and `Config`. |
 | `github.com/go-steer/mast/pkg/transcript` | The operator projection over sessions. |
 | `github.com/go-steer/mast/pkg/workload` | Bundle types — the Go form of `workload.yaml`. |
 | `github.com/go-steer/mast/pkg/specialists` | Specialist spec, registry and loader. |
@@ -51,9 +50,9 @@ providers, MCP, auth, pricing, the dispatch shapes and the rest of the
 runtime live under `internal/`, where Go refuses an import from
 outside the module.
 
-Two packages under `pkg/` are importable and still not supported:
-`approval` (apart from the types listed below) and `watchdog`. A minor
-release may change or remove either.
+One package under `pkg/` is importable and still not supported:
+`approval`, apart from the types listed below. A minor release may
+change or remove the rest of it.
 
 The direction is that you customize mast by writing your own `main.go`
 around the binary, not by importing its runtime packages; see

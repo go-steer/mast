@@ -26,13 +26,13 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/config"
 	"github.com/go-steer/mast/internal/digest"
 	"github.com/go-steer/mast/internal/effects"
 	mastmcp "github.com/go-steer/mast/internal/mcp"
 	"github.com/go-steer/mast/internal/planner"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )

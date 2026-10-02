@@ -643,7 +643,7 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 	// whole turn, so dropping the chunks loses nothing. Nothing sets
 	// Partial outside a streaming model, so this is a no-op under
 	// StreamingModeNone — the same guard, for the same reason, as
-	// pkg/watchdog/bridge.go's (#400, same class as #331).
+	// internal/watchdog/bridge.go's (#400, same class as #331).
 	//
 	// This makes the emitter CORRECT under SSE; it does not make it
 	// streaming-aware. A caller who turns SSE on gets whole messages, not

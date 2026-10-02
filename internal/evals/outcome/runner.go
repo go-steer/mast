@@ -73,9 +73,9 @@ import (
 	"google.golang.org/adk/v2/session/database"
 	"google.golang.org/adk/v2/tool"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/evals"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 )
 
 const (
@@ -86,7 +86,7 @@ const (
 	userID  = "mast-evals-outcome"
 
 	// agentName is the single agent the corpus runs against, built by
-	// pkg/agent.NewCoordinator with the lookout toolset and no
+	// internal/agent.NewCoordinator with the lookout toolset and no
 	// sub-agents.
 	//
 	// One agent rather than the gke-triage roster, and for a reason

@@ -40,6 +40,7 @@ import (
 	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/adk/v2/tool"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/graph"
 	"github.com/go-steer/mast/internal/modelretry"
@@ -49,7 +50,6 @@ import (
 	geminiprov "github.com/go-steer/mast/internal/providers/gemini"
 	"github.com/go-steer/mast/internal/providers/mock"
 	"github.com/go-steer/mast/internal/router"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
@@ -526,7 +526,7 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //
 //   - "echo": fake in-process echo model (no credentials required).
 //   - "toolactor": request-driven offline fake that drives registered
-//     tool calls deterministically (pkg/agent/toolactor.go); the v0.2
+//     tool calls deterministically (internal/agent/toolactor.go); the v0.2
 //     UAT harness uses it to exercise the crash/drain/abort legs against
 //     a real blocking MCP tool. No credentials required.
 //   - "scripted": JSONL recorded-turn replay via internal/providers/mock;

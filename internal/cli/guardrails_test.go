@@ -20,8 +20,8 @@ import (
 	"testing"
 
 	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/watchdog"
 )
 
 // newGuardrailView builds the projection over a hand-sized meter pool,

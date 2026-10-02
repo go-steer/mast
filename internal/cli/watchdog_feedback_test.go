@@ -14,7 +14,7 @@
 
 // Daemon-side tests for --watchdog=feedback: the observation reaching
 // the one party that can act on it. The package half (queue bounds,
-// block wording) lives in pkg/watchdog; what these pin is the wiring —
+// block wording) lives in internal/watchdog; what these pin is the wiring —
 // that the block lands in the *next* turn's prompt, that warn mode
 // injects nothing, and that an operator reset does not throw the
 // correction away along with the halt.
@@ -29,7 +29,7 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
-	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/internal/watchdog"
 )
 
 // recordingLoopModel is loopingModel that also keeps the message that

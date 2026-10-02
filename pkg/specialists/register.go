@@ -23,7 +23,7 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 )
 
 // ModelResolver turns a specialist's `model:` frontmatter override into
@@ -74,10 +74,11 @@ type BuildOptions struct {
 	Tools    []tool.Tool
 	Toolsets []tool.Toolset
 
-	// OnStall, when non-nil, installs mastagent.FinishOnStall on every
-	// Task-mode specialist Build creates, using the payload this function
-	// returns for that spec. Returning nil selects
-	// mastagent.DefaultStallPayload.
+	// OnStall, when non-nil, installs a stall guard on every Task-mode
+	// specialist Build creates: a turn that ends without finish_task is
+	// closed with one, using the payload this function returns for that
+	// spec. Returning nil selects the default payload, a `{"result":
+	// string}` report led by the stall marker.
 	//
 	// It is opt-in and it is per-spec, in that order of importance.
 	//
@@ -96,7 +97,7 @@ type BuildOptions struct {
 	// is: the fallback would produce a finish_task call the runtime refuses,
 	// leaving exactly the unresolved delegation the guard exists to prevent,
 	// and it would do it at run time on the one turn nobody is watching.
-	OnStall func(spec Spec) mastagent.StallPayload
+	OnStall func(spec Spec) StallPayload
 
 	// Logger is where a built specialist reports an allowlist entry
 	// that matched nothing (#278). Nil is legal and means no report —
@@ -154,6 +155,17 @@ func (o BuildOptions) modelForTier(spec Spec) (model.LLM, error) {
 	return m, nil
 }
 
+// StallPayload builds the finish_task arguments a stall guard reports
+// for a specialist that stopped without calling it: the agent's name and
+// its last words in, the arguments out. It must invent no content — a
+// stall report says the specialist stalled, it does not answer for it —
+// and should lead the field a reader sees with the stall marker.
+//
+// The type is this package's own (#301). It used to be the agent
+// package's, which made BuildOptions name a package outside the v1.0
+// promise; the shape is unchanged.
+type StallPayload func(agentName, lastWords string) map[string]any
+
 // stallGuard resolves BuildOptions.OnStall into the AfterModelCallbacks a
 // Task-mode spec is built with. Nil OnStall means no guard and no callbacks.
 //
@@ -172,7 +184,7 @@ func (o BuildOptions) stallGuard(spec Spec) ([]llmagent.AfterModelCallback, erro
 		return nil, fmt.Errorf("specialists: build %q: BuildOptions.OnStall returned no payload for a spec that declares an output_schema; "+
 			"the default {\"result\": string} payload would fail finish_task validation, which is the unresolved delegation the guard exists to prevent", spec.Name)
 	}
-	return []llmagent.AfterModelCallback{mastagent.FinishOnStall(spec.Name, payload)}, nil
+	return []llmagent.AfterModelCallback{mastagent.FinishOnStall(spec.Name, mastagent.StallPayload(payload))}, nil
 }
 
 // filterToolsets applies the specialist's MCP allowlist to the offered

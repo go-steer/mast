@@ -20,7 +20,7 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 )
 
 const transferTool = "transfer_to_agent"

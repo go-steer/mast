@@ -42,7 +42,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/pkg/budget"
 )
 
@@ -341,7 +341,7 @@ func TestAMeterWithNoCeilingsRefusesNothing(t *testing.T) {
 // gateFor is the switch between the two arms: the meter itself, or no
 // gate at all. *budget.Meter satisfies mastagent.CallGate, which is the
 // wiring under test as much as anything else here — the interface is
-// declared in pkg/agent and never mentions pkg/budget.
+// declared in internal/agent and never mentions pkg/budget.
 func gateFor(gated bool, m *budget.Meter) mastagent.CallGate {
 	if !gated {
 		return nil

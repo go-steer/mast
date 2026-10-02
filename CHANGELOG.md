@@ -4,6 +4,24 @@
 
 ### API Change
 
+- **`pkg/agent` and `pkg/watchdog` moved under `internal/`; recognize a
+  halted turn with `mast.IsWatchdogHalt`.**
+  - **`pkg/agent`:** `specialists.Build` covers what an embedder built
+    agents for: it turns a `Spec` into a governed ADK agent you can wire
+    into any graph. The starters now use it.
+  - **`specialists.BuildOptions.OnStall`** returns the new
+    `specialists.StallPayload`, which has the same shape as the type it
+    replaces.
+  - **`pkg/watchdog`:** the one thing the library quickstart sent
+    embedders to it for, recognizing a halt from `Run`, `RunWorkload` or a
+    resume, is now `mast.IsWatchdogHalt(err)`.
+  - **What is no longer possible:** choosing which watchdog signals run.
+    That only ever worked for an embedder composing its own runner.
+
+  The promised surface is now the root, `cli`, `pkg/workload`,
+  `pkg/specialists`, `pkg/budget` and `pkg/transcript`.
+  [#301](https://github.com/go-steer/mast/issues/301)
+
 - **The binary moved into `internal/cli`, and `cmd/mast` is one line over
   it.** Nothing about the `mast` binary changes: flags, subcommands, output
   and exit codes are the same, and a test now drives each exit code through

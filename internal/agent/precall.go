@@ -154,7 +154,7 @@ func RefusalText(agentName, reason string) string {
 // CallGate decides whether an agent may make another model call.
 //
 // The one implementation that matters is *budget.Meter, whose Allow has
-// exactly this shape. It is an interface here so that pkg/agent does not
+// exactly this shape. It is an interface here so that internal/agent does not
 // depend on pkg/budget for a one-method question, and so a host with its
 // own notion of "may this call happen" — a quota, a kill switch, a
 // maintenance window — can install one without going through the meter.

@@ -95,8 +95,8 @@ func runConfigProblems(label, src string) ([]string, int) {
 				"\n"+
 				"\tThe safe set is exactly the non-test files that name `.Partial`\n"+
 				"\t(re-derive it with: grep -rn '\\.Partial' --include='*.go'):\n"+
-				"\t  pkg/watchdog/bridge.go — skips partials as of #331\n"+
-				"\t  pkg/agent/stall.go — skips partials\n"+
+				"\t  internal/watchdog/bridge.go — skips partials as of #331\n"+
+				"\t  internal/agent/stall.go — skips partials\n"+
 				"\t  internal/cli/agui.go — skips partials as of #400\n"+
 				"\t  internal/cli/a2a.go — skips partials as of #408\n"+
 				"\tThe walk is finished: every event consumer named by #331 is in\n"+
@@ -245,7 +245,7 @@ var c = someOtherConfig{StreamingMode: "sse"}
 	// checked rather than omitted, and the issue is where the reasoning is.
 	// #407 is named because it is the change that should delete this check.
 	got, _ := runConfigProblems("x.go", qualifiedSSE)
-	for _, want := range []string{"internal/cli/a2a.go", "#408", "internal/cli/agui.go", "#400", "pkg/watchdog/bridge.go", "#331", "#407", ".Partial"} {
+	for _, want := range []string{"internal/cli/a2a.go", "#408", "internal/cli/agui.go", "#400", "internal/watchdog/bridge.go", "#331", "#407", ".Partial"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("failure message does not mention %q:\n%s", want, got[0])
 		}

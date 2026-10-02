@@ -703,7 +703,7 @@ cp -r "${FIXTURE}" "${SCHED}"
 # workload with a cadence declared and nothing else changed.
 #
 # The prompt carries an incident-shaped reason because that is the lever
-# the offline fake reads to pick a tool (pkg/agent/toolactor.go), the
+# the offline fake reads to pick a tool (internal/agent/toolactor.go), the
 # same one inject_uat pulls from the other side. It doubles as a check
 # on the wake-up message itself: the prompt reaches the model as the
 # author wrote it, braces and quotes intact, rather than escaped into a
@@ -842,7 +842,7 @@ assert_log_atleast "the specialist got another turn" "${LOG}" 'function_call:fin
 # formality: this report is invalid against the worker's output_schema,
 # ADK answers an invalid finish_task with a retry instruction rather than
 # an error, and a retry that the gate refuses costs nothing — so before
-# pkg/agent's UnreportableRefusal this leg did not fail, it spun, to
+# internal/agent's UnreportableRefusal this leg did not fail, it spun, to
 # 3,292 calls in the ninety seconds curl was willing to wait.
 assert_log_atmost "and not an unbounded number of them" "${LOG}" 'function_call:finish_task' 10
 # The quiet ending is what needs watching now. An incident that no longer

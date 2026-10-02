@@ -119,7 +119,7 @@ runtime. See [the v1.0 stability promise](#the-v10-stability-promise).
 
 | Package | Role |
 |---|---|
-| `pkg/agent` | Agent-mode constructors over ADK (coordinator, Task, SingleTurn) + per-mode default instructions; echo/scripted fake models for offline smoke. |
+| `internal/agent` | Agent-mode constructors over ADK (coordinator, Task, SingleTurn) + per-mode default instructions; echo/scripted fake models for offline smoke. |
 | `internal/graph` | Workflow-graph dispatch (LLM-as-router over ADK's workflow engine) and the `fanout` shape — concurrent read-only branches on `parallelagent` (never `ParallelWorker`, whose branch events the log suppresses) with one `_synthesis` merge. |
 | `internal/router` | LLM-as-router classifier (SingleTurn) used by graph dispatch. |
 | `pkg/specialists` | Subagent-as-tool: `.specialist.md` files (YAML frontmatter plus a prose body — not Go templates; renamed from `.tmpl` in v0.8 (#292), which stopped loading in v0.9 (#349)) with budgets, model overrides, tool allowlists ([`docs/specialists-design.md`](./docs/specialists-design.md)). |
@@ -142,7 +142,7 @@ runtime. See [the v1.0 stability promise](#the-v10-stability-promise).
 | `pkg/approval` | The write gate: the runner-plugin seam where a mutating call parks for an operator, the three-valued verdict (`approve`/`reject`/`edit`), the typed change-set producer, and exact-`(tool, arguments)`-signature grants with their freshness re-read. Policy stays in `internal/permissions`; the durable pause is ADK's tool-confirmation flow. Since [#296](https://github.com/go-steer/mast/issues/296) it also records what a change overwrote: `capture.go` takes a declared prior-state read before the call runs, on all four paths to execution, and writes the old values plus a proposed revert onto the event log. mast never fires the revert. |
 | `internal/permissions` | Permission gate + prompt contract (ported). Runtime-wired since v0.3 through `pkg/approval`'s plugin — it decides policy (proceed / ask / refuse) and stays ADK-independent. |
 | `internal/auth` | Caller identity, session ACL types, bearer/mTLS config (ported). Approvals and edits are recorded against the authenticated approver it resolves. |
-| `pkg/watchdog` | Loop signals (repeated call, alternating cycle, tool-failure streak) + session-event bridge + the `warn`/`feedback`/`enforce` posture ladder; alerts are logged, projected onto the guardrail surface, and — from `feedback` up — routed into the model's own next prompt. The posture resolves `--watchdog` > the bundle's `safety.watchdog` > `watchdog.DefaultMode` (`feedback`), and every turn-driving surface taps it, the library embed included. Under `--attach-listen` a halt is persisted through `eventlog.GuardrailStore` and adopted on the next turn after a restart — configuration still wins, so a posture dialed back below `enforce` inherits nothing. |
+| `internal/watchdog` | Loop signals (repeated call, alternating cycle, tool-failure streak) + session-event bridge + the `warn`/`feedback`/`enforce` posture ladder; alerts are logged, projected onto the guardrail surface, and — from `feedback` up — routed into the model's own next prompt. The posture resolves `--watchdog` > the bundle's `safety.watchdog` > `watchdog.DefaultMode` (`feedback`), and every turn-driving surface taps it, the library embed included. Under `--attach-listen` a halt is persisted through `eventlog.GuardrailStore` and adopted on the next turn after a restart — configuration still wins, so a posture dialed back below `enforce` inherits nothing. |
 
 **Providers** — reshaped at port time (per-provider Options structs,
 no registry; dispatch is an explicit switch in `internal/compose`)
@@ -239,8 +239,8 @@ when somebody reads their chat.
   decides whether to act on it, and every one of those readers sees the
   same call again. Seven non-test files say "mast runs
   `StreamingModeNone`" in a comment; three check it
-  (`grep -rn '\.Partial' --include='*.go'`): `pkg/watchdog/bridge.go`,
-  `pkg/agent/stall.go` and — since
+  (`grep -rn '\.Partial' --include='*.go'`): `internal/watchdog/bridge.go`,
+  `internal/agent/stall.go` and — since
   [#400](https://github.com/go-steer/mast/issues/400) — the AG-UI
   emitter in `internal/cli/agui.go`, which was the worst entry on the list
   because it minted a *complete* tool-call triple per chunk with empty
@@ -448,7 +448,6 @@ Written here before it is arrived at by accident
 |---|---|
 | `github.com/go-steer/mast` | The library pillar's front door: `Run`, `RunWorkload`, `ListSessions`, `ResumeSession`, `ResumeByToken`, `Pause`, `AckEffects`. |
 | `github.com/go-steer/mast/cli` | The binary as a package (#301): `Main`, `Option`, `WithModels`, `WithToolset`, `WithTools`. A custom `main.go` is the stock binary plus its own models and tools, and every option is in ADK's types. The flags and exit codes it runs are the CLI promise below; this row adds only the option set. |
-| `github.com/go-steer/mast/pkg/agent` | Agent-mode constructors and `Config` — what an embedding host builds a loop out of. |
 | `github.com/go-steer/mast/pkg/transcript` | The operator projection over sessions; the durable pillar's read surface. |
 | `github.com/go-steer/mast/pkg/workload` | Bundle types. The operator contract has a Go form and a YAML form; both are promised. |
 | `github.com/go-steer/mast/pkg/specialists` | Spec + registry + loader — the authoring model the slim embed imports. |
@@ -460,9 +459,13 @@ against the tree: that table's five included `provider` and `tool`,
 and **neither package exists** — there has never been a `pkg/tool`, and
 `internal/providers` is a directory of four backends with no interface above
 them. The provider extension point is real but it is a *field*, not a
-package (below). `agent`, `specialists`, `workload` and `budget` are
-what `examples/deploy/slim` actually imports, which is the only
-evidence available that a surface has been exercised by a consumer.
+package (below). The evidence that a surface has been exercised by a
+consumer is what imports it: `examples/deploy/slim` imports
+`specialists` and `budget`, the starters and the custom-binary fixture
+import `specialists` and `cli`, and `workload` and `transcript` are what
+the root's own signatures hand an embedder. (`agent` was on this list
+until #301 found the slim example used it for a fake model and nothing
+else.)
 
 **What it does not cover.** Everything else, and almost all of it is
 now unreachable rather than merely unsupported. Until 2026-10-02 this
@@ -471,26 +474,21 @@ release might break. [#301](https://github.com/go-steer/mast/issues/301)
 moved 30 of them under `internal/` — the servers, providers, MCP, auth,
 pricing, the dispatch shapes, the effect outbox — because nothing
 outside this repository imported any of them, and a statement that a
-package is unsupported does not stop anyone depending on it. Two remain
-importable and unsupported, and both are waiting on a decision, not
-an oversight:
-
-- `pkg/approval`, beyond the eight declarations covered by reference
-  below.
-- `pkg/watchdog`, because the library quickstart tells an embedder to
-  recognize a halted turn with `watchdog.IsTripped`, so it needs a
-  replacement on the promised surface before it can go.
-
-`pkg/agent` leaves the promise, and `pkg/watchdog` goes internal, in
-the same step as the custom-`main.go` surface (#301's third PR), which
-is where their replacements are designed.
+package is unsupported does not stop anyone depending on it. Two more
+followed with their replacements: `pkg/agent` left the promise once
+`specialists.Build` was shown to cover what an embedder built agents
+for — the slim example imported it only for a fake model — and once
+`specialists.BuildOptions.OnStall` stopped naming its `StallPayload`;
+`pkg/watchdog` went once the root could answer the one question the
+library quickstart sent embedders to it for (`mast.IsWatchdogHalt`).
+What stays importable and unsupported is `pkg/approval` beyond the
+eight declarations covered by reference below.
 
 The demotion is not the end state of #301. The point is that mast is
 customized by writing your own `main.go`: a public `cli` package whose
 `Main` *is* the binary, taking options in ADK's own types (a model
-resolver, tools, toolsets, a session service). The surface v1.0 freezes
-becomes root `mast`, `cli`, `pkg/workload`, `pkg/specialists`,
-`pkg/budget` and `pkg/transcript`.
+resolver, tools, toolsets). The surface v1.0 freezes is the table
+above.
 
 *(Corrected 2026-09-14 with the rest of
 [#338](https://github.com/go-steer/mast/issues/338). This list said
@@ -759,7 +757,7 @@ model reads, and it is not an approval.
 asks, before each call, whether a ceiling can still be respected;
 `agent.RefuseOnGate` is the `BeforeModelCallback` that asks it and
 synthesizes the agent's answer when it cannot, installed by the three
-`pkg/agent` constructors and armed per turn with `agent.WithCallGate`.
+`internal/agent` constructors and armed per turn with `agent.WithCallGate`.
 `Observe` is unchanged and still the durable ledger — the pre-call
 check refuses only what it can prove (`max_turns` is now exact; tokens
 and cost stop *at* the cap rather than one call past it) and never

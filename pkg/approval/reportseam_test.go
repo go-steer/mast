@@ -106,10 +106,10 @@ func (m callOnce) GenerateContent(_ context.Context, req *model.LLMRequest, _ bo
 // report, and runs it under gate as a coordinator's sub-agent.
 //
 // The specialist is built from llmagent directly rather than through
-// pkg/agent's NewTaskAgent: pkg/agent's offline fakes fill the
-// change-set field, so pkg/agent's non-test code must not import this
+// internal/agent's NewTaskAgent: internal/agent's offline fakes fill the
+// change-set field, so internal/agent's non-test code must not import this
 // package, and this test's non-test counterpart is what pins the two
-// spellings together (pkg/agent's TestChangeSetPropertyName).
+// spellings together (internal/agent's TestChangeSetPropertyName).
 func runReportProbe(t *testing.T, schema *genai.Schema, report map[string]any, gate llmagent.BeforeToolCallback) *reportProbe {
 	t.Helper()
 	probe := &reportProbe{}

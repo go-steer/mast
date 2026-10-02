@@ -246,11 +246,11 @@ type Budget struct {
 }
 
 // Watchdog postures a bundle may declare, in ladder order. These are
-// string copies of pkg/watchdog's Mode constants, not the constants
+// string copies of internal/watchdog's Mode constants, not the constants
 // themselves: this package is stdlib-only by design (it sits in the
 // slim-embed slice, and a YAML schema has no business pulling the ADK
 // runtime in behind it). TestSafetyWatchdogVocabularyMatchesTheWatchdog
-// imports pkg/watchdog from the test binary and fails if the two lists
+// imports internal/watchdog from the test binary and fails if the two lists
 // ever disagree, so the copy cannot rot silently.
 const (
 	// WatchdogWarn logs a detected runaway pattern and lets the turn
@@ -277,7 +277,7 @@ const (
 // manifest carrying the flag by hand.
 type Safety struct {
 	// Watchdog is the behavioral watchdog posture for this workload:
-	// warn, feedback, or enforce (pkg/watchdog.Mode's ladder — each
+	// warn, feedback, or enforce (internal/watchdog.Mode's ladder — each
 	// rung includes the one below it). Empty means unset, which is not
 	// the same as "warn": an unset posture falls through to the
 	// daemon's default, and the --watchdog flag overrides whatever is

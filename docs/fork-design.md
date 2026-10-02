@@ -26,7 +26,7 @@ The mechanical work is similar — same set of code gets deleted either way. The
 2. **Code extraction.** Create empty repo, copy in the keep list, write a fresh initial commit. Pro: clean history matching the new scope. Con: loses provenance entirely; tests/CI/coverage start from zero.
 3. **Hard-fork-then-prune in one squash commit** (originally recommended). Hard-fork to preserve history, then land all cuts in a single squash commit titled `chore: prune to lean scope (forked from go-steer/core-agent@<SHA>)`. Pro: provenance preserved, but history *after* the fork point reads cleanly against the new scope. Con: the squash commit is enormous.
 
-**ADK v2 changes the calculation.** The v2 workflow package delivers node runtime, graph engine, Chat/Task/SingleTurn agent modes, durable HITL, unified `agent.Context`, and one telemetry span tree. Under v1, the core agent loop (`pkg/agent/{agent,runner,loop,scheduler,checkpointer,compactor,autonomous,inbox}.go`) was substantial value-add code worth preserving through a prune. Under v2, most of what that code did *is what v2 provides natively* — porting it would be porting code whose value has evaporated. Prune-in-place is the wrong shape for code that we would rewrite anyway.
+**ADK v2 changes the calculation.** The v2 workflow package delivers node runtime, graph engine, Chat/Task/SingleTurn agent modes, durable HITL, unified `agent.Context`, and one telemetry span tree. Under v1, the core agent loop (`internal/agent/{agent,runner,loop,scheduler,checkpointer,compactor,autonomous,inbox}.go`) was substantial value-add code worth preserving through a prune. Under v2, most of what that code did *is what v2 provides natively* — porting it would be porting code whose value has evaporated. Prune-in-place is the wrong shape for code that we would rewrite anyway.
 
 **The revised recommended mechanic: rebuild the lean core around v2 primitives, port the adapter packages unchanged, build the mast-specific subsystems v2-natively.** Three buckets of work; different provenance treatment per bucket:
 
@@ -140,7 +140,7 @@ Estimated size: ~500-1500 LOC. Written fresh; no v1 code carried forward. ~3-5 d
 | `internal/digest/` | ADK-independent; straight port. |
 | `pkg/tools/` (built-in tool surface) | ADK-touching lightly (tool.Tool contract unchanged); port with bash-search-gate applied (core-agent issue #158). |
 | `pkg/tools/agentic/` (Mechanism B wrappers) | ADK-independent aside from digest calls; straight port. |
-| `pkg/agent-card/` | ADK-independent; straight port. |
+| `internal/agent-card/` | ADK-independent; straight port. |
 | `pkg/skills/` + `adk/tool/skilltoolset` | ADK-touching (agent context on skill invocation); port for SKILL.md format support per [`./skills-design.md`](./skills-design.md). Reinstated 2026-07-01 after skill-publisher landscape (GKE + Google teams) inverted the audience-fit assumption behind the earlier cut. |
 
 Not ported (see "Packages not ported" below).
@@ -169,7 +169,7 @@ Estimated wall-clock: ~5-8 days in parallel with P1.2 completion.
 
 **Packages not ported:**
 
-- `pkg/agent/{agent,runner,loop,scheduler,checkpointer,compactor,autonomous,inbox}.go` — replaced by bucket 1 (lean core) + bucket 3 (autonomous+inbox as cyclic graphs, landing in Phase 2).
+- `internal/agent/{agent,runner,loop,scheduler,checkpointer,compactor,autonomous,inbox}.go` — replaced by bucket 1 (lean core) + bucket 3 (autonomous+inbox as cyclic graphs, landing in Phase 2).
 - ~~`pkg/skills/` + `adk/tool/skilltoolset` — skills subsystem cut~~ *Reversed 2026-07-01: skills reinstated as first-class consumable. See [`./skills-design.md`](./skills-design.md); moved to the bucket-2 port list (below) rather than the cut list.*
 - Any package or example targeting developer-laptop interactive-coding UX polish.
 - LSP / AST tooling references (none today, just preventative).
@@ -196,7 +196,7 @@ What remains of Phase 2 is bucket-3 work not scoped into Phase 1's minimum. In r
 
 1. **Reference-graph library** — the seven canonical shapes per [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md), each with `main.go` + `README.md` + `config.yaml` under `examples/workflows/<shape>/`. Ship 2-3 shapes per PR; the whole set incrementally.
 2. **Planner completion + `orchestrate` task class exposed** per [`./orchestration-design.md`](./orchestration-design.md) — all `run_shape_*` planner tools wired to the reference-graph library; `plan_review_required` HITL flow end-to-end; bundle-scoped nested classifiers.
-3. **Autonomous+inbox as cyclic graphs** — rewrite `pkg/agent/autonomous.go` and `pkg/agent/inbox.go` (both unported from Phase 1) as v2 cyclic graphs. Landing pattern: define the graph in `pkg/autonomous/` or similar, expose `mast --autonomous <config>` entry point.
+3. **Autonomous+inbox as cyclic graphs** — rewrite `internal/agent/autonomous.go` and `internal/agent/inbox.go` (both unported from Phase 1) as v2 cyclic graphs. Landing pattern: define the graph in `pkg/autonomous/` or similar, expose `mast --autonomous <config>` entry point.
 4. ~~**Watchdog signal-emission** — concrete watchdog running inside an emitting function node, injecting alerts into the session event stream per core-agent issue #159.~~ *Done 2026-08-17, in a different shape: the alert reaches the model as a prompt prepend under `--watchdog=feedback` (ported from core-agent `e42a511`), not as an emitted event. The node form was the v2-native idea; the chokepoint form is what mast's turn structure actually offers, and it is one place rather than every graph.*
 5. **Small-tier-parent classifier as LLM-as-router** — replaces the substring matcher (positioning.md open Q #4, now resolved). Ships as a specialist `.tmpl` with `mode: SingleTurn` plus a router node in the appropriate reference graph.
 6. **DefaultInstruction refinements** — the first-pass split from bucket 1 will need per-mode iteration once real workloads exercise them. Includes the planner-mode DefaultInstruction template ([`./orchestration-design.md`](./orchestration-design.md) open Q #7).

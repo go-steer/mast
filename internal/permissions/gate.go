@@ -202,7 +202,7 @@ var planExemptTools = map[string]bool{
 	"skill": true,
 
 	// Read-only subagent introspection (individual tool names,
-	// registered by pkg/agent/background_tools.go — not wrapped in
+	// registered by internal/agent/background_tools.go — not wrapped in
 	// a namespace-level toolset).
 	"list_agents": true,
 	"check_agent": true,

@@ -36,7 +36,7 @@
 // are denylisted for the slim-embed guarantee. Consumers who need the
 // minimal dependency graph (docs/library-api-design.md, "Slim-embed
 // guarantee") must NOT import this package — they compose the slim
-// slice directly (pkg/agent, pkg/specialists, optionally pkg/workload,
+// slice directly (internal/agent, pkg/specialists, optionally pkg/workload,
 // pkg/budget, pkg/transcript), as examples/deploy/slim does.
 //
 // # Example
@@ -70,14 +70,14 @@ import (
 	"google.golang.org/adk/v2/runner"
 	adksession "google.golang.org/adk/v2/session"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/planner"
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
-	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -785,7 +785,7 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 		return fmt.Errorf("mast: session %q: %w", sessionID, first)
 	}
 
-	// Behavioral watchdog (pkg/watchdog). Every other turn-driving path
+	// Behavioral watchdog (internal/watchdog). Every other turn-driving path
 	// in this repo taps the event stream — the daemon at runTurnPre,
 	// the one-shot in runOneShot — and this one did not, so a
 	// library-embedded workload was the single mast surface with no

@@ -22,8 +22,8 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/taskclass"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/specialists"
 )
 

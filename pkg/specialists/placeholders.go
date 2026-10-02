@@ -20,11 +20,11 @@
 // the best available fix while mast still handed its prompts to
 // llmagent.Config.Instruction — a template field.
 //
-// It no longer does. pkg/agent passes every prompt through
+// It no longer does. internal/agent passes every prompt through
 // InstructionProvider, which ADK forwards unchanged, so a brace is a
 // brace on all three surfaces: a specialist body, a bundle's coordinator
 // instruction, and the planner's rendered prompt. Nothing scans them and
-// nothing can fail on them. See pkg/agent/instruction.go.
+// nothing can fail on them. See internal/agent/instruction.go.
 //
 // # What is left to refuse, and why it is only this
 //
@@ -63,7 +63,7 @@
 // the coupling it guarded. What must not regress is the *cause*: a
 // future constructor reaching for Config.Instruction would bring the
 // templating back, silently, for every prompt. That is guarded by
-// TestNoShippedCodePassesAPromptThroughADKsTemplateField in pkg/agent,
+// TestNoShippedCodePassesAPromptThroughADKsTemplateField in internal/agent,
 // which is an AST check over the whole module rather than a rule
 // restated here.
 

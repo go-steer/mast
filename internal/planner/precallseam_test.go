@@ -30,8 +30,8 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/planner"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 )
 
 // W10.1's spike. A cost ceiling that refuses a call has to run BEFORE
@@ -400,7 +400,7 @@ func TestOneModelObjectServesManyAgents(t *testing.T) {
 // sub_model_calls: 0 is the pre-call property showing up in the
 // planner's own view of the dispatch.
 //
-// The shape is not invented here either. pkg/agent's FinishOnStall
+// The shape is not invented here either. internal/agent's FinishOnStall
 // already ships it: a Task agent's silent turn becomes a finish_task
 // call so the specialist costs its own part of the answer rather than
 // the whole run. A cost refusal is the same move with a different

@@ -15,7 +15,7 @@
 // The W10.3 acceptance test: a spent specialist closes one path, not the
 // session.
 //
-// pkg/agent's TestARefusedTaskAgentReportsThroughFinishTask proves the
+// internal/agent's TestARefusedTaskAgentReportsThroughFinishTask proves the
 // agent half against a stub gate — a refused Task specialist reports
 // through finish_task, so the caller above it has something to read. What
 // it cannot prove is the half this file is about, because that one lives
@@ -48,12 +48,12 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/observability"
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
-	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

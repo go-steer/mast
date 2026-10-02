@@ -29,8 +29,8 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/specialists"
-	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -101,7 +101,7 @@ func TestLibraryEmbedEnforceHaltsARunawayTurn(t *testing.T) {
 	m := &libraryLoopModel{rounds: 60}
 
 	_, err := RunWorkload(context.Background(), Config{Model: m}, bundle, specs, "go")
-	if !watchdog.IsTripped(err) {
+	if !IsWatchdogHalt(err) {
 		t.Fatalf("RunWorkload err = %v, want a watchdog halt", err)
 	}
 	// RepeatedToolCallSignal trips at 5; a few rounds of slack for the
