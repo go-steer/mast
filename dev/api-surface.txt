@@ -1,0 +1,26 @@
+# The importable surface of github.com/go-steer/mast, one package per
+# line, as a directory relative to the module root.
+#
+#   promised     follows semver from v1.0. dev/tools/verify-apidiff fails
+#                CI on an incompatible change to one of these that is not
+#                acknowledged in dev/api-breaks.txt.
+#   unsupported  importable, and a minor release may change it. Each needs
+#                a reason to exist outside internal/.
+#
+# Every importable package must be listed. surface_test.go fails on one
+# that is not, so a new public package is a decision rather than an
+# accident (#301), and on a promised list that drifts from actor_test.go.
+#
+# DESIGN.md "The v1.0 stability promise" and docs/site's
+# reference/stability.md are the prose for this file.
+
+promised     .
+promised     cli
+promised     pkg/budget
+promised     pkg/specialists
+promised     pkg/transcript
+promised     pkg/workload
+
+# Eight of its declarations are covered by reference, because
+# pkg/transcript returns them (see DESIGN.md); the rest is not.
+unsupported  pkg/approval

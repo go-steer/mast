@@ -564,6 +564,22 @@ approve ([#296](https://github.com/go-steer/mast/issues/296)), and
 wire — but it was reached by resolving the closure rather than by
 reading the issue, which is the habit #300 was written to install.
 
+**The promise is a gate, not only a table.** `dev/api-surface.txt` is
+the machine-readable form of the table above: every importable package,
+each `promised` or `unsupported`. Three things hold it.
+- `dev/tools/verify-apidiff` (presubmit `apidiff`) runs Go's `apidiff`
+  over the promised packages against the nearest v1+ tag, and fails on
+  an incompatible change that `dev/api-breaks.txt` does not acknowledge.
+  It skips while no v1 tag exists, so tagging v1.0.0 is what arms it.
+- `TestEveryImportablePackageIsADecision` fails on an importable
+  package the file does not list.
+- `TestThePromisedListHasOneSource` holds the file and the auth-import
+  guard's list to one answer.
+
+It is ported from go-steer/purser's gate, narrowed to the promised
+packages so that `pkg/approval`'s unsupported remainder can move
+without ceremony.
+
 **The closure is a test, not only a paragraph.**
 `pkg/transcript/freeze_test.go` parses this package's exported
 declarations, collects every in-module qualified type reachable through
