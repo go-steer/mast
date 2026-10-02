@@ -57,8 +57,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 
@@ -444,7 +444,7 @@ func (c *sessionsCmd) run(ctx context.Context, out io.Writer) error {
 			ResumeAt:  c.resumeAt,
 			// The wire field keeps its name: PauseRequest.Interrupt sits
 			// beside ResumeRequest.InterruptID, so it never collided the
-			// way the two CLI flags did, and pkg/inject's JSON is not
+			// way the two CLI flags did, and internal/inject's JSON is not
 			// what #337 was about.
 			Interrupt: c.cancelTurn,
 			TTL:       c.ttl,

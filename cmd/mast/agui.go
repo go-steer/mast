@@ -14,7 +14,7 @@
 
 package main
 
-// AG-UI-server wiring for the daemon (docs/ag-ui-design.md). pkg/agui owns the
+// AG-UI-server wiring for the daemon (docs/ag-ui-design.md). internal/agui owns the
 // wire protocol, auth, and HTTP+SSE surface but never imports the runtime; this
 // file supplies the Backend seam — RunAgent drives one turn through the same
 // runTurnPre chokepoint every other turn kind funnels through (inheriting the
@@ -62,10 +62,10 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/mast/internal/agui"
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/modeltext"
-	"github.com/go-steer/mast/pkg/agui"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/serverauth"
+	"github.com/go-steer/mast/internal/serverauth"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -659,7 +659,7 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 		e.interrupted = true
 	}
 	// State writes ride on the event's Actions, not its Content, so this runs
-	// before the Content nil-check: pkg/graph stashes a node result on an event
+	// before the Content nil-check: internal/graph stashes a node result on an event
 	// that carries no content at all.
 	e.emitStateDelta(ev.Actions.StateDelta)
 	if ev.Content == nil {
@@ -730,7 +730,7 @@ func (e *aguiEmitter) onEvent(ev *session.Event) {
 //
 // **It reads session.Event.Author, and only on a model-authored event.** Author
 // is the attribution seam the rest of mast already trusts: pkg/budget buckets
-// spend by it, pkg/effects classifies by it, and pkg/specialists records that
+// spend by it, internal/effects classifies by it, and pkg/specialists records that
 // it carries the agent's name on every dispatch shape mast builds (Branch does
 // not — it is empty in the coordinator/sub-agent-tool shape). Restricting the
 // read to model events means the author is an agent by construction, so no

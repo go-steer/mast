@@ -44,7 +44,7 @@ type ModelResolver func(name string) (model.LLM, error)
 // ModelResolver's does, and for one more — the answer depends on which
 // provider the operator started mast with, which is a composition fact,
 // not a roster fact. internal/compose.BuildRoot supplies the one mast
-// ships; it goes through pkg/taskclass.ModelForTier and then through
+// ships; it goes through internal/taskclass.ModelForTier and then through
 // the same memoized ModelResolver, so a roster of twelve small-tier
 // diagnosers still opens one client.
 type TierResolver func(tier string) (model.LLM, error)
@@ -264,7 +264,7 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 			// the question back. Peers are already unreachable — ADK's
 			// transferTargets skips Task-mode agents — so the only transfer a
 			// specialist can make is to the coordinator that delegated to it,
-			// and under pkg/router's Chat coordinator that transfer aborts the
+			// and under internal/router's Chat coordinator that transfer aborts the
 			// run. See TaskAgentConfig for the mechanism.
 			DisallowTransferToParent: true,
 			DisallowTransferToPeers:  true,

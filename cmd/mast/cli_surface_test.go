@@ -25,7 +25,7 @@ import (
 )
 
 // updateCLISurface rewrites the golden instead of comparing against it.
-// The other goldens in this repo (pkg/attach's agent card) are
+// The other goldens in this repo (internal/attach's agent card) are
 // hand-maintained; this one is forty-odd rows across ten flag sets, and
 // a hand-edit that gets a row wrong writes a false contract — which is
 // worse than no contract, because the next reader trusts it.

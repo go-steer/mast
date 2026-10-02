@@ -22,7 +22,7 @@ import (
 )
 
 // notFoundText is the reaped-handle shape, verbatim from a Vertex
-// response (the same literal pkg/providers/gemini has pinned since the
+// response (the same literal internal/providers/gemini has pinned since the
 // retry-once path was written).
 const notFoundText = "Error 404, Message: Not found: cached content metadata for 6116704758662168576., Status: NOT_FOUND, Details: []"
 

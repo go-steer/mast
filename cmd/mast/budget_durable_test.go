@@ -30,10 +30,10 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"gorm.io/gorm"
 
-	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/eventlog"
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/eventlog"
-	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"

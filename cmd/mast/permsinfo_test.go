@@ -21,8 +21,8 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/mast/internal/permissions"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/permissions"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 

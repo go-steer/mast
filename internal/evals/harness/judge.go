@@ -30,7 +30,7 @@ import (
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
 	"github.com/go-steer/mast/internal/modelretry"
-	"github.com/go-steer/mast/pkg/providers/anthropic"
+	"github.com/go-steer/mast/internal/providers/anthropic"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

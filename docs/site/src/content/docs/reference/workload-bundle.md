@@ -504,7 +504,7 @@ tier: small
 ```
 
 The values are `small`, `mid`, and `frontier`. Mast resolves the tier
-against the provider it is actually running (`pkg/taskclass.ModelForTier`),
+against the provider it is actually running (`internal/taskclass.ModelForTier`),
 so the same bundle reads the same and costs the right thing on either
 backend:
 

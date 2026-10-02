@@ -100,7 +100,7 @@ Customization points:
    the comma-separated list.
 2. **Worker** — replace `syntheticHealth` with the real check. For LLM-backed
    per-item work, wrap a Task-mode agent in `workflow.NewAgentNode` and make
-   the wrapped node invoke it (see `pkg/graph` for the RunNode idiom); keep
+   the wrapped node invoke it (see `internal/graph` for the RunNode idiom); keep
    `maxConcurrency` small.
 3. **Summarizer** — this is *summarize* (N → structured report); if your
    reduce step is a true N→1 fold, you're in shape #6 (map-reduce), same

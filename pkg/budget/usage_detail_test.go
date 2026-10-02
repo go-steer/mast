@@ -31,7 +31,7 @@ import (
 )
 
 // stubDetail implements Detailer the way a provider adapter does.
-// Deliberately local: pkg/providers/usage imports pkg/budget, so a test
+// Deliberately local: internal/providers/usage imports pkg/budget, so a test
 // in this package cannot import it back, and the contract being
 // implementable by a type this package has never heard of is the
 // property worth having.
@@ -54,7 +54,7 @@ func i64(n int64) *int64 { return &n }
 //	next turn: input=10  cache_creation=0     cache_read=28804 output=4
 //
 // The adapter folds all three input buckets into PromptTokenCount
-// (pkg/providers/anthropic/stream.go), so the genai record alone cannot
+// (internal/providers/anthropic/stream.go), so the genai record alone cannot
 // tell the first line from a turn that sent 28,814 fresh tokens — and
 // those two cost different money.
 const (
@@ -269,7 +269,7 @@ func TestCallOf(t *testing.T) {
 	}
 }
 
-// A nil-safe Detailer is worth having: pkg/providers/usage returns the
+// A nil-safe Detailer is worth having: internal/providers/usage returns the
 // zero Buckets from a nil *Detail so an adapter need not branch.
 func TestBucketsOfToleratesAnAbsentMap(t *testing.T) {
 	if got := bucketsOf(&session.Event{}); got != (Buckets{}) {

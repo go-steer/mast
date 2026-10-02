@@ -73,17 +73,28 @@ func TestMapPath(t *testing.T) {
 	t.Parallel()
 	cases := []struct{ in, want string }{
 		// Unmapped packages sit at the same path upstream.
-		{"pkg/attach/server.go", "pkg/attach/server.go"},
-		{"pkg/pricing/builtin.go", "pkg/pricing/builtin.go"},
+		{"pkg/agent/agent.go", "pkg/agent/agent.go"},
+		{"pkg/watchdog/watchdog.go", "pkg/watchdog/watchdog.go"},
 
-		// The fork renamed pkg/models to pkg/providers.
-		{"pkg/providers/gemini/gemini.go", "pkg/models/gemini/gemini.go"},
-		{"pkg/providers/anthropic/llm.go", "pkg/models/anthropic/llm.go"},
+		// #301 moved the packages outside the v1.0 surface to internal/;
+		// core-agent still has them under pkg/.
+		{"internal/attach/server.go", "pkg/attach/server.go"},
+		{"internal/pricing/builtin.go", "pkg/pricing/builtin.go"},
+		{"internal/permissions/gate.go", "pkg/permissions/gate.go"},
+
+		// A prefix is a directory, not a string: attachadapter is not
+		// inside attach.
+		{"internal/attachadapter/adapter.go", "pkg/attachadapter/adapter.go"},
+
+		// The fork renamed pkg/models to pkg/providers, since moved to
+		// internal/.
+		{"internal/providers/gemini/gemini.go", "pkg/models/gemini/gemini.go"},
+		{"internal/providers/anthropic/llm.go", "pkg/models/anthropic/llm.go"},
 
 		// Longest match wins: vertexcache is not under upstream's
 		// pkg/models at all, so the more specific rewrite must beat the
-		// pkg/providers one it is nested inside.
-		{"pkg/providers/vertexcache/manager.go", "internal/vertexcache/manager.go"},
+		// internal/providers one it is nested inside.
+		{"internal/providers/vertexcache/manager.go", "internal/vertexcache/manager.go"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -95,13 +106,50 @@ func TestMapPath(t *testing.T) {
 	}
 }
 
+// TestEveryPortedInternalFileMapsUpstream walks this repository, not a
+// fixture. core-agent keeps almost nothing under internal/, so a ported
+// file there whose path is not rewritten is compared against a path
+// upstream does not have — and the report shows it as missing-path,
+// which reads as an upstream rename rather than a table this repo
+// forgot to update. Every inferred mapping under internal/ has to come
+// from dirRewrites.
+func TestEveryPortedInternalFileMapsUpstream(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join("..", "..")
+	got, err := scan(root)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	checked := 0
+	for _, a := range got {
+		if !strings.HasPrefix(a.Path, "internal/") {
+			continue
+		}
+		_, explicit, _, err := readTrailer(filepath.Join(root, filepath.FromSlash(a.Path)))
+		if err != nil {
+			t.Fatalf("read %s: %v", a.Path, err)
+		}
+		if explicit != "" {
+			continue
+		}
+		checked++
+		if a.UpstreamPath == a.Path {
+			t.Errorf("%s is ported from core-agent but maps to the same path upstream; add its directory to dirRewrites or give its trailer an explicit :path", a.Path)
+		}
+	}
+	// Vacuity floor: internal/attach alone carries dozens of trailers.
+	if checked < 50 {
+		t.Fatalf("checked only %d ported internal/ files; the scan is not seeing the tree", checked)
+	}
+}
+
 func TestScanFindsTrailersAndSkipsWorktrees(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
-	write(t, root, "pkg/attach/server.go", "// Copyright\n\n// Originally derived from go-steer/core-agent@aaaaaaa\n\npackage attach\n")
-	write(t, root, "pkg/providers/gemini/gemini.go", "// Originally derived from go-steer/core-agent@bbbbbbb\npackage gemini\n")
-	write(t, root, "pkg/mcp/auth.go", "// Originally derived from go-steer/core-agent@ccccccc:pkg/mcp/lifecycle.go\npackage mcp\n")
+	write(t, root, "internal/attach/server.go", "// Copyright\n\n// Originally derived from go-steer/core-agent@aaaaaaa\n\npackage attach\n")
+	write(t, root, "internal/providers/gemini/gemini.go", "// Originally derived from go-steer/core-agent@bbbbbbb\npackage gemini\n")
+	write(t, root, "internal/mcp/auth.go", "// Originally derived from go-steer/core-agent@ccccccc:pkg/mcp/lifecycle.go\npackage mcp\n")
 	// Not ported.
 	write(t, root, "pkg/agent/agent.go", "package agent\n")
 	// Documents the convention; not a ported file.
@@ -126,11 +174,11 @@ func TestScanFindsTrailersAndSkipsWorktrees(t *testing.T) {
 	for _, a := range got {
 		byPath[a.Path] = a
 	}
-	if a := byPath["pkg/providers/gemini/gemini.go"]; a.UpstreamPath != "pkg/models/gemini/gemini.go" {
+	if a := byPath["internal/providers/gemini/gemini.go"]; a.UpstreamPath != "pkg/models/gemini/gemini.go" {
 		t.Errorf("gemini upstream path = %q, want the pkg/models rewrite", a.UpstreamPath)
 	}
 	// An explicit :path in the trailer beats every inferred mapping.
-	if a := byPath["pkg/mcp/auth.go"]; a.UpstreamPath != "pkg/mcp/lifecycle.go" {
+	if a := byPath["internal/mcp/auth.go"]; a.UpstreamPath != "pkg/mcp/lifecycle.go" {
 		t.Errorf("mcp upstream path = %q, want the explicit trailer path", a.UpstreamPath)
 	}
 }

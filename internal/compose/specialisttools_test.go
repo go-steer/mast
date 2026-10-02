@@ -29,7 +29,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/planner"
+	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

@@ -21,7 +21,7 @@ name: upstream-drift
 #
 # 182 files in this repo carry an "Originally derived from
 # go-steer/core-agent@<sha>" trailer, frozen at four different upstream
-# snapshots. Nothing reconciled them. pkg/pricing went five weeks
+# snapshots. Nothing reconciled them. internal/pricing went five weeks
 # behind while three model families shipped, and it surfaced because a
 # human noticed — not because anything reported it (#149).
 #

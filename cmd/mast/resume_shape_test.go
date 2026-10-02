@@ -25,9 +25,9 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
+	"github.com/go-steer/mast/internal/auth"
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/auth"
-	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 

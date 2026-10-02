@@ -17,8 +17,8 @@ package main
 import (
 	"context"
 
+	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/attach"
 )
 
 // permsReadTimeout bounds the decision-log read behind GET /perms.

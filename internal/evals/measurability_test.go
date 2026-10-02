@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/internal/effects"
 )
 
 func reachByMetric(t *testing.T, reach []MetricReach) map[string]MetricReach {

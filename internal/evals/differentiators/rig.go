@@ -43,10 +43,10 @@ import (
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
 	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/effects"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
@@ -198,7 +198,7 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	// about the fixture.
 	r.meter = budget.Config{Limits: cfg.limits}
 
-	// Silence GORM the way pkg/eventlog.Open does. Left at ADK's default
+	// Silence GORM the way internal/eventlog.Open does. Left at ADK's default
 	// the five scenarios emit ~48KB of SELECT and "record not found"
 	// chatter, which buries the report this suite exists to print.
 	svc, err := database.NewSessionService(

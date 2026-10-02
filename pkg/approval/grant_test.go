@@ -33,7 +33,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
-	"github.com/go-steer/mast/pkg/permissions"
+	"github.com/go-steer/mast/internal/permissions"
 )
 
 // W7's claim, and what a test has to hold it to: ONE operator answer

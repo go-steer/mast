@@ -25,9 +25,9 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	adkagent "google.golang.org/adk/v2/agent"
 
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/permissions"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/permissions"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )

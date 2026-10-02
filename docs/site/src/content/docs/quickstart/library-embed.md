@@ -122,10 +122,12 @@ SingleTurn classifier feeding one Task specialist over in-memory sessions:
 go run ./examples/deploy/slim
 ```
 
-Read `examples/deploy/slim/README.md` for the import walkthrough and the
-additive upgrade path: durability, metrics, HITL, an operator surface, and
-MCP tools are each **one import plus a config value** later — not a
-migration.
+Read `examples/deploy/slim/README.md` for the import walkthrough and
+what grows from there. Durability and MCP tools are a config value
+later; metrics, an operator surface, schedules and the rest of the
+daemon are not importable — they live under `internal/` — so when you
+need them, the path is the `mast` binary rather than reassembling it
+from parts.
 
 ## Which path?
 

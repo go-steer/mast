@@ -34,10 +34,10 @@ const modulePath = "github.com/go-steer/mast"
 // transitive: a type from another package reachable through an exported
 // signature here is frozen too, and 32 of this module's packages are
 // named as explicitly unsupported. budget.Limits carried a
-// *pricing.Catalog once, which froze pkg/pricing's table shape by
+// *pricing.Catalog once, which froze internal/pricing's table shape by
 // accident; the Pricer interface replaced it so that what crosses the
 // seam is a number, and Detailer does the same job for the usage
-// sidecar — pkg/providers/usage names budget, never the reverse.
+// sidecar — internal/providers/usage names budget, never the reverse.
 //
 // A new import here is not necessarily wrong. It is a decision about
 // what v1.0 promises, and it should be made on purpose.

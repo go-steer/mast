@@ -33,7 +33,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/mast/internal/modelretry"
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/observability"
 )
 
 // retryReporting builds the reporter wired to a real registry and a

@@ -74,7 +74,7 @@ type AckRecord struct {
 	Workload string `json:"workload"`
 
 	// Subject is the producer's subject key, verbatim. mast does not
-	// parse it — see pkg/monitor.Transition.SubjectKey.
+	// parse it — see internal/monitor.Transition.SubjectKey.
 	Subject string `json:"subject"`
 
 	// By is the authenticated caller, resolved from the credential the

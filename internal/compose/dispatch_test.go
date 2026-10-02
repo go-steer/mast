@@ -24,9 +24,9 @@ import (
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/mast/internal/graph"
+	"github.com/go-steer/mast/internal/planner"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/graph"
-	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"

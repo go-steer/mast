@@ -26,7 +26,7 @@ import (
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/mast/pkg/monitor"
+	"github.com/go-steer/mast/internal/monitor"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -386,7 +386,7 @@ func TestCollectParsesTheNamedTransitionSource(t *testing.T) {
 }
 
 // TestCollectDoesNotSecondGuessTheClassification is the runtime end of
-// the leg pkg/monitor pins: the stub reports `escalated` for a subject
+// the leg internal/monitor pins: the stub reports `escalated` for a subject
 // whose severity mast can see did not change, and mast reports it as
 // escalated anyway. This is the test that fails the moment anyone adds
 // a local heuristic — anywhere between the tool result and the envelope.

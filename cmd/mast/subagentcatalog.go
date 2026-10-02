@@ -15,9 +15,9 @@
 package main
 
 import (
+	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/internal/compose"
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/graph"
+	"github.com/go-steer/mast/internal/graph"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )

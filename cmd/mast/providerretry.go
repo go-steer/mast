@@ -18,7 +18,7 @@ import (
 	"log/slog"
 
 	"github.com/go-steer/mast/internal/modelretry"
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/observability"
 )
 
 // reportProviderRetries points the process-wide retry policy at this
@@ -36,7 +36,7 @@ import (
 // A library embed reaches neither this call nor a registry of its own,
 // so it gets the retry and no report. That is the pre-existing shape of
 // mast's library surface rather than a decision taken here:
-// pkg/observability is a daemon concern, and an embedding host that
+// internal/observability is a daemon concern, and an embedding host that
 // wants these numbers owns its own metrics.
 func reportProviderRetries(obs *observability.Registry, workload string, logger *slog.Logger) {
 	modelretry.Shared().SetObserver(providerRetryReporter(obs, workload, logger))

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/auth"
+	"github.com/go-steer/mast/internal/auth"
 )
 
 func quietLogger() *slog.Logger {

@@ -23,10 +23,10 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 
-	"github.com/go-steer/mast/pkg/auth"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/monitor"
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/auth"
+	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/monitor"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -40,7 +40,7 @@ import (
 // nothing else. An approval mints a grant that licenses a write to the
 // world and is consumed on use; an ack asserts no diagnosis, authorizes
 // no change, and does one thing — asks whoever owns the finding state
-// to stop surfacing one subject. Nothing here touches pkg/permissions
+// to stop surfacing one subject. Nothing here touches internal/permissions
 // or pkg/approval, and nothing here writes a decision record. If it
 // did, the answer to "who approved this change" — the question v0.3
 // spent a release making precise — would start including people who
@@ -49,7 +49,7 @@ import (
 // # Three legs, in this order, and the order is the design
 //
 //  1. Attribute. Who is asking comes from the credential the request
-//     presented, resolved by pkg/inject's callerContext. Never from the
+//     presented, resolved by internal/inject's callerContext. Never from the
 //     body: an attribution a caller writes about itself is worth
 //     nothing after an incident, which is the rule #194 settled for
 //     approvals and this inherits.
@@ -139,7 +139,7 @@ func (a *monitorAcker) forward(ctx context.Context, req inject.MonitorAckRequest
 
 	caller, ok := auth.CallerFromContext(ctx)
 	if !ok || caller.Identity == "" {
-		// Unreachable from the route — pkg/inject attributes at least
+		// Unreachable from the route — internal/inject attributes at least
 		// the shared credential — and refused rather than defaulted
 		// anyway. An ack whose whole purpose is to be attributable must
 		// not fall back to a mechanism name the way an internal resume

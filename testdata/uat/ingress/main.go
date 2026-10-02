@@ -17,7 +17,7 @@
 // to observe what an unattended monitoring cycle actually says — and,
 // more often, that it says nothing.
 //
-// It implements the three answers pkg/notify is written against:
+// It implements the three answers internal/notify is written against:
 //
 //	POST  /v1/messages  {"conversation","text"}        → 200 {"conversation","id"}
 //	PATCH /v1/messages  {"conversation","id","text"}   → 204

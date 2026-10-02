@@ -26,8 +26,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -50,7 +50,7 @@ const (
 // — so by the time an adapter holds an agent.Agent, the attribution
 // this endpoint exists to report is already gone. cmd/mast keeps the
 // toolsets on rootBuild for exactly this reason, which is also why
-// this type lives in package main rather than in pkg/attachadapter.
+// this type lives in package main rather than in internal/attachadapter.
 //
 // Scope: what mast wired, MCP and non-MCP both. The non-MCP half is
 // the planner's control-plane vocabulary, which compose now returns
@@ -193,7 +193,7 @@ func (tc *toolCatalog) snapshot(ctx context.Context) []attach.ToolInfo {
 
 // gateState projects what the write gate would do to a call of this
 // tool, without making one. The mapping is the wire contract in
-// pkg/attach/state.go against pkg/workload's on_mutation values:
+// internal/attach/state.go against pkg/workload's on_mutation values:
 //
 //	read-only (any policy)   → allowed
 //	mutating + apply         → allowed

@@ -26,7 +26,7 @@ import (
 const transferTool = "transfer_to_agent"
 
 // buildSpecialist wires one Task-mode specialist under a Chat-mode
-// coordinator — the topology pkg/router builds — and returns the model the
+// coordinator — the topology internal/router builds — and returns the model the
 // specialist ran on. The coordinator delegates to it once, so the
 // specialist's declaration surface is the surface of a real delegation
 // rather than of a cold start.

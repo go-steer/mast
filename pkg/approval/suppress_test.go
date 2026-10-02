@@ -31,8 +31,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/permissions"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/permissions"
 )
 
 // proposingModel answers each round with one scale_deployment call,
@@ -523,10 +523,10 @@ func TestSuppressionWorksWithNoWatchdogToTell(t *testing.T) {
 // TestRefusalLoopErrorDeclaresItsTurnErrorKind pins the bare-string
 // contract from the side that owns the string. SelfClassifyingError
 // carries a kind and nothing else so a raiser need not import
-// pkg/attach; the price of the weaker contract is this assertion, which
+// internal/attach; the price of the weaker contract is this assertion, which
 // is the same one pkg/watchdog pays for TrippedError.
 //
-// A kind pkg/attach does not ship falls back to substring-scanning the
+// A kind internal/attach does not ship falls back to substring-scanning the
 // error text, and this error's text mentions a refusal and a tool name —
 // which is exactly how #208's halts came out as config_error.
 func TestRefusalLoopErrorDeclaresItsTurnErrorKind(t *testing.T) {

@@ -28,10 +28,10 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
-	"github.com/go-steer/mast/pkg/attach"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/eventlog"
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/eventlog"
-	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 

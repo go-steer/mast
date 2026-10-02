@@ -37,7 +37,7 @@ type actorKey struct{}
 //
 // This is the root package's only contact with caller identity, and the
 // root is inside the v1.0 promise (DESIGN.md, "The v1.0 stability
-// promise"). It used to read pkg/auth's Caller off the context, which
+// promise"). It used to read internal/auth's Caller off the context, which
 // committed a frozen entry point to an unsupported package's context
 // key — a dependency apidiff cannot see, because a context key is not
 // part of any signature.

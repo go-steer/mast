@@ -21,12 +21,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/attachadapter"
-	"github.com/go-steer/mast/pkg/auth"
-	"github.com/go-steer/mast/pkg/eventlog"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/permissions"
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/attachadapter"
+	"github.com/go-steer/mast/internal/auth"
+	"github.com/go-steer/mast/internal/eventlog"
+	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/permissions"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )

@@ -21,8 +21,8 @@
 #
 # Denylist notes (keep in sync with docs/library-api-design.md):
 #
-#   * mast-side packages: pkg/inject, pkg/observability, pkg/mcp,
-#     pkg/graph, pkg/router, pkg/config are the subsystems a slim
+#   * mast-side packages: internal/inject, internal/observability, internal/mcp,
+#     internal/graph, internal/router, internal/config are the subsystems a slim
 #     embed must not pay for. The slim slice is pkg/agent,
 #     pkg/specialists (+ optionally pkg/workload, pkg/budget,
 #     pkg/transcript).
@@ -35,10 +35,10 @@
 #     no-op stubs unless an SDK is installed, and mast cannot shed it
 #     without shedding ADK itself. The heavy parts — the OTel SDK and
 #     the OTLP exporters — enter the graph only via
-#     pkg/observability, so those are what we deny.
+#     internal/observability, so those are what we deny.
 #
 #   * github.com/prometheus/ and github.com/modelcontextprotocol/
-#     enter only via pkg/observability and pkg/mcp respectively;
+#     enter only via internal/observability and internal/mcp respectively;
 #     denied wholesale.
 
 set -euo pipefail
@@ -49,12 +49,12 @@ SLIM_PKG=./examples/deploy/slim
 
 # Extended regexes, anchored at the start of the import path.
 DENYLIST=(
-  '^github\.com/go-steer/mast/pkg/inject(/|$)'
-  '^github\.com/go-steer/mast/pkg/observability(/|$)'
-  '^github\.com/go-steer/mast/pkg/mcp(/|$)'
-  '^github\.com/go-steer/mast/pkg/graph(/|$)'
-  '^github\.com/go-steer/mast/pkg/router(/|$)'
-  '^github\.com/go-steer/mast/pkg/config(/|$)'
+  '^github\.com/go-steer/mast/internal/inject(/|$)'
+  '^github\.com/go-steer/mast/internal/observability(/|$)'
+  '^github\.com/go-steer/mast/internal/mcp(/|$)'
+  '^github\.com/go-steer/mast/internal/graph(/|$)'
+  '^github\.com/go-steer/mast/internal/router(/|$)'
+  '^github\.com/go-steer/mast/internal/config(/|$)'
   '^github\.com/prometheus/'
   '^github\.com/modelcontextprotocol/'
   '^go\.opentelemetry\.io/otel/sdk(/|$)'

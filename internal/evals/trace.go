@@ -22,8 +22,8 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/modeltext"
-	"github.com/go-steer/mast/pkg/effects"
 )
 
 // Trace is the provider-free view of one recorded run that every
@@ -302,7 +302,7 @@ func TraceFromEvents(events adksession.Events, pred effects.Predicate, subAgents
 }
 
 // isControl mirrors effects.controlCalls. The names are duplicated
-// rather than exported from pkg/effects because widening that package's
+// rather than exported from internal/effects because widening that package's
 // API for a test harness is the wrong trade.
 //
 // TestControlCallsMatchEffects cross-checks the list behaviourally, via

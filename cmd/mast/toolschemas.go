@@ -170,7 +170,7 @@ func (ts *toolSchemas) resolve(name string) (tool.Tool, error) {
 // collection that reads as empty is a monitor that has stopped
 // monitoring.
 //
-// The handle is unwrapped first. The wired toolsets carry pkg/mcp's
+// The handle is unwrapped first. The wired toolsets carry internal/mcp's
 // digesting wrap, which exists to shrink what a *model* reads. None of
 // these callers is a model: the precondition read goes into a digest and
 // a field comparison, the prior-state capture goes into a durable record
@@ -247,7 +247,7 @@ func (ts *toolSchemas) ack(ctx adkagent.Context, name string, args map[string]an
 }
 
 // unwrapTool peels the wrappers a caller outside the model's dispatch
-// path should see through — today that is pkg/mcp's digesting wrap.
+// path should see through — today that is internal/mcp's digesting wrap.
 // Bounded rather than unbounded because an Unwrap that returns its own
 // receiver would otherwise spin; no real chain is more than one deep.
 func unwrapTool(t tool.Tool) tool.Tool {

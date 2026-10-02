@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/pkg/eventlog"
+	"github.com/go-steer/mast/internal/eventlog"
 )
 
 func discardLogger() *slog.Logger {

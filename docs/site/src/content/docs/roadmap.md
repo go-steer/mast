@@ -68,7 +68,7 @@ trigger in
 - **Attach mode + mast-web reachability — shipped.** P1.3c ported the
   attach HTTP/SSE transport (protocol v1.4.0: session listing, seq'd
   replay + live tail, inject/wake/interrupt, capabilities frames, agent
-  card) plus `pkg/auth` and the eventlog overlay, pinned at
+  card) plus `internal/auth` and the eventlog overlay, pinned at
   `core-agent@25d8531c`. Serve mode's `--attach-listen` binds the surface
   (implies `--session-db`; bearer auth via `MAST_ATTACH_TOKEN`;
   loopback-only without auth), and the
@@ -98,7 +98,7 @@ Per the 2026-07-25 scope re-cut and the per-subsystem design docs:
   `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE, with
   a pluggable `TokenValidator` and rate-limiter seam. v0.1 shipped the
   client only.
-- **AG-UI server** — the hand-rolled, zero-dependency `pkg/agui` wire +
+- **AG-UI server** — the hand-rolled, zero-dependency `internal/agui` wire +
   HTTP/SSE surface for CopilotKit apps and chat-platform bots, driving every
   turn through the same `runTurnPre` chokepoint, with the full HITL
   interrupt/resume lifecycle (terminal `RunFinished{outcome: interrupt}` →
@@ -822,7 +822,7 @@ them were caught by a test, for the same reason in every case: each was a
 
 - **`budget.Limits.Catalog` is now `budget.Limits.Pricer`**, a one-method
   interface the meter owns, so freezing `pkg/budget` at v1.0 stops freezing
-  `pkg/pricing` alongside it. The daemon and `mast.RunWorkload` are
+  `internal/pricing` alongside it. The daemon and `mast.RunWorkload` are
   unaffected.
 
 **v1.0 now has a definition, and it is the API freeze and nothing else.** Six
@@ -1080,7 +1080,7 @@ the disconnect fix: closing the tab no longer cancels anything, because a
 transport dropping is not a decision to abandon work. A run with no reader
 left is bounded by its wallclock budget, the watchdog, and an explicit
 `mast sessions pause <id> --cancel-turn`. A client that needs to *mean* stop
-needs a verb for it, and AG-UI has none on mast yet — `pkg/attach` already
+needs a verb for it, and AG-UI has none on mast yet — `internal/attach` already
 holds the shape (`POST /interrupt`), so this is a wiring decision waiting on a
 consumer rather than an open question. **Rejoin a stream you dropped** is the
 other half and is also unbuilt: reconnecting with the same `threadId` starts a

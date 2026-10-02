@@ -71,7 +71,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/mast/internal/evals"
-	"github.com/go-steer/mast/pkg/mcp"
+	"github.com/go-steer/mast/internal/mcp"
 )
 
 // DefaultLookout is the binary name looked up on PATH when no path is

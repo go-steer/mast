@@ -38,9 +38,9 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
+	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/evals"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/effects"
 )
 
 const (
@@ -216,7 +216,7 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 
 	svc, err := database.NewSessionService(
 		sqlite.Open(filepath.Join(r.scratch, sc.ID+".db")),
-		// Silence GORM the way pkg/eventlog.Open does. Left at ADK's
+		// Silence GORM the way internal/eventlog.Open does. Left at ADK's
 		// default the run buries its own report in SQL chatter.
 		&gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)},
 	)

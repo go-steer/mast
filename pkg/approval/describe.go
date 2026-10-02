@@ -39,8 +39,8 @@ type Parked struct {
 	// holding a park and a decision has no other way to know they are
 	// about the same call.
 	//
-	// pkg/effects reads the same field for its own purpose and does not
-	// route through this type, because pkg/effects does not import this
+	// internal/effects reads the same field for its own purpose and does not
+	// route through this type, because internal/effects does not import this
 	// package and widening it for one accessor is the wrong trade. Both
 	// readers are pinned against a real flow by adkseam_test.go.
 	CallID string

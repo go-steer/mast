@@ -14,7 +14,7 @@
 
 // Originally derived from go-steer/core-agent@cafe3106cf61cb7c1edbb39c2ce446dd87358747
 
-// Generator for pkg/pricing/builtin.go.
+// Generator for internal/pricing/builtin.go.
 //
 // Reads BerriAI/litellm's model_prices_and_context_window.json (from
 // the URL by default, or a local file via --source), selects the
@@ -141,7 +141,7 @@ var familyPrefixes = []string{"gemini-", "claude-"}
 //
 // Mast is the name mast uses for the backend — the same strings as
 // internal/compose.ProviderGemini / ProviderVertex and
-// pkg/providers/anthropic.ProviderName / VertexProviderName — and it is
+// internal/providers/anthropic.ProviderName / VertexProviderName — and it is
 // what gets emitted as the "<backend>/<model>" key prefix. Using mast's
 // vocabulary rather than LiteLLM's keeps upstream's spelling
 // ("vertex_ai-anthropic_models") out of mast's own namespace, so a
@@ -171,7 +171,7 @@ var backends = []struct{ Mast, Prefix, Family string }{
 // its place.
 var nameExclusions = []struct{ Pattern, Why string }{
 	{"-latest", "floating alias — identity AND price move underneath a pinned config, " +
-		"and pkg/providers/gemini's geminiMajorVersion() reads 0 from it, which makes " +
+		"and internal/providers/gemini's geminiMajorVersion() reads 0 from it, which makes " +
 		"builtinsCompatible drop search grounding on every turn"},
 	{"exp-", "unversioned experimental build; no stability promise from the provider"},
 	{"computer-use", "computer-use model — a different tool surface, not an agent-loop chat model"},
@@ -231,7 +231,7 @@ func main() {
 	source := flag.String("source", defaultLiteLLMSource,
 		"URL or path to LiteLLM's model_prices_and_context_window.json")
 	outPath := flag.String("out", defaultOutPath(),
-		"path to write generated builtin.go (default: pkg/pricing/builtin.go relative to cwd)")
+		"path to write generated builtin.go (default: internal/pricing/builtin.go relative to cwd)")
 	toStdout := flag.Bool("stdout", false,
 		"print generated file to stdout instead of writing to --out")
 	check := flag.Bool("check", false,
@@ -982,11 +982,11 @@ func BuiltinContextWindows() map[string]int {
 }
 `
 
-// defaultOutPath resolves pkg/pricing/builtin.go relative to the
+// defaultOutPath resolves internal/pricing/builtin.go relative to the
 // current working directory. Assumes the generator is run from the
 // repo root (the go run invocation from README's usage block).
 func defaultOutPath() string {
-	return filepath.Join("pkg", "pricing", "builtin.go")
+	return filepath.Join("internal", "pricing", "builtin.go")
 }
 
 // die reports a generator failure. Any non-zero exit means "the

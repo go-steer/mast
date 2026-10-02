@@ -15,7 +15,7 @@
 package main
 
 // A2A-server wiring for the daemon (docs/a2a-design.md, "Mast as A2A
-// server"). pkg/a2a owns the wire protocol, auth, and HTTP surface but
+// server"). internal/a2a owns the wire protocol, auth, and HTTP surface but
 // never imports the runtime; this file supplies the Backend seam —
 // GetTask over the transcript store's state projection and CancelTask
 // over the same abort machinery the /abort door uses — and projects the
@@ -44,10 +44,10 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/mast/internal/a2a"
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/modeltext"
 	buildversion "github.com/go-steer/mast/internal/version"
-	"github.com/go-steer/mast/pkg/a2a"
-	"github.com/go-steer/mast/pkg/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )

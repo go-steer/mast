@@ -32,7 +32,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/agui"
+	"github.com/go-steer/mast/internal/agui"
 	"github.com/go-steer/mast/pkg/watchdog"
 )
 

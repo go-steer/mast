@@ -307,17 +307,17 @@ func pricedEvent(modelVersion string, prompt, cached, out int32) *session.Event 
 // rates, keyed by the backend-qualified id and falling back to the bare
 // one — the lookup shape every pricer mast ships performs.
 //
-// Deliberately not a wrapper around pkg/pricing. What this package owes
+// Deliberately not a wrapper around internal/pricing. What this package owes
 // its caller is the derivation either side of the price: which buckets a
 // provider's counters map to, which model id is asked about first, and
 // what happens when the answer is "cannot price this". None of that is a
 // claim about the shipping price list, and a test that read the real
-// catalog would restate pkg/pricing's assertions and go red every time a
+// catalog would restate internal/pricing's assertions and go red every time a
 // vendor moved a rate. The rates below are stated where they are used.
 type ratePricer map[string]perMTok
 
 // perMTok is one model's rates. A zero cacheRead or cacheWrite bills
-// that bucket at the input rate, matching pkg/pricing — an unknown cache
+// that bucket at the input rate, matching internal/pricing — an unknown cache
 // rate is not a free one.
 type perMTok struct{ in, cacheRead, cacheWrite, out float64 }
 
@@ -601,7 +601,7 @@ func TestAScopeModelPricesAnUnnamedCallAtItsOwnTier(t *testing.T) {
 
 // A rate is a property of the (backend, model) pair, not of the model:
 // the same id can bill differently first-party and through a reseller,
-// which is why pkg/pricing keys rows by backend at all. Priced off the
+// which is why internal/pricing keys rows by backend at all. Priced off the
 // bare id, a run against one backend would silently be charged at the
 // other's table.
 //

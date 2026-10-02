@@ -45,19 +45,21 @@ quickstart](/quickstart/library-embed/), which uses only these.
 
 ## What it will not cover
 
-The other 32 importable packages under `pkg/`: `a2a`, `agui`,
-`approval`, `attach`, `attachadapter`, `auth`, `config`, `digest`,
-`effects`, `envelope`, `eventlog`, `federation`, `graph`, `inject`,
-`instruction`, `mcp`, `modeltier`, `monitor`, `notify`,
-`observability`, `permissions`, `planner`, `pricing`,
-`providers/anthropic`, `providers/gemini`, `providers/mock`,
-`providers/usage`, `providers/vertexcache`, `router`, `serverauth`,
-`taskclass` and `watchdog`.
+Everything else. Most of it is not importable at all: the servers,
+providers, MCP, auth, pricing, the dispatch shapes and the rest of the
+runtime live under `internal/`, where Go refuses an import from
+outside the module.
 
-These are importable and they are not supported. A minor release may
-change or remove them. If you need one of them to be stable, open an
-issue saying what you are building — a package with a named consumer is
-the kind that gets promoted.
+Two packages under `pkg/` are importable and still not supported:
+`approval` (apart from the types listed below) and `watchdog`. A minor
+release may change or remove either.
+
+The direction is that you customize mast by writing your own `main.go`
+around the binary, not by importing its runtime packages; see
+[#301](https://github.com/go-steer/mast/issues/301). If you need
+something that is internal today, open an issue saying what you are
+building — a package with a named consumer is the kind that gets an
+extension point.
 
 ### A covered path can drag one in
 
@@ -106,12 +108,14 @@ rather than quietly enlarging this page's promise.
 
 ### Caller identity stays outside
 
-`auth` and `serverauth` are on the unsupported list for a specific
-reason: caller identity is moving to
+mast's own `auth` and `serverauth` packages are internal for a
+specific reason: caller identity is moving to
 [go-steer/purser](https://github.com/go-steer/purser), a library shared
 with core-agent, and when mast adopts it those two packages are deleted.
 That is meant to happen in a minor release, so nothing covered reaches
-them. A test enforces this, and it counts a context key as well as a
+them. Being internal is not enough on its own — Go lets an exported
+signature name an internal type, and a context key appears in no
+signature — so a test enforces it, counting a context key as well as a
 type in a signature.
 
 For an embedder, that comes down to one call. To have `ResumeByToken`
@@ -125,7 +129,7 @@ res, err := mast.ResumeByToken(ctx, cfg, bundle, specs, token, nil)
 The name is recorded as you give it. Without one, the audit record
 names the mechanism, `library ResumeByToken`. Setting `auth.WithCaller`
 worked before this change and no longer does: `ResumeByToken` stopped
-reading `pkg/auth` when it moved out of the promise.
+reading mast's auth package when it moved out of the promise.
 
 ## The ADK version is part of the contract
 

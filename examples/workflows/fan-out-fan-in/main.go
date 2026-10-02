@@ -27,7 +27,7 @@
 // deterministic function node, so it runs fully offline with
 // `go run .` — no model, no credentials, no network. Swap the worker
 // for an AgentNode-wrapped Task specialist when the per-item work
-// needs an LLM (pkg/graph shows the RunNode idiom for that).
+// needs an LLM (internal/graph shows the RunNode idiom for that).
 //
 // Self-contained on purpose (workflow-scaffolding-design.md, "Shapes
 // are forkable starters, not demonstrations"): copy this directory,

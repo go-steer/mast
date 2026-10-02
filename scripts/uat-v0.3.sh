@@ -82,7 +82,7 @@
 # The observation point is `mast sessions show`: with `--dispatch=graph`
 # and the roster's `hitl.require_approval`, each specialist result is
 # parked on a durable RequestInput interrupt whose message quotes the
-# result verbatim (pkg/graph/graph.go). That needs no new surface, no
+# result verbatim (internal/graph/graph.go). That needs no new surface, no
 # listener and no SSE parsing — the report is read back out of SQLite by
 # the same CLI an operator would use.
 #
@@ -495,7 +495,7 @@ assert_has "every analyst is accounted for in the gate message" "${FMSG}" "4 of 
 
 # Each analyst's events reach the runner under its own branch tag —
 # two apiece for a clean report (the finish_task call and its response).
-# This is the property the fan-out was rebuilt for (pkg/graph/fanout.go):
+# This is the property the fan-out was rebuilt for (internal/graph/fanout.go):
 # a branch whose events are suppressed cannot see its own tool results,
 # cannot be metered by author, and leaves nothing for crash recovery.
 for a in ${ANALYSTS}; do

@@ -32,7 +32,7 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 

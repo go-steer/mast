@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )

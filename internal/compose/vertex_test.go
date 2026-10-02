@@ -185,7 +185,7 @@ func TestBuildModel_VertexAliasRefusesWithoutProject(t *testing.T) {
 }
 
 // TestTierModelName_VertexResolves closes the loop the tier table had
-// left open: pkg/taskclass has carried a "vertex" family since the
+// left open: internal/taskclass has carried a "vertex" family since the
 // port, but nothing could ask for it. A tier under the alias must
 // resolve to the same Gemini ids the gemini alias gets — a backend is
 // not a different model line.

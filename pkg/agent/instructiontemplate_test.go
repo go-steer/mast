@@ -47,8 +47,8 @@ import (
 //
 // mast puts operator-authored prose in that field. A specialist's body
 // (pkg/specialists/loader.go, verbatim after TrimSpace), a bundle's
-// coordinator instruction (pkg/router), the planner's rendered prompt
-// (pkg/planner). Braces are ordinary in all three: a shell variable in
+// coordinator instruction (internal/router), the planner's rendered prompt
+// (internal/planner). Braces are ordinary in all three: a shell variable in
 // `${MAST_HOME}/bin/mast`, a JSON shape the specialist is told to emit,
 // a kubectl -o jsonpath. Each of those ends the turn before a token is
 // sent, naming neither the file nor the brace.
@@ -223,7 +223,7 @@ func TestASingleTurnPromptMayContainBraces(t *testing.T) {
 
 // The negative that keeps the fix honest. Substitution is not merely
 // unused here — it must not happen, or an operator who writes {plan}
-// gets whatever pkg/graph last put under that key spliced into their
+// gets whatever internal/graph last put under that key spliced into their
 // prompt. A session that HAS the key is the case where templating and
 // not-templating differ observably.
 func TestAPromptIsNotSubstitutedEvenWhenTheKeyExists(t *testing.T) {
@@ -275,7 +275,7 @@ func TestAPromptIsNotSubstitutedEvenWhenTheKeyExists(t *testing.T) {
 // would say so: the prompt works until someone writes a brace into it.
 //
 // Scoped to non-test files deliberately. A test that builds an llmagent
-// directly (pkg/approval and pkg/effects both do) is exercising ADK's
+// directly (pkg/approval and internal/effects both do) is exercising ADK's
 // agent rather than shipping mast's prompt handling, and forcing a
 // provider on those would make this guard about tidiness instead of
 // about what an operator's prose does.

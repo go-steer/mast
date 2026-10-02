@@ -33,9 +33,9 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/session/database"
 
-	"github.com/go-steer/mast/pkg/envelope"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/envelope"
+	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )

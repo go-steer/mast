@@ -19,14 +19,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-steer/mast/internal/pricing"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/pricing"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
 // TestRatePer1K pins the pricing wiring: echo keeps the inflated
 // offline-smoke rate, catalog-known gemini models derive from
-// pkg/pricing's builtin table (average of input/output per-MTok,
+// internal/pricing's builtin table (average of input/output per-MTok,
 // scaled to per-1K), and catalog misses keep the pre-catalog flat
 // spike rate instead of dropping to zero.
 func TestRatePer1K(t *testing.T) {
@@ -328,7 +328,7 @@ func TestBuiltinCatalogConstructs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// catalogPricer: the seam between pkg/pricing and pkg/budget.
+// catalogPricer: the seam between internal/pricing and pkg/budget.
 //
 // pkg/budget no longer names a rate type, so its own tests price against
 // an explicit table and prove the derivation either side of the number.
@@ -412,7 +412,7 @@ func TestCatalogPricer_PricesCacheWritesAtTheirPremiumRate(t *testing.T) {
 }
 
 // A catalog row that prices cache reads but never got a cache-write rate
-// bills writes as fresh input. That is pkg/pricing's documented fallback
+// bills writes as fresh input. That is internal/pricing's documented fallback
 // and it is the conservative direction — the old behaviour, not a free
 // call — but it must be reached through the rate table rather than by
 // the adapter dropping the bucket on the floor.

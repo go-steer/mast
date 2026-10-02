@@ -355,7 +355,7 @@ func (r *retryingLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	// calling this method has the same effects at the same moment as
 	// calling the model it wraps. mast's own Gemini layer populates
 	// req.Config.Tools when GenerateContent is invoked rather than when
-	// the sequence is walked (pkg/providers/gemini), so a wrapper that
+	// the sequence is walked (internal/providers/gemini), so a wrapper that
 	// deferred everything to first iteration would quietly move the
 	// built-in-tool gate — a security boundary — to a later moment, and
 	// would erase it entirely for any caller that asks for a sequence it

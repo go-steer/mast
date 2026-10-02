@@ -20,7 +20,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/go-steer/mast/pkg/auth"
+	"github.com/go-steer/mast/internal/auth"
 )
 
 // Environment keys for the inject listener's user table (#198). Env

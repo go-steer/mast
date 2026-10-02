@@ -30,9 +30,9 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/agui"
-	"github.com/go-steer/mast/pkg/observability"
-	"github.com/go-steer/mast/pkg/planner"
+	"github.com/go-steer/mast/internal/agui"
+	"github.com/go-steer/mast/internal/observability"
+	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
@@ -551,9 +551,9 @@ func TestAGUIRateLimiter(t *testing.T) {
 }
 
 // TestAGUIOutcomeVocabulary pins observability's exported AG-UI outcome
-// constants to their fixed string values. pkg/agui records outcomes through
+// constants to their fixed string values. internal/agui records outcomes through
 // observability.Registry.AGUIRun using its own unexported constants (locked to
-// the same literals by pkg/agui's TestOutcomeConstantLiterals); this test locks
+// the same literals by internal/agui's TestOutcomeConstantLiterals); this test locks
 // the registry side, so the two pins together prevent either from drifting and
 // producing an unprimed scrape series.
 func TestAGUIOutcomeVocabulary(t *testing.T) {
@@ -567,7 +567,7 @@ func TestAGUIOutcomeVocabulary(t *testing.T) {
 	}
 	for got, want := range pairs {
 		if got != want {
-			t.Fatalf("outcome %q != wire value %q (the metric vocabulary drifted from pkg/agui)", got, want)
+			t.Fatalf("outcome %q != wire value %q (the metric vocabulary drifted from internal/agui)", got, want)
 		}
 	}
 }
@@ -934,7 +934,7 @@ func TestAGUIClassifyRunInterruptWithoutProjection(t *testing.T) {
 }
 
 // mkStateEvent builds a runner event carrying only a state write — no content
-// at all, which is the shape pkg/graph stashes a node result on.
+// at all, which is the shape internal/graph stashes a node result on.
 func mkStateEvent(delta map[string]any) *adksession.Event {
 	ev := adksession.NewEvent(context.Background(), "inv-agui-test")
 	ev.Actions.StateDelta = delta
@@ -962,7 +962,7 @@ func stateDeltas(t *testing.T, frames []any) [][]agui.PatchOp {
 
 // TestAGUIEmitterPublishesNoStateWithoutAProjection is the default-off half of
 // #98's state slice, and the one worth having: session state is whatever the
-// runtime put there — pkg/graph writes routing keys and judge verdicts,
+// runtime put there — internal/graph writes routing keys and judge verdicts,
 // pkg/approval writes grants and change sets — and the AG-UI client is a
 // browser. A workload that declares no agui.state_projection must publish none
 // of it.
@@ -1030,7 +1030,7 @@ func TestAGUIEmitterProjectsOnlyAllowlistedKeys(t *testing.T) {
 
 // TestAGUIEmitterStateDeltaRidesAnEventWithNoContent pins the ordering bug the
 // obvious implementation has: state writes ride on Actions, not Content, and
-// pkg/graph stashes a node result on an event carrying no content at all.
+// internal/graph stashes a node result on an event carrying no content at all.
 //
 // Neutralize check: move the emitStateDelta call below onEvent's
 // `if ev.Content == nil { return }` and this fails with zero frames.

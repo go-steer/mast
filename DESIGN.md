@@ -105,6 +105,13 @@ not claim.
 
 ## Package map
 
+`pkg/` holds the promised paths and two packages that are importable
+but unsupported (`approval`, `watchdog`); everything else is under
+`internal/`, unreachable from outside the module. That split is
+[#301](https://github.com/go-steer/mast/issues/301): mast is customized
+by writing your own `main.go` around the binary, not by importing its
+runtime. See [the v1.0 stability promise](#the-v10-stability-promise).
+
 **Dispatch + orchestration** —
 [`docs/workflow-scaffolding-design.md`](./docs/workflow-scaffolding-design.md),
 [`docs/orchestration-design.md`](./docs/orchestration-design.md)
@@ -112,15 +119,15 @@ not claim.
 | Package | Role |
 |---|---|
 | `pkg/agent` | Agent-mode constructors over ADK (coordinator, Task, SingleTurn) + per-mode default instructions; echo/scripted fake models for offline smoke. |
-| `pkg/graph` | Workflow-graph dispatch (LLM-as-router over ADK's workflow engine) and the `fanout` shape — concurrent read-only branches on `parallelagent` (never `ParallelWorker`, whose branch events the log suppresses) with one `_synthesis` merge. |
-| `pkg/router` | LLM-as-router classifier (SingleTurn) used by graph dispatch. |
+| `internal/graph` | Workflow-graph dispatch (LLM-as-router over ADK's workflow engine) and the `fanout` shape — concurrent read-only branches on `parallelagent` (never `ParallelWorker`, whose branch events the log suppresses) with one `_synthesis` merge. |
+| `internal/router` | LLM-as-router classifier (SingleTurn) used by graph dispatch. |
 | `pkg/specialists` | Subagent-as-tool: `.specialist.md` files (YAML frontmatter plus a prose body — not Go templates; renamed from `.tmpl` in v0.8 (#292), which stopped loading in v0.9 (#349)) with budgets, model overrides, tool allowlists ([`docs/specialists-design.md`](./docs/specialists-design.md)). |
 | `pkg/workload` | Workload bundles: declarative YAML naming specialists, tool catalog, budgets, HITL policy. |
-| `pkg/monitor` | The run-to-run classification a monitoring cycle carries: parses the record stream a bundle's `monitor.transitions_from` key names (logfmt or flat JSON, one record per line, mandatory `scanned=/findings=` summary) into a `monitor.Set` the scheduled envelope ships whole. Domain-neutral by construction — no enum of transition classes, no severity comparison, no fingerprinting; the classifier's verdict is consumed verbatim. Also the two argument names an operator's acknowledgement is forwarded under (`subject_key`, `ack_by`) — constants rather than strings in `cmd/`, because the loader refuses a bundle that pins either and both ends must mean the same thing by them. |
-| `pkg/notify` | The chat egress a monitoring cycle speaks through: a dependency-free client for switchboard's `POST /v1/messages` ingress and its edit/append verbs, with the two non-error answers to an append (409 "send the full text", 200 with a continuation ref) modelled as sentinels a caller acts on rather than as faults. Knows nothing about monitoring — the timeline policy lives in `cmd/mast/notify.go`. |
-| `pkg/planner` | Supervisor-body planner scaffold (`plan`/`finish_plan`; `invoke_remote_agent` composes here). |
-| `pkg/envelope` | Inject payloads — the unattended entry-point contract. |
-| `pkg/config` | `.agents/` discovery (workloads, specialists, MCP refs, A2A registrations) ([`docs/config-layout-design.md`](./docs/config-layout-design.md)). Since [#289](https://github.com/go-steer/mast/issues/289) it also computes the **config identity** — a digest over exactly the files the loaders read — which the daemon logs at startup and re-hashes once a minute, warning once per edit when the mount stops matching what is running. It never reloads. |
+| `internal/monitor` | The run-to-run classification a monitoring cycle carries: parses the record stream a bundle's `monitor.transitions_from` key names (logfmt or flat JSON, one record per line, mandatory `scanned=/findings=` summary) into a `monitor.Set` the scheduled envelope ships whole. Domain-neutral by construction — no enum of transition classes, no severity comparison, no fingerprinting; the classifier's verdict is consumed verbatim. Also the two argument names an operator's acknowledgement is forwarded under (`subject_key`, `ack_by`) — constants rather than strings in `cmd/`, because the loader refuses a bundle that pins either and both ends must mean the same thing by them. |
+| `internal/notify` | The chat egress a monitoring cycle speaks through: a dependency-free client for switchboard's `POST /v1/messages` ingress and its edit/append verbs, with the two non-error answers to an append (409 "send the full text", 200 with a continuation ref) modelled as sentinels a caller acts on rather than as faults. Knows nothing about monitoring — the timeline policy lives in `cmd/mast/notify.go`. |
+| `internal/planner` | Supervisor-body planner scaffold (`plan`/`finish_plan`; `invoke_remote_agent` composes here). |
+| `internal/envelope` | Inject payloads — the unattended entry-point contract. |
+| `internal/config` | `.agents/` discovery (workloads, specialists, MCP refs, A2A registrations) ([`docs/config-layout-design.md`](./docs/config-layout-design.md)). Since [#289](https://github.com/go-steer/mast/issues/289) it also computes the **config identity** — a digest over exactly the files the loaders read — which the daemon logs at startup and re-hashes once a minute, warning once per edit when the mount stops matching what is running. It never reloads. |
 
 **Durability + governance** —
 [`docs/durable-execution-design.md`](./docs/durable-execution-design.md)
@@ -128,12 +135,12 @@ not claim.
 | Package | Role |
 |---|---|
 | `pkg/transcript` | Operator surface over the ADK session store: list/show summaries, pending-interrupt scan, durable abort/pause markers, resume-token records, and the durable decision records (`approve`/`reject`/`edit`) that `mast sessions export-decisions` writes out as JSONL. (Named `session` pre-v0.1.0; renamed to end the alias collision with ADK's `session`.) |
-| `pkg/eventlog` | Seq-overlay + `Since`/`Watch` stream + audit metadata sidecar layered **on** ADK `session/database` (ADK owns the tables), plus two mast-owned append-only logs folded forward across restarts: `GuardrailStore` (trips and resets, so an `enforce` halt outlives the process that observed it) and `SpendStore` (one row per priced model call, so a cost ceiling does too). Ported from core-agent. |
+| `internal/eventlog` | Seq-overlay + `Since`/`Watch` stream + audit metadata sidecar layered **on** ADK `session/database` (ADK owns the tables), plus two mast-owned append-only logs folded forward across restarts: `GuardrailStore` (trips and resets, so an `enforce` halt outlives the process that observed it) and `SpendStore` (one row per priced model call, so a cost ceiling does too). Ported from core-agent. |
 | `pkg/budget` | Turn/cost metering folded from event usage; trips cancel the run context. Metering stays in memory and database-free; durability is a two-part seam — `Config.OnSpend` writes each priced call out, `Meter.Restore` folds a previous process's spend back in — which `cmd/mast` wires to `eventlog.SpendStore`. Token buckets come from the ADK usage record, overridden per bucket by the provider sidecar when the adapter attached one (`budget.Detailer`, #352); an over-reported count is fitted to the room the prompt leaves rather than credited. |
-| `pkg/effects` | The recorded-effect outbox: the session event log **is** the outbox (durable `FunctionCall` = intent, paired `FunctionResponse` = completion), read once per turn in an ADK runner plugin's `BeforeRun`. A dangling mutating intent puts the turn in fail-closed ambiguous-effect mode until an operator acks. |
-| `pkg/approval` | The write gate: the runner-plugin seam where a mutating call parks for an operator, the three-valued verdict (`approve`/`reject`/`edit`), the typed change-set producer, and exact-`(tool, arguments)`-signature grants with their freshness re-read. Policy stays in `pkg/permissions`; the durable pause is ADK's tool-confirmation flow. Since [#296](https://github.com/go-steer/mast/issues/296) it also records what a change overwrote: `capture.go` takes a declared prior-state read before the call runs, on all four paths to execution, and writes the old values plus a proposed revert onto the event log. mast never fires the revert. |
-| `pkg/permissions` | Permission gate + prompt contract (ported). Runtime-wired since v0.3 through `pkg/approval`'s plugin — it decides policy (proceed / ask / refuse) and stays ADK-independent. |
-| `pkg/auth` | Caller identity, session ACL types, bearer/mTLS config (ported). Approvals and edits are recorded against the authenticated approver it resolves. |
+| `internal/effects` | The recorded-effect outbox: the session event log **is** the outbox (durable `FunctionCall` = intent, paired `FunctionResponse` = completion), read once per turn in an ADK runner plugin's `BeforeRun`. A dangling mutating intent puts the turn in fail-closed ambiguous-effect mode until an operator acks. |
+| `pkg/approval` | The write gate: the runner-plugin seam where a mutating call parks for an operator, the three-valued verdict (`approve`/`reject`/`edit`), the typed change-set producer, and exact-`(tool, arguments)`-signature grants with their freshness re-read. Policy stays in `internal/permissions`; the durable pause is ADK's tool-confirmation flow. Since [#296](https://github.com/go-steer/mast/issues/296) it also records what a change overwrote: `capture.go` takes a declared prior-state read before the call runs, on all four paths to execution, and writes the old values plus a proposed revert onto the event log. mast never fires the revert. |
+| `internal/permissions` | Permission gate + prompt contract (ported). Runtime-wired since v0.3 through `pkg/approval`'s plugin — it decides policy (proceed / ask / refuse) and stays ADK-independent. |
+| `internal/auth` | Caller identity, session ACL types, bearer/mTLS config (ported). Approvals and edits are recorded against the authenticated approver it resolves. |
 | `pkg/watchdog` | Loop signals (repeated call, alternating cycle, tool-failure streak) + session-event bridge + the `warn`/`feedback`/`enforce` posture ladder; alerts are logged, projected onto the guardrail surface, and — from `feedback` up — routed into the model's own next prompt. The posture resolves `--watchdog` > the bundle's `safety.watchdog` > `watchdog.DefaultMode` (`feedback`), and every turn-driving surface taps it, the library embed included. Under `--attach-listen` a halt is persisted through `eventlog.GuardrailStore` and adopted on the next turn after a restart — configuration still wins, so a posture dialed back below `enforce` inherits nothing. |
 
 **Providers** — reshaped at port time (per-provider Options structs,
@@ -141,27 +148,27 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 
 | Package | Role |
 |---|---|
-| `pkg/providers/gemini` | Built-in-tool wrapper (search grounding, URL context), Vertex context-cache stamping, per-request built-in gating for models that reject mixed tools. |
-| `pkg/providers/anthropic` | First-party + Vertex backends; thinking-block round-trip, prompt-cache usage fold, draft-2020-12 schema normalization. |
-| `pkg/providers/vertexcache` | Vertex context-cache manager — Create / TTL-refresh / evict / Delete around one explicit cache. Public because it is wired by the embedder, not by us: `internal/compose` sets neither `ContextCacheName` nor `ContextCacheInvalidate`, so `cmd/mast` runs uncached and every path in this package is reached only through a caller that constructs a `Manager` itself. The eviction verdict it shares with `pkg/providers/gemini` lives in `internal/vertexcacheerr`, because the two have to agree and neither imports the other ([#325](https://github.com/go-steer/mast/issues/325)). |
-| `pkg/providers/mock` | Scripted JSONL replay for tests and offline demos. |
-| `pkg/providers/usage` | The normalized usage record adapters attach beside ADK's, under `budget.DetailKey`. Exists because mast reads usage through `genai.GenerateContentResponseUsageMetadata`, which has a cache-*read* bucket and no cache-*write* one — so Anthropic's `cache_creation_input_tokens` was folded into fresh input and billed at 1x instead of 1.25x for eight releases ([#352](https://github.com/go-steer/mast/issues/352)). Every count is a pointer: nil is "the provider did not say", which is not zero. |
-| `pkg/taskclass` / `pkg/modeltier` / `pkg/pricing` | Task-class profiles → model-tier defaults → catalog pricing for the budget meter. |
-| `pkg/instruction` | Instruction assembly. |
-| `pkg/digest` | Tool-result digesting — the structural / agentic / passthrough router, its retrieval store, and per-method telemetry (eventlog-store variant descoped at port). Driven by `pkg/mcp`'s digest wrap since [#221](https://github.com/go-steer/mast/issues/221) (on by default, `--mcp-digest=false` to disable), which is what populates `attach.UsageInfo.DigestMethods` and the `latency_ms` / `savings` tool-result sidecars (both ride a digested response; a response the wrap hands back undigested is byte-identical to the tool's own, because `pkg/approval` compares two reads of the same tool for equality). mast's caller is **structural-only**: it passes no `LLMFallback`, so the agentic path runs only for an embedder that supplies one and `Savings.Subagent*` stay zero on the daemon. |
+| `internal/providers/gemini` | Built-in-tool wrapper (search grounding, URL context), Vertex context-cache stamping, per-request built-in gating for models that reject mixed tools. |
+| `internal/providers/anthropic` | First-party + Vertex backends; thinking-block round-trip, prompt-cache usage fold, draft-2020-12 schema normalization. |
+| `internal/providers/vertexcache` | Vertex context-cache manager — Create / TTL-refresh / evict / Delete around one explicit cache. **Wired by nothing.** It was public so an embedder could construct a `Manager` and pass the two hooks, because `internal/compose` sets neither `ContextCacheName` nor `ContextCacheInvalidate` and `cmd/mast` runs uncached. Moving it under `internal/` (#301) removed that caller too; it comes back as a custom-`main.go` option when a workload names the need, not before. The eviction verdict it shares with `internal/providers/gemini` lives in `internal/vertexcacheerr`, because the two have to agree and neither imports the other ([#325](https://github.com/go-steer/mast/issues/325)). |
+| `internal/providers/mock` | Scripted JSONL replay for tests and offline demos. |
+| `internal/providers/usage` | The normalized usage record adapters attach beside ADK's, under `budget.DetailKey`. Exists because mast reads usage through `genai.GenerateContentResponseUsageMetadata`, which has a cache-*read* bucket and no cache-*write* one — so Anthropic's `cache_creation_input_tokens` was folded into fresh input and billed at 1x instead of 1.25x for eight releases ([#352](https://github.com/go-steer/mast/issues/352)). Every count is a pointer: nil is "the provider did not say", which is not zero. |
+| `internal/taskclass` / `internal/modeltier` / `internal/pricing` | Task-class profiles → model-tier defaults → catalog pricing for the budget meter. |
+| `internal/instruction` | Instruction assembly. |
+| `internal/digest` | Tool-result digesting — the structural / agentic / passthrough router, its retrieval store, and per-method telemetry (eventlog-store variant descoped at port). Driven by `internal/mcp`'s digest wrap since [#221](https://github.com/go-steer/mast/issues/221) (on by default, `--mcp-digest=false` to disable), which is what populates `attach.UsageInfo.DigestMethods` and the `latency_ms` / `savings` tool-result sidecars (both ride a digested response; a response the wrap hands back undigested is byte-identical to the tool's own, because `pkg/approval` compares two reads of the same tool for equality). mast's caller is **structural-only**: it passes no `LLMFallback`, so the agentic path runs only for an embedder that supplies one and `Savings.Subagent*` stay zero on the daemon. |
 
 **Operator + interop surfaces**
 
 | Package | Role |
 |---|---|
-| `pkg/attach` | The mast-native operator transport (HTTP/SSE): session registry + resume gating, seq'd replay + live tail, inject/wake/interrupt, capabilities frames, agent card, prompt broker, peer registry (optionally durable across hub restarts), rate limiting, and the guardrail surface (`GET`/`POST /sessions/{id}/guardrails[/reset]`) an `enforce` halt is cleared through. Ported from core-agent; wire-compatible with it (mast-web serves both). Fan-out is non-blocking with one exception: `turn-complete` / `turn-error` are held until the event log has reached every subscriber, because the terminal frame and the turn's own text arrive from two sources and the frame used to win ([#327](https://github.com/go-steer/mast/issues/327)). Every way that wait can fail releases the frame and logs. |
-| `pkg/attachadapter` | Bridges the runner-driven daemon into attach's `Registrant` contract: one injected message = one serialized turn; typed operator events in wire order; interrupt cancels the turn context. The turn state it publishes is not derived from that in-flight state alone: a write-gate park makes `RunTurn` *return*, so `Config.TurnStateFn` reads the pause off the transcript and the adapter reports `awaiting_permission` / `awaiting_elicit` over a session waiting on a person ([#313](https://github.com/go-steer/mast/issues/313)). A live turn outranks the park it is resolving. |
-| `pkg/inject` | The unattended entry point: `POST /inject`, `/resume`, `/abort`, `/pause`, `/extend-token`, `/stop`, `/ack-effects`, plus `GET /parks`, `/parks/{session}`, `/metrics`, and the two health routes — `/` (liveness; consults nothing) and `/healthz` (readiness; runs `Config.HealthChecks` and answers 503 when one fails, unauthenticated and error-free in the body because a kubelet has no token). |
-| `pkg/observability` | Fixed Prometheus counter registry + env-gated OTel trace export ([`docs/observability-design.md`](./docs/observability-design.md)). |
-| `pkg/a2a` / `pkg/federation` | A2A v0.3 both ways: the synchronous client, and the server (agent card, `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE) exposing workloads that opt in via the bundle's `a2a.expose`. Plus the `federation.Adapter`/`Handle` interface + `invoke_remote_agent` (called "frozen" here since v0.1 in the sense that its shape is settled — **not** a v1.0 commitment; `pkg/federation` is on the uncovered list below, and [`docs/compatibility-policy.md`](./docs/compatibility-policy.md) does not bind it) ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
-| `pkg/agui` | The AG-UI server surface (agent↔user) for CopilotKit apps and chat-platform bots: hand-rolled zero-dep wire types, an HTTP+SSE run endpoint, `/agui/agents.json` discovery, the HITL interrupt/resume lifecycle, and two per-bundle publication surfaces, both empty-or-off by default and both silent rather than redacted when off: per-key state (a run's write to a key named in `agui.state_projection` becomes an RFC 6902 `StateDelta`; a key not on the list emits nothing) and the model's reasoning (`agui.emit_reasoning` publishes the `REASONING_*` phase bracket; off emits no frame at all, and the provider's thought signature is never published under either setting). The discovery descriptor advertises both per workload, read through the optional `CapabilityReporter` the `Backend` implements rather than from a second read of the bundle. A third frame family, the `STEP_STARTED`/`STEP_FINISHED` bracket naming the agent that authored each stretch of a run, has **no** key and no capability bit — it publishes nothing a permitted client could not already read off the stream, and every workload emits it, so there is nothing per-bundle to report. Refusals are decided before the SSE upgrade and ride HTTP status, which is also where the per-thread run bound surfaces: the backend returns `ErrRunQueueFull` and the server turns it into `409` + `Retry-After` rather than opening a stream to carry an error frame. The admission counting itself is `cmd/mast`'s, beside the derived session id and the turn lock it protects. Runtime-free, like `pkg/a2a` ([`docs/ag-ui-design.md`](./docs/ag-ui-design.md)). |
-| `pkg/serverauth` | The request-admission seams both network servers share: pluggable bearer auth (`TokenValidator` → `Principal`, per-surface scope checks) and rate limiting. Stdlib + `golang.org/x/time` only, so it stays slim-embed-safe. |
-| `pkg/mcp` | MCP toolset wiring + per-specialist tool allowlists. HTTP servers get their transport wrapped so a 4xx/5xx carries the server's own error text (an IAM permission name, a quota metric) rather than a bare status line. Every toolset is also wrapped for response digesting (`WithDigest`, `retrieve_raw`) unless the daemon or the server opted out; the wrap exposes `Unwrap()` so mast's own non-model caller — the write gate's precondition read — reaches the tool rather than a digest of it. |
+| `internal/attach` | The mast-native operator transport (HTTP/SSE): session registry + resume gating, seq'd replay + live tail, inject/wake/interrupt, capabilities frames, agent card, prompt broker, peer registry (optionally durable across hub restarts), rate limiting, and the guardrail surface (`GET`/`POST /sessions/{id}/guardrails[/reset]`) an `enforce` halt is cleared through. Ported from core-agent; wire-compatible with it (mast-web serves both). Fan-out is non-blocking with one exception: `turn-complete` / `turn-error` are held until the event log has reached every subscriber, because the terminal frame and the turn's own text arrive from two sources and the frame used to win ([#327](https://github.com/go-steer/mast/issues/327)). Every way that wait can fail releases the frame and logs. |
+| `internal/attachadapter` | Bridges the runner-driven daemon into attach's `Registrant` contract: one injected message = one serialized turn; typed operator events in wire order; interrupt cancels the turn context. The turn state it publishes is not derived from that in-flight state alone: a write-gate park makes `RunTurn` *return*, so `Config.TurnStateFn` reads the pause off the transcript and the adapter reports `awaiting_permission` / `awaiting_elicit` over a session waiting on a person ([#313](https://github.com/go-steer/mast/issues/313)). A live turn outranks the park it is resolving. |
+| `internal/inject` | The unattended entry point: `POST /inject`, `/resume`, `/abort`, `/pause`, `/extend-token`, `/stop`, `/ack-effects`, plus `GET /parks`, `/parks/{session}`, `/metrics`, and the two health routes — `/` (liveness; consults nothing) and `/healthz` (readiness; runs `Config.HealthChecks` and answers 503 when one fails, unauthenticated and error-free in the body because a kubelet has no token). |
+| `internal/observability` | Fixed Prometheus counter registry + env-gated OTel trace export ([`docs/observability-design.md`](./docs/observability-design.md)). |
+| `internal/a2a` / `internal/federation` | A2A v0.3 both ways: the synchronous client, and the server (agent card, `message/send`·`tasks/get`·`tasks/cancel`·`message/stream` over SSE) exposing workloads that opt in via the bundle's `a2a.expose`. Plus the `federation.Adapter`/`Handle` interface + `invoke_remote_agent` (called "frozen" here since v0.1 in the sense that its shape is settled — **not** a v1.0 commitment; `internal/federation` is internal, so nothing outside the module can implement it and [`docs/compatibility-policy.md`](./docs/compatibility-policy.md) does not bind it) ([`docs/a2a-design.md`](./docs/a2a-design.md), [`docs/federation-design.md`](./docs/federation-design.md)). |
+| `internal/agui` | The AG-UI server surface (agent↔user) for CopilotKit apps and chat-platform bots: hand-rolled zero-dep wire types, an HTTP+SSE run endpoint, `/agui/agents.json` discovery, the HITL interrupt/resume lifecycle, and two per-bundle publication surfaces, both empty-or-off by default and both silent rather than redacted when off: per-key state (a run's write to a key named in `agui.state_projection` becomes an RFC 6902 `StateDelta`; a key not on the list emits nothing) and the model's reasoning (`agui.emit_reasoning` publishes the `REASONING_*` phase bracket; off emits no frame at all, and the provider's thought signature is never published under either setting). The discovery descriptor advertises both per workload, read through the optional `CapabilityReporter` the `Backend` implements rather than from a second read of the bundle. A third frame family, the `STEP_STARTED`/`STEP_FINISHED` bracket naming the agent that authored each stretch of a run, has **no** key and no capability bit — it publishes nothing a permitted client could not already read off the stream, and every workload emits it, so there is nothing per-bundle to report. Refusals are decided before the SSE upgrade and ride HTTP status, which is also where the per-thread run bound surfaces: the backend returns `ErrRunQueueFull` and the server turns it into `409` + `Retry-After` rather than opening a stream to carry an error frame. The admission counting itself is `cmd/mast`'s, beside the derived session id and the turn lock it protects. Runtime-free, like `internal/a2a` ([`docs/ag-ui-design.md`](./docs/ag-ui-design.md)). |
+| `internal/serverauth` | The request-admission seams both network servers share: pluggable bearer auth (`TokenValidator` → `Principal`, per-surface scope checks) and rate limiting. Stdlib + `golang.org/x/time` only, so it stays slim-embed-safe. |
+| `internal/mcp` | MCP toolset wiring + per-specialist tool allowlists. HTTP servers get their transport wrapped so a 4xx/5xx carries the server's own error text (an IAM permission name, a quota metric) rather than a bare status line. Every toolset is also wrapped for response digesting (`WithDigest`, `retrieve_raw`) unless the daemon or the server opted out; the wrap exposes `Unwrap()` so mast's own non-model caller — the write gate's precondition read — reaches the tool rather than a digest of it. |
 
 **Internal:** `internal/compose` (model/backend dispatch, shared
 one-shot construction, the `bounded` single-node build),
@@ -196,10 +203,10 @@ loop is daemon-side in `cmd/mast/schedtrigger.go`, reading the
 bundle's `scheduled:` section; a cycle's collection leg
 (`cmd/mast/monitor.go`, `cmd/mast/monitorctx.go`) runs ahead of it,
 off the bundle's `monitor.collect` block, and parses the one result
-named by `monitor.transitions_from` through `pkg/monitor` before the
+named by `monitor.transitions_from` through `internal/monitor` before the
 envelope is built. The cycle's tail — whether to wake the model at
 all, and what to tell the chat — is `cmd/mast/notify.go` over
-`pkg/notify`, configured by the bundle's `monitor.notify` block and
+`internal/notify`, configured by the bundle's `monitor.notify` block and
 the daemon's `--notify-url` / `MAST_NOTIFY_TOKEN`. The one leg that
 runs the other way is `cmd/mast/monitorack.go`, off the bundle's
 `monitor.ack` block: an operator's acknowledgement arrives on the
@@ -249,14 +256,14 @@ when somebody reads their chat.
   ([#331](https://github.com/go-steer/mast/issues/331),
   [#400](https://github.com/go-steer/mast/issues/400)).
 - **Two runner plugins bracket every tool call, in this order.**
-  `pkg/effects` (the outbox) registers first, `pkg/approval` (the
+  `internal/effects` (the outbox) registers first, `pkg/approval` (the
   write gate) second, so a call replayed after a crash is answered
   from the outbox instead of asking an operator to re-approve a
   mutation that already fired. Reordering them is a correctness bug,
   not a preference.
 - **Those plugins are runner-scoped, and a planner dispatch builds its
   own runner.** `invoke_specialist` constructs a runner in the tool
-  body (`pkg/planner/dispatch.go`) with no `PluginConfig`, so neither
+  body (`internal/planner/dispatch.go`) with no `PluginConfig`, so neither
   the outbox nor the write gate reaches a mutating call made inside a
   dispatch. Accounting does reach it — the sub-run's spend and
   watchdog signal travel out-of-band through `SubRunSink`, which is the
@@ -281,12 +288,12 @@ when somebody reads their chat.
   which is the behaviour lead row **L7** was written to beat. The
   **outbox** half has no such obstacle, because recording is
   one-directional: `SubRunSink` sees a mutating `FunctionCall` before
-  the tool body runs (`pkg/planner/outboxseam_test.go`). What it cannot
+  the tool body runs (`internal/planner/outboxseam_test.go`). What it cannot
   be is a durable sub-session — `Store.ScanInterrupted` lists one
   `AppName` and the sub-runner uses `"planner_dispatch"`
   (`pkg/transcript/dispatchscope_test.go`) — so the record belongs in
   the outer session, and as of 2026-09-01 it is there
-  (`pkg/effects/subrun.go`). So the refusal is not waiting on anything:
+  (`internal/effects/subrun.go`). So the refusal is not waiting on anything:
   what it names is what an operator does. Its message offers
   `coordinator`, `graph`, and `on_mutation: apply`, and each of the
   three is composed in `internal/compose/plannerwrite_test.go` — a way
@@ -345,7 +352,7 @@ when somebody reads their chat.
   and a verb, and nothing else: an approval mints a grant that
   licenses a write and is consumed on use, while an ack asserts no
   diagnosis and authorizes no change. `cmd/mast/monitorack.go` touches
-  neither `pkg/permissions` nor `pkg/approval` and writes no decision
+  neither `internal/permissions` nor `pkg/approval` and writes no decision
   record — if it did, the v0.3 answer to "who approved this change"
   would start including people who muted an alert. The split that
   falls out: **the producer is the store of record for the
@@ -377,7 +384,7 @@ when somebody reads their chat.
   off, so inheriting them would make an unattended agent's reach a
   function of `--provider`. The corollary is the point — the paths
   with no bundle (`mast run`, `mast.Run`, the eval rigs) are safe by
-  construction, not by remembering a key. `pkg/providers/gemini`'s own
+  construction, not by remembering a key. `internal/providers/gemini`'s own
   `DefaultBuiltinTools()` is still on and is a recommendation to a
   library caller wrapping a Gemini model directly; `internal/compose`
   does not pass it. The gate is per bundle: a specialist's `model:`
@@ -449,26 +456,39 @@ The set is the pillar-serving one from
 [`docs/library-api-design.md`](./docs/library-api-design.md), corrected
 against the tree: that table's five included `provider` and `tool`,
 and **neither package exists** — there has never been a `pkg/tool`, and
-`pkg/providers` is a directory of four backends with no interface above
+`internal/providers` is a directory of four backends with no interface above
 them. The provider extension point is real but it is a *field*, not a
 package (below). `agent`, `specialists`, `workload` and `budget` are
 what `examples/deploy/slim` actually imports, which is the only
 evidence available that a surface has been exercised by a consumer.
 
-**What it does not cover.** The other 32 importable packages under
-`pkg/`, named rather than left to omission: `a2a`, `agui`, `approval`,
-`attach`, `attachadapter`, `auth`, `config`, `digest`, `effects`,
-`envelope`, `eventlog`, `federation`, `graph`, `inject`, `instruction`,
-`mcp`, `modeltier`, `monitor`, `notify`, `observability`,
-`permissions`, `planner`, `pricing`, `providers/anthropic`,
-`providers/gemini`, `providers/mock`, `providers/usage`,
-`providers/vertexcache`, `router`, `serverauth`, `taskclass`,
-`watchdog`. They are importable, they are not supported, and a minor
-release may break them. Shrinking that list — by demotion to
-`internal/` where nothing outside the module needs the symbol — is
-[#301](https://github.com/go-steer/mast/issues/301); the promise does
-not wait on it, because "unsupported" is a statement mast can make
-today and "unreachable" is work.
+**What it does not cover.** Everything else, and almost all of it is
+now unreachable rather than merely unsupported. Until 2026-10-02 this
+paragraph named 32 importable packages under `pkg/` that a minor
+release might break. [#301](https://github.com/go-steer/mast/issues/301)
+moved 30 of them under `internal/` — the servers, providers, MCP, auth,
+pricing, the dispatch shapes, the effect outbox — because nothing
+outside this repository imported any of them, and a statement that a
+package is unsupported does not stop anyone depending on it. Two remain
+importable and unsupported, and both are waiting on a decision, not
+an oversight:
+
+- `pkg/approval`, beyond the eight declarations covered by reference
+  below.
+- `pkg/watchdog`, because the library quickstart tells an embedder to
+  recognize a halted turn with `watchdog.IsTripped`, so it needs a
+  replacement on the promised surface before it can go.
+
+`pkg/agent` leaves the promise, and `pkg/watchdog` goes internal, in
+the same step as the custom-`main.go` surface (#301's third PR), which
+is where their replacements are designed.
+
+The demotion is not the end state of #301. The point is that mast is
+customized by writing your own `main.go`: a public `cli` package whose
+`Main` *is* the binary, taking options in ADK's own types (a model
+resolver, tools, toolsets, a session service). The surface v1.0 freezes
+becomes root `mast`, `cli`, `pkg/workload`, `pkg/specialists`,
+`pkg/budget` and `pkg/transcript`.
 
 *(Corrected 2026-09-14 with the rest of
 [#338](https://github.com/go-steer/mast/issues/338). This list said
@@ -509,7 +529,7 @@ That bet paid out one release later. The usage sidecar (#352) needed the
 meter to read cache-write counts that only a provider adapter can
 produce, and `CacheWriteTokens` went into `Call` as a field, with the
 read side a second budget-owned interface — `Detailer`, returning a
-budget-owned `Buckets` — so `pkg/providers/usage` names `pkg/budget` and
+budget-owned `Buckets` — so `internal/providers/usage` names `pkg/budget` and
 never the reverse. A test in the package now parses its own imports and
 fails on any that names this module, because the property is the point
 and a compiler will not notice it going away.
@@ -558,14 +578,15 @@ Nothing about `pkg/transcript`'s code changed here, and nothing needed
 to. Task 2 of #338 is a statement of what the freeze already commits.
 
 **Caller identity is not in the promise, and a test holds it out.**
-`pkg/auth` and `pkg/serverauth` are on the unsupported list for a reason
+mast's `auth` and `serverauth` packages (under `pkg/` when this was
+written, `internal/` since #301) are outside the promise for a reason
 beyond scope: caller identity is moving to
 [go-steer/purser](https://github.com/go-steer/purser), shared with
-core-agent, and purser's phase 2 deletes mast's `pkg/auth` outright
+core-agent, and purser's phase 2 deletes mast's auth package outright
 ([`docs/sibling-sync.md`](./docs/sibling-sync.md)). That has to be a
 minor. So no promised package may reach either one, and "reach" includes
 a context key, which no signature shows and `apidiff` cannot see. The
-root package had exactly one: `ResumeByToken` read `pkg/auth`'s `Caller`
+root package had exactly one: `ResumeByToken` read the auth package's `Caller`
 off the context to fill `ConsumedBy`. It reads a mast-owned string set
 by `mast.WithActor` now
 ([#467](https://github.com/go-steer/mast/issues/467)). It does not read
@@ -687,7 +708,7 @@ resolved is worth stating because the issue offered three options and
 the answer was a fourth.
 
 The two prompt routes stay, and the durable park answers them. The
-seam is `attach.PermsSource` (`pkg/attach/permsource.go`): `GET
+seam is `attach.PermsSource` (`internal/attach/permsource.go`): `GET
 /perms/stream` publishes a session's open approval parks read off the
 transcript, and `POST /perms/respond` takes the same resume path `POST
 /resume` takes, verdict shape and authenticated attribution included.
@@ -724,7 +745,7 @@ than documenting the hole.
 The other half of that issue — the **outbox record** — shipped
 2026-09-01: a per-dispatch recorder on the same observer seam that
 meters a dispatch writes each mutating intent and completion to the
-session's companion ops row (`pkg/effects/subrun.go`,
+session's companion ops row (`internal/effects/subrun.go`,
 `pkg/transcript/subrun.go`), and the outbox and the auto-resume scan
 fold them in. An interrupted dispatch now leaves a visible dangling
 intent, so `apply` gives up the stop and not the record. Recording

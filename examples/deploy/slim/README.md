@@ -44,12 +44,12 @@ What it must **not** pull — enforced in CI by
 which fails any PR whose changes grow this example's transitive
 dependency graph:
 
-- `pkg/inject` (HTTP inject/resume/abort server)
-- `pkg/observability` (Prometheus registry, OTel SDK wiring) — and with
+- `internal/inject` (HTTP inject/resume/abort server)
+- `internal/observability` (Prometheus registry, OTel SDK wiring) — and with
   it `github.com/prometheus/...`, the OTel SDK, and the OTLP exporters
-- `pkg/mcp` — and with it `github.com/modelcontextprotocol/go-sdk`
-- `pkg/graph`, `pkg/router` (workload dispatch shapes)
-- `pkg/config` (`.agents/` discovery)
+- `internal/mcp` — and with it `github.com/modelcontextprotocol/go-sdk`
+- `internal/graph`, `internal/router` (workload dispatch shapes)
+- `internal/config` (`.agents/` discovery)
 
 One honest caveat: the OTel **API** (`go.opentelemetry.io/otel`,
 `/trace`, `/metric`) is in the graph regardless, because ADK v2's
@@ -57,29 +57,33 @@ model path (`google.golang.org/genai`) imports it directly. Those are
 no-op stubs unless an SDK is installed; the SDK and exporters stay
 out. The CI check denylists the heavy parts and documents this.
 
-## The upgrade path is additive
+## Growing from here
 
-Each subsystem you later need is one import plus a config value — not
-a migration:
+Some of what you might need later is one config value away:
 
 - **Durability:** swap `session.InMemoryService()` for ADK's
   `session/database` service over SQLite in the same
   `runner.Config` field.
 - **Budgets:** already here — `pkg/budget` is part of the slim slice.
-- **Metrics / traces:** import `pkg/observability`, register the
-  fixed metric families, observe the same runner events this loop
-  already iterates.
+- **MCP tools:** ADK's own `mcptoolset` goes into the specialists'
+  `BuildOptions.Toolsets` like any other toolset. (mast's MCP wiring —
+  the error-body wrap, response digesting — is the daemon's, and is not
+  importable.)
 - **HITL pauses:** emit `RequestInput` interrupts from the workflow
-  nodes (see `pkg/graph` for the full pattern) and feed operator
-  verdicts back through the runner.
-- **An operator surface:** import `pkg/inject` and mount its
-  inject/resume/abort endpoints in your existing HTTP mux.
-- **MCP tools:** import `pkg/mcp` and add toolsets to the
-  specialists' `BuildOptions`.
+  nodes and feed operator verdicts back through the runner;
+  `internal/graph` in this repository is a worked example to read, not
+  to import.
 
-That is the strategic point of the guarantee: slim consumers start
-*inside* mast and grow by adding imports, not by migrating off a
-side-car framework. If you don't need any of mast's governance or
+The rest is not. The inject server, mast's metric families, the attach
+and AG-UI surfaces, schedules and the write gate's daemon half live
+under `internal/` and are not importable from outside this module
+([#301](https://github.com/go-steer/mast/issues/301)). When you need
+them, the path is the binary: run `mast` — and, once #301's `cli`
+package ships, build your own `main.go` around it with your own models
+and tools — rather than a pile of imports that reassembles the daemon
+by hand.
+
+If you don't need any of mast's governance or
 durability and never will, use raw ADK v2 — see the routing note in
 [`docs/positioning.md`](../../../docs/positioning.md), "Smaller
 agents, slim embeds".

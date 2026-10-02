@@ -1,6 +1,6 @@
 # mast observability: design
 
-**Status:** draft, 2026-07-01 (updated 2026-07-26 — the v0.1 telemetry surface shipped in `pkg/observability`; the "Shipped v0.1" annotations below record what landed: a lean seven-counter-family set, `/metrics` on the shared inject listener, env-gated OTel trace export only, and the `budget_exceeded` outcome vocabulary). Companion to [`./positioning.md`](./positioning.md) (unattended-first positioning makes telemetry non-optional), [`./fork-design.md`](./fork-design.md) (bucket 1's lean core exposes the emission hooks; bucket 2's `pkg/eventlog/` port supplies the base signal), [`./durable-execution-design.md`](./durable-execution-design.md) (pause/resume events surface as metrics), and [`./orchestration-design.md`](./orchestration-design.md) (workload bundles are the natural aggregation dimension). Uses ADK v2's unified span tree as substrate — every agent, node, tool, and specialist invocation surfaces uniformly in one trace shape.
+**Status:** draft, 2026-07-01 (updated 2026-07-26 — the v0.1 telemetry surface shipped in `internal/observability`; the "Shipped v0.1" annotations below record what landed: a lean seven-counter-family set, `/metrics` on the shared inject listener, env-gated OTel trace export only, and the `budget_exceeded` outcome vocabulary). Companion to [`./positioning.md`](./positioning.md) (unattended-first positioning makes telemetry non-optional), [`./fork-design.md`](./fork-design.md) (bucket 1's lean core exposes the emission hooks; bucket 2's `internal/eventlog/` port supplies the base signal), [`./durable-execution-design.md`](./durable-execution-design.md) (pause/resume events surface as metrics), and [`./orchestration-design.md`](./orchestration-design.md) (workload bundles are the natural aggregation dimension). Uses ADK v2's unified span tree as substrate — every agent, node, tool, and specialist invocation surfaces uniformly in one trace shape.
 
 ## Why this is not optional
 
@@ -97,9 +97,9 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 ### Metric families
 
-<!-- shipped-metric-families:start — pkg/observability/metrics_page_test.go asserts that every family the registry actually constructs is named between these markers. A family that ships and is listed nowhere here is the drift #228 was filed for; a family below that is only a design target belongs after the marker, not before it. -->
+<!-- shipped-metric-families:start — internal/observability/metrics_page_test.go asserts that every family the registry actually constructs is named between these markers. A family that ships and is listed nowhere here is the drift #228 was filed for; a family below that is only a design target belongs after the marker, not before it. -->
 
-*(Shipped v0.1, 2026-07-26 — `pkg/observability` resolves this catalog for v0.1 as a deliberately **lean seven-counter-family set**, all fed from the same event-stream loop the budget meter folds:*
+*(Shipped v0.1, 2026-07-26 — `internal/observability` resolves this catalog for v0.1 as a deliberately **lean seven-counter-family set**, all fed from the same event-stream loop the budget meter folds:*
 
 - *`mast_turns_total{workload, outcome}` — outcome ∈ `ok` / `error` / `budget_exceeded` (fixed vocabulary; see the correction below) — plus `watchdog_halt` since v0.4 (added 2026-08-21 to this list; the behavioral watchdog's halt is deliberately distinct from `error`, because it is the backstop working, and from `budget_exceeded`, because the session has runway left)*
 - *`mast_model_calls_total{workload}`*
@@ -109,7 +109,7 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 - *`mast_hitl_resumes_total{workload}`*
 - *`mast_budget_trips_total{workload}`*
 
-*Metric names live in `pkg/observability` and only there — the registry is fixed, callers increment pre-declared families through typed methods and cannot mint names or labels (that implements open Q #5's cardinality control). All families are primed to zero per served workload at startup so `rate()`/`increase()` have a defined origin. The fuller catalog below — sessions gauges, duration histograms, tool/MCP/specialist families, and everything beyond — is **re-phased to v0.2**; it remains the design target, not the shipped set.)*
+*Metric names live in `internal/observability` and only there — the registry is fixed, callers increment pre-declared families through typed methods and cannot mint names or labels (that implements open Q #5's cardinality control). All families are primed to zero per served workload at startup so `rate()`/`increase()` have a defined origin. The fuller catalog below — sessions gauges, duration histograms, tool/MCP/specialist families, and everything beyond — is **re-phased to v0.2**; it remains the design target, not the shipped set.)*
 
 *(Shipped v0.2, 2026-08-04 — the fixed-registry pass (#50) canonicalized the durable-execution surface built over the sprint into five counter families total: the `mast_autoresume_total` family shipped earlier with boot-time auto-resume (#41), and #50 added the four below it. All are low-cardinality, primed to zero per workload, and incremented through typed methods at the write site, so a counter advances only when the durable operation it names actually happened — with one deliberate inversion, `mast_marker_write_failures_total`, which advances only when a marker write failed:*
 
@@ -123,7 +123,7 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 *(Shipped v0.2, 2026-08-11 — the protocol servers. The A2A server (#78) and the AG-UI server (#84) each count what they drive through the `runTurnPre` chokepoint. Recorded here 2026-08-21: both surfaces shipped their families and neither was written into this inventory, which is exactly the failure #228 was filed for. Note that both are labelled by **`workload`**, not by `skill` or `thread`, and that the shipped AG-UI vocabulary is not the sketch's — the design-target entries under "A2A" and "AG-UI" below are annotated accordingly:*
 
-- *`mast_a2a_server_tasks_total{workload, outcome}` — task-lifecycle transitions; outcome ∈ `submitted` / `working` / `input-required` / `completed` / `failed` / `canceled` / `rejected`, the wire task-state vocabulary (the string values match `pkg/a2a`'s `TaskState` constants)*
+- *`mast_a2a_server_tasks_total{workload, outcome}` — task-lifecycle transitions; outcome ∈ `submitted` / `working` / `input-required` / `completed` / `failed` / `canceled` / `rejected`, the wire task-state vocabulary (the string values match `internal/a2a`'s `TaskState` constants)*
 - *`mast_agui_runs_total{workload, outcome}` — runs by terminal disposition; outcome ∈ `success` / `interrupted` / `error` / `aborted` / `rejected`*
 - *`mast_agui_run_duration_seconds{workload}` — histogram of executed-run wallclock; a pre-turn refusal (draining, an unaddressable session id) is not timed, so the histogram counts runs that reached the turn*
 
@@ -170,7 +170,7 @@ Metrics surface aggregates that don't fit trace-shape queries. Prometheus scrape
 
 **Session lifecycle:**
 - `mast_sessions_started_total{workload, task_class, tenant}` — counter
-- `mast_sessions_completed_total{workload, task_class, tenant, outcome}` — counter; outcome ∈ `finish_task` / `error` / `budget_exhausted` / `hitl_abandoned` / `aborted` *(Corrected 2026-07-26: the shipped outcome vocabulary is **`budget_exceeded`**, not `budget_exhausted` — aligned to `pkg/observability`'s constants; the `hitl_policy.on_budget_exhaustion` config key in [`./orchestration-design.md`](./orchestration-design.md) is unaffected)*
+- `mast_sessions_completed_total{workload, task_class, tenant, outcome}` — counter; outcome ∈ `finish_task` / `error` / `budget_exhausted` / `hitl_abandoned` / `aborted` *(Corrected 2026-07-26: the shipped outcome vocabulary is **`budget_exceeded`**, not `budget_exhausted` — aligned to `internal/observability`'s constants; the `hitl_policy.on_budget_exhaustion` config key in [`./orchestration-design.md`](./orchestration-design.md) is unaffected)*
 - `mast_sessions_active` — gauge (currently running + paused)
 - `mast_sessions_paused{reason}` — gauge (currently paused, by reason)
 - `mast_session_duration_seconds{workload}` — histogram
@@ -255,7 +255,7 @@ Prometheus is cardinality-sensitive. Guidance:
 
 `/metrics` on the same HTTP listener as attach mode (or on a separate port; configurable). Standard OpenMetrics format. Multi-instance deployments: each mast pod exposes its own `/metrics`; Prometheus scrapes each; aggregation happens Prometheus-side.
 
-*(Shipped v0.1, 2026-07-26: `/metrics` is served on the **shared inject listener** (`pkg/inject` mounts the registry's handler at `GET /metrics`) — no separate port in v0.1. This resolves open question #1 for now; the separate-port default gets revisited at v0.2 alongside the fuller metric catalog. Also shipped: **no OTel-metrics export in v0.1** — metrics are Prometheus-scrape only; the OTel path in v0.1 is env-gated *trace* export (`SetupOTel` installs the OTLP trace exporter + W3C propagator only when the standard `OTEL_EXPORTER_OTLP_*` env vars ask for it, and mast opens no custom spans — ADK v2's runner emits the span tree, mast only makes it leave the process).)*
+*(Shipped v0.1, 2026-07-26: `/metrics` is served on the **shared inject listener** (`internal/inject` mounts the registry's handler at `GET /metrics`) — no separate port in v0.1. This resolves open question #1 for now; the separate-port default gets revisited at v0.2 alongside the fuller metric catalog. Also shipped: **no OTel-metrics export in v0.1** — metrics are Prometheus-scrape only; the OTel path in v0.1 is env-gated *trace* export (`SetupOTel` installs the OTLP trace exporter + W3C propagator only when the standard `OTEL_EXPORTER_OTLP_*` env vars ask for it, and mast opens no custom spans — ADK v2's runner emits the span tree, mast only makes it leave the process).)*
 
 *(Amended v0.5, 2026-08-20: "mast opens no custom spans" stopped being true, and it had stopped being harmless before that. ADK's spans parent off whatever context reaches `runner.Run`, so the turns with an HTTP request behind them were a tree and the unattended ones — a scheduled fire, a boot auto-resume, `mast run` — were not: `invoke_agent` became a trace root, on a trace that named no session. mast now opens one `mast.turn` span per turn; see the attribute-vocabulary annotation above.)*
 
@@ -316,9 +316,9 @@ Both paths use the same emit / consume mechanism internally — the difference i
 
 ## Configuration surface
 
-Global observability config lives in `pkg/config/` (populated by env + optional config file):
+Global observability config lives in `internal/config/` (populated by env + optional config file):
 
-*(Deferred 2026-07-26: the config-file `observability:` block below is **deferred until `pkg/config` grows a runtime-config surface** — the shipped v0.1 `pkg/config` loads `.agents/` workloads + specialists only, with no `mast.yaml` runtime-config loading yet. v0.1 observability is configured by env alone: standard `OTEL_EXPORTER_OTLP_*` vars for trace export; `/metrics` rides the inject listener.)*
+*(Deferred 2026-07-26: the config-file `observability:` block below is **deferred until `internal/config` grows a runtime-config surface** — the shipped v0.1 `internal/config` loads `.agents/` workloads + specialists only, with no `mast.yaml` runtime-config loading yet. v0.1 observability is configured by env alone: standard `OTEL_EXPORTER_OTLP_*` vars for trace export; `/metrics` rides the inject listener.)*
 
 ```yaml
 # example config
@@ -374,7 +374,7 @@ Not shipping in v0.1 — parallel to `docs/deployment-design.md` starter configs
 2. **Log content in unattended pods.** Debug logs are useful for triage but noisy on hot paths. Should log level auto-elevate around HITL escalations and errors? Bias: yes, "auto-debug on error" is a common pattern — buffer info-level logs for the last N seconds and dump on error.
 3. **Trace sampling on high-volume workloads.** A cost-monitor loop running every 30s at 100 replicas is 8.6M sessions/month; 100% sampling is expensive. Per-workload sampling defaults? Bias: 100% for orchestrate task class, 10% for research/review, 1% for chat, per-workload override always available.
 4. **Log-to-trace correlation ID persistence.** Should the correlation ID be part of the session record so log-only reads (post-hoc audit review) can still cross-reference to traces even after trace storage TTL expires? Bias: yes; correlation ID is a session field.
-5. **Metric-name pollution risk.** Custom specialists and workloads shouldn't be able to introduce arbitrary metric names (that's a cardinality DoS). All metrics defined in `pkg/observability/`; specialists can emit *events* (surfaced via traces) but not metrics. Enforce at API level.
+5. **Metric-name pollution risk.** Custom specialists and workloads shouldn't be able to introduce arbitrary metric names (that's a cardinality DoS). All metrics defined in `internal/observability/`; specialists can emit *events* (surfaced via traces) but not metrics. Enforce at API level.
 6. **Cost telemetry accuracy for streaming responses.** Provider-side streaming means token counts arrive incrementally; when do we emit `mast_provider_tokens_out_total`? Bias: on stream end (accurate); with an interim emit at HITL boundary if the session pauses mid-stream.
 7. **Correlation with core-agent traces during dual-run periods.** During any period when a workload runs on core-agent and mast (comparison, migration), can traces be correlated? Both should carry a common `deployment.id` or similar; deferred but capture the design constraint.
 
@@ -390,7 +390,7 @@ Not shipping in v0.1 — parallel to `docs/deployment-design.md` starter configs
 ## Related
 
 - [`./positioning.md`](./positioning.md) — governance moat is retrospective; observability is present-tense
-- [`./fork-design.md`](./fork-design.md) — `pkg/observability/` is a new package in bucket 1's design surface
+- [`./fork-design.md`](./fork-design.md) — `internal/observability/` is a new package in bucket 1's design surface
 - [`./durable-execution-design.md`](./durable-execution-design.md) — pause/resume metrics + trace propagation across pause boundaries
 - [`./orchestration-design.md`](./orchestration-design.md) — workload bundles carry per-workload observability overrides
 - [`./deployment-design.md`](./deployment-design.md) — multi-instance metric aggregation

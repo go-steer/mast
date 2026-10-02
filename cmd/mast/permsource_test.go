@@ -25,11 +25,11 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/auth"
+	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/permissions"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/auth"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/permissions"
 )
 
 // The end-to-end claim #364 makes: a question raised by the write gate

@@ -24,11 +24,11 @@ import (
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/effects"
+	"github.com/go-steer/mast/internal/effects"
 )
 
 // eventList adapts a slice to session.Events, the same shim
-// pkg/effects' unit tests use.
+// internal/effects' unit tests use.
 type eventList []*adksession.Event
 
 func (e eventList) All() iter.Seq[*adksession.Event] {
@@ -242,7 +242,7 @@ func TestTraceFromEvents_Exclusions(t *testing.T) {
 	})
 
 	t.Run("long-running-calls-are-kept", func(t *testing.T) {
-		// pkg/effects defers these at turn start; a finished run's
+		// internal/effects defers these at turn start; a finished run's
 		// completed blocking tool is an effect like any other.
 		ev := modelEvent(callPart("scale_deployment", "lr1", nil))
 		ev.LongRunningToolIDs = []string{"lr1"}
@@ -335,7 +335,7 @@ func TestTraceFromEvents_OrphanCompletion(t *testing.T) {
 // TestControlCallsMatchEffects cross-checks isControl against the
 // runtime's own exclusion set, behaviourally: a dangling call to each
 // name must land in ScanDangling's Deferred bucket, which is where
-// pkg/effects puts control calls. It catches a name dropped from
+// internal/effects puts control calls. It catches a name dropped from
 // effects' set. It cannot catch one added — see isControl's comment.
 func TestControlCallsMatchEffects(t *testing.T) {
 	names := []string{
@@ -357,7 +357,7 @@ func TestControlCallsMatchEffects(t *testing.T) {
 				eventList{modelEvent(callPart(name, "c1", nil))},
 				effects.NewPredicate(nil), nil)
 			if len(ds.Deferred) != 1 {
-				t.Fatalf("pkg/effects no longer treats %q as a control call "+
+				t.Fatalf("internal/effects no longer treats %q as a control call "+
 					"(Deferred=%d); isControl in trace.go must be updated", name, len(ds.Deferred))
 			}
 		})

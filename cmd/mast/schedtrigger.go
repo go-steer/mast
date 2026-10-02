@@ -27,9 +27,9 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/mast/pkg/auth"
-	"github.com/go-steer/mast/pkg/monitor"
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/auth"
+	"github.com/go-steer/mast/internal/monitor"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -140,7 +140,7 @@ type scheduledPayload struct {
 	// cycle's notification from, so an operator reading the transcript
 	// and an operator reading the notification are looking at one
 	// answer. The classes inside are the producer's own strings — see
-	// pkg/monitor for why there is no vocabulary here to compare them
+	// internal/monitor for why there is no vocabulary here to compare them
 	// against.
 	Transitions *monitor.Set `json:"transitions,omitempty"`
 

@@ -124,7 +124,7 @@ type Limits struct {
 	// approximation that "overcharges input-heavy sessions and
 	// undercharges output-heavy ones". That premise stopped being true
 	// once the event carried the input/output split and the cache-read
-	// subset: the call can be priced against the same pkg/pricing catalog
+	// subset: the call can be priced against the same internal/pricing catalog
 	// everything else uses. The error is not small on a real agent — an
 	// input-heavy, cache-warm session measured here ran 5.9x over its
 	// flat-rate figure, and a cost ceiling that wrong is a ceiling that
@@ -212,7 +212,7 @@ func (l Limits) IsZero() bool {
 //
 // This is deliberately narrower than the rate table behind it. A pricer
 // is asked for a number, never for rates: mast's own implementation
-// wraps pkg/pricing, but that package owes a re-key from the backend
+// wraps internal/pricing, but that package owes a re-key from the backend
 // name to the more general notion of a provider profile
 // (docs/model-support-design.md M2), and a third backend must not be a
 // breaking change to the meter. Naming the catalog here would have
@@ -228,7 +228,7 @@ type Pricer interface {
 // A struct rather than three int parameters because the buckets are the
 // part expected to grow: reasoning tokens billed apart from output, and
 // cache-*write* tokens billed apart from cache reads, are both on
-// model-support-design's list, and pkg/pricing's own Rates says 1h-TTL
+// model-support-design's list, and internal/pricing's own Rates says 1h-TTL
 // cache support "means adding a second rate here". Each of those arrives
 // as a new field, which a pricer that does not know about it ignores.
 type Call struct {
@@ -265,7 +265,7 @@ const DetailKey = "mast.usage_detail"
 
 // Detailer is the sidecar contract: what a provider adapter attaches
 // under DetailKey so the meter can see buckets genai's usage metadata
-// has no field for. mast's implementation is pkg/providers/usage.Detail.
+// has no field for. mast's implementation is internal/providers/usage.Detail.
 //
 // An interface rather than a named struct type because pkg/budget
 // imports nothing else in this module — a provider package naming a
@@ -694,7 +694,7 @@ func callOf(ev *session.Event, u genai.GenerateContentResponseUsageMetadata) Cal
 	// model it is not a rounding error — a triage run measured here spent
 	// 6,449 thinking tokens against 1,180 candidate tokens, so the omitted
 	// term was 85% of billable output. The field is Gemini-only;
-	// pkg/providers/anthropic never sets it, and Anthropic's own output
+	// internal/providers/anthropic never sets it, and Anthropic's own output
 	// count already includes thinking.
 	return Call{
 		UncachedInputTokens: prompt - read - write,

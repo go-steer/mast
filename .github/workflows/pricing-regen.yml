@@ -14,7 +14,7 @@
 
 name: pricing-regen
 
-# Weekly + on-demand refresh of pkg/pricing/builtin.go from LiteLLM's
+# Weekly + on-demand refresh of internal/pricing/builtin.go from LiteLLM's
 # catalog. Opens an auto-PR when the regenerated file differs from
 # what's in main. Fixed branch name (bot/pricing-regen) so re-runs
 # update the existing PR rather than stacking dupes.
@@ -100,7 +100,7 @@ jobs:
       # tightens eligible().
       #
       # This is load-bearing now that membership is a rule: a model that
-      # newly qualifies arrives with no pkg/modeltier tier, and
+      # newly qualifies arrives with no internal/modeltier tier, and
       # pricing's TestBuiltinModelsKnownToCompanionTables fails here
       # rather than letting an unclassified model reach an operator with
       # its compaction threshold silently defaulting to the universal
@@ -137,7 +137,7 @@ jobs:
           set -euo pipefail
           body="${RUNNER_TEMP}/pr-body.md"
           cat > "$body" <<'HEAD'
-          Automated pricing regen — LiteLLM's `model_prices_and_context_window.json` shifted since the last time `pkg/pricing/builtin.go` was regenerated.
+          Automated pricing regen — LiteLLM's `model_prices_and_context_window.json` shifted since the last time `internal/pricing/builtin.go` was regenerated.
 
           **Regen date**: ${{ steps.meta.outputs.date }}
           **Source**: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
@@ -150,13 +150,13 @@ jobs:
           ## Review checklist
 
           - [ ] **New and removed models are intentional.** Membership is a rule, not a list, so this diff can add or drop whole models — not just move numbers. For each added key: is it a real GA/preview id an operator would plausibly pin, or catalog noise that `eligible()` should be excluding? For each removed key: upstream deprecated it or pulled it, and nothing in-tree still names it (`git grep` the id — task-class defaults, example workloads, docs and UAT scripts all hardcode model ids).
-          - [ ] Diff on `pkg/pricing/builtin.go` is confined to the two generated maps (no spurious formatting churn)
+          - [ ] Diff on `internal/pricing/builtin.go` is confined to the two generated maps (no spurious formatting churn)
           - [ ] Any rate change that halves or doubles is real (spot-check the provider's public pricing page — LiteLLM has occasionally shipped bad entries). "What moved" above is the list to check; a row not named there did not change value.
           - [ ] Context-window changes in `builtinContextWindows` are real. These are what a compaction threshold is a fraction of: a window that grows makes compaction fire later, and an over-large one lets a session run past a limit the provider hard-fails on.
           - [ ] `UpdatedAt` dates on all entries are today
           - [ ] The workflow log's rejection report ("N Gemini/Anthropic entries rejected") lists nothing that should have been kept — a model can vanish from this table because upstream stopped publishing its price or window, not only because it was deprecated
-          - [ ] A newly-added model that belongs in a tier default is promoted deliberately, not automatically. `pkg/taskclass.ModelForTier` names the LATEST model in each line (see the POLICY block on that function) and `TestModelForTier_ReturnsLatestInLine` fails this PR when a newer same-line model lands here — promote it in a follow-up once it has been UAT'd, don't ship an unexercised model as everyone's default.
-          - [ ] A rate that moved ONTO a promotional number, or a promotional rate that failed to move OFF one, is recorded in `introductoryRates` (`pkg/pricing/introductory_rates_test.go`). LiteLLM publishes no expiry metadata, so a known end date only exists here if someone writes it down.
+          - [ ] A newly-added model that belongs in a tier default is promoted deliberately, not automatically. `internal/taskclass.ModelForTier` names the LATEST model in each line (see the POLICY block on that function) and `TestModelForTier_ReturnsLatestInLine` fails this PR when a newer same-line model lands here — promote it in a follow-up once it has been UAT'd, don't ship an unexercised model as everyone's default.
+          - [ ] A rate that moved ONTO a promotional number, or a promotional rate that failed to move OFF one, is recorded in `introductoryRates` (`internal/pricing/introductory_rates_test.go`). LiteLLM publishes no expiry metadata, so a known end date only exists here if someone writes it down.
 
           ## Verification
 

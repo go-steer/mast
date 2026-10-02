@@ -48,9 +48,9 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/mast/internal/observability"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/observability"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"

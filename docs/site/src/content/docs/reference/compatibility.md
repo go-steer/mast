@@ -27,8 +27,6 @@ you can read it before you decide what to depend on.
   every exported interface as one you might implement, unless its doc
   comment says otherwise. In a covered path that means the budget
   extension points, `budget.Pricer` and `budget.Detailer`.
-  (`federation.Adapter` is the other interface you might implement, but
-  `pkg/federation` is unsupported, so this policy does not bind it.)
 - **Adding a struct field whose zero value changes behaviour.** Adding
   the field itself is not breaking — mast does not defend unkeyed
   composite literals — but a field that does something when you leave

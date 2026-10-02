@@ -27,7 +27,7 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast"
-	"github.com/go-steer/mast/pkg/auth"
+	"github.com/go-steer/mast/internal/auth"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 
@@ -82,13 +82,14 @@ func TestResumeByTokenWithoutAnActorNamesTheMechanism(t *testing.T) {
 
 func TestResumeByTokenNoLongerReadsPkgAuth(t *testing.T) {
 	// The break, pinned so it is a decision rather than an accident. The
-	// root package used to read pkg/auth's Caller off ctx, which put an
-	// unsupported package's context key inside the v1.0 promise. An
+	// root package used to read the auth package's Caller off ctx (it was
+	// pkg/auth then, internal/auth since #301), which put an unsupported
+	// package's context key inside the v1.0 promise. An
 	// embedder still setting it now gets the mechanism, and the
 	// CHANGELOG says so; WithActor is the replacement.
 	ctx := auth.WithCaller(context.Background(), auth.Caller{Identity: "alice@example.com"})
 	if got := consumedBy(t, ctx); got != "library ResumeByToken" {
-		t.Errorf("ConsumedBy = %q: the root package is reading pkg/auth's context key again", got)
+		t.Errorf("ConsumedBy = %q: the root package is reading internal/auth's context key again", got)
 	}
 }
 
@@ -104,15 +105,16 @@ var promised = []string{
 }
 
 func TestNoPromisedPackageImportsTheAuthPackages(t *testing.T) {
-	// Caller identity is moving to go-steer/purser, and pkg/auth and
-	// pkg/serverauth are both on DESIGN.md's unsupported list so they can
-	// be deleted when it does. A promised package importing either would
-	// quietly commit whatever it reaches — a type in a signature, or a
-	// context key, which no signature shows — and turn that deletion into
-	// a major.
+	// Caller identity is moving to go-steer/purser (#469), and
+	// internal/auth and internal/serverauth are deleted when it does.
+	// Being internal stops an embedder importing them, not a promised
+	// package: Go lets an exported signature name an internal type, and
+	// a context key shows up in no signature at all. A promised package
+	// importing either would quietly commit whatever it reaches and turn
+	// that deletion into a major.
 	banned := map[string]bool{
-		"github.com/go-steer/mast/pkg/auth":       true,
-		"github.com/go-steer/mast/pkg/serverauth": true,
+		"github.com/go-steer/mast/internal/auth":       true,
+		"github.com/go-steer/mast/internal/serverauth": true,
 	}
 	fset := token.NewFileSet()
 	checked := 0

@@ -24,9 +24,9 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/inject"
-	"github.com/go-steer/mast/pkg/observability"
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/inject"
+	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"
 )

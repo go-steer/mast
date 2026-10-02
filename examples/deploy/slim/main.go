@@ -21,7 +21,7 @@
 // What matters here is what this file IMPORTS, not what it serves:
 // only the slim slice (pkg/agent, pkg/specialists, pkg/budget) plus
 // ADK v2 and stdlib. No inject server, no metrics endpoint, no MCP,
-// no pkg/graph or pkg/router dispatch, no pkg/config discovery. CI
+// no internal/graph or internal/router dispatch, no internal/config discovery. CI
 // enforces that this dependency graph stays slim
 // (scripts/check-slim-deps.sh).
 package main
@@ -71,7 +71,7 @@ func run(ctx context.Context) error {
 	llm := mastagent.NewEchoModel("slim-echo")
 
 	// Specs are registered programmatically — no .agents/ directory,
-	// no file discovery, no pkg/config. The same Specs could instead
+	// no file discovery, no internal/config. The same Specs could instead
 	// be loaded from .specialist.md files via specialists.LoadDir.
 	classifier, err := specialists.Build(specialists.Spec{
 		Name:        "incident_classifier",

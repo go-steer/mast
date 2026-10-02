@@ -330,7 +330,7 @@ start_toolactor() {
 # inject_bg <uid> <reason> — POST an edge event whose turn will BLOCK inside
 # the MCP tool, backgrounded with a long client timeout. inject is
 # SYNCHRONOUS (the turn runs on the request context; 202 is written only
-# after it completes — pkg/inject/server.go:362,383), so a blocking turn
+# after it completes — internal/inject/server.go:362,383), so a blocking turn
 # must be backgrounded or the client-timeout would cancel the turn. The HTTP
 # status lands in ${WORK}/inject-<uid>.code once the turn resolves. Sets the
 # background curl PID in the global BGPID so the caller can reap it with

@@ -18,7 +18,7 @@
 // the whole catalog rather than against one hand-built fixture.
 //
 // #154 was a total tool-calling outage on the Anthropic path: every
-// tool built by ADK's functiontool.New or by pkg/mcp reached Claude as
+// tool built by ADK's functiontool.New or by internal/mcp reached Claude as
 // a name with an empty input schema, because the converter handled only
 // the typed genai.Schema spelling. The regression test that shipped
 // with the fix covers functiontool.New, which is the shape of that bug
@@ -43,7 +43,7 @@
 //   - ParametersJsonSchema via functiontool.New — every mast-authored
 //     tool: the planner vocabulary, pause_session, the federation
 //     invoke tool. This is the path #154 broke.
-//   - ParametersJsonSchema via pkg/mcp — an MCP server's advertised
+//   - ParametersJsonSchema via internal/mcp — an MCP server's advertised
 //     inputSchema, which is where a workload's real read and write
 //     tools come from.
 //
@@ -67,10 +67,10 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/mast/internal/federation"
+	"github.com/go-steer/mast/internal/mcp"
+	"github.com/go-steer/mast/internal/planner"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/federation"
-	"github.com/go-steer/mast/pkg/mcp"
-	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 

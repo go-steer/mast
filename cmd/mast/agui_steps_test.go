@@ -26,7 +26,7 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/agui"
+	"github.com/go-steer/mast/internal/agui"
 )
 
 // mkAuthoredEvent builds a model event attributed to an agent — the shape the

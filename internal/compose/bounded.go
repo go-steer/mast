@@ -182,7 +182,7 @@ func rosterNames(specs []specialists.Spec) string {
 // that is not Chat mode (runner.go, "root agent %s must be a chat
 // LlmAgent"), and a SingleTurn agent is by definition not one. A
 // one-node workflow is the sanctioned way to make a non-Chat agent a
-// root — the same idiom BuildClassRoot and pkg/planner.NewRoot use —
+// root — the same idiom BuildClassRoot and internal/planner.NewRoot use —
 // and it costs no model call of its own, which is the property the
 // whole shape is about.
 func buildBounded(b workload.Bundle, spec specialists.Spec, built adkagent.Agent) (adkagent.Agent, error) {
@@ -205,7 +205,7 @@ func buildBounded(b workload.Bundle, spec specialists.Spec, built adkagent.Agent
 }
 
 // boundedNodeConfig maps the specialist's max_wallclock_seconds onto the
-// node timeout, the same mapping pkg/graph makes for a specialist node.
+// node timeout, the same mapping internal/graph makes for a specialist node.
 // The other two budget fields are the meter's (MeterScopes), not a
 // node's — a node cannot see a token count.
 func boundedNodeConfig(spec specialists.Spec) workflow.NodeConfig {

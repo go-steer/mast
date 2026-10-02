@@ -17,7 +17,7 @@ budget:
 #
 # `tier:` and not `model:`. A tier says how much model this step is
 # worth and lets the running provider answer with a concrete id
-# (internal/compose maps it through pkg/taskclass.ModelForTier at build
+# (internal/compose maps it through internal/taskclass.ModelForTier at build
 # time), so this bundle reads the same and costs the right thing whether
 # you point mast at Gemini or at Anthropic. `model: claude-sonnet-4-6`
 # would say the same thing in a way that only works on one vendor — and

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Durable intent records for planner dispatches — the storage half of
-// the v0.6 W9.3 seam (#235). See pkg/effects/subrun.go for why a
+// the v0.6 W9.3 seam (#235). See internal/effects/subrun.go for why a
 // dispatched specialist's mutating calls have nowhere else to go, and
 // internal/compose/subrunrecord.go for the adapter that joins the two.
 //
@@ -42,7 +42,7 @@
 // # Why this file names no effect class
 //
 // The record is deliberately dumb: a tool name, a call ID, a time. What
-// counts as mutating is pkg/effects' question, and this package does not
+// counts as mutating is internal/effects' question, and this package does not
 // import it — effects is the one leaf in mast's graph with no mast
 // dependencies at all, and its own tests already reach the other way.
 package transcript

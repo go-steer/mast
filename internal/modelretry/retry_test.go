@@ -502,7 +502,7 @@ func TestAWaitIsAnnouncedBeforeItIsServed(t *testing.T) {
 // sequence it returns is first walked.
 //
 // mast's Gemini layer populates req.Config.Tools at invocation rather
-// than at iteration (pkg/providers/gemini), and that population IS the
+// than at iteration (internal/providers/gemini), and that population IS the
 // built-in-tool gate #324 put in front of server-side web search. A
 // wrapper that deferred the inner call to first iteration would move a
 // security boundary to a later moment and delete it outright for a

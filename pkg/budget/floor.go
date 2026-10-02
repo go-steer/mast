@@ -48,7 +48,7 @@ func flooredUsage(u *genai.GenerateContentResponseUsageMetadata) genai.GenerateC
 	}
 	// A copy, not a mutation of the caller's record: the event is the
 	// session's, it is shared with every other Observe-shaped hook on
-	// the stream (pkg/observability's, the transcript writer's), and a
+	// the stream (internal/observability's, the transcript writer's), and a
 	// meter that silently rewrote what a provider reported would make
 	// the raw counter unrecoverable for anyone diagnosing the provider.
 	// The remaining fields are per-modality detail slices this package

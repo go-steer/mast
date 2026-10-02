@@ -25,8 +25,8 @@ import (
 
 	"google.golang.org/genai"
 
-	"github.com/go-steer/mast/pkg/a2a"
-	"github.com/go-steer/mast/pkg/agui"
+	"github.com/go-steer/mast/internal/a2a"
+	"github.com/go-steer/mast/internal/agui"
 )
 
 // These are the cmd/mast half of #370: four places that read model text off a

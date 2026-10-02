@@ -32,7 +32,7 @@
 // # Slim consumers
 //
 // This is the batteries-included surface: it imports the dispatch
-// subsystems (pkg/graph, pkg/router, pkg/planner), several of which
+// subsystems (internal/graph, internal/router, internal/planner), several of which
 // are denylisted for the slim-embed guarantee. Consumers who need the
 // minimal dependency graph (docs/library-api-design.md, "Slim-embed
 // guarantee") must NOT import this package — they compose the slim
@@ -71,10 +71,10 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/planner"
 	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/planner"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/watchdog"
@@ -462,7 +462,7 @@ func resolveModel(ctx context.Context, cfg Config, bt workload.BuiltinTools) (mo
 	// No provider alias on the library surface: claude-* backend
 	// selection is env-driven here (ANTHROPIC_API_KEY vs Vertex
 	// project). Consumers who need to force a backend construct the
-	// model via pkg/providers/anthropic and set Config.Model.
+	// model via internal/providers/anthropic and set Config.Model.
 	llm, err := compose.NewRuntimeModel(ctx, "", cfg.ModelName, bt)
 	if err != nil {
 		return nil, "", fmt.Errorf("mast: %w", err)
@@ -640,7 +640,7 @@ func (s *subRunSink) Observe(ev *adksession.Event) error {
 // Unlike cmd/mast's sink this one does not classify the error into a
 // kind. The classification exists to pick a metric label and the library
 // build has no registry, so the only thing it would buy here is an
-// import of pkg/attach in the root package — which today does not depend
+// import of internal/attach in the root package — which today does not depend
 // on it, and which every embedding consumer pays for.
 func (s *subRunSink) Close(out planner.DispatchOutcome) {
 	if out.Err == nil || s.logger == nil {

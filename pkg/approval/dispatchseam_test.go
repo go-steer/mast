@@ -30,9 +30,9 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
+	"github.com/go-steer/mast/internal/graph"
+	"github.com/go-steer/mast/internal/router"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/graph"
-	"github.com/go-steer/mast/pkg/router"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -45,8 +45,8 @@ import (
 // is documented nowhere, and the answer decides whether the write gate is
 // one mechanism or one per shape.
 //
-// These two probes measure it, against mast's own builders (pkg/router,
-// pkg/graph) rather than hand-rolled equivalents, so what they measure is
+// These two probes measure it, against mast's own builders (internal/router,
+// internal/graph) rather than hand-rolled equivalents, so what they measure is
 // what mast ships. Both answers came out the same way and neither was
 // obvious:
 //

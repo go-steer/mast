@@ -30,8 +30,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	"github.com/go-steer/mast/pkg/effects"
-	"github.com/go-steer/mast/pkg/planner"
+	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
 	"github.com/go-steer/mast/pkg/workload"

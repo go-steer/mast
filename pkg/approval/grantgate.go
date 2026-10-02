@@ -22,7 +22,7 @@ import (
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/mast/pkg/permissions"
+	"github.com/go-steer/mast/internal/permissions"
 )
 
 // The gate's half of the change-set grant. grant.go holds the record

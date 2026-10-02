@@ -16,8 +16,8 @@
 // ConsumedBy is the audit answer to "who approved this?" — the reason a
 // durable gate beats an in-memory prompt — and the daemon used to write
 // the constant "operator resume --token" into it on every HTTP resume,
-// naming the channel rather than the human. pkg/inject already resolves
-// the caller onto the request context (pkg/inject/caller_test.go covers
+// naming the channel rather than the human. internal/inject already resolves
+// the caller onto the request context (internal/inject/caller_test.go covers
 // that half); these cover the half that reads it.
 package main
 
@@ -28,12 +28,12 @@ import (
 
 	adksession "google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/mast/pkg/auth"
-	"github.com/go-steer/mast/pkg/inject"
+	"github.com/go-steer/mast/internal/auth"
+	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 
-// callerCtx is what pkg/inject's handleResume hands the daemon.
+// callerCtx is what internal/inject's handleResume hands the daemon.
 func callerCtx(identity string) context.Context {
 	return auth.WithCaller(context.Background(), auth.Caller{Identity: identity})
 }

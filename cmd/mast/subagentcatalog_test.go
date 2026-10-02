@@ -21,9 +21,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/go-steer/mast/internal/attach"
+	"github.com/go-steer/mast/internal/graph"
 	mastagent "github.com/go-steer/mast/pkg/agent"
-	"github.com/go-steer/mast/pkg/attach"
-	"github.com/go-steer/mast/pkg/graph"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )

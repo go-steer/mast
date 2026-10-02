@@ -22,7 +22,7 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 
-	"github.com/go-steer/mast/pkg/monitor"
+	"github.com/go-steer/mast/internal/monitor"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -68,7 +68,7 @@ import (
 // producer's. What mast gains is the ability to say "this cycle
 // classified four things and one of them is new"; what mast still
 // cannot say is whether a given finding should have been called new.
-// See pkg/monitor — the checks there are all "is this a whole answer",
+// See internal/monitor — the checks there are all "is this a whole answer",
 // never "is this the right answer".
 
 // monitorCollector runs a workload's declared collection calls at the
@@ -165,7 +165,7 @@ func (c *monitorCollector) clock() time.Time {
 // that mast reads it; a truncated or unparseable answer read leniently
 // becomes an empty transition set, and an empty transition set is the
 // wire for "all quiet". W4.5 will decline to notify on exactly that. So
-// the parse is strict and its failure ends the cycle — see pkg/monitor
+// the parse is strict and its failure ends the cycle — see internal/monitor
 // for what "malformed" is allowed to mean, which is never "a class mast
 // has not heard of".
 func (c *monitorCollector) collect(ctx context.Context, sessionID string) (cycleFacts, error) {

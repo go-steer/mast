@@ -35,7 +35,7 @@ import (
 // end-to-end UAT (scripts/uat-v0.2.sh) needs to exercise the crash /
 // drain / abort legs against a real, blocking MCP tool.
 //
-// Why not the scripted provider (pkg/providers/mock)? The scripted model
+// Why not the scripted provider (internal/providers/mock)? The scripted model
 // replays a fixed positional list of turns behind a single global cursor
 // that RESETS to 0 on every process restart. The legs this UAT targets
 // restart the daemon mid-flight, and the daemon's model-call count
@@ -232,11 +232,11 @@ func (m *toolActor) GenerateContent(_ context.Context, req *model.LLMRequest, _ 
 }
 
 // ApprovedCallsMarker introduces the calls an operator approved, in the
-// event pkg/graph puts on the change executor's branch (v0.4 W7.0).
+// event internal/graph puts on the change executor's branch (v0.4 W7.0).
 //
-// Spelled here rather than imported, because pkg/graph's own tests
+// Spelled here rather than imported, because internal/graph's own tests
 // import this package and the dependency can only run one way.
-// TestApprovalPreambleCarriesTheMarker (pkg/graph) is what keeps the two
+// TestApprovalPreambleCarriesTheMarker (internal/graph) is what keeps the two
 // strings one string: a fake that never matches would silently stop
 // executing approved calls and every leg would still pass, just testing
 // the reason-driven path twice.
@@ -373,9 +373,9 @@ func refusedBy(req *model.LLMRequest, tool string) bool {
 	return false
 }
 
-// PlannerDispatchTool is the planner's roster door (pkg/planner's
+// PlannerDispatchTool is the planner's roster door (internal/planner's
 // ToolInvokeSpecialist). Named here rather than imported, for the reason
-// ApprovedCallsMarker gives: pkg/planner's own tests use this package, so
+// ApprovedCallsMarker gives: internal/planner's own tests use this package, so
 // the dependency can only run one way.
 const PlannerDispatchTool = "invoke_specialist"
 
@@ -385,7 +385,7 @@ const PlannerDispatchTool = "invoke_specialist"
 // argument — unlike a coordinator, whose roster arrives as one tool per
 // specialist and needs no prose at all.
 //
-// Coupled to pkg/planner's DefaultInstructionTemplate on purpose and by
+// Coupled to internal/planner's DefaultInstructionTemplate on purpose and by
 // the same arrangement as ApprovedCallsMarker: TestPlannerInstruction-
 // NamesTheRoster over there is what keeps the two strings one string. A
 // drifted phrase would not fail loudly — the fake would find no roster,

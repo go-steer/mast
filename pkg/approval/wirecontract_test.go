@@ -32,7 +32,7 @@ import (
 // failure mode is a verdict refused as unknown while an operator watches
 // their approval do nothing.
 //
-// pkg/inject's wirecontract_test.go pins the envelope these ride in.
+// internal/inject's wirecontract_test.go pins the envelope these ride in.
 // This file pins the payload.
 
 func TestWireContract_OutcomeVocabulary(t *testing.T) {
