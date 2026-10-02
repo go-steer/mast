@@ -83,7 +83,7 @@ Per [`./fork-design.md`](./fork-design.md) 2026-07-01 resolved block, "auto-inst
 
 **Branch isolation.** v2 defaults to isolating parallel branches; fan-out-fan-in and map-reduce don't need extra care to prevent history leakage across siblings ([`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) "With isolation").
 
-**Cyclic graphs.** v2 makes cycles first-class ([`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) shape #4). Autonomous loops (replacing today's `pkg/agent/autonomous.go`), inbox loops, and long-running monitors express as cyclic graphs with a router deciding continue-vs-exit.
+**Cyclic graphs.** v2 makes cycles first-class ([`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) shape #4). Autonomous loops (replacing today's `internal/agent/autonomous.go`), inbox loops, and long-running monitors express as cyclic graphs with a router deciding continue-vs-exit.
 
 **Rationale.** The whole design principle in [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) — "reference graphs, not helper packages" — depends on these primitives being expressive enough that mast's contribution is domain wiring, not engine wrapping. The presence of dynamic nodes + `RunNode[T]` is what makes supervisor+workers, multi-tenant scoping, and the planner's supervisor-body shape ([`./orchestration-design.md`](./orchestration-design.md) shape "C") land without helper layers.
 

@@ -367,7 +367,7 @@ note "built ${BIN} + ${BLOCKER} (toolactor model — no credentials, no network)
 # apply_change, and mast refuses a read_only specialist that can
 # (internal/compose.CheckCapabilitySplit). None declares an
 # `output_schema`, which is load-bearing for U-scoped: a schemad
-# specialist's refusal resolves the delegation to nothing (pkg/agent's
+# specialist's refusal resolves the delegation to nothing (internal/agent's
 # UnreportableRefusal, W10.3), and there would be nothing for a
 # coordinator to recognize as a closed path. The unschemad case is the
 # one where routing around is even possible, so it is the one to measure.
@@ -607,7 +607,7 @@ assert_log_atleast "the ceiling said so at ERROR" "${LOG}" \
   'BUDGET CEILING — refused a model call before it was made' 1
 assert_has "the record names the ceiling that was reached" \
   "$(grep -- 'refused a model call' "${LOG}" || true)" 'of a cap of'
-# The marker pkg/agent exports for exactly this: an operator reading the
+# The marker internal/agent exports for exactly this: an operator reading the
 # transcript finds a sentence, not an absence.
 assert_log_atleast "and the transcript carries the operator-readable refusal" "${LOG}" \
   'STOPPED — this agent reached a cost ceiling.' 1

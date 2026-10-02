@@ -43,7 +43,7 @@ import (
 //
 // This is a guard rather than a one-time fix because the source of the
 // bad comment is still upstream: core-agent renamed the option when it
-// split pkg/agent, four of its own comments still name the old one, and
+// split internal/agent, four of its own comments still name the old one, and
 // internal/attach is ported code. The next sync can carry the instruction
 // straight back in. The port is the event this test is waiting for —
 // see docs/sibling-sync.md, `532f7c75`, which is mast's own finding
@@ -78,7 +78,7 @@ var renamedOptions = []renamedOption{{
 	dead: "agent.WithAttachPromptBroker",
 	live: "attachadapter.WithPromptBroker",
 	note: "This one arrives by port, not by typo: core-agent renamed the\n" +
-		"\toption when it split pkg/agent and four of its own comments still\n" +
+		"\toption when it split internal/agent and four of its own comments still\n" +
 		"\tname the old spelling, so any sync that touches internal/attach can\n" +
 		"\tbring it back. It never existed in this repo under either name.\n" +
 		"\tSee docs/sibling-sync.md (`532f7c75`) and #364.",

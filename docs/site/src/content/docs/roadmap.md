@@ -26,11 +26,11 @@ sessions, and round-tripped a prompt through a real turn over SSE.
 **Nothing is promised yet.** mast is pre-1.0 and every exported path may
 change in any release. v1.0 is the release that makes the promise, and
 [what it will cover](/reference/stability/) is published now so you can
-decide what to depend on today: **six import paths** — the module root,
-`pkg/agent`, `pkg/transcript`, `pkg/workload`, `pkg/specialists`,
-`pkg/budget` — plus `cmd/mast`'s flags, verbs and exit codes, with the
-other 32 importable packages under `pkg/` named individually as
-unsupported. v1.0 means the API stops moving and carries no other claim;
+decide what to depend on today: the module root, the `cli` package a
+[custom `main.go`](/quickstart/custom-binary/) is built on,
+`pkg/transcript`, `pkg/workload`, `pkg/specialists` and `pkg/budget`,
+plus the binary's flags, verbs and exit codes. Everything else is under
+`internal/`, where Go refuses an import from outside the module. v1.0 means the API stops moving and carries no other claim;
 in particular it is not a production-readiness badge.
 
 *This section previously reserved stability for "the five packages the four

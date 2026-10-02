@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

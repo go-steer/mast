@@ -23,7 +23,7 @@
 // blocks back with their signatures intact — not for a caller to read.
 //
 // Before this package the distinction was made in exactly one place
-// (pkg/agent's stall detector) and omitted in eight others, including the
+// (internal/agent's stall detector) and omitted in eight others, including the
 // A2A result artifact handed to another team's agent, the AG-UI
 // TextMessage stream, and the eval trace whose FinalText the graders read.
 // Nothing leaked, because claude-opus-5 under the request mast sends today

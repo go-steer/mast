@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/pkg/workload"
 )
 

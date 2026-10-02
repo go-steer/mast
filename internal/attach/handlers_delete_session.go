@@ -46,7 +46,7 @@ import (
 
 // defaultBootstrapSessionID is the daemon startup session's
 // SessionID. Mirrors agent.defaultSessionID; hardcoded here to
-// avoid internal/attach → pkg/agent import cycle.
+// avoid internal/attach → internal/agent import cycle.
 const defaultBootstrapSessionID = "default"
 
 // doDeleteSession is the DELETE /sessions handler body (wired for

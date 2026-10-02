@@ -306,7 +306,7 @@ now_plus() {
 # ---- blocking-tool drivers (toolactor legs) -------------------------
 # start_toolactor <logfile> [extra flags...] — launch the daemon under
 # --model=toolactor, which drives the blocking MCP tools deterministically
-# (pkg/agent/toolactor.go). Same readiness spin as start(). Uses the current
+# (internal/agent/toolactor.go). Same readiness spin as start(). Uses the current
 # ${DB}, so a per-leg DB reassignment isolates each crash/restart leg's
 # auto-resume metric deltas, and the current ${WL} (defaults to the fixture)
 # — the S4-exit3 leg points it at a budget-free variant so the drain window,

@@ -52,7 +52,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 )
 
 // Tool names of the v0.1 planner vocabulary. Exported so callers and
@@ -87,7 +87,7 @@ type Config struct {
 	// the planner-specific frame from orchestration-design's planner
 	// section (resolved open question #7: single template with
 	// variables; per-workload override as the escape hatch). The
-	// generic pkg/agent DefaultTaskInstruction never applies here: a
+	// generic internal/agent DefaultTaskInstruction never applies here: a
 	// planner is never a generic task agent, so the template embeds
 	// the unattended-task discipline itself.
 	Instruction string
@@ -123,7 +123,7 @@ type Config struct {
 }
 
 // New constructs the planner as a Task-mode LlmAgent via
-// pkg/agent.NewTaskAgent, with the v0.1 tool vocabulary attached.
+// internal/agent.NewTaskAgent, with the v0.1 tool vocabulary attached.
 //
 // The returned agent CANNOT be a runner root directly: ADK v2.1.0's
 // runner requires an LlmAgent root to be Chat-mode (runner.go,

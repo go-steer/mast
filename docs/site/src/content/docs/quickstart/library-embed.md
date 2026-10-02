@@ -82,19 +82,20 @@ The [watchdog](/concepts/interop/#where-the-posture-comes-from) runs here
 too, and it is armed by default: a turn that loops on the same tool call
 gets a `feedback` observation, and a bundle declaring
 `safety.watchdog: enforce` has the runaway turn abandoned with an error
-`watchdog.IsTripped` recognizes. What a library call cannot hold, it does
+`mast.IsWatchdogHalt` recognizes. What a library call cannot hold, it does
 not pretend to — there is no cross-call session state for the "refuse
 every later turn" half of `enforce`, and no next turn for a `feedback`
 observation to be injected into, so both rungs act within the turn they
 fire in.
 
-An embedder is also the caller who can change *which* signals run.
-`watchdog.DefaultWatchdog` takes a signal list, so the shipped-but-not-
-default `dominant-tool-call` density detector
-(`watchdog.NewDominantToolCallSignal(12, 8)`) goes in the same way a
-tighter repeat threshold does — and a workload whose normal shape is a
-polling loop drops the cycle detector the same way. See [the
-signals](/concepts/interop/#the-signals).
+Which signals run is mast's choice, not the embedder's: the watchdog is
+internal, and so is the shipped-but-not-default `dominant-tool-call`
+density detector. That changed with
+[#301](https://github.com/go-steer/mast/issues/301), which moved every
+runtime package out of reach; before it, an embedder composing its own
+runner could hand the watchdog a signal list. If your workload needs a
+different set — a polling loop that should not trip the cycle detector,
+say — open an issue. See [the signals](/concepts/interop/#the-signals).
 
 ## Path 2: the slim slice
 
@@ -106,8 +107,7 @@ root package; compose the slim slice directly:
 
 | Import | What it buys |
 |---|---|
-| `pkg/agent` | Task / SingleTurn / Chat constructors over ADK's `llmagent` |
-| `pkg/specialists` | Programmatic specialist `Spec`s + `Build` |
+| `pkg/specialists` | Programmatic specialist `Spec`s, and `Build`, which turns one into a governed ADK agent |
 | `pkg/budget` | In-process usage meter + cost ceilings (optional) |
 | ADK v2 (`runner`, `session`, `workflow`, …) | The loop itself |
 

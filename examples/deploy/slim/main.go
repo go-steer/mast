@@ -19,11 +19,10 @@
 // in-memory sessions and nothing else.
 //
 // What matters here is what this file IMPORTS, not what it serves:
-// only the slim slice (pkg/agent, pkg/specialists, pkg/budget) plus
-// ADK v2 and stdlib. No inject server, no metrics endpoint, no MCP,
-// no internal/graph or internal/router dispatch, no internal/config discovery. CI
-// enforces that this dependency graph stays slim
-// (scripts/check-slim-deps.sh).
+// only the slim slice (pkg/specialists, pkg/budget) plus ADK v2 and
+// stdlib. No inject server, no metrics endpoint, no MCP, no dispatch
+// shapes, no .agents/ discovery. CI enforces that this dependency graph
+// stays slim (scripts/check-slim-deps.sh).
 package main
 
 import (
@@ -34,12 +33,12 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/workflowagent"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
 )
@@ -63,12 +62,12 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	// The echo model is mast's offline fake (no credentials, no
-	// network). Swap in a real model with one ADK import:
+	// An offline fake (fakemodel.go: no credentials, no network). Swap in
+	// a real model with one ADK import:
 	//
 	//	import "google.golang.org/adk/v2/model/gemini"
 	//	llm, err := gemini.NewModel(ctx, "gemini-2.5-flash", &genai.ClientConfig{})
-	llm := mastagent.NewEchoModel("slim-echo")
+	var llm model.LLM = triageFake{}
 
 	// Specs are registered programmatically — no .agents/ directory,
 	// no file discovery, no internal/config. The same Specs could instead

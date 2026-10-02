@@ -18,7 +18,7 @@
 // (frontier / mid / small) used to tune behavior whose right setting
 // depends on how powerfully the model reasons.
 //
-// First consumer: the compactor (pkg/agent). A single
+// First consumer: the compactor (internal/agent). A single
 // utilization-threshold (0.85) is fine for frontier models — they
 // reason coherently with 850k tokens of context. Small models
 // degrade much earlier (Flash gets unreliable somewhere in the
@@ -68,7 +68,7 @@ const (
 )
 
 // DefaultCompactionThresholds is the per-tier compaction utilization
-// table consumed by pkg/agent's DefaultCompactor. Values are
+// table consumed by internal/agent's DefaultCompactor. Values are
 // fractions of the model's context window — compaction fires when
 // `used / window >= threshold`.
 //

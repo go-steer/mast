@@ -24,7 +24,7 @@ import (
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/internal/planner"
-	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/internal/watchdog"
 )
 
 // daemonSubRunObserver folds the events of a planner dispatch's private

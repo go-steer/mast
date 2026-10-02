@@ -33,7 +33,7 @@ func TestArgsEquivalent(t *testing.T) {
 		{"identical", `{"path":"a.go"}`, `{"path":"a.go"}`, true},
 		{"dot-slash prefix", `{"path":"./a.go"}`, `{"path":"a.go"}`, true},
 		{"traversal cleaned", `{"path":"dir/../a.go"}`, `{"path":"a.go"}`, true},
-		{"trailing slash on a dir", `{"dir":"pkg/agent/"}`, `{"dir":"pkg/agent"}`, true},
+		{"trailing slash on a dir", `{"dir":"internal/agent/"}`, `{"dir":"internal/agent"}`, true},
 		// The case #144 named and v1 could not catch.
 		{"absolute vs relative", `{"path":"/workspace/main.go"}`, `{"path":"main.go"}`, true},
 		{"absolute vs partial", `{"path":"/workspace/pkg/x.go"}`, `{"path":"pkg/x.go"}`, true},

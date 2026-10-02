@@ -36,20 +36,20 @@ package taskclass
 //
 //  1. An explicit caller/spec Instruction (workload bundle, specialist
 //     frontmatter, library caller) is always used verbatim — nothing
-//     is prepended or appended (pkg/agent's "specialists keep full
+//     is prepended or appended (internal/agent's "specialists keep full
 //     control" rule).
 //  2. Otherwise the class profile's instruction default (Instruction
 //     below) applies: an explicit class profile beats the generic
 //     mode default.
 //  3. Otherwise — no class declared, or a class with no per-class
-//     text — pkg/agent's per-mode fallback applies
+//     text — internal/agent's per-mode fallback applies
 //     (DefaultChatInstruction / DefaultTaskInstruction /
-//     DefaultSingleTurnInstruction), enforced by the pkg/agent
+//     DefaultSingleTurnInstruction), enforced by the internal/agent
 //     constructors when they see an empty Instruction.
 //
 // In practice a caller resolves `instr := explicit; if instr == "" {
 // instr = taskclass.Instruction(class) }` and hands the result to the
-// pkg/agent constructor, whose empty-string fallback supplies layer 3.
+// internal/agent constructor, whose empty-string fallback supplies layer 3.
 
 // Agent-mode labels returned by AgentMode. String-typed (not ADK
 // types) so taskclass stays a pure-data package — the ADK wiring
@@ -81,12 +81,12 @@ func PlannerEnabled(class string) bool { return class == Orchestrate }
 // the class has none (unknown classes, and classes whose right
 // default is the generic per-mode fallback). See the precedence note
 // in this file's doc comment: callers pass a non-empty result to the
-// pkg/agent constructor so the class profile beats the generic mode
+// internal/agent constructor so the class profile beats the generic mode
 // default, and pass "" through so the constructor's own fallback
 // applies.
 //
 // chat and orchestrate intentionally return "": chat's right framing
-// IS pkg/agent's DefaultChatInstruction, and orchestrate's root is
+// IS internal/agent's DefaultChatInstruction, and orchestrate's root is
 // the planner, whose template (internal/planner DefaultInstructionTemplate)
 // embeds the orchestration frame itself.
 func Instruction(class string) string {
@@ -105,7 +105,7 @@ func Instruction(class string) string {
 
 // Per-class instruction defaults. Each variant embeds the unattended
 // Task-mode discipline (conservative defaults, fail-fast on ambiguity,
-// record findings as you go — the same spine as pkg/agent's
+// record findings as you go — the same spine as internal/agent's
 // DefaultTaskInstruction) and then sharpens it for the class's job.
 // Kept as unexported consts; Instruction is the lookup surface.
 const (

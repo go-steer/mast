@@ -400,12 +400,11 @@ interleaves to stop; when they are the whole delay, that is most of a
 loop's cost. It is off by default because a third Critical detector
 changes what every unattended workload is told about itself under
 `feedback`, and a polling workload with any variation in it is exactly a
-dominant call with interleaves. A [library
-embedder](/quickstart/library-embed/) wires it by constructing
-`watchdog.DefaultWatchdog` with its own signal list including
-`watchdog.NewDominantToolCallSignal(12, 8)`; alongside the other two it
-stands down wherever one of them already owns the shape, so one loop
-still produces one alert.
+dominant call with interleaves. Nothing turns it on today: the watchdog
+is internal since [#301](https://github.com/go-steer/mast/issues/301),
+and until then only an embedder composing its own runner could hand it
+a signal list. When it runs, it stands down wherever one of the other two
+already owns the shape, so one loop still produces one alert.
 
 Severity is a property of the pattern, not of the posture. What changes
 between postures is the reaction, and the three of them are a ladder —

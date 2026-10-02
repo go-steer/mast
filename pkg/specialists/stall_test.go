@@ -23,7 +23,7 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/pkg/specialists"
 )
 
@@ -83,7 +83,7 @@ func TestStallGuard_ClosesTheDelegation(t *testing.T) {
 	spec := specialists.Spec{Name: "inspector", Description: "d", Instruction: "i", Mode: specialists.ModeTask}
 	agent, err := specialists.Build(spec, specialists.BuildOptions{
 		Model:   m,
-		OnStall: func(specialists.Spec) mastagent.StallPayload { return nil },
+		OnStall: func(specialists.Spec) specialists.StallPayload { return nil },
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -126,7 +126,7 @@ func TestStallGuard_LeavesAWorkingSpecialistAlone(t *testing.T) {
 	spec := specialists.Spec{Name: "worker", Description: "d", Instruction: "i", Mode: specialists.ModeTask}
 	agent, err := specialists.Build(spec, specialists.BuildOptions{
 		Model:   m,
-		OnStall: func(specialists.Spec) mastagent.StallPayload { return nil },
+		OnStall: func(specialists.Spec) specialists.StallPayload { return nil },
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -163,7 +163,7 @@ func TestStallGuard_HonorsTheSpecsOutputSchema(t *testing.T) {
 	}
 	agent, err := specialists.Build(spec, specialists.BuildOptions{
 		Model: m,
-		OnStall: func(s specialists.Spec) mastagent.StallPayload {
+		OnStall: func(s specialists.Spec) specialists.StallPayload {
 			return func(agentName, lastWords string) map[string]any {
 				return map[string]any{
 					"summary":  mastagent.StallText(agentName, lastWords),
@@ -222,7 +222,7 @@ func TestStallGuard_RefusesADefaultPayloadAgainstASchema(t *testing.T) {
 	}
 	_, err := specialists.Build(spec, specialists.BuildOptions{
 		Model:   &askingModel{name: "asker"},
-		OnStall: func(specialists.Spec) mastagent.StallPayload { return nil },
+		OnStall: func(specialists.Spec) specialists.StallPayload { return nil },
 	})
 	if err == nil {
 		t.Fatal("Build accepted a stall guard with no payload for a spec that declares an output_schema")

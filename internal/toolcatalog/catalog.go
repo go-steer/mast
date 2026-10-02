@@ -67,10 +67,10 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/federation"
 	"github.com/go-steer/mast/internal/mcp"
 	"github.com/go-steer/mast/internal/planner"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/transcript"
 )
 

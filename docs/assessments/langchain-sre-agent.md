@@ -143,7 +143,7 @@ Same story for budget: `internal/graph/graph.go:100-106` maps only `MaxWallclock
 
 Designed in [`../orchestration-design.md`](../orchestration-design.md) (golden traces, `mast sessions capture-golden`, A/B, cost regression), phased v0.3+. Nothing shipped.
 
-**We already have the hard part.** `internal/providers/mock/scripted.go` (JSONL replay) and `pkg/agent/toolactor.go` (request-driven fake model, restart-safe, from the v0.2 UAT work) give deterministic, zero-cost trajectory testing. Their harness needs live model calls for every eval run; ours would not. See §5.
+**We already have the hard part.** `internal/providers/mock/scripted.go` (JSONL replay) and `internal/agent/toolactor.go` (request-driven fake model, restart-safe, from the v0.2 UAT work) give deterministic, zero-cost trajectory testing. Their harness needs live model calls for every eval run; ours would not. See §5.
 
 ### G8 — No decision-feedback loop
 
@@ -172,7 +172,7 @@ Six slices. P1 is the long pole. P3 and P4 parallelize behind P0.
 
 1. **Honor `spec.Model`** in `specialists.Build` — resolve per-specialist model against the provider config, fall back to `opts.Model`. Touches `pkg/specialists/register.go:74-97` and the compose path. Unlocks the whole cost story; interacts with specialists-design open Q#4 (cross-provider override).
 2. **Enforce per-specialist `MaxTurns` / `MaxCostUSD`** — compose with the workload meter, tightest-cap-wins (already the documented semantic in `pkg/workload/bundle.go:76-86`).
-3. **Add `output_schema` to specialist frontmatter** → `OutputSchema` on the Task agent (`pkg/agent/modes.go:43` already carries the field).
+3. **Add `output_schema` to specialist frontmatter** → `OutputSchema` on the Task agent (`internal/agent/modes.go:43` already carries the field).
 
    **Mast never gains a `Finding` or `HealthReport` Go type** (per Q1). The mechanism stays generic — a `*genai.Schema` mast does not interpret — and the concrete k8s-shaped schema, with `kind` / `resource_name` / `reason` for fingerprint stability, is a workload asset shipped with the `gke-triage` bundle and published by lookout. This is *less* mast code than first drafted, and it removes the one place P0 was quietly going to make the substrate domain-aware.
 
@@ -299,7 +299,7 @@ These are mast's differentiators. If they are not in the eval suite they are not
 
 | Tier | Runs on | Evaluators | Cost | Where |
 |---|---|---|---|---|
-| Deterministic | `internal/providers/mock/scripted.go` + `pkg/agent/toolactor.go` | effect-ordering, exactly-once, refusal, rejection, budget — pure code over the event log | zero | every PR |
+| Deterministic | `internal/providers/mock/scripted.go` + `internal/agent/toolactor.go` | effect-ordering, exactly-once, refusal, rejection, budget — pure code over the event log | zero | every PR |
 | Judge | real provider | `severity_accuracy`, `tool_coverage`, `response_quality` | metered | nightly |
 
 **Correction (2026-08-12).** An earlier draft of this table put `tool_coverage` and `severity_accuracy` in the deterministic tier, arguing that reading a trajectory out of the event log avoids the live call their harness needs. That is wrong. `tool_coverage` measures *which tools the model chose*; a scripted provider does not choose — its trajectory is the fixture — so replaying one and asserting the tools match the script asserts the script equals itself. **Measuring agent quality, and therefore comparing to LangChain at all, needs a live model.** The structural advantage is real but narrower than claimed: the free tier gates *mast's guarantees* (the five differentiator scenarios below), which their harness cannot express at any price. Both halves are necessary and they measure different things. Tier definitions live in [`../v0.3-plan.md`](../v0.3-plan.md) §2, which splits this four ways.

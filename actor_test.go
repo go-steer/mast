@@ -97,7 +97,6 @@ func TestResumeByTokenNoLongerReadsPkgAuth(t *testing.T) {
 // directories relative to this one.
 var promised = []string{
 	".",
-	"pkg/agent",
 	"pkg/transcript",
 	"cli",
 	"pkg/workload",

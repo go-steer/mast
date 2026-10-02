@@ -32,8 +32,8 @@ import (
 
 	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/internal/eventlog"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/watchdog"
 )
 
 // noAttachStores is one "process" on the plain path: open the session

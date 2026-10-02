@@ -19,8 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/watchdog"
 )
 
 // The gate reaches the stop through the context, so what the daemon

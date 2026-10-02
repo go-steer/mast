@@ -27,7 +27,7 @@ import (
 	"google.golang.org/adk/v2/session"
 )
 
-// usageEvent builds a synthetic model event the way pkg/agent's echo
+// usageEvent builds a synthetic model event the way internal/agent's echo
 // model synthesizes usage: prompt + candidates counts with the total
 // derived (real models populate UsageMetadata the same way).
 func usageEvent(prompt, candidates int32) *session.Event {

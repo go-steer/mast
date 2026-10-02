@@ -41,7 +41,7 @@
 //	the follow-up per core-agent's docs/digest-design.md sequencing.)
 //
 // LLM-agnostic: this package digests payloads. It does not import
-// pkg/agent, does not know what an MCP tool is, does not reach for
+// internal/agent, does not know what an MCP tool is, does not reach for
 // the model loop. Callers pass an LLMFallback function if they want
 // one.
 //

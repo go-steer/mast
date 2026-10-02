@@ -20,8 +20,8 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/router"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )

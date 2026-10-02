@@ -15,7 +15,7 @@
 // The planner tells a model which specialists it may dispatch to in
 // PROSE — invoke_specialist takes a name as an argument, so unlike a
 // coordinator's roster there is no per-specialist tool declaration to
-// read it off. mast's offline UAT double (pkg/agent's toolactor) has to
+// read it off. mast's offline UAT double (internal/agent's toolactor) has to
 // find the roster somewhere, and the only place it exists is that
 // sentence.
 //
@@ -38,8 +38,8 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/planner"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 )
 
 // The tool name the fake calls is the tool name the planner declares.
@@ -73,7 +73,7 @@ func TestPlannerInstructionNamesTheRoster(t *testing.T) {
 
 	if !strings.Contains(sys, mastagent.RosterPreamble) {
 		t.Fatalf("the planner instruction no longer contains %q, which is the only thing\n"+
-			"pkg/agent's offline double has to find a roster by. Update\n"+
+			"internal/agent's offline double has to find a roster by. Update\n"+
 			"mastagent.RosterPreamble in the same change; a silent drift here\n"+
 			"turns every planner UAT leg into a test of an empty roster.\nGot:\n%s",
 			mastagent.RosterPreamble, sys)

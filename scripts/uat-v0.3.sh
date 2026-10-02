@@ -442,7 +442,7 @@ stop_term
 
 # ---- U-report leg C: a violating report is refused ------------------
 # MAST_FAKE_SCHEMA_VIOLATION makes the offline fake omit the first
-# required property (pkg/agent/schemafill.go). If the schema were merely
+# required property (internal/agent/schemafill.go). If the schema were merely
 # declared and not enforced, this leg would park with a report just like
 # leg A.
 say "U-report/C: a report that violates the declared schema is refused"

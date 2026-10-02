@@ -34,7 +34,6 @@ The slim slice this example pulls:
 
 | Import | What it buys |
 |---|---|
-| `pkg/agent` | Task / SingleTurn / Chat constructors over ADK's `llmagent` |
 | `pkg/specialists` | Programmatic specialist `Spec`s + `Build` (file loading via `LoadDir` optional) |
 | `pkg/budget` | In-process usage meter + cost ceilings (optional) |
 | ADK v2 (`runner`, `session`, `workflow`, …) + stdlib | The loop itself |

@@ -52,7 +52,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/workflow"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/pkg/specialists"
 )
 
 // category is the fork point: one entry per route the classifier can
@@ -132,12 +132,12 @@ func main() {
 // no coordinator agent above it (the runner's Chat-mode restriction
 // applies only when the root itself is an LlmAgent).
 func buildRoot() (adkagent.Agent, error) {
-	classifier, err := mastagent.NewSingleTurnAgent(mastagent.SingleTurnAgentConfig{
+	classifier, err := specialists.Build(specialists.Spec{
 		Name:        "TicketClassifier",
 		Description: "Classifies a support ticket into a routing category.",
+		Mode:        specialists.ModeSingleTurn,
 		Instruction: "Classify the support ticket into exactly one of: billing, outage, account, unknown. Reply with the single category word and nothing else.",
-		Model:       classifierModel{},
-	})
+	}, specialists.BuildOptions{Model: classifierModel{}})
 	if err != nil {
 		return nil, fmt.Errorf("build classifier: %w", err)
 	}
@@ -165,12 +165,12 @@ func buildRoot() (adkagent.Agent, error) {
 	subAgents := []adkagent.Agent{classifier}
 
 	for _, c := range append(append([]category{}, categories...), fallback) {
-		specialist, err := mastagent.NewTaskAgent(mastagent.TaskAgentConfig{
+		specialist, err := specialists.Build(specialists.Spec{
 			Name:        c.name,
 			Description: "Handles " + c.name + " tickets.",
+			Mode:        specialists.ModeTask,
 			Instruction: c.instruction,
-			Model:       specialistModel{category: c.name, resolution: c.resolution},
-		})
+		}, specialists.BuildOptions{Model: specialistModel{category: c.name, resolution: c.resolution}})
 		if err != nil {
 			return nil, fmt.Errorf("build specialist %q: %w", c.name, err)
 		}

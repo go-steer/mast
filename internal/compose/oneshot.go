@@ -24,9 +24,9 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/workflow"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/internal/taskclass"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 )
 
 // BuildClassRoot constructs the runnable root agent for one public
@@ -35,7 +35,7 @@ import (
 // internal/taskclass's (docs/orchestration-design.md "Public task
 // classes"):
 //
-//   - chat → a Chat-mode coordinator (pkg/agent.NewCoordinator).
+//   - chat → a Chat-mode coordinator (internal/agent.NewCoordinator).
 //   - debug / implement / research / review → a Task-mode agent,
 //     wrapped in a one-node workflow root because ADK v2.1.0's runner
 //     only accepts Chat-mode LlmAgent roots directly (same idiom as
@@ -48,7 +48,7 @@ import (
 // Instruction precedence (internal/taskclass modes.go): the class profile's
 // per-class default is passed explicitly, so it beats the generic
 // per-mode fallback; classes without per-class text (chat) fall
-// through to pkg/agent's mode default via the constructor's own
+// through to internal/agent's mode default via the constructor's own
 // empty-Instruction rule.
 // pauseRecorder enables the planner classes' pause_session tool when
 // the caller has a durable store (nil otherwise — an in-memory pause

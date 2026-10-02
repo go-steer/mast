@@ -15,7 +15,7 @@
 // The one place this package's contract with the wire layer is checked.
 //
 // TrippedError implements attach.SelfClassifyingError by returning a
-// bare string, because pkg/watchdog is stdlib-only and importing
+// bare string, because internal/watchdog is stdlib-only and importing
 // internal/attach — and with it auth, eventlog and permissions — to spell
 // one constant is not a trade worth making for a leaf guardrail
 // package. A bare string is a weaker contract than a type, so the
@@ -30,7 +30,7 @@ import (
 	"testing"
 
 	"github.com/go-steer/mast/internal/attach"
-	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/internal/watchdog"
 )
 
 var _ attach.SelfClassifyingError = (*watchdog.TrippedError)(nil)

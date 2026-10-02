@@ -26,7 +26,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/pkg/specialists"
 )
 

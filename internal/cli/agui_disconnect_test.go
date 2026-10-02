@@ -33,7 +33,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/mast/internal/agui"
-	"github.com/go-steer/mast/pkg/watchdog"
+	"github.com/go-steer/mast/internal/watchdog"
 )
 
 // aguiCtxModel is a scripted model whose script sees the turn's context, so a

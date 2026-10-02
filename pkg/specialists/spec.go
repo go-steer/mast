@@ -25,7 +25,7 @@
 // (#292, #349).
 //
 // Nothing substitutes into a body at any layer, and since #464 that is
-// true of the substrate too: pkg/agent hands every prompt to ADK's
+// true of the substrate too: internal/agent hands every prompt to ADK's
 // InstructionProvider, which forwards it unchanged, rather than to the
 // Instruction field, which resolved `{...}` against session state
 // before every request. A brace is literal. The one syntax that

@@ -30,7 +30,7 @@ import (
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -187,8 +187,8 @@ func proposes(t *testing.T, want string) ChangeSetLookup {
 // TestApprovalPreambleCarriesTheMarker keeps two strings one string.
 // The offline change-executor fake recognizes an approved change set by
 // a literal substring of this preamble (agent.ApprovedCallsMarker),
-// because pkg/agent cannot import this package — internal/graph's own tests
-// import pkg/agent. Reword the preamble without this test and the fake
+// because internal/agent cannot import this package — internal/graph's own tests
+// import internal/agent. Reword the preamble without this test and the fake
 // stops executing approved calls silently: every UAT leg still passes,
 // having exercised the reason-driven path twice.
 func TestApprovalPreambleCarriesTheMarker(t *testing.T) {

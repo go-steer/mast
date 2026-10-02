@@ -80,8 +80,9 @@ Per the fork-and-forget lifecycle
 (workflow-scaffolding-design.md, "Shapes are forkable starters, not
 demonstrations"): copy this directory out, and it's your code — no upgrade
 path, no compatibility promise; mast's CI only keeps this in-repo original
-building. The starter imports mast `pkg/agent` (mode constructors + the
-fake-model idiom) and ADK — never another starter and never `internal/graph`.
+building. The starter imports mast's `pkg/specialists` (`Build` turns a
+`Spec` into a governed ADK agent) and ADK — never another starter, and
+nothing under mast's `internal/`, which a copied starter could not import.
 
 Customization points, in the order you'll hit them:
 

@@ -190,7 +190,7 @@ func (r *refusals) forget(invocationID string) {
 // and what an operator abort does, and it carries the same obligation
 // the watchdog's halt carries — a cancelled run surfaces as "context
 // canceled", so the host has to keep the reason somewhere it can report
-// it from afterwards (see pkg/watchdog's Preflight, and cmd/mast's
+// it from afterwards (see internal/watchdog's Preflight, and cmd/mast's
 // refusalStop).
 //
 // # Why it rides the context

@@ -524,7 +524,7 @@ func TestSuppressionWorksWithNoWatchdogToTell(t *testing.T) {
 // contract from the side that owns the string. SelfClassifyingError
 // carries a kind and nothing else so a raiser need not import
 // internal/attach; the price of the weaker contract is this assertion, which
-// is the same one pkg/watchdog pays for TrippedError.
+// is the same one internal/watchdog pays for TrippedError.
 //
 // A kind internal/attach does not ship falls back to substring-scanning the
 // error text, and this error's text mentions a refusal and a tool name —

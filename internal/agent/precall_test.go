@@ -30,7 +30,7 @@ import (
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 )
 
 // countingModel answers every request and counts how many it was asked

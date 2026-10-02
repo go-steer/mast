@@ -37,8 +37,8 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/workflow"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/planner"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 	"github.com/go-steer/mast/pkg/budget"
 )
 

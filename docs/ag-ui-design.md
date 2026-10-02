@@ -269,7 +269,7 @@ Mast's internal event stream emits AG-UI events uniformly:
 > `ToolCallStart`/`Args`/`End` triple per chunk with empty arguments —
 > dispatched as several distinct calls by any client acting on
 > `ToolCallEnd` — plus the real one on the aggregate. `onEvent` now drops
-> partials, the same guard `pkg/watchdog/bridge.go` took for the same reason
+> partials, the same guard `internal/watchdog/bridge.go` took for the same reason
 > in [#331](https://github.com/go-steer/mast/issues/331), and
 > `internal/cli/agui.go` moves into the safe set named by
 > `TestEveryRunnerSiteIsNonStreaming`'s failure message.

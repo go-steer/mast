@@ -26,12 +26,12 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/observability"
 	"github.com/go-steer/mast/internal/planner"
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/budget"
-	"github.com/go-steer/mast/pkg/watchdog"
 )
 
 // The daemon's sub-run observer bills a planner dispatch to the OUTER

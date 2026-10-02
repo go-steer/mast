@@ -19,8 +19,8 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	internalcli "github.com/go-steer/mast/internal/cli"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 )
 
 func apply(opts ...Option) internalcli.Options {

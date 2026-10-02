@@ -38,9 +38,9 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/evals"
-	mastagent "github.com/go-steer/mast/pkg/agent"
 )
 
 const (
@@ -62,7 +62,7 @@ const (
 	// behaviour are measured by the W0.3 differentiators, which is
 	// where they belong.
 	//
-	// It is built by pkg/agent.NewCoordinator — mast's Chat-mode
+	// It is built by internal/agent.NewCoordinator — mast's Chat-mode
 	// constructor — holding the read toolset with no sub-agents, rather
 	// than through compose.BuildRoot. Two things rule the composed path
 	// out for a roster of one, and both are shape facts worth knowing:

@@ -22,7 +22,7 @@ import (
 
 	adkmodel "google.golang.org/adk/v2/model"
 
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	mastagent "github.com/go-steer/mast/internal/agent"
 )
 
 // wiring is a RunnerConfig that would be accepted, so each test can name

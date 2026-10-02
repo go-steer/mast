@@ -137,7 +137,7 @@ func TestPlanFirst_AllowsSkillIntrospection(t *testing.T) {
 }
 
 // list_agents and check_agent are read-only subagent introspection
-// registered directly by pkg/agent/background_tools.go — not via the
+// registered directly by internal/agent/background_tools.go — not via the
 // namespace wrapper. Exempt them individually.
 func TestPlanFirst_AllowsSubagentIntrospection(t *testing.T) {
 	t.Parallel()

@@ -163,7 +163,7 @@ b.AddRoutes(check, map[string]workflow.Node{
 })
 ```
 
-**Notes.** The v2 cyclic graph replaces the custom loop machinery in today's `pkg/agent/autonomous.go` and `pkg/agent/inbox.go`. Pause/resume is durable via the graph engine — a scheduled monitor that pauses for operator input at 02:00 can resume at 09:00 when the operator logs into `mast-web`. This is the sleeper feature of v2 for unattended workloads: HITL escalation from an unattended loop, without workflow wrapping.
+**Notes.** The v2 cyclic graph replaces the custom loop machinery in today's `internal/agent/autonomous.go` and `internal/agent/inbox.go`. Pause/resume is durable via the graph engine — a scheduled monitor that pauses for operator input at 02:00 can resume at 09:00 when the operator logs into `mast-web`. This is the sleeper feature of v2 for unattended workloads: HITL escalation from an unattended loop, without workflow wrapping.
 
 ### 5. Adversarial verifier
 
@@ -325,8 +325,8 @@ Core-agent's existing patterns port to reference-graph shapes at different level
 
 | Core-agent pattern | Mast shape | Effort |
 |---|---|---|
-| `pkg/agent/autonomous.go` custom loop | Autonomous loop (cyclic graph) | Rewrite the loop as a graph; pause/resume comes for free. |
-| `pkg/agent/inbox.go` inbox poll | Autonomous loop with router (poll → process → poll) | Straightforward port. |
+| `internal/agent/autonomous.go` custom loop | Autonomous loop (cyclic graph) | Rewrite the loop as a graph; pause/resume comes for free. |
+| `internal/agent/inbox.go` inbox poll | Autonomous loop with router (poll → process → poll) | Straightforward port. |
 | `spawn_agent` dynamic sub-agents | Supervisor+workers with dynamic node | Direct port; `spawn_agent` becomes an escape hatch when the pattern doesn't fit the graph shapes. |
 | `examples/gke-parallel-triage` custom fan-out | Fan-out-fan-in reference graph | This *becomes* the reference implementation; less code than today. |
 | `examples/scheduled-monitor` custom scheduler | Autonomous loop with time-triggered entry | Trigger stays external (cron / operator); loop body is the graph. |

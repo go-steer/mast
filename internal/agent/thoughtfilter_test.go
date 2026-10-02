@@ -14,7 +14,7 @@
 
 package agent
 
-// The pkg/agent half of #370, filed as #372: a ninth place that read model
+// The internal/agent half of #370, filed as #372: a ninth place that read model
 // text with `p.Text != ""` and would have forwarded a thinking block with it.
 //
 // It differs from the other eight in one way worth stating, because it is the

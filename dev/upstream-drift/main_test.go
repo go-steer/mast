@@ -73,14 +73,15 @@ func TestMapPath(t *testing.T) {
 	t.Parallel()
 	cases := []struct{ in, want string }{
 		// Unmapped packages sit at the same path upstream.
-		{"pkg/agent/agent.go", "pkg/agent/agent.go"},
-		{"pkg/watchdog/watchdog.go", "pkg/watchdog/watchdog.go"},
+		{"pkg/budget/budget.go", "pkg/budget/budget.go"},
+		{"pkg/transcript/transcript.go", "pkg/transcript/transcript.go"},
 
 		// #301 moved the packages outside the v1.0 surface to internal/;
 		// core-agent still has them under pkg/.
 		{"internal/attach/server.go", "pkg/attach/server.go"},
 		{"internal/pricing/builtin.go", "pkg/pricing/builtin.go"},
 		{"internal/permissions/gate.go", "pkg/permissions/gate.go"},
+		{"internal/watchdog/watchdog.go", "pkg/watchdog/watchdog.go"},
 
 		// A prefix is a directory, not a string: attachadapter is not
 		// inside attach.

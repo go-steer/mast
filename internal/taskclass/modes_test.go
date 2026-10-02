@@ -77,10 +77,10 @@ func TestPlannerEnabled_OnlyOrchestrate(t *testing.T) {
 }
 
 // TestInstruction_Precedence pins the composition contract with
-// pkg/agent (modes.go, "Instruction precedence"): Task classes with a
+// internal/agent (modes.go, "Instruction precedence"): Task classes with a
 // per-class default return non-empty text (layer 2 — the class
 // profile beats the generic mode default), while chat and orchestrate
-// return "" so pkg/agent's / internal/planner's own fallback applies
+// return "" so internal/agent's / internal/planner's own fallback applies
 // (layer 3).
 func TestInstruction_Precedence(t *testing.T) {
 	for _, class := range []string{"debug", "implement", "research", "review"} {

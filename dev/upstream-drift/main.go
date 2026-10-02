@@ -115,8 +115,9 @@ var skipDirs = map[string]bool{
 
 // dirRewrites map a mast directory onto its upstream counterpart where
 // the fork renamed it. Longest match wins. Anything not listed here is
-// assumed to sit at the same path upstream (pkg/agent, pkg/watchdog,
-// ...).
+// assumed to sit at the same path upstream — true of a file mast ported
+// into a promised path that core-agent has too (pkg/transcript, for
+// one).
 //
 // Most of the table is one move: #301 took every package outside the
 // v1.0 surface from pkg/ to internal/, and core-agent still has them
@@ -140,6 +141,7 @@ var dirRewrites = map[string]string{
 	"internal/permissions":   "pkg/permissions",
 	"internal/pricing":       "pkg/pricing",
 	"internal/taskclass":     "pkg/taskclass",
+	"internal/watchdog":      "pkg/watchdog",
 }
 
 type attribution struct {

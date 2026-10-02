@@ -29,16 +29,16 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 
+	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/auth"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/envelope"
 	"github.com/go-steer/mast/internal/inject"
 	"github.com/go-steer/mast/internal/observability"
-	mastagent "github.com/go-steer/mast/pkg/agent"
+	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/transcript"
-	"github.com/go-steer/mast/pkg/watchdog"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -390,7 +390,7 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	// decide not to.
 	msg = prependFeedback(d.wds.feedback(sessionID), msg)
 
-	// Watchdog tap (pkg/watchdog): per-session accumulation across
+	// Watchdog tap (internal/watchdog): per-session accumulation across
 	// turns, per-turn dedup of aggregator re-emissions (core-agent
 	// #363).
 	enf := d.wds.enforcer(sessionID)
