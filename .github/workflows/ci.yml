@@ -105,6 +105,22 @@ jobs:
       - name: docs-lint
         run: dev/ci/presubmits/docs-lint.sh
 
+  # The v1.0 promise, enforced (#301): an incompatible change to a
+  # promised package since the last v1+ tag fails unless
+  # dev/api-breaks.txt acknowledges it. Skips before v1.0 exists.
+  # fetch-depth 0, because the baseline is a tag a shallow clone lacks.
+  apidiff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: promised API is compatible with the last v1+ release
+        run: dev/ci/presubmits/apidiff.sh
+
   terraform:
     runs-on: ubuntu-latest
     steps:

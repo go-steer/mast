@@ -1,0 +1,9 @@
+# Incompatible changes to a promised package that a release makes on
+# purpose, one apidiff line per entry ("<symbol>: <verb>"), each with a
+# comment naming the issue and the reason. dev/tools/verify-apidiff
+# fails on any incompatible change that is not listed here.
+#
+# After v1.0 an entry here is a major release, not a PR: mast's
+# compatibility policy (docs/site reference/compatibility.md) breaks a
+# promised package only in a new major. This file should be empty on
+# every release that is not one.

@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Report every change to the promised Go API since the last v1+ release
+# tag, and fail on the incompatible ones unless dev/api-breaks.txt
+# acknowledges them. This is what makes v1.0 a promise rather than a
+# paragraph (#301): without it, the only thing between an accidental
+# break and a tagged minor is whether a reviewer noticed.
+#
+# Ported from go-steer/purser's dev/tools/verify-apidiff, with two
+# deliberate differences:
+#
+#   * It measures the promised packages listed in dev/api-surface.txt,
+#     not the whole module. pkg/approval is importable and unsupported
+#     beyond eight output types, and measuring it would make every change
+#     to it an acknowledgement.
+#   * It compares against the nearest v1+ tag and skips when there is
+#     none. Before v1.0 every minor may break the API by design, so a
+#     gate against v0.x would only ever be acknowledged away. Tagging
+#     v1.0.0 arms it with no further change.
+#
+# APIDIFF_BASE=<ref> overrides the baseline, for working out the shape of
+# a change against an older release or a branch point.
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+# Pinned deliberately, to the version purser gates on: apidiff's
+# classification of a change is the thing being gated, and a floating
+# @latest could turn a green PR red with no local diff.
+APIDIFF_VERSION="v0.0.0-20260813180055-c1d0aacb2297"
+
+MODULE="$(go list -m)"
+SURFACE="dev/api-surface.txt"
+ALLOWFILE="${APIDIFF_ALLOWFILE:-dev/api-breaks.txt}"
+
+BASE="${APIDIFF_BASE:-}"
+if [[ -z "$BASE" ]]; then
+  if ! BASE="$(git describe --tags --abbrev=0 --match 'v[1-9]*' 2>/dev/null)"; then
+    echo "verify-apidiff: no v1+ tag reachable from HEAD; the promise starts at v1.0, skipping." >&2
+    exit 0
+  fi
+fi
+if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
+  echo "verify-apidiff: base ref '$BASE' not found. In CI this usually means" >&2
+  echo "  the checkout was shallow — actions/checkout needs fetch-depth: 0." >&2
+  exit 1
+fi
+
+mapfile -t promised < <(awk '$1 == "promised" { print $2 }' "$SURFACE")
+if [[ "${#promised[@]}" -eq 0 ]]; then
+  echo "verify-apidiff: $SURFACE lists no promised packages" >&2
+  exit 1
+fi
+
+ensure_tool apidiff "golang.org/x/exp/cmd/apidiff@${APIDIFF_VERSION}"
+
+WORKDIR="$(mktemp -d)"
+BASETREE="$WORKDIR/base"
+cleanup() {
+  git worktree remove --force "$BASETREE" >/dev/null 2>&1 || true
+  rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
+git worktree add --detach --quiet "$BASETREE" "$BASE"
+
+echo "promised API: $BASE → HEAD"
+full=""
+incompatible=""
+for dir in "${promised[@]}"; do
+  pkg="$MODULE"
+  [[ "$dir" != "." ]] && pkg="$MODULE/$dir"
+  key="${dir//\//_}"
+  if [[ ! -d "$BASETREE/$dir" ]]; then
+    # Promised after the baseline was cut: there is nothing to break yet.
+    echo "  $pkg: new since $BASE"
+    continue
+  fi
+  ( cd "$BASETREE" && apidiff -w "$WORKDIR/$key.base" "$pkg" )
+  apidiff -w "$WORKDIR/$key.head" "$pkg"
+  # apidiff always exits 0; it reports and does not judge. The decision is
+  # whether the -incompatible output is empty.
+  f="$(apidiff "$WORKDIR/$key.base" "$WORKDIR/$key.head")"
+  i="$(apidiff -incompatible "$WORKDIR/$key.base" "$WORKDIR/$key.head" | sed "s|^- |$pkg.|")"
+  if [[ -n "$f" ]]; then
+    full+=$'\n'"$pkg"$'\n'"$f"$'\n'
+  fi
+  if [[ -n "$i" ]]; then
+    incompatible+="$i"$'\n'
+  fi
+done
+
+if [[ -z "$full" ]]; then
+  echo "No change to the promised API."
+  exit 0
+fi
+echo "$full"
+
+if [[ -z "$incompatible" ]]; then
+  echo "All changes are backward compatible."
+  exit 0
+fi
+
+mapfile -t breaks < <(printf '%s' "$incompatible" | sed '/^$/d')
+allowed=()
+if [[ -f "$ALLOWFILE" ]]; then
+  mapfile -t allowed < <(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$ALLOWFILE" | grep -v '^$' || true)
+fi
+unacknowledged=()
+for b in "${breaks[@]}"; do
+  hit=0
+  for a in "${allowed[@]:-}"; do
+    if [[ "$b" == "$a" ]]; then
+      hit=1
+      break
+    fi
+  done
+  if [[ "$hit" -eq 0 ]]; then
+    unacknowledged+=("$b")
+  fi
+done
+
+if [[ "${#unacknowledged[@]}" -eq 0 ]]; then
+  printf 'All %d incompatible change(s) are acknowledged in %s.\n' "${#breaks[@]}" "$ALLOWFILE"
+  exit 0
+fi
+{
+  echo
+  printf '%d incompatible change(s) to the promised API are not acknowledged in %s:\n\n' \
+    "${#unacknowledged[@]}" "$ALLOWFILE"
+  printf '  %s\n' "${unacknowledged[@]}"
+  cat <<EOF
+
+After v1.0 an incompatible change to a promised package is a new major
+version (docs/site reference/compatibility.md), not a line in this file.
+The usual causes are an exported identifier renamed without a deprecated
+alias, a struct field removed, or a signature that grew a parameter
+instead of an option.
+EOF
+} >&2
+exit 1

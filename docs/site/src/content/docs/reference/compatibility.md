@@ -36,6 +36,16 @@ you can read it before you decide what to depend on.
 - **Raising the `go` directive in `go.mod`**, which stops you building
   on your current toolchain.
 
+The first two are checked by machine, not by reviewers. From v1.0 a CI
+gate (`dev/tools/verify-apidiff`) compares every covered path against
+the last v1 release with Go's `apidiff` and fails on an incompatible
+change, and the list it measures is the one this page's covered paths
+come from (`dev/api-surface.txt`). A test fails if any importable
+package is missing from that list, so a new public package has to be
+put on it deliberately. What the gate can't see — behaviour, defaults,
+an interface you were never meant to implement — is the rest of this
+page.
+
 ### With nothing failing to compile
 
 - **A default that changes what your workload does.** The sharpest
