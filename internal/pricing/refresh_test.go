@@ -66,6 +66,7 @@ func TestRefresh_HappyPathWritesExternalSection(t *testing.T) {
 	home := t.TempDir()
 	out, err := Refresh(context.Background(), home, RefreshOptions{
 		Source: srv.URL,
+		Client: srv.Client(),
 	})
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
@@ -134,7 +135,7 @@ func TestRefresh_PreservesManualSection(t *testing.T) {
 		t.Fatalf("SaveUserFile pre: %v", err)
 	}
 
-	if _, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL}); err != nil {
+	if _, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL, Client: srv.Client()}); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
@@ -170,7 +171,7 @@ func TestRefresh_SkipsWhenCacheFresh(t *testing.T) {
 		t.Fatalf("SaveUserFile: %v", err)
 	}
 
-	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL})
+	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL, Client: srv.Client()})
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -201,6 +202,7 @@ func TestRefresh_ForcesWhenIntervalNegative(t *testing.T) {
 
 	out, err := Refresh(context.Background(), home, RefreshOptions{
 		Source:      srv.URL,
+		Client:      srv.Client(),
 		MinInterval: -1 * time.Second,
 	})
 	if err != nil {
@@ -242,7 +244,7 @@ func TestRefresh_RespectsIfNoneMatch(t *testing.T) {
 	}
 	_ = SaveUserFile(home, pre)
 
-	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL})
+	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL, Client: srv.Client()})
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -278,7 +280,7 @@ func TestRefresh_NetworkFailureUsesCache(t *testing.T) {
 	}
 	_ = SaveUserFile(home, pre)
 
-	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL})
+	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL, Client: srv.Client()})
 	if err != nil {
 		t.Fatalf("Refresh should not error on 5xx: %v", err)
 	}
@@ -315,7 +317,7 @@ func TestRefresh_MalformedBodyKeepsCache(t *testing.T) {
 	}
 	_ = SaveUserFile(home, pre)
 
-	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL})
+	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL, Client: srv.Client()})
 	if err != nil {
 		t.Fatalf("Refresh should not error on malformed body: %v", err)
 	}
