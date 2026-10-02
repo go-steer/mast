@@ -116,7 +116,7 @@ names.
    version on their own clocks — §5.
 9. **Removing or renaming a CLI flag or subcommand verb, or changing
    what an exit code means.** Pinned by
-   `cmd/mast/testdata/cli-surface.txt` and `TestCLISurface`; before
+   `internal/cli/testdata/cli-surface.txt` and `TestCLISurface`; before
    that file existed a flag rename passed every test in the tree.
 10. **Removing a bundle key, or changing what one means.** Bumps
     `schema_version` — §5.

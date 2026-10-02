@@ -396,7 +396,7 @@ func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 	// one that doesn't gets "library ResumeByToken", which names the
 	// mechanism truthfully rather than guessing at a human. The daemon's
 	// twin resolves from its authenticated request context instead
-	// (cmd/mast/main.go, approverFromContext), which the library has no
+	// (internal/cli/main.go, approverFromContext), which the library has no
 	// business reading: see WithActor for why.
 	by := actorFrom(ctx, "library ResumeByToken")
 	if rec.Plane == transcript.PlaneGate {

@@ -527,7 +527,7 @@ type HTTPTrigger struct {
 // phase instead of re-phasing to whenever the process happened to come
 // back. Ticks that passed while the daemon was down are skipped rather
 // than caught up; the reasoning for that lives next to the code that
-// acts on it, in cmd/mast/schedtrigger.go.
+// acts on it, in internal/cli/schedtrigger.go.
 //
 // A workload may declare this alongside `http:` — the two triggers are
 // independent, and an operator can still inject into a scheduled

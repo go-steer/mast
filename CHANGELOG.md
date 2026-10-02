@@ -4,6 +4,19 @@
 
 ### API Change
 
+- **The binary moved into `internal/cli`, and `cmd/mast` is one line over
+  it.** Nothing about the `mast` binary changes: flags, subcommands, output
+  and exit codes are the same, and a test now drives each exit code through
+  the new entry point instead of trusting the `os.Exit` calls it replaced.
+  **If you build mast yourself with `-ldflags`**, the commit and date
+  variables moved with it: `-X main.commit=` and `-X main.date=` now stamp
+  nothing, and the flags are
+  `-X github.com/go-steer/mast/internal/version.Commit=` and `…version.Date=`,
+  beside the existing `…version.Version=`. The release workflow and
+  Dockerfile already use them. This is step two of #301; the public `cli`
+  package for a custom `main.go` follows.
+  [#301](https://github.com/go-steer/mast/issues/301)
+
 - **Thirty packages moved from `pkg/` to `internal/` and can no longer be
   imported from outside the module:** `a2a`, `agui`, `attach`,
   `attachadapter`, `auth`, `config`, `digest`, `effects`, `envelope`,

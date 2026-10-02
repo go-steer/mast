@@ -62,8 +62,8 @@ loop, dispatch shapes, the write gate, the effect outbox, the budget meter
 and its call gate, the behavioral watchdog, and the session event log — and
 they differ in what surrounds a turn: everything that *starts* one without a
 caller (schedules, the monitoring cycle, notify, auto-resume, timed pauses,
-drain) and every operator listener is `package main` under `cmd/mast`, not
-`pkg/`. "Same subsystems" is the claim for the governance half and was
+drain) and every operator listener is the binary's, in `internal/cli`,
+not `pkg/`. "Same subsystems" is the claim for the governance half and was
 overstated for the rest until 2026-09-11
 ([#288](https://github.com/go-steer/mast/issues/288)); an embedder's host
 already owns the trigger. See
@@ -88,13 +88,14 @@ already owns the trigger. See
   no workload policy and no resume surface, so it registers no gate
   (parking a call in a process with no way to un-park it is a hang, not a
   safety property).
-- **Binary.** `cmd/mast`: serve mode (workload daemon with inject +
+- **Binary.** `cmd/mast`, a one-line `main` over `internal/cli.Main`
+  ([#301](https://github.com/go-steer/mast/issues/301)): serve mode (workload daemon with inject +
   attach + A2A + AG-UI + metrics listeners), one-shot mode, and the
   `mast sessions` / `mast stop` operator CLIs. Serve and one-shot are
   the *same* invocation distinguished by a positional prompt — `mast
   --workload=<name> …` serves, `mast --task=<class> "<prompt>"` runs
   one turn and exits. There is no `serve` subcommand; only `sessions`
-  and `stop` are subcommands (`cmd/mast/main.go`).
+  and `stop` are subcommands (`internal/cli/main.go`).
 
 Nothing here is under a semver promise yet — mast is pre-1.0, and
 dropping API stability promises is what restarting at v0.1.0 bought.
@@ -124,7 +125,7 @@ runtime. See [the v1.0 stability promise](#the-v10-stability-promise).
 | `pkg/specialists` | Subagent-as-tool: `.specialist.md` files (YAML frontmatter plus a prose body — not Go templates; renamed from `.tmpl` in v0.8 (#292), which stopped loading in v0.9 (#349)) with budgets, model overrides, tool allowlists ([`docs/specialists-design.md`](./docs/specialists-design.md)). |
 | `pkg/workload` | Workload bundles: declarative YAML naming specialists, tool catalog, budgets, HITL policy. |
 | `internal/monitor` | The run-to-run classification a monitoring cycle carries: parses the record stream a bundle's `monitor.transitions_from` key names (logfmt or flat JSON, one record per line, mandatory `scanned=/findings=` summary) into a `monitor.Set` the scheduled envelope ships whole. Domain-neutral by construction — no enum of transition classes, no severity comparison, no fingerprinting; the classifier's verdict is consumed verbatim. Also the two argument names an operator's acknowledgement is forwarded under (`subject_key`, `ack_by`) — constants rather than strings in `cmd/`, because the loader refuses a bundle that pins either and both ends must mean the same thing by them. |
-| `internal/notify` | The chat egress a monitoring cycle speaks through: a dependency-free client for switchboard's `POST /v1/messages` ingress and its edit/append verbs, with the two non-error answers to an append (409 "send the full text", 200 with a continuation ref) modelled as sentinels a caller acts on rather than as faults. Knows nothing about monitoring — the timeline policy lives in `cmd/mast/notify.go`. |
+| `internal/notify` | The chat egress a monitoring cycle speaks through: a dependency-free client for switchboard's `POST /v1/messages` ingress and its edit/append verbs, with the two non-error answers to an append (409 "send the full text", 200 with a continuation ref) modelled as sentinels a caller acts on rather than as faults. Knows nothing about monitoring — the timeline policy lives in `internal/cli/notify.go`. |
 | `internal/planner` | Supervisor-body planner scaffold (`plan`/`finish_plan`; `invoke_remote_agent` composes here). |
 | `internal/envelope` | Inject payloads — the unattended entry-point contract. |
 | `internal/config` | `.agents/` discovery (workloads, specialists, MCP refs, A2A registrations) ([`docs/config-layout-design.md`](./docs/config-layout-design.md)). Since [#289](https://github.com/go-steer/mast/issues/289) it also computes the **config identity** — a digest over exactly the files the loaders read — which the daemon logs at startup and re-hashes once a minute, warning once per edit when the mount stops matching what is running. It never reloads. |
@@ -199,16 +200,16 @@ gates ([`docs/outcome-evals-design.md`](./docs/outcome-evals-design.md))),
 by driving two agent rigs through an ADK runner, plus the shared
 invariant every provider adapter's wire test is held to — see
 `docs/model-support-design.md` R2/R8). The scheduled-trigger
-loop is daemon-side in `cmd/mast/schedtrigger.go`, reading the
+loop is daemon-side in `internal/cli/schedtrigger.go`, reading the
 bundle's `scheduled:` section; a cycle's collection leg
-(`cmd/mast/monitor.go`, `cmd/mast/monitorctx.go`) runs ahead of it,
+(`internal/cli/monitor.go`, `internal/cli/monitorctx.go`) runs ahead of it,
 off the bundle's `monitor.collect` block, and parses the one result
 named by `monitor.transitions_from` through `internal/monitor` before the
 envelope is built. The cycle's tail — whether to wake the model at
-all, and what to tell the chat — is `cmd/mast/notify.go` over
+all, and what to tell the chat — is `internal/cli/notify.go` over
 `internal/notify`, configured by the bundle's `monitor.notify` block and
 the daemon's `--notify-url` / `MAST_NOTIFY_TOKEN`. The one leg that
-runs the other way is `cmd/mast/monitorack.go`, off the bundle's
+runs the other way is `internal/cli/monitorack.go`, off the bundle's
 `monitor.ack` block: an operator's acknowledgement arrives on the
 daemon's `POST /monitor-ack`, is attributed from the credential that
 carried it, recorded durably by `pkg/transcript`, and forwarded to the
@@ -241,7 +242,7 @@ when somebody reads their chat.
   (`grep -rn '\.Partial' --include='*.go'`): `pkg/watchdog/bridge.go`,
   `pkg/agent/stall.go` and — since
   [#400](https://github.com/go-steer/mast/issues/400) — the AG-UI
-  emitter in `cmd/mast/agui.go`, which was the worst entry on the list
+  emitter in `internal/cli/agui.go`, which was the worst entry on the list
   because it minted a *complete* tool-call triple per chunk with empty
   arguments, so a client dispatching on `TOOL_CALL_END` would have run
   the tool several times. The
@@ -300,7 +301,7 @@ when somebody reads their chat.
   out that nobody built is worse than none, because the operator spends
   their next hour on it.
 - **mast calls a tool nobody asked for in exactly three places, and
-  each has its own fence.** `cmd/mast/toolschemas.go`'s `runOwnBehalf`
+  each has its own fence.** `internal/cli/toolschemas.go`'s `runOwnBehalf`
   is the whole surface: the write gate's precondition read, a
   monitoring cycle's `monitor.collect` leg, and the `monitor.ack`
   forward. The read is fenced by *classification* — compose refuses to
@@ -335,7 +336,7 @@ when somebody reads their chat.
   and is the bug this contract exists to prevent.
 - **A cycle with nothing to report does not wake the model, and a
   failed report is never replayed.** The skip is decided before the
-  turn runs (`cmd/mast/notify.go`'s `decide`) and only where both
+  turn runs (`internal/cli/notify.go`'s `decide`) and only where both
   `monitor.transitions_from` and `monitor.notify` are declared — so
   "nothing changed" is always the classifier's answer, never mast's
   guess. The no-replay half is the ordering constraint the whole M4b
@@ -351,7 +352,7 @@ when somebody reads their chat.
 - **An ack is not an approval.** They share an operator, a chat window
   and a verb, and nothing else: an approval mints a grant that
   licenses a write and is consumed on use, while an ack asserts no
-  diagnosis and authorizes no change. `cmd/mast/monitorack.go` touches
+  diagnosis and authorizes no change. `internal/cli/monitorack.go` touches
   neither `internal/permissions` nor `pkg/approval` and writes no decision
   record — if it did, the v0.3 answer to "who approved this change"
   would start including people who muted an alert. The split that
@@ -647,7 +648,7 @@ subcommands and their verbs, and the exit codes (`0` ok, `1` the work
 failed, `2` the invocation was rejected, `3` serve mode's drain expired
 with sessions still interrupted). Not promised: log lines, stdout
 prose, `--help` wording, and metric names, which have their own gate.
-The surface is pinned in `cmd/mast/testdata/cli-surface.txt` and
+The surface is pinned in `internal/cli/testdata/cli-surface.txt` and
 enforced by `TestCLISurface`; before that file existed, a flag rename
 passed every test in the tree.
 

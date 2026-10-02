@@ -307,7 +307,7 @@ func (d *digestingTool) Run(ctx adkagent.Context, args any) (map[string]any, err
 //
 // mast calls a tool on its own behalf in exactly one place the model is
 // not part of: the write gate's change-set precondition read
-// (cmd/mast/toolschemas.go). That caller wants the tool's own bytes.
+// (internal/cli/toolschemas.go). That caller wants the tool's own bytes.
 // Nothing it reads reaches a transcript, so there is nothing to save —
 // and a digest envelope carries a fresh call_id and a wall-clock
 // latency on every call, which would void an operator's grant on the

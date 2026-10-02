@@ -44,7 +44,7 @@ import (
 //
 // The set of servers a specialist may name is `tool_catalog.mcp`,
 // already loaded and already validated against mcp.json
-// (cmd/mast/main.go). Checking a name against it costs nothing and
+// (internal/cli/main.go). Checking a name against it costs nothing and
 // reaches no network. The *tool* half of the same allowlist cannot be
 // checked here: it needs a live `tools/list`, which is why mast's
 // toolsets are lazy — connecting to every server at startup to validate

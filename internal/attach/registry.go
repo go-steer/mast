@@ -703,7 +703,7 @@ const resumerDefaultApp = "mast"
 // value, which admits admins only, so the owner who triggered the
 // resume is refused by the very entry their request created. mast's
 // own storeResumer returns a zero ACL for exactly this reason (see
-// cmd/mast/attach.go), and it is the obvious thing for an embedder's
+// internal/cli/attach.go), and it is the obvious thing for an embedder's
 // resumer to do too. The resumer's return value is still honored when
 // no store is wired or no row exists — the storeless and legacy paths
 // have nothing else to go on.

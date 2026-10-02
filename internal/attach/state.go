@@ -56,7 +56,7 @@ const (
 // core-agent's permissions.Gate.ToolGateState projects, so a client
 // that already reads one daemon's /tools reads the other's — mast
 // derives them from the write gate instead (effects.Predicate plus
-// hitl.on_mutation; see cmd/mast/toolcatalog.go). Bare strings for the
+// hitl.on_mutation; see internal/cli/toolcatalog.go). Bare strings for the
 // same reason the source constants are.
 const (
 	// ToolGateAllowed: the tool runs without operator involvement —

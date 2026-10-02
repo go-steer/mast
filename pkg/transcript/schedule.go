@@ -118,7 +118,7 @@ func (s *Store) Schedule(ctx context.Context, userID, workload string) *Schedule
 //
 // Last-write-wins is correct here and needs no read-modify-write:
 // mast's scheduled trigger is single-instance (like the timed-pause
-// scheduler, and for the same reason — see cmd/mast/pausesched.go),
+// scheduler, and for the same reason — see internal/cli/pausesched.go),
 // so the only writer of a given workload's record is the one goroutine
 // that owns its cadence.
 func (s *Store) SaveSchedule(ctx context.Context, userID string, rec ScheduleRecord) error {

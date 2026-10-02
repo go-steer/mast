@@ -205,7 +205,7 @@ func TestAToolsetErrorIsNotSwallowed(t *testing.T) {
 func TestTheWrapCanBeSeenThroughByAMastSideCaller(t *testing.T) {
 	t.Parallel()
 	// The write gate's precondition read runs the tool mast wired, not
-	// the digest of it (cmd/mast/toolschemas.go). Unwrap is how it gets
+	// the digest of it (internal/cli/toolschemas.go). Unwrap is how it gets
 	// there, so the wrap must keep announcing it.
 	inner := &fakeTool{name: "read_status", response: map[string]any{"state": "steady"}}
 	wrapped := WithDigest(&fakeToolset{name: "gke", tools: []tool.Tool{inner}}, "gke", &DigestOptions{})

@@ -429,7 +429,7 @@ func TestWireContract_ParksResultOmitsTheTranscript(t *testing.T) {
 
 	// Every name a transcript projection carries and this one refuses.
 	// Each exists on transcript.Detail, or on a record it embeds, and is
-	// deliberately not copied — see cmd/mast/parks.go, which is where
+	// deliberately not copied — see internal/cli/parks.go, which is where
 	// each omission is argued.
 	for name, why := range map[string]string{
 		"event_count":     "the transcript's size, and the transcript with it",

@@ -140,7 +140,7 @@ around the call. No tool results, including the result of the read that
 produced a capture: only that read's name, its digest, and the declared
 field names travel, because the values are cluster state and can be
 anything. And nothing the write gate did not park on. The projection is
-written out field by field in `cmd/mast/parks.go`, so a field added to the
+written out field by field in `internal/cli/parks.go`, so a field added to the
 transcript cannot reach this wire without someone deciding it should.
 
 A `hold` is reported beside the parks and never as one. Nothing resolves by

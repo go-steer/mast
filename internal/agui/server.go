@@ -196,7 +196,7 @@ type RunResult struct {
 }
 
 // Backend drives an AG-UI run against the mast runtime. The daemon implements
-// it over runTurnPre (cmd/mast/agui.go); this package never imports the
+// it over runTurnPre (internal/cli/agui.go); this package never imports the
 // runtime. emit is called synchronously and in order on the calling goroutine
 // — the SSE handler writes each frame to the wire — so implementations need no
 // locking around it. The backend emits the opening frames (RunStarted, then
