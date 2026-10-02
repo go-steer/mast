@@ -509,6 +509,14 @@
 
 ### Bug or Regression
 
+- **`mast` with no `--workload` starts again.** The CLI reference documents
+  an empty `--workload` as the trivial single-agent coordinator, for
+  inject-endpoint smoke tests. Serve mode read the workload's monitor, cadence
+  and HITL blocks off a bundle that does not exist in that mode, and panicked
+  before any listener bound. It had done so since the monitor-notify check
+  landed in #246. A daemon with no workload now reads those blocks as
+  declaring nothing, which is what they mean there.
+
 - **An event and the index entry every reader finds it by now commit
   together or not at all.** `eventlog.AppendEvent` was two independent
   writes — ADK persists its `events` row, then mast inserts the

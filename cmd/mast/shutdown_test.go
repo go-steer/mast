@@ -554,9 +554,28 @@ func TestTeardownWatchdogFiresOnOverrun(t *testing.T) {
 	}
 }
 
+// TestTeardownWatchdogDisarmedDoesNotFire: serve() disarms the watchdog
+// once its teardown has returned. Without that, a process that outlives
+// serve() is killed with exit 4 after the deadline for a teardown that
+// finished long before.
+func TestTeardownWatchdogDisarmedDoesNotFire(t *testing.T) {
+	fired := make(chan struct{}, 1)
+	dump := func(io.Writer) { fired <- struct{}{} }
+	exit := func(int) { fired <- struct{}{} }
+
+	disarm := armTeardownWatchdog(20*time.Millisecond, dump, exit, discardLogger())
+	disarm()
+
+	select {
+	case <-fired:
+		t.Fatal("a disarmed watchdog fired")
+	case <-time.After(200 * time.Millisecond):
+		// expected: the timer was stopped
+	}
+}
+
 // TestTeardownWatchdogQuietBeforeDeadline: a watchdog with a long
-// deadline must not fire (dump/exit) before it — a healthy teardown
-// reaches os.Exit first and kills the sleeping goroutine.
+// deadline must not fire (dump/exit) before it.
 func TestTeardownWatchdogQuietBeforeDeadline(t *testing.T) {
 	fired := make(chan struct{}, 1)
 	dump := func(io.Writer) { fired <- struct{}{} }
