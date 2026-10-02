@@ -28,7 +28,9 @@
 #     (dev/release/notes.sh); pre-release suffixes (-pre, -rc.N)
 #     are marked Pre-release automatically
 #   - refuses to finish if the install page names assets the release
-#     does not carry (dev/release/check-install-page.sh --release)
+#     does not carry (dev/release/check-install-page.sh --release) —
+#     for stable tags only, since the page names the latest stable
+#     release and a pre-release is not it
 #
 # The O-tier gate runs on the dry run too, deliberately. A dry run's job
 # is to answer "would the real tag work", and one that skipped the only
@@ -162,8 +164,15 @@ jobs:
       # download URLs (#306), which is the failure mode — caught then
       # by a human noticing, and now by the release refusing to finish
       # while the page sends readers at a 404.
+      #
+      # Not for a pre-release (v1.0.0-rc.1, v0.1.0-pre). The install
+      # page names the latest *stable* release, and it should: a
+      # release candidate is something to try, not something to send an
+      # operator's copy-paste at. So under an rc tag the page correctly
+      # names the previous release, and comparing it against the rc's
+      # assets would fail a release for being right.
       - name: Verify the install page matches the published assets
-        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: dev/release/check-install-page.sh --release "${GITHUB_REF_NAME}"
