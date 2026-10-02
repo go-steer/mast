@@ -1,15 +1,15 @@
 ---
 title: Roadmap
-description: What v0.9 ships, and what lands after it — honestly.
+description: What v1.0 ships, and what lands after it — honestly.
 ---
 
-mast is at **v0.9.0** — the surfaces stop answering a question nobody asked.
-On the v0.8.0 correctness pass, the v0.7.0 route-back pass, the v0.6.0
-enforcement pass, the v0.5.0 monitoring cycle, the v0.4.0 change set, the
-v0.3.0 write gate and the v0.2.0 durable-execution spine. See [Shipped in
-v0.9.0](#shipped-in-v090--the-surfaces-stop-answering-a-question-nobody-asked)
-below. v0.9 is the last release before v1.0, which is the API freeze and
-nothing else.
+mast is at **v1.0.0** — the API stops moving. The promised import paths and
+the binary's command line follow semver from here, enforced by a CI gate
+rather than a paragraph. See [Shipped in
+v1.0.0](#shipped-in-v100--the-api-stops-moving) below. Before it: the v0.9.0
+surfaces pass, the v0.8.0 correctness pass, the v0.7.0 route-back pass, the
+v0.6.0 enforcement pass, the v0.5.0 monitoring cycle, the v0.4.0 change set,
+the v0.3.0 write gate and the v0.2.0 durable-execution spine.
 
 **All eleven v0.1 exit criteria from the fork design are green.** The
 `--task` profile criterion cleared with the P1.3a/P1.3b adapter ports and
@@ -23,10 +23,8 @@ sessions, and round-tripped a prompt through a real turn over SSE.
 
 ## Stability, precisely
 
-**Nothing is promised yet.** mast is pre-1.0 and every exported path may
-change in any release. v1.0 is the release that makes the promise, and
-[what it will cover](/reference/stability/) is published now so you can
-decide what to depend on today: the module root, the `cli` package a
+**v1.0.0 makes the promise.** [What it covers](/reference/stability/):
+the module root, the `cli` package a
 [custom `main.go`](/quickstart/custom-binary/) is built on,
 `pkg/transcript`, `pkg/workload`, `pkg/specialists` and `pkg/budget`,
 plus the binary's flags, verbs and exit codes. Everything else is under
@@ -561,6 +559,56 @@ shown it either way — a fix worth having moves `intent_coverage` by a fraction
 of one row's mean. The competing hypothesis is that the models reason past the
 tool rather than fail to find it, and the same experiment separates the two.
 
+## Shipped in v1.0.0 — the API stops moving
+
+**The promise, enforced rather than written down.** The promised import paths —
+the module root, `cli`, `pkg/budget`, `pkg/specialists`, `pkg/transcript` and
+`pkg/workload` — and the binary's flags, subcommands and exit codes follow
+semver from this release ([stability](/reference/stability/),
+[compatibility](/reference/compatibility/)). Three checks back it:
+- a CI gate runs `apidiff` over every promised package against this tag and
+  fails on an incompatible change;
+- a test fails on an importable package nobody decided to make public;
+- another test holds the promised packages away from the auth code that moves
+  to go-steer/purser next, context keys included.
+
+**A small surface, on purpose
+([#301](https://github.com/go-steer/mast/issues/301)).** Thirty-two packages
+that were importable, unsupported and imported by nothing outside this
+repository moved under `internal/`. In their place is one new package: `cli`,
+the binary itself, for [building your own `mast`](/quickstart/custom-binary/).
+Its options take ADK's own types:
+- `WithModels` supplies models by name, for `--model` and each specialist's
+  `model:`.
+- `WithTools` / `WithToolset` add toolsets a specialist reaches through its
+  `tools.mcp` allowlist, governed exactly like an MCP server's — a typo is
+  refused, a read-only specialist must enumerate, and an unknown tool parks for
+  approval by default.
+
+This was proven against a real custom binary, not an in-process call.
+
+**The binary, taken apart and put back the same.** `cmd/mast` is one line
+over `internal/cli`.
+- `serve()` was a single function of about 1,250 lines. It is now a daemon
+  built in twelve named phases, with its teardown order preserved and pinned by
+  a test.
+- Serving with no `--workload` — a documented smoke-test mode — had crashed at
+  boot since v0.5 and starts again.
+
+**The rest of the release.**
+- **Supply chain** ([#342](https://github.com/go-steer/mast/issues/342)): signed
+  checksums, a published and signed container image, and SLSA build provenance,
+  each verified against what was published.
+- **Install**: the packaged install is a Helm chart, and a Terraform module
+  installs both halves and can narrow an IAM grant it widened.
+- **Replicas** ([#345](https://github.com/go-steer/mast/issues/345)): a
+  scheduling lease, so only one replica starts the turns nobody asked for.
+- **Readiness**: a probe that can go red.
+- **Approval parks**: announced to chat with `--park-notify`.
+- **Provider rejections**: one retry on a `429` or `503`.
+- **MCP**: a tool whose server declares it read-only is believed, unless the
+  workload pins it otherwise.
+
 ## Shipped in v0.9.0 — the surfaces stop answering a question nobody asked
 
 v0.8 closed a run of claims that turned out not to hold. v0.9 is the
@@ -1038,7 +1086,20 @@ believed it did.
   scheduled monitoring ships. It remains available to any caller that
   builds its own signal set and knows its workload does not poll.
 
-## What v0.9.0 will not let you do
+## What v1.0.0 will not let you do
+
+**Import mast's runtime.** Since v1.0 a Go program gets the library entry
+points, the promised types, and the binary as a package; the servers, the
+providers, MCP wiring, the watchdog and the rest are `internal/`. A custom
+`main.go` can add models and tools. It cannot yet supply its own session
+store, authentication or runner plugins. The session store's durable
+machinery sits on the SQL connection behind `--session-db`. Authentication
+waits for go-steer/purser to reach v1. A plugin needs a design that orders it
+around the write gate. It also cannot choose which watchdog signals run, or
+switch on Vertex context caching, which nothing wires today. Each is a
+deliberate deferral that a named use case would reopen, and each would arrive
+as an addition rather than a break.
+
 
 **Restore.** A change now carries a recorded route back — the prior state and
 the exact call that undoes it — and mast will not fire that call. Rendering the
@@ -1179,21 +1240,29 @@ which is why it is spelled out rather than left to inference.
 
 ## Next
 
-**v1.0 is the API freeze and carries no other claim.** What it covers is
-[published now](/reference/stability/) so you can decide what to depend on
-today: six import paths plus `cmd/mast`'s flags, verbs and exit codes, with
-every other importable package named individually as unsupported. It is not a
-production-readiness badge, and saying so is the point — the version number
-stops being a proxy for a judgement nobody made.
+**v1.0 changes how mast moves, not what it does next.** From here an
+incompatible change to a promised package is a new major, and the gate says so
+on the PR that makes it. Additions are minors: a new `cli` option, a new
+bundle key under the same `schema_version`, a new field on a promised struct.
+That is why two things this page once said had to land before the freeze did
+not need to. The AG-UI client-tool gate is a bundle key not yet written, and a
+key added later is additive. The deferred `cli` options are options not yet
+written.
 
-Two things have to land before it, because both get harder the day the freeze
-starts. The exported surface wants **shrinking**: runtime glue belongs under
-`internal/`, and moving a package after v1.0 is itself a breaking change
-([#301](https://github.com/go-steer/mast/issues/301)). And the AG-UI bundle
-keys still owed a shape — the concurrent-run policy
-([#384](https://github.com/go-steer/mast/issues/384)) and the client-tool
-gate — need their *key* decided even where the implementation slips, since a
-key lands on the frozen `Bundle`.
+The work that is queued:
+
+- **A third real provider
+  ([#312](https://github.com/go-steer/mast/issues/312))**, the first test of
+  whether `tier:` survives a vendor it was not designed against.
+- **Caller identity on go-steer/purser
+  ([#469](https://github.com/go-steer/mast/issues/469))**, after which mast's
+  own auth packages are deleted rather than maintained. Nothing promised
+  reaches them, which is what lets that happen in a minor.
+- **Leader takeover ([#403](https://github.com/go-steer/mast/issues/403))**: a
+  healthy passive replica that picks up the cadence when the leader dies.
+- **Homebrew and apt packages
+  ([#342](https://github.com/go-steer/mast/issues/342))**, the last of the
+  packaged-install work.
 
 ## Further out
 

@@ -29,7 +29,7 @@ type: application
 # --version/--app-version, so an unreleased chart rendered from a
 # checkout never claims to be a release.
 version: 0.0.0-dev
-appVersion: "0.9.0"
+appVersion: "1.0.0"
 
 # Lineage: the templates here are the `deploy/` kustomize base this repo
 # carried through v0.9, deleted 2026-09-20 when the chart replaced it

@@ -165,11 +165,18 @@ check_hardcoded_base() {
 #   c. a release-asset download URL
 #   d. a release-asset filename, and the "Assets for vX.Y.Z" line
 #      above it
+#   e. the version a site banner leads with (the landing page's
+#      frontmatter `banner:` block)
 #
 # (c) and (d) are the ones that actually hurt: install.md sat at
 # v0.4.0 for three releases *including its copy-paste download URLs*,
 # so a reader following the page got a 404 rather than a stale
 # adjective.
+#
+# (e) is the one that sat longest: the landing page's banner said
+# "v0.7.0 — …" through v0.8.0 and v0.9.0 with this rule green, because a
+# banner is none of the four phrasings above. It is the first sentence
+# of the site.
 check_stale_version() {
   local path="$1" cur="$2"
   local curmm="${cur%.*}"        # v0.7.0 -> v0.7
@@ -197,6 +204,17 @@ check_stale_version() {
       got = ver(substr($0, RSTART, RLENGTH))
       want = (got ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) ? curbare : substr(curmm, 2)
       if (got != want) report(got, "this document title")
+    }
+
+    # (e) the leading version of a frontmatter banner. The block runs from
+    # `banner:` to the next top-level key; only its first version is a
+    # claim about now — later ones are the history it recites.
+    /^banner:/ { inbanner = 1; next }
+    inbanner && /^[A-Za-z]/ { inbanner = 0 }
+    inbanner && !bannerdone && match($0, /v[0-9]+\.[0-9]+\.[0-9]+/) {
+      bannerdone = 1
+      got = ver(substr($0, RSTART, RLENGTH))
+      if (got != curbare) report(got, "this site banner")
     }
 
     # (c) a release-asset download URL. A wrong one 404s.
@@ -372,6 +390,30 @@ Legitimate history, which must NOT fire: shipped in v0.5.0, on the
 v0.4.0 change set, and the v0.2 scaffold returns not_implemented.
 EOF
 
+  # (e) in its own file, because a banner lives in frontmatter, which
+  # has to be the top of the file. The second version is recited
+  # history and must not fire.
+  cat > "$tmp/banner.mdx" <<'EOF'
+---
+title: mast
+banner:
+  content: |
+    v0.7.0 — a stale headline, and v0.6 history after it.
+hero:
+  title: mast
+---
+EOF
+  cat > "$tmp/banner-ok.mdx" <<'EOF'
+---
+title: mast
+banner:
+  content: |
+    v9.9.9 — current, then the v0.7.0 history it recites.
+hero:
+  title: mast
+---
+EOF
+
   # The other half of the rule: a page that is correct must stay
   # silent. A check that fires on everything is as useless as one that
   # fires on nothing, and this is the half a broad "any vX.Y.Z" regex
@@ -444,6 +486,11 @@ EOF
     grep -qF "$what" <<<"$stale" || {
       echo "self-test: check_stale_version did not fire on \"$what\""; out=1; }
   done
+  grep -qF "this site banner" <<<"$(check_stale_version "$tmp/banner.mdx" "v9.9.9")" || {
+    echo "self-test: check_stale_version did not fire on \"this site banner\""; out=1; }
+  n=$(check_stale_version "$tmp/banner-ok.mdx" "v9.9.9" | wc -l)
+  (( n == 0 )) || {
+    echo "self-test: check_stale_version fired on a current banner"; out=1; }
   # Both "current release:" and "current as of" are status lines.
   n=$(grep -cF "this status line" <<<"$stale" || true)
   (( n >= 2 )) || { echo "self-test: check_stale_version caught $n status line(s), expected 2"; out=1; }
