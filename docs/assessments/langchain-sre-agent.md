@@ -105,7 +105,7 @@ Their structural property: the orchestrator holds zero write tools, and every wr
 mast today:
 - HITL gates the **specialist's result**, not the tool call. `internal/graph/graph.go:181-217` runs the specialist to completion via `workflow.RunNode`, *then* parks on a `RequestInput`. By the time an operator sees the prompt, any mutation the specialist chose to make has already fired.
 - `hitl_policy.on_mutation` is specified with a mutation predicate (`docs/orchestration-design.md`, resolved-decision row 129) but unimplemented. `pkg/workload/bundle.go:92-97` carries only `RequireApproval bool`.
-- `internal/permissions` is ported but **no `permissions.Gate` is constructed anywhere in non-test code**. Only `internal/attach/prompter.go` imports it — the `PromptBroker` transport that would carry a gate's prompts to an operator exists; the gate itself is never interposed on tool execution. (The seam is proven: `internal/effects` registers as a runner plugin at `cmd/mast/main.go:443` and `cmd/mast/oneshot.go:127`.)
+- `internal/permissions` is ported but **no `permissions.Gate` is constructed anywhere in non-test code**. Only `internal/attach/prompter.go` imports it — the `PromptBroker` transport that would carry a gate's prompts to an operator exists; the gate itself is never interposed on tool execution. (The seam is proven: `internal/effects` registers as a runner plugin at `internal/cli/main.go:443` and `internal/cli/oneshot.go:127`.)
 - **Specialists mix read and write in one allowlist.** `examples/workloads/gke-triage/specialists/OOMKilled.tmpl:12-20` grants `patch_resource` and `rollout_undo` to a *diagnosis* specialist, held back only by prompt text at lines 34-38: *"Do NOT mutate anything on your own initiative."* That is precisely the boundary LangChain rejected.
 
 ### G2 — No parallel fan-out — **blocking, capability**
@@ -209,7 +209,7 @@ Two requirements carried in from Q5's verification, both non-negotiable because 
 
 ### P3 — Proactive monitoring (k8s-lookout + mast)
 
-1. **`scheduled:` on `EdgeTrigger`** (interval + jitter), reusing the timed-pause scheduler machinery in `cmd/mast/pausesched.go`.
+1. **`scheduled:` on `EdgeTrigger`** (interval + jitter), reusing the timed-pause scheduler machinery in `internal/cli/pausesched.go`.
 2. **Collector = `k8s-lookout`.** `lookout health --format=json` plus `triage delta` / `triage top` over lookout's MCP mode. Zero model tokens, and better than their hand-rolled collection.
 3. **Bounded analysis.** One cheap-tier call, forced structured `HealthReport`, no orchestrator, fixed step count. Their strongest lesson; we get it nearly free once P0.3 lands.
 4. **Finding state lands in lookout, not mast** (Q1). New surface: `lookout findings diff --report -` takes a `HealthReport` on stdin and returns the delta (new / escalated / ongoing / resolved / suppressed) plus a notify decision. Fingerprint + ack windows + digest-every-N live behind it. **Port their `normalize_resource_name` outright** — the vowel-free-alphabet trick is genuinely clever and we would otherwise rediscover it the hard way.

@@ -31,7 +31,7 @@ const dispatchApp = "planner_dispatch"
 // sentence most likely to be said about the missing outbox record under
 // hitl.on_mutation: apply. This measures what durability alone would buy,
 // and the answer is nothing: the boot-time auto-resume scan that consumes
-// dangling intents (cmd/mast/autoresume.go → Store.ScanInterrupted) lists
+// dangling intents (internal/cli/autoresume.go → Store.ScanInterrupted) lists
 // sessions for ONE AppName, and a dispatch sub-runner does not use the
 // workload's.
 //

@@ -96,7 +96,7 @@ func (f *fakePermsSource) answers() []fakeAnswer {
 }
 
 // sourceRegistrant offers a PermsSource and nothing else — the shape a
-// mast daemon registers (cmd/mast/permsource.go).
+// mast daemon registers (internal/cli/permsource.go).
 type sourceRegistrant struct {
 	stubRegistrant
 	src PermsSource

@@ -78,7 +78,7 @@ const (
 // silently ends scheduled work until someone restarts the pod a second
 // time. Eight seconds bounds that recovery; it also bounds how long a
 // genuinely-second replica spends waiting at boot before concluding it
-// is second (see cmd/mast/schedlease.go).
+// is second (see internal/cli/schedlease.go).
 const (
 	instanceHeartbeatInterval = 2 * time.Second
 	// InstanceLeaseStaleAfter is how long an instance lease survives its
@@ -182,7 +182,7 @@ const (
 // This does NOT make mast multi-replica. It makes the second replica
 // *quiet*: it stops that replica duplicating timed work, and it does
 // not hand over the work if the leader goes away and a passive replica
-// is already running (see cmd/mast/schedlease.go for what the daemon
+// is already running (see internal/cli/schedlease.go for what the daemon
 // does with the refusal, and docs/deployment-design.md for the part
 // that is still designed and not built).
 func AcquireInstanceLease(ctx context.Context, db *gorm.DB, name string) (*InstanceLease, error) {

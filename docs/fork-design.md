@@ -59,7 +59,7 @@ These need answers before phase 1; deferring them creates rework.
 | Project name | **`mast`** | Short (4 chars), nautical-fits-`go-steer`-org, "load-bearing structural element" is the right metaphor for an agent runtime substrate. GitHub search 2026-06-11: no collision in the agent/AI/LLM space; the two notable Go projects named `mast` are niche (a math DSL parser at `fatlotus/mast`, a Merkle Search Trees implementation at `jrhy/mast`). Tagline writes itself: *"mast: agent runtime for unattended, library, and multi-provider workloads."* |
 | Repo home | **`github.com/go-steer/mast`** | Same-org as core-agent. Signals "same team, two products." Verified 2026-06-11: repo does not yet exist. |
 | Go module path | **`github.com/go-steer/mast`** | Affects every import in the kept code. Touched once at fork time via `go mod edit -module github.com/go-steer/mast` + sed. |
-| Binary name | **`mast`** | Drops from `cmd/core-agent/main.go` → `cmd/mast/main.go`. CLI invocation becomes `mast --task=debug ...`. |
+| Binary name | **`mast`** | Drops from `cmd/core-agent/main.go` → `internal/cli/main.go`. CLI invocation becomes `mast --task=debug ...`. |
 | License | Carry forward Apache 2.0 | No reason to change unless **(C)**. |
 | Versioning | Start fresh at v0.1.0 | Signals "new project, not a continuation." Inherits design maturity, drops API stability promises. |
 | ADK dependency | **Keep, and adopt v2 from day one.** No concrete pain; provides known working code. v2's graph engine, durable HITL, and agent modes are load-bearing for mast's positioning (see [`./workflow-scaffolding-design.md`](./workflow-scaffolding-design.md) and [`./specialists-design.md`](./specialists-design.md)). Revisit replacement only if a specific bug or limitation surfaces. | Replacing `google.golang.org/adk/v2` would be 2-3 months of careful work (tool-call correlation, parallel function calls, streaming delta protocols, content-part ordering rules — all the fiddly translation ADK does between Gemini and Anthropic semantics). v2 makes that even less appealing by delivering the graph scheduler, durable HITL, and agent modes we would otherwise own. Version disposition: the lean core (bucket 1) is written fresh against v2; adapter ports (bucket 2) migrate v1→v2 at port time. No v1→v2 migration diff persists in mast's history. See "Recommended approach" and "Sync discipline" for the follow-on implications. Owning ADK's job is a separate decision that needs its own trigger. |
@@ -112,7 +112,7 @@ P1.3c is unblocked by the letter of its gate (#390/#385 closed), but attach kept
 
 Phase 1 is a set of coordinated PRs against a fresh `github.com/go-steer/mast` repo, not one squash. Sequencing:
 
-**P1.1 — bootstrap.** New repo initialized. Empty `cmd/mast/main.go`, minimal `go.mod` pinning `google.golang.org/adk/v2`, `LICENSE` (Apache 2.0), initial `README.md` stub, `.gitignore`, `CHANGELOG.md`, CI skeleton adapted from mast-web (lint + build + test workflows). ~1 day.
+**P1.1 — bootstrap.** New repo initialized. Empty `internal/cli/main.go`, minimal `go.mod` pinning `google.golang.org/adk/v2`, `LICENSE` (Apache 2.0), initial `README.md` stub, `.gitignore`, `CHANGELOG.md`, CI skeleton adapted from mast-web (lint + build + test workflows). ~1 day.
 
 **P1.2 — lean core (bucket 1).** The core agent loop as a small shim over v2 primitives:
 - v2 runner integration; `agent.Agent` interface consumers.

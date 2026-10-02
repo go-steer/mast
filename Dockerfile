@@ -68,8 +68,8 @@ ARG BUILD_DATE=""
 RUN go build \
     -ldflags "-s -w \
       ${VERSION:+-X github.com/go-steer/mast/internal/version.Version=${VERSION}} \
-      ${COMMIT:+-X main.commit=${COMMIT}} \
-      ${BUILD_DATE:+-X main.date=${BUILD_DATE}}" \
+      ${COMMIT:+-X github.com/go-steer/mast/internal/version.Commit=${COMMIT}} \
+      ${BUILD_DATE:+-X github.com/go-steer/mast/internal/version.Date=${BUILD_DATE}}" \
     -trimpath \
     -o /out/mast \
     ./cmd/mast

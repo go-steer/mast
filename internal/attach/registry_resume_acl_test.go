@@ -28,7 +28,7 @@ import (
 // the Registrant and returns the zero auth.SessionACL, because the ACL
 // is the registry's durable state and a factory has no particular
 // reason to go re-read it. mast's own storeResumer is exactly this
-// shape (cmd/mast/attach.go).
+// shape (internal/cli/attach.go).
 //
 // The existing stubResumer returns row.ACL(), which is why nothing
 // caught this: the test double was better behaved than any resumer

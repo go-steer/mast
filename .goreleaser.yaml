@@ -32,8 +32,8 @@ builds:
     ldflags:
       - -s -w
       - -X github.com/go-steer/mast/internal/version.Version={{.Version}}
-      - -X main.commit={{.ShortCommit}}
-      - -X main.date={{.CommitDate}}
+      - -X github.com/go-steer/mast/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/go-steer/mast/internal/version.Date={{.CommitDate}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:

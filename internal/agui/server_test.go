@@ -65,7 +65,7 @@ func (b *fakeBackend) RunAgent(ctx context.Context, in RunInput, emit func(any))
 	if beforeEmitErr != nil {
 		return RunResult{}, beforeEmitErr
 	}
-	// Opening frames (mirrors cmd/mast/agui.go): RunStarted then the shared
+	// Opening frames (mirrors internal/cli/agui.go): RunStarted then the shared
 	// state snapshot echoing the input state.
 	emit(NewRunStarted(in.ThreadID, in.RunID))
 	snap := in.State

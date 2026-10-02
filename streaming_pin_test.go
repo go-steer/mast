@@ -97,10 +97,10 @@ func runConfigProblems(label, src string) ([]string, int) {
 				"\t(re-derive it with: grep -rn '\\.Partial' --include='*.go'):\n"+
 				"\t  pkg/watchdog/bridge.go — skips partials as of #331\n"+
 				"\t  pkg/agent/stall.go — skips partials\n"+
-				"\t  cmd/mast/agui.go — skips partials as of #400\n"+
-				"\t  cmd/mast/a2a.go — skips partials as of #408\n"+
+				"\t  internal/cli/agui.go — skips partials as of #400\n"+
+				"\t  internal/cli/a2a.go — skips partials as of #408\n"+
 				"\tThe walk is finished: every event consumer named by #331 is in\n"+
-				"\tthat set. cmd/mast/a2a.go's turnCapture is the one deliberate\n"+
+				"\tthat set. internal/cli/a2a.go's turnCapture is the one deliberate\n"+
 				"\tomission — it is last-wins over model text, so it picks the\n"+
 				"\tcomplete response without a guard, and adding one would empty\n"+
 				"\tthe result artifact on a provider whose turn ends on a partial.\n"+
@@ -245,7 +245,7 @@ var c = someOtherConfig{StreamingMode: "sse"}
 	// checked rather than omitted, and the issue is where the reasoning is.
 	// #407 is named because it is the change that should delete this check.
 	got, _ := runConfigProblems("x.go", qualifiedSSE)
-	for _, want := range []string{"cmd/mast/a2a.go", "#408", "cmd/mast/agui.go", "#400", "pkg/watchdog/bridge.go", "#331", "#407", ".Partial"} {
+	for _, want := range []string{"internal/cli/a2a.go", "#408", "internal/cli/agui.go", "#400", "pkg/watchdog/bridge.go", "#331", "#407", ".Partial"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("failure message does not mention %q:\n%s", want, got[0])
 		}

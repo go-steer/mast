@@ -263,7 +263,7 @@ type RunError struct {
 
 // StepStarted / StepFinished bracket a named step within a run. The protocol
 // leaves the naming to the server; this package holds no opinion on it, and
-// the daemon's emitter picks the name (cmd/mast/agui.go names a step after the
+// the daemon's emitter picks the name (internal/cli/agui.go names a step after the
 // agent that authored the model events inside it, so a client sees where a
 // coordinator handed off to a specialist).
 //

@@ -112,7 +112,7 @@ func (l *ledger) total() float64 {
 
 // meteredTurn is the daemon's turn loop in miniature: install the gate,
 // stream the run, fold every event, stop on a crossed ceiling. The
-// shape is copied from cmd/mast/main.go's runTurn deliberately — a
+// shape is copied from internal/cli/main.go's runTurn deliberately — a
 // harness that folded differently from production would be testing
 // itself.
 //

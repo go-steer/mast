@@ -162,7 +162,7 @@ which predates local/stdio MCP.
 ### Bug the UAT surfaced — `/abort` re-abort returned HTTP 500 (fixed in #88)
 
 Re-aborting an already-aborted session used to return **HTTP 500**: `abortHandler`
-(`cmd/mast/main.go`) returned `store.Abort`'s `ErrAlreadyAborted` sentinel raw, and the inject
+(`internal/cli/main.go`) returned `store.Abort`'s `ErrAlreadyAborted` sentinel raw, and the inject
 server mapped an unrecognized error to 500. `/pause` maps the same sentinel to 409, and A2A
 `tasks/cancel` maps it to idempotent success. The durable marker **is** idempotent (the counter
 stays at 1), so this was a status-code wart, not a correctness bug. **#88 fixed it:** `abortHandler`

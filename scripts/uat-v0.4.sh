@@ -745,7 +745,7 @@ edge_trigger:
     # Zero, so a tick is predictable to the nanosecond. A real bundle
     # leaves this unset and gets a tenth of its interval; that the
     # offset is bounded and never accumulates into drift is a unit
-    # test's claim (cmd/mast/schedtrigger_test.go), because a harness
+    # test's claim (internal/cli/schedtrigger_test.go), because a harness
     # that waited out a random delay would only be measuring the delay.
     jitter: 0s
     prompt: 'Sweep the fixture cluster: {"reason":"$3"} and remediate what you find.'

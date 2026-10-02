@@ -118,7 +118,7 @@ grows net positive. That is [#300](https://github.com/go-steer/mast/issues/300)'
 second repo: a convention nothing measures is not a convention.
 
 mast's side of the agreement therefore ships with a mechanism, not just a refactor —
-`cmd/mast/paramgroup_test.go` reads the package with `go/ast` and fails if a named entry point
+`internal/cli/paramgroup_test.go` reads the package with `go/ast` and fails if a named entry point
 grows past its recorded parameter count, if it declares two adjacent same-typed parameters, or if
 *any* non-test free function in `package main` passes nine. It is offered upstream on #685 rather
 than ported: core-agent's own ceilings are different numbers, and its `funlen`/`gocognit` ratchet
@@ -201,7 +201,7 @@ defaults + `safety.watchdog` config (#665) · `4ac0337` persist guardrail trip-s
 process restart (#671)
 
 At triage time mast's watchdog was the pre-`635a9eb` shape: one signal (`repeated-tool-call`),
-observe-only, alerts surfaced through `Tap`. `cmd/mast/guardrails.go` was explicit that
+observe-only, alerts surfaced through `Tap`. `internal/cli/guardrails.go` was explicit that
 `watchdogModeWarn` is "the only watchdog posture mast ships", and the trip state lived in an
 in-memory `watchdogPool` that a restart cleared.
 
@@ -264,7 +264,7 @@ reset as rows in the ADK session's own event stream, folding the session's event
 restore. mast cannot: an out-of-band `Get`-then-`AppendEvent` while the runner holds the session
 bumps `last_update_time` and trips ADK's optimistic-concurrency check — the write-lease
 constraint that already forced attachadapter to defer its interrupt audit to between turns, and
-the reason `cmd/mast/guardrails.go` had settled for a log line as its only reset audit. A reset
+the reason `internal/cli/guardrails.go` had settled for a log line as its only reset audit. A reset
 arrives from an operator mid-incident, which is exactly when a turn is running. Upstream solves
 it with a pending queue drained from inside the agent's write lease; mast has no `Agent` to hang
 that lease on, so it writes to `agent_guardrail_log`, a table it owns, on the connection
@@ -897,7 +897,7 @@ Each was checked against mast's code; every row below is a finding, not a candid
 
 | SHA | Upstream | The mast finding |
 |---|---|---|
-| `57ac01c` + `f71c685` | bill a synchronously-invoked subagent's turns to the parent (#849); a declared budget that binds on both delegation doors (#850) | **Worse here, and it is three consumers rather than one** — [#226](https://github.com/go-steer/mast/issues/226). `invoke_specialist` runs each specialist on a private runner with an in-memory session (`internal/planner/dispatch.go:202`), so nothing riding the outer event stream sees a single event it emits: not the budget meter, not the metrics registry, not the watchdog (`cmd/mast/main.go:2536`–`2568`). A planner-dispatched specialist can spend without limit, report no tokens, and loop without being halted. Coordinator and graph dispatch are unaffected — `parallelagent` funnels sub-agent events upward — so an operator reads one bundle and gets two different enforcement stories depending on `dispatch:`. `MeterScopes`' per-specialist ceilings are unenforceable on this door for the same reason |
+| `57ac01c` + `f71c685` | bill a synchronously-invoked subagent's turns to the parent (#849); a declared budget that binds on both delegation doors (#850) | **Worse here, and it is three consumers rather than one** — [#226](https://github.com/go-steer/mast/issues/226). `invoke_specialist` runs each specialist on a private runner with an in-memory session (`internal/planner/dispatch.go:202`), so nothing riding the outer event stream sees a single event it emits: not the budget meter, not the metrics registry, not the watchdog (`internal/cli/main.go:2536`–`2568`). A planner-dispatched specialist can spend without limit, report no tokens, and loop without being halted. Coordinator and graph dispatch are unaffected — `parallelagent` funnels sub-agent events upward — so an operator reads one bundle and gets two different enforcement stories depending on `dispatch:`. `MeterScopes`' per-specialist ceilings are unenforceable on this door for the same reason |
 | `6813f6d` | add the dominant-tool-call density detector (#847) | **Same hole between the same two detectors** — [#227](https://github.com/go-steer/mast/issues/227). `RepeatedToolCallSignal` resets its run on any non-matching call; `AlternatingCycleSignal` skips near-uniform windows by construction (`uniform(tail[:p])`, `pkg/watchdog/cycle.go:165`). `a a a b a a a c a a a` trips neither until the interleaves happen to stop. The port's real work is de-duplication, not detection: mast appends every signal's alert, and under the `feedback` default three overlapping detectors on one loop is three paragraphs of steering for one behavior |
 | `661f278` | a metrics page written from the code, plus a drift gate (#854) | **Half absorbed, half missing** — [#228](https://github.com/go-steer/mast/issues/228). mast is *ahead* on the page: `reference/metrics.md` lists exactly the sixteen families `internal/observability` constructs, with labels and vocabularies. Nothing keeps it that way, and the same pipeline already carries the drift — `mast_scheduled_fires_total` and `mast_a2a_server_tasks_total` ship, are on the site page, and appear in neither the shipped nor the design-target column of `docs/observability-design.md` |
 | `f90bc65` | a scripted provider that gives every Model call its own cursor (#853) | **Same defect, different door** — [#229](https://github.com/go-steer/mast/issues/229). `mock.NewScripted` returns one cursor, offline fakes collapse every per-specialist override back to that one instance (a documented feature of `BuildModel`), and fan-out runs its branches concurrently. Three branches then walk one script between them. The cursor is mutex-guarded, so `-race` stays silent while the replay is nondeterministic |
@@ -1016,16 +1016,16 @@ Every row is a finding read out of mast's source, not a guess from upstream's co
 | `5b41cc1` (the #864 half) | one terminal frame per turn, and never before the answer (#892) | **Same dual-source race, no hold** — [#327](https://github.com/go-steer/mast/issues/327). `internal/attachadapter/adapter.go:299` publishes `turn-complete` directly to subscribers the moment `RunTurn` returns, while the turn's final text travels eventlog → pump → fan-out; mast's broadcaster already documents the two sources racing (`internal/attach/broadcaster.go:181-188`, `lastSent` exists precisely to dedupe them). Nothing holds the terminal frame for the log, so a client that finalizes its render there drops the answer. The `#818` half of the commit does not apply — mast has no in-turn guardrail arm emitting its own `turn-error` before the cancel |
 | `1423bb1` | accept a group-readable users.json owned by our own group (#985) | **Pre-fix code, and mast's own manifest arms the trigger** — [#328](https://github.com/go-steer/mast/issues/328). `pkg/auth/users.go:74` rejects any group or other bit (`mode&0o077 != 0`); Kubernetes `fsGroup` unconditionally sets group-read on a projected Secret volume; `deploy/base/50-statefulset-daemon.yaml:74` sets `fsGroup: 65532`. mast's *shipped* recipe does not mount a users file (line 15 records the single-bearer choice), so this is not live today — but multi-user auth plus that pod is a boot failure, and the recipe is the obvious starting point for anyone adding it. **Absorbed 2026-09-17**, policy and platform split taken verbatim — the accepting condition (own-group ownership fine, other bits never, group write/execute never even for our own group) is the whole content of the fix and there was nothing for mast to re-derive. One divergence, and it runs the other way from upstream's: upstream kept its three recipes' `chmod` initContainers because their manifests pin released tags predating the fix, whereas mast never had one to remove, so `deploy/base/50-statefulset-daemon.yaml` grows the users-file mount as a **commented-out direct Secret mount** — the recipe the next person copies is the correct one rather than a workaround they have to know to delete. Nothing owed upstream |
 | `32ceb5a` | an unauthenticated `/healthz` that can actually go red (#987) | **mast skipped the 401 problem and landed in the worse half of it** — [#326](https://github.com/go-steer/mast/issues/326). mast's daemon probes `GET /` on the inject port, which `pkg/inject/server.go:497-505` answers with an unconditional `200 ok` — no state consulted. Upstream's argument against `tcpSocket` applies with one addition: a static 200 from a route named "the health check" *looks* like a readiness signal, so a daemon whose session DB was deleted, whose volume went read-only or whose database is locked stays 1/1 Ready and keeps taking injects. mast has `pkg/eventlog` and can do the real bounded read upstream does. **Absorbed 2026-09-18**, with upstream's refusals taken intact — no outbound provider call, no `auth` key, no session IDs or counts in an unauthenticated body, one log line per health *transition* rather than per probe. Three things the port had to decide that upstream did not. **Which table to read**: mast's own overlay table `agent_eventlog` is created by `eventlog.Open` (the attach path) and *not* by `eventlog.OpenSessionServiceWithDB` (the plain durable path), so probing it would have gone red on every non-attach daemon; the probe reads ADK's `events`, which is the one table both paths create. **What a real read actually catches**, verified rather than assumed: the first draft's doc comment claimed an unlinked SQLite file still reads because POSIX keeps the descriptor valid, and the test disproved it — mast's pure-Go `glebarez/sqlite` returns `disk I/O error (1802)`, so a volume unmounted under a running pod *is* caught, while a filesystem that went read-only is not, and the comment now says both. **Liveness stays on `GET /`**: the deploy manifest moves only `readinessProbe`, because the action behind a liveness failure is a restart and a restart does not fix a deleted volume — it converts one unready pod into a crash loop that also kills in-flight turns. Nothing owed upstream |
-| `164365c` | attach mode implies a durable session db (#984) | **Same flag that exists only to be mandatory** — [#329](https://github.com/go-steer/mast/issues/329). `cmd/mast/main.go:515-518` hard-errors `errAttachNeedsSessionDB` when `--attach-listen` is set without `--session-db`. Lower cost than upstream's — mast's check is early in `serve`, not after provider detection and loader discovery — but the shape is identical, and mast is the product where *every* shape is a daemon. **Absorbed 2026-09-17, and the port had to invent what upstream reused.** Upstream never chose a path: its `--session-db` is a *bool* beside a `--session-db-path` that already defaulted, so implying durability there is flipping a bool. mast's is a single path-or-DSN string with a driver and no default, so the port has to name a location — `~/.mast/sessions.db`, which is `~/.<binary>/sessions.db`, the shape core-agent already uses, so this is convergence rather than divergence. Three mast-only consequences. **Postgres never implies**: a DSN carries a host, a database and credentials, so `--session-db-driver=postgres` keeps its startup error, reworded to say the implication does not apply rather than repeating "requires `--session-db`". **`--session-db=` (explicitly empty) is refused**, because a string flag cannot tell *unset* from *explicitly off* by value — upstream's bool can, and refuses that conflict by name, so the equivalent here reads `cmd/mast`'s existing `explicit` map (`flag.Visit`) rather than comparing the value, or the conflict is silently swallowed. And the resolution happens in `run()` rather than inside `serve`, because "was the flag given?" is a property of the command line. **The commit's second half is n/a, verified rather than assumed**: `164365c` also adds an `IsSessionNotFound` helper so that a store implied for a never-written session does not log an error on the auto-continue path, and mast has no `pkg/compose/auto_continue.go` analogue and no boot-time caller that fetches an unknown session — a cold attach boot on a fresh implied store logs no `ERROR` at all (asserted by `cmd/mast/sessiondb_boot_test.go`), so porting the helper would have exported a function with no consumer. Nothing owed upstream |
+| `164365c` | attach mode implies a durable session db (#984) | **Same flag that exists only to be mandatory** — [#329](https://github.com/go-steer/mast/issues/329). `internal/cli/main.go:515-518` hard-errors `errAttachNeedsSessionDB` when `--attach-listen` is set without `--session-db`. Lower cost than upstream's — mast's check is early in `serve`, not after provider detection and loader discovery — but the shape is identical, and mast is the product where *every* shape is a daemon. **Absorbed 2026-09-17, and the port had to invent what upstream reused.** Upstream never chose a path: its `--session-db` is a *bool* beside a `--session-db-path` that already defaulted, so implying durability there is flipping a bool. mast's is a single path-or-DSN string with a driver and no default, so the port has to name a location — `~/.mast/sessions.db`, which is `~/.<binary>/sessions.db`, the shape core-agent already uses, so this is convergence rather than divergence. Three mast-only consequences. **Postgres never implies**: a DSN carries a host, a database and credentials, so `--session-db-driver=postgres` keeps its startup error, reworded to say the implication does not apply rather than repeating "requires `--session-db`". **`--session-db=` (explicitly empty) is refused**, because a string flag cannot tell *unset* from *explicitly off* by value — upstream's bool can, and refuses that conflict by name, so the equivalent here reads `cmd/mast`'s existing `explicit` map (`flag.Visit`) rather than comparing the value, or the conflict is silently swallowed. And the resolution happens in `run()` rather than inside `serve`, because "was the flag given?" is a property of the command line. **The commit's second half is n/a, verified rather than assumed**: `164365c` also adds an `IsSessionNotFound` helper so that a store implied for a never-written session does not log an error on the auto-continue path, and mast has no `pkg/compose/auto_continue.go` analogue and no boot-time caller that fetches an unknown session — a cold attach boot on a fresh implied store logs no `ERROR` at all (asserted by `internal/cli/sessiondb_boot_test.go`), so porting the helper would have exported a function with no consumer. Nothing owed upstream |
 | `cfe5d98` | pick up gemini-3.8-flash, hold the frontier default at 3.7 (#937) | **A mechanical regen mast has not run** — [#330](https://github.com/go-steer/mast/issues/330). `pkg/pricing/builtin.go` carries 3.5 / 3.6 / 3.7-flash rows across all three spellings and no 3.8-flash. mast has the same fail-open companion-table guard (`TestBuiltinModelsKnownToCompanionTables`), so the regen will need the same hand-written `modeltier` frontier case. **Upstream's deferral argument transfers unchanged and should be taken:** mast's zero-config default is `gemini-3.7-flash` and identical price and window mean a promotion buys nothing that a UAT has not already paid for |
 
 ### Latent, not reachable, and worth pinning — `dd2007f`, filed as [#331](https://github.com/go-steer/mast/issues/331)
 
 `fix(watchdog): count a streamed tool call once, on the event ADK runs it from (#925)` is a real trap
 in mast's `pkg/watchdog/bridge.go`, which has no `ev.Partial` check anywhere in the file. It is
-unreachable **only** because mast runs `StreamingModeNone` at every runner site — `cmd/mast/main.go:2920`,
-`cmd/mast/oneshot.go:231`, and `internal/planner/dispatch.go:310`'s zero-value `RunConfig{}`. That is
-three coincidences rather than a decision, and `cmd/mast/a2a.go:206` names `StreamingModeSSE` as the
+unreachable **only** because mast runs `StreamingModeNone` at every runner site — `internal/cli/main.go:2920`,
+`internal/cli/oneshot.go:231`, and `internal/planner/dispatch.go:310`'s zero-value `RunConfig{}`. That is
+three coincidences rather than a decision, and `internal/cli/a2a.go:206` names `StreamingModeSSE` as the
 planned follow-on, so the trap has a scheduled trigger. Verified against ADK v2.2.0 rather than
 assumed: `base_flow.go:799` derives `useStream` from the run config, partial events *are* yielded to
 the stream before `if resp.Partial { continue }` guards `handleFunctionCalls`, and the streaming
@@ -1058,12 +1058,12 @@ which is the shape a `--stream` flag would arrive in. It is vacuity-guarded on t
 exercised on fixtures, because a tree walk that finds nothing is not evidence that it would find
 something. Its failure message is the audit list rather than an assertion, and the list is
 re-derivable: the consumers that are safe are exactly the non-test files that name `.Partial`.
-The row's three line numbers are stale (the sites are `mast.go:796`, `cmd/mast/oneshot.go:240`,
-`cmd/mast/main.go:3261`, plus zero-value literals in `internal/planner/dispatch.go` and
+The row's three line numbers are stale (the sites are `mast.go:796`, `internal/cli/oneshot.go:240`,
+`internal/cli/main.go:3261`, plus zero-value literals in `internal/planner/dispatch.go` and
 `internal/toolcatalog`), which is itself the argument for scanning rather than enumerating.
 
 **The audit turned up a second consumer, filed as [#400](https://github.com/go-steer/mast/issues/400).**
-`cmd/mast/agui.go`'s emitter mints a fresh id per event and has no dedup set of any kind, so under
+`internal/cli/agui.go`'s emitter mints a fresh id per event and has no dedup set of any kind, so under
 SSE it emits a complete `TEXT_MESSAGE_*` triad per chunk and a complete `TOOL_CALL_*` triple per
 chunk with empty arguments. It is the worst-affected consumer and also the one most likely to be
 triggered deliberately, because AG-UI is a streaming protocol with delta frames for exactly this —
@@ -1434,7 +1434,7 @@ mast's park-backed source are different mechanisms serving the same two routes, 
 deliberate — core-agent has a human at a keyboard and a blocking `AskApproval`; mast has neither and
 has a durable park instead. The convergence is at the wire, not in the implementation, so a future
 upstream commit on `PromptBroker` is a port candidate for `pkg/attach` and says nothing about
-`cmd/mast/permsource.go`. What *would* be drift is a change to the frame shape, the SSE event name
+`internal/cli/permsource.go`. What *would* be drift is a change to the frame shape, the SSE event name
 or the decision vocabulary; `internal/attach/permswire_test.go` pins all three as literals, so such a
 commit will arrive as a failing test rather than as a silent divergence.
 
@@ -1955,7 +1955,7 @@ match.
 
 It is not one, and the difference is structural rather than a matter of degree. The message is part
 of `RefusalLoopError`, which is reachable only through `compose.WriteGate`. mast's one-shot carries
-**no workload bundle** (`cmd/mast/oneshot.go:152-155`, `:200-203`), so `WriteGate` resolves to a nil
+**no workload bundle** (`internal/cli/oneshot.go:152-155`, `:200-203`), so `WriteGate` resolves to a nil
 Plugin there and `RefusalLoopError` cannot be constructed on the one path that has no next turn. The
 file's own comments already say this in two places ("there is no workload bundle on the one-shot
 path, so this resolves to no gate today"). Every surface that *can* produce the message has a durable
@@ -2024,3 +2024,20 @@ is no longer mechanical, though: those three rows are the reconciliation list.
 promised. Which server packages stay public is [#301](https://github.com/go-steer/mast/issues/301),
 and the answer does not affect auth: kept public, they name purser types; demoted, they move to
 `internal/` with the rest.
+
+## The binary is a package now — what that does to ports, 2026-10-02
+
+[#301](https://github.com/go-steer/mast/issues/301) moved every runtime package from `pkg/` to
+`internal/` and the whole of `cmd/mast` into `internal/cli`, leaving `cmd/mast/main.go` as one
+line over `cli.Main`. Two consequences for this ledger:
+
+- **Ported library files keep their trailers, and `dev/upstream-drift` maps them back.** Its rename
+  table carries one row per moved directory (`internal/attach` → `pkg/attach`, and so on), and
+  `TestEveryPortedInternalFileMapsUpstream` walks the real tree so a ported file it cannot map fails
+  there, rather than reporting as an upstream rename on the weekly issue.
+- **Changes to core-agent's `cmd/core-agent` are ported by hand, not by diff.** #293 held a refactor
+  of `serve()` until both repos agreed a convention. That premise is gone: only one file in mast's
+  binary (`internal/cli/safety.go`) carries a core-agent trailer, and the binary is now a
+  library-shaped package with options, which core-agent has no counterpart for. A fix in
+  core-agent's daemon wiring is read for what it fixes and re-applied to `internal/cli`, the same
+  way the 2026-09-20 triage already handled anything touching `cmd/`.

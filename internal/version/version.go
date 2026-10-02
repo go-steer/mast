@@ -25,3 +25,15 @@ package version
 // in-development builds. GoReleaser overrides it with the release
 // tag via -ldflags at build time.
 var Version = "dev"
+
+// Commit and Date are the short commit and commit date of a release
+// build, empty for a local one; `mast --version` prints them when set.
+// They lived in package main until the binary moved into internal/cli
+// (#301), where an `-X main.commit=` flag would have stamped nothing
+// and nothing would have failed — so they sit here beside Version, and
+// a custom main.go built with the same ldflags reports the same
+// identity.
+var (
+	Commit = ""
+	Date   = ""
+)

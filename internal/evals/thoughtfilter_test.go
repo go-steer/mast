@@ -32,7 +32,7 @@ import (
 //
 // The parts are ordered answer-then-reasoning because this site keeps the LAST
 // model text part; under the other order it is correct by accident. See the
-// note in cmd/mast/thoughtfilter_test.go on why mast does not get to assume an
+// note in internal/cli/thoughtfilter_test.go on why mast does not get to assume an
 // order.
 //
 // Neutralize check: restore `part.Text != ""` in TraceFromEvents and FinalText

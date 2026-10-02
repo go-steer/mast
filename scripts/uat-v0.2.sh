@@ -549,7 +549,7 @@ assert_http "clean drain exit code" "${STOP_CODE}" 0
 # ${DB}.
 #
 # Reachable auto-resume outcomes, and why (the decision tree in
-# cmd/mast/autoresume.go): the fixture drives tools THROUGH a
+# internal/cli/autoresume.go): the fixture drives tools THROUGH a
 # coordinator->worker delegation. A crash mid-tool-call therefore leaves TWO
 # dangling calls — the coordinator's delegation to uat-worker (the worker
 # never returned) AND the worker's own tool call — and that pins the
@@ -565,7 +565,7 @@ assert_http "clean drain exit code" "${STOP_CODE}" 0
 #     BOTH are disabled).
 # The "resumed" Case-A read-only REPAIR needs a COORDINATOR-authored
 # dangling call with no dangling delegation, which this topology never
-# yields; it stays covered by cmd/mast/autoresume_test.go
+# yields; it stays covered by internal/cli/autoresume_test.go
 # (TestAutoResumeRepairsDanglingReadOnly).
 #
 # DEGRADED to unit coverage (infeasible as deterministic shell legs, and
@@ -745,7 +745,7 @@ stop_term
 # budget.max_wallclock_seconds, which makes drainBound == that ceiling AND
 # bounds the turn by it, so the turn self-cancels first -> exit 0. A
 # BUDGET-FREE workload variant breaks the tie: no budget means an UNBOUNDED
-# turn (cmd/mast/main.go:1361 installs the wallclock ceiling only when a
+# turn (internal/cli/main.go:1361 installs the wallclock ceiling only when a
 # budget is set) against the 30s default drain (defaultDrainBound,
 # shutdown.go), so the drain window is what expires. Built at runtime under
 # ${WORK} (house rule #5) by copying the fixture and dropping its budget.
