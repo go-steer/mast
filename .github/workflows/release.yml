@@ -85,6 +85,14 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # The presubmits include terraform.sh, which fails rather than
+      # skips without the binary, the same way ci.yml's terraform job
+      # installs it. It arrived with the Terraform module (#463) after
+      # the last release was cut, so v1.0.0-rc.1 was the first tag to
+      # meet it here — and stopped before publishing anything.
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
       - name: Presubmits
         run: dev/ci/presubmits/all.sh
       # Needed by .goreleaser.yaml's signs: block on both paths — the
