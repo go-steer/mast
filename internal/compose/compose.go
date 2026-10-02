@@ -242,6 +242,21 @@ type RootConfig struct {
 	// retrieve_raw returns bytes the specialist was already sent.
 	SpecialistTools []tool.Tool
 
+	// HostToolsets are toolsets the binary that embeds mast supplies
+	// itself (cli.WithToolset). They are offered to Task-mode specialists
+	// alongside Toolsets and reached the same way: an allowlist names one
+	// by its Name() in tools.mcp, as it would name an MCP server. The
+	// startup checks count them as declared, so a typo in that name is
+	// refused rather than silently granting nothing, and a read-only
+	// specialist still has to enumerate the read-only tools it takes.
+	HostToolsets []tool.Toolset
+
+	// ModelLookup, when set, is asked for every model name before mast's
+	// own construction — the root's `model:` overrides as well as the
+	// --model value the caller resolved Model from (cli.WithModels).
+	// Returning false falls through to the built-in providers.
+	ModelLookup func(name string) (model.LLM, bool)
+
 	// Dispatch selects the root shape. Empty means DispatchAuto.
 	Dispatch Dispatch
 
@@ -307,7 +322,18 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 	// predicate takes a nil logger here because the fan-out path below
 	// builds the same one with cfg.Logger, and the audited-override
 	// lines are worth exactly one appearance in a startup log.
-	if err := CheckCapabilitySplit(cfg.Bundle, cfg.Specs, MutationPredicate(cfg.Bundle, nil), cfg.Logger); err != nil {
+	hostNames := make([]string, 0, len(cfg.HostToolsets))
+	for _, ts := range cfg.HostToolsets {
+		hostNames = append(hostNames, ts.Name())
+	}
+	if err := CheckHostToolsets(cfg.Bundle, hostNames); err != nil {
+		return nil, nil, err
+	}
+	if len(cfg.HostToolsets) > 0 {
+		cfg.Toolsets = append(append([]tool.Toolset(nil), cfg.Toolsets...), cfg.HostToolsets...)
+	}
+
+	if err := CheckCapabilitySplit(cfg.Bundle, cfg.Specs, MutationPredicate(cfg.Bundle, nil), cfg.Logger, hostNames...); err != nil {
 		return nil, nil, err
 	}
 
@@ -315,7 +341,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 	// those allowlists name are servers this workload has. An allowlist
 	// is applied by dropping what does not match, so a mistyped server
 	// name subtracts a capability in silence (#278).
-	if err := CheckMCPServerNames(cfg.Bundle, cfg.Specs); err != nil {
+	if err := CheckMCPServerNames(cfg.Bundle, cfg.Specs, hostNames...); err != nil {
 		return nil, nil, err
 	}
 
@@ -346,7 +372,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		}
 	}
 
-	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Bundle.BuiltinTools, cfg.Logger)
+	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Bundle.BuiltinTools, cfg.Logger, cfg.ModelLookup)
 	resolveTier := NewTierResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, resolve, cfg.Logger)
 	logTierResolution(cfg.Specs, cfg.Provider, cfg.ModelName, cfg.Logger)
 
@@ -639,7 +665,14 @@ func IsOfflineFake(name string) bool { return offlineFakes[name] }
 // no per-specialist axis to merge — see builtintools.go for why the
 // inheritance trap upstream guards against cannot occur under a
 // default-off baseline.
-func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, bt workload.BuiltinTools, logger *slog.Logger) specialists.ModelResolver {
+//
+// lookup, when non-nil, is the binary's own resolver (cli.WithModels),
+// asked before mast builds anything. It comes after the offline-fake
+// collapse on purpose: `--model=echo` makes the whole process a test
+// double, a host's models included. A model it returns is used as
+// given — no retry decorator, because the host owns its client — and
+// memoized like any other.
+func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, bt workload.BuiltinTools, logger *slog.Logger, lookup func(string) (model.LLM, bool)) specialists.ModelResolver {
 	var (
 		mu       sync.Mutex
 		cache    = map[string]model.LLM{}
@@ -659,6 +692,12 @@ func NewModelResolver(ctx context.Context, provider, rootName string, root model
 		defer mu.Unlock()
 		if m, ok := cache[name]; ok {
 			return m, nil
+		}
+		if lookup != nil {
+			if m, ok := lookup(name); ok && m != nil {
+				cache[name] = m
+				return m, nil
+			}
 		}
 		m, err := NewRuntimeModel(ctx, provider, name, bt)
 		if err != nil {

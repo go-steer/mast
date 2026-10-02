@@ -76,6 +76,7 @@ export default defineConfig({
             { label: 'Unattended triage (offline)', link: '/quickstart/unattended-triage/' },
             { label: 'Embed the library', link: '/quickstart/library-embed/' },
             { label: 'Fork a starter', link: '/quickstart/fork-a-starter/' },
+            { label: 'Build your own mast', link: '/quickstart/custom-binary/' },
           ],
         },
         {

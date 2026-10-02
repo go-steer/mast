@@ -99,7 +99,7 @@ already owns the trigger. See
 
 Nothing here is under a semver promise yet — mast is pre-1.0, and
 dropping API stability promises is what restarting at v0.1.0 bought.
-Six import paths plus the CLI acquire one at v1.0; see
+The paths listed there, plus the CLI, acquire one at v1.0; see
 [The v1.0 stability promise](#the-v10-stability-promise) below for the
 list, for what is deliberately outside it, and for what the number does
 not claim.
@@ -442,11 +442,12 @@ is the definition: **v1.0 is the release where mast makes them again.**
 Written here before it is arrived at by accident
 ([#300](https://github.com/go-steer/mast/issues/300)).
 
-**What the promise covers.** Six import paths follow semver from v1.0:
+**What the promise covers.** These import paths follow semver from v1.0:
 
 | Path | Why it is in |
 |---|---|
 | `github.com/go-steer/mast` | The library pillar's front door: `Run`, `RunWorkload`, `ListSessions`, `ResumeSession`, `ResumeByToken`, `Pause`, `AckEffects`. |
+| `github.com/go-steer/mast/cli` | The binary as a package (#301): `Main`, `Option`, `WithModels`, `WithToolset`, `WithTools`. A custom `main.go` is the stock binary plus its own models and tools, and every option is in ADK's types. The flags and exit codes it runs are the CLI promise below; this row adds only the option set. |
 | `github.com/go-steer/mast/pkg/agent` | Agent-mode constructors and `Config` — what an embedding host builds a loop out of. |
 | `github.com/go-steer/mast/pkg/transcript` | The operator projection over sessions; the durable pillar's read surface. |
 | `github.com/go-steer/mast/pkg/workload` | Bundle types. The operator contract has a Go form and a YAML form; both are promised. |
@@ -594,7 +595,7 @@ by `mast.WithActor` now
 `purser.Caller` either, because purser is pre-1.0 and says phase 2 is
 what will move its API; that is the rule above for an input from a
 dependency already scheduled to change. `actor_test.go` in the root
-fails if any of the six promised packages imports either auth package.
+fails if any promised package imports either auth package.
 Once purser reaches v1, the root can additionally read purser's context
 key, and that is an additive change.
 

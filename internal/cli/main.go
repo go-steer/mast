@@ -67,6 +67,13 @@ const (
 // Cancelling ctx shuts serve mode down the way SIGINT or SIGTERM does:
 // the same drain, the same exit status.
 func Main(ctx context.Context, args []string) int {
+	return MainWith(ctx, args, Options{})
+}
+
+// MainWith is Main with what a custom main.go adds (see Options). The
+// public cli package calls it; cmd/mast calls Main, which is MainWith
+// with nothing added.
+func MainWith(ctx context.Context, args []string, ext Options) int {
 	// Subcommand dispatch happens before flag parsing so the flag-only
 	// serve invocation (`mast --workload=... --listen=...`) keeps
 	// working exactly as before — scripts/demo-spike2.sh depends on it.
@@ -76,7 +83,7 @@ func Main(ctx context.Context, args []string) int {
 	if len(args) > 0 && args[0] == "stop" {
 		return runStop(args[1:])
 	}
-	return run(ctx, args)
+	return run(ctx, args, ext)
 }
 
 // programName is what usage and parse errors call the binary, which
@@ -90,7 +97,7 @@ func programName() string {
 	return appName
 }
 
-func run(ctx context.Context, args []string) int {
+func run(ctx context.Context, args []string, ext Options) int {
 	// A FlagSet of its own rather than flag.CommandLine, so Main reads
 	// the args it was handed and a second call in one process starts
 	// clean. ExitOnError semantics are kept by hand below: -h is 0, a
@@ -231,6 +238,7 @@ func run(ctx context.Context, args []string) int {
 		}
 		ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 		opts := oneShotOptions{
+			Ext:        ext,
 			Class:      class,
 			Provider:   *providerFlag,
 			Model:      *modelName,
@@ -269,10 +277,12 @@ func run(ctx context.Context, args []string) int {
 		return exitUsage
 	}
 
-	if err := serve(ctx, logger,
-		workloadOpts{arg: *workloadFlag, dispatch: *dispatchMode},
-		modelOpts{provider: *providerFlag, name: *modelName},
-		listenOpts{
+	d := &daemon{
+		parent: ctx,
+		logger: logger,
+		wl:     workloadOpts{arg: *workloadFlag, dispatch: *dispatchMode},
+		mdl:    modelOpts{provider: *providerFlag, name: *modelName},
+		listeners: listenOpts{
 			inject:     *listen,
 			attach:     *attachListen,
 			a2a:        *a2aListen,
@@ -280,9 +290,13 @@ func run(ctx context.Context, args []string) int {
 			notify:     *notifyURL,
 			parkNotify: *parkNotify,
 		},
-		sessions,
-		resumeOpts{auto: *autoResume, window: *autoResumeWindow},
-		*watchdogFlag, *mcpDigest); err != nil {
+		sessions:     sessions,
+		resumes:      resumeOpts{auto: *autoResume, window: *autoResumeWindow},
+		watchdogFlag: *watchdogFlag,
+		mcpDigest:    *mcpDigest,
+		ext:          ext,
+	}
+	if err := d.serve(); err != nil {
 		// serve already logged the failure with context; the error
 		// return only carries the exit status (and lets serve's defers
 		// — signal stop, OTel flush — run before the process dies).

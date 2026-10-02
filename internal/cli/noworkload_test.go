@@ -51,13 +51,14 @@ func TestServeWithoutAWorkloadBoots(t *testing.T) {
 				done <- fmt.Errorf("serve panicked: %v", r)
 			}
 		}()
-		done <- serve(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)),
-			workloadOpts{},
-			modelOpts{name: "echo"},
-			listenOpts{inject: addr},
-			sessionOpts{driver: "sqlite"},
-			resumeOpts{},
-			"", false)
+		d := &daemon{
+			parent:    context.Background(),
+			logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			mdl:       modelOpts{name: "echo"},
+			listeners: listenOpts{inject: addr},
+			sessions:  sessionOpts{driver: "sqlite"},
+		}
+		done <- d.serve()
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)

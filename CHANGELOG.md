@@ -165,6 +165,30 @@
 
 ### Feature
 
+- **Build your own mast: `github.com/go-steer/mast/cli` is the binary as a
+  package.** A `main.go` of
+  `os.Exit(cli.Main(ctx, os.Args[1:], opts...))` is the whole `mast`
+  binary, with the same flags, subcommands, servers and exit codes, plus
+  what the options add:
+  - `cli.WithModels` supplies models by name, for `--model` and for each
+    specialist's `model:`. A name it declines goes to mast's own
+    providers.
+  - `cli.WithTools` and `cli.WithToolset` add toolsets that a specialist
+    reaches by naming them in `tools.mcp`, as it would an MCP server.
+
+  What you add is governed like what mast ships:
+  - A misspelled toolset name is refused at startup.
+  - A read-only specialist still has to enumerate the tools it takes.
+  - A tool mast does not know counts as mutating, so by default its calls
+    park for an operator's approval.
+  - A custom model is metered from the usage it reports, and priced at the
+    fallback rate if the catalog does not know it.
+
+  The options take ADK's own types and nothing else from mast. A custom
+  session store, authentication and runner plugins are deliberately not
+  options yet; the [quickstart](https://go-steer.github.io/mast/quickstart/custom-binary/)
+  says why for each. [#301](https://github.com/go-steer/mast/issues/301)
+
 - **A Terraform module installs both halves of mast on GKE, and — unlike
   `scripts/setup-wif.sh` — can narrow an IAM grant it previously widened.**
   `examples/deploy/terraform/` composes `modules/wif` (three APIs, three

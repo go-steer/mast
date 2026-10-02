@@ -59,13 +59,24 @@ import (
 // nothing here can tell a typo from a server this deployment does not
 // happen to carry. A library embed that hands compose its own toolsets
 // is in the same position. Both fall through to the runtime warning.
-func CheckMCPServerNames(b workload.Bundle, specs []specialists.Spec) error {
-	if len(b.ToolCatalog.MCP) == 0 {
+//
+// # Toolsets the binary supplies
+//
+// hostToolsets names the toolsets a custom main.go hands the daemon
+// (RootConfig.HostToolsets). An allowlist reaches one by naming it in
+// tools.mcp, exactly as it names a server, so the declared set is the
+// catalog plus these — and a workload whose only tools come from the
+// host is no longer a workload that declared nothing.
+func CheckMCPServerNames(b workload.Bundle, specs []specialists.Spec, hostToolsets ...string) error {
+	if len(b.ToolCatalog.MCP) == 0 && len(hostToolsets) == 0 {
 		return nil
 	}
-	declared := make(map[string]bool, len(b.ToolCatalog.MCP))
+	declared := make(map[string]bool, len(b.ToolCatalog.MCP)+len(hostToolsets))
 	for _, ref := range b.ToolCatalog.MCP {
 		declared[ref.Server] = true
+	}
+	for _, n := range hostToolsets {
+		declared[n] = true
 	}
 	for _, s := range specs {
 		var unknown []string
@@ -78,11 +89,17 @@ func CheckMCPServerNames(b workload.Bundle, specs []specialists.Spec) error {
 			continue
 		}
 		sort.Strings(unknown)
+		declares := quoteAll(catalogNames(b))
+		if len(hostToolsets) > 0 {
+			hosts := append([]string(nil), hostToolsets...)
+			sort.Strings(hosts)
+			declares += ", and this binary supplies toolsets " + quoteAll(hosts)
+		}
 		return fmt.Errorf("compose: specialist %q allows MCP %s %s, which the workload's tool_catalog.mcp does not declare (it declares %s); the allowlist is applied by dropping what does not match, so this grants the specialist nothing from %s and would not have been reported at run time. Fix the name, or add the server to tool_catalog.mcp",
 			s.Name,
 			plural(len(unknown), "server"),
 			quoteAll(unknown),
-			quoteAll(catalogNames(b)),
+			declares,
 			plural(len(unknown), "it"))
 	}
 	return nil
@@ -118,4 +135,29 @@ func plural(n int, word string) string {
 	default:
 		return word + "s"
 	}
+}
+
+// CheckHostToolsets refuses toolset names a custom main.go supplies that
+// could not be told apart in an allowlist: an empty name, a name two of
+// them share, or a name the workload's tool_catalog.mcp already uses for
+// an MCP server. Each would make "which tools does this specialist reach"
+// depend on wiring order rather than on what the bundle says.
+func CheckHostToolsets(b workload.Bundle, hostToolsets []string) error {
+	seen := make(map[string]bool, len(hostToolsets))
+	servers := make(map[string]bool, len(b.ToolCatalog.MCP))
+	for _, ref := range b.ToolCatalog.MCP {
+		servers[ref.Server] = true
+	}
+	for _, n := range hostToolsets {
+		switch {
+		case n == "":
+			return fmt.Errorf("compose: a toolset supplied by this binary has an empty Name(); allowlists reach a toolset by name, so an unnamed one could never be granted")
+		case seen[n]:
+			return fmt.Errorf("compose: two toolsets supplied by this binary are both named %q; an allowlist naming it could not say which it means", n)
+		case servers[n]:
+			return fmt.Errorf("compose: a toolset supplied by this binary is named %q, which tool_catalog.mcp already declares as an MCP server; rename one — an allowlist naming it would reach both", n)
+		}
+		seen[n] = true
+	}
+	return nil
 }

@@ -135,7 +135,7 @@ func resolveAnalyst(t *testing.T, bundle workload.Bundle, specs []specialists.Sp
 	// A nil root is what makes the override build its own model rather
 	// than collapse back (see NewModelResolver); the root's name is a
 	// different tier so the reuse shortcut cannot fire either.
-	resolve := NewModelResolver(context.Background(), "", "gemini-3.7-flash", nil, bundle.BuiltinTools, nil)
+	resolve := NewModelResolver(context.Background(), "", "gemini-3.7-flash", nil, bundle.BuiltinTools, nil, nil)
 	m, err := resolve(specs[0].Model)
 	if err != nil {
 		t.Fatalf("resolve the specialist's model: %v", err)

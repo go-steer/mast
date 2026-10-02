@@ -75,8 +75,14 @@ import (
 // connecting to every MCP server at construction. The write gate is the
 // runtime backstop for that path: an undeclared mutating call still
 // parks.
-func CheckCapabilitySplit(b workload.Bundle, specs []specialists.Spec, pred effects.Predicate, logger *slog.Logger) error {
-	hasCatalog := len(b.ToolCatalog.MCP) > 0
+//
+// hostToolsets names the toolsets the binary supplies itself
+// (RootConfig.HostToolsets). They are reached through tools.mcp exactly
+// like an MCP server, so they count as a catalog: a read-only specialist
+// with no allowlist in a workload whose only tools come from the host
+// would otherwise inherit every one of them unchecked.
+func CheckCapabilitySplit(b workload.Bundle, specs []specialists.Spec, pred effects.Predicate, logger *slog.Logger, hostToolsets ...string) error {
+	hasCatalog := len(b.ToolCatalog.MCP) > 0 || len(hostToolsets) > 0
 	for _, s := range specs {
 		if s.Mode == specialists.ModeSingleTurn {
 			continue
