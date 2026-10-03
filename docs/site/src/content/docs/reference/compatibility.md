@@ -6,19 +6,19 @@ sidebar:
 ---
 
 [Stability and versioning](/reference/stability/) says *what* mast
-promises at v1.0. This page says *how a promised thing is allowed to
+promises from v1.0. This page says *how a promised thing is allowed to
 change* — because a stability promise with no deprecation process is
 not a promise, it is a claim that nothing will ever change, and the
 first time that is broken the promise is worth nothing backwards as
 well as forwards.
 
-Everything here **takes effect at v1.0**. mast is pre-1.0 today and
-still breaks covered paths without a cycle; this is published now so
-you can read it before you decide what to depend on.
+Everything here has been **in effect since v1.0.0**. Before it, covered
+paths broke without a deprecation cycle, and this page is what ended
+that.
 
 ## What counts as breaking
 
-### In a [covered import path](/reference/stability/#what-v10-will-cover)
+### In a [covered import path](/reference/stability/#what-v10-covers)
 
 - **Removing or renaming anything exported** — type, function, method,
   field, constant, or a constant's value.
@@ -80,7 +80,7 @@ page.
 ### Not breaking, and free to change in any release
 
 Anything in the [32 unsupported
-packages](/reference/stability/#what-it-will-not-cover) or under
+packages](/reference/stability/#what-it-does-not-cover) or under
 `internal/`; the starters under `examples/`, which are yours the moment
 you copy them; log lines, stdout prose and `--help` wording; and metric
 family names.
@@ -201,7 +201,7 @@ Two details that belong here rather than there:
 An earlier plan was that every unsupported package would carry an
 `// Experimental:` marker. Seven releases later there were zero of them
 in the tree, which is why the promise is a [named
-list](/reference/stability/#what-it-will-not-cover) instead: you can
+list](/reference/stability/#what-it-does-not-cover) instead: you can
 check a list against your own imports, and you were never going to grep
 for a marker nobody wrote.
 
