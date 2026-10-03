@@ -1,6 +1,6 @@
-# mast — architecture (v1.0)
+# mast — architecture (v0.9)
 
-**Status:** current as of v1.0.0 (2026-10-02). This is the map of what
+**Status:** current as of v0.9.0 (2026-09-17). This is the map of what
 actually ships — the working architecture for contributors and
 embedders. The *why* behind each subsystem lives in the design corpus
 under [`docs/`](./docs/README.md) (start with
@@ -97,9 +97,9 @@ already owns the trigger. See
   one turn and exits. There is no `serve` subcommand; only `sessions`
   and `stop` are subcommands (`internal/cli/main.go`).
 
-Restarting at v0.1.0 dropped the API stability promises mast forked
-with, and v1.0.0 makes them again: the paths listed there, plus the CLI,
-follow semver; see
+Nothing here is under a semver promise yet — mast is pre-1.0, and
+dropping API stability promises is what restarting at v0.1.0 bought.
+The paths listed there, plus the CLI, acquire one at v1.0; see
 [The v1.0 stability promise](#the-v10-stability-promise) below for the
 list, for what is deliberately outside it, and for what the number does
 not claim.

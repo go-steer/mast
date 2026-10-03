@@ -2,58 +2,6 @@
 
 ## Unreleased
 
-## v1.0.0 (2026-10-02)
-
-*The API stops moving.*
-
-v1.0 makes one claim. From this release the promised import paths and the
-binary's command line follow semver, and the claim is enforced:
-- a CI gate runs Go's `apidiff` over every promised package against this tag;
-- a test fails on any importable package that nobody decided to make public.
-
-It is not a production-readiness badge.
-
-**What is promised is deliberately small.** The library entry points (the
-module root), `pkg/budget`, `pkg/specialists`, `pkg/transcript` and
-`pkg/workload`, plus one new package, `cli`. `cli` is the `mast` binary for
-writing your own `main.go`: the same flags, servers and governance, with your
-models and tools added through options that take ADK's own types.
-
-Everything else moved under `internal/`, which is thirty-two packages that
-were importable, unsupported, and imported by nothing outside this repository.
-Customizing mast now means building your own binary, not importing its
-runtime.
-
-**Breaking changes from v0.9.0**, each with its entry below:
-
-- **Go embedders.** Those thirty-two packages are gone from the importable
-  surface. `ResumeByToken` attribution comes from `mast.WithActor` instead of
-  `pkg/auth`'s context key. A halted turn is recognized with
-  `mast.IsWatchdogHalt`.
-- **Bundles.** A prompt is text, not a template, and `{project?}` is refused
-  at load.
-- **CLI.** `mast sessions pause --interrupt` is `--cancel-turn`, and
-  `--attach-listen` now implies a session database rather than refusing to
-  start without one.
-- **AG-UI.** A thread bounds its queued runs and answers `409` past the bound.
-- **Install.** The packaged install is a Helm chart; the `deploy/` kustomize
-  tree is gone.
-
-**Two behaviour changes that will be noticed rather than read.** An MCP tool
-whose server declares `readOnlyHint: true` is now treated as read-only, so it
-stops parking for approval. A workload can still pin it mutating in
-`tool_catalog.tools`, and that override wins. And a model call that meets a
-provider's `429` or `503` now waits two seconds and tries once more instead of
-ending the turn.
-
-The rest of the release is the supply chain and the second replica:
-- Signed checksums, a published and signed container image, and SLSA build
-  provenance, each verified against what was published rather than the step
-  that produced it.
-- A Terraform install that can narrow an IAM grant it widened.
-- A scheduling lease, so only one replica starts the turns nobody asked for.
-- A readiness probe that can go red.
-
 ### API Change
 
 - **`pkg/transcript` is the read half of the operator store; the writes and

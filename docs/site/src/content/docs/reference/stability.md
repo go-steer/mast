@@ -5,24 +5,29 @@ sidebar:
   order: 8
 ---
 
-From v1.0.0 this page is a promise: what mast keeps working across
-minor releases, and what it deliberately does not.
+mast is **pre-1.0**. Nothing on this page is a promise yet — it is the
+promise mast will make at v1.0, published now so you can decide what to
+depend on today.
 
 This page is the *what*. [Compatibility and
 deprecations](/reference/compatibility/) is the *how*: what counts as
 breaking, how long a deprecation lasts before the thing goes away, and
 how long a release is supported.
 
-## Why v1.0, and why only this
+## Today, before v1.0
+
+Every exported path may change in any release. In practice the
+paths listed below are the ones under active compatibility discipline
+and the ones least likely to move; the rest have changed between minor
+releases and will again.
 
 Restarting version numbers at v0.1.0 is what dropped mast's inherited
 API stability promises when it forked from
 [core-agent](https://github.com/go-steer/core-agent). **v1.0 is the
 release that makes them again** — that, and nothing more, is what the
-number means. Before it, every exported path could change in any
-release, and many did.
+number will mean.
 
-## What v1.0 covers
+## What v1.0 will cover
 
 These import paths follow [semver](https://semver.org) from v1.0:
 
@@ -38,7 +43,7 @@ These import paths follow [semver](https://semver.org) from v1.0:
 Start from the [library embed
 quickstart](/quickstart/library-embed/), which uses only these.
 
-## What it does not cover
+## What it will not cover
 
 Everything else. Most of it is not importable at all: the servers,
 providers, MCP, auth, pricing, the dispatch shapes and the rest of the
@@ -83,7 +88,7 @@ prefer receiving a type over constructing one.
 
 #### The `approval` types covered by reference
 
-Eight declarations from `pkg/approval` are covered because
+Eight declarations from `pkg/approval` are covered at v1.0 because
 `pkg/transcript` hands them to you. The rest of `pkg/approval` is not.
 
 | You reach it through | Covered |
@@ -167,7 +172,7 @@ when a key changes shape or meaning, not when a key is added.
 
 The [`mast` binary](/reference/cli/) is a first-class consumer shape,
 and its callers are shell scripts, systemd units and Kubernetes
-manifests — none of which a compiler can warn. Promised:
+manifests — none of which a compiler can warn. Promised from v1.0:
 
 - **Flag names and their meanings.**
 - **Subcommands and their verbs** — `mast sessions <verb>` and `mast stop`.
