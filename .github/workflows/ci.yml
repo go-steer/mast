@@ -47,7 +47,7 @@ jobs:
       # local opt-out). Installing it here is what keeps that opt-out
       # from ever being the reason a run is green: an RBAC test that
       # skips is indistinguishable from no RBAC test.
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Build
         run: dev/ci/presubmits/build.sh
       - name: Vet

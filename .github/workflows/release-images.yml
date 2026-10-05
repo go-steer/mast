@@ -286,7 +286,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       # cosign reads ~/.docker/config.json; helm keeps its own registry
       # credentials. Both are needed, and the helm one is dropped again
