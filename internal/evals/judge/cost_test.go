@@ -22,11 +22,14 @@ import (
 	"testing"
 
 	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/graph"
 	"github.com/go-steer/mast/internal/providers/anthropic"
 	"github.com/go-steer/mast/internal/taskclass"
+	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
 )
 
@@ -317,6 +320,70 @@ func TestJudgeCost(t *testing.T) {
 				t.Errorf("board.OK() = %v with findings:\n%s", ok, joined)
 			}
 		})
+	}
+}
+
+// TestScopeCost_PricesTheTokenMixNotABlend drives the real meters with a
+// mostly-input call, the shape every J-cost-tier turn has. The meter
+// bills a scope at the catalog's exact input and output prices, so a
+// row's effective rate sits well under (input+output)/2; the check used
+// to compare against that blend and failed about half the nightlies on
+// a correctly priced opus row (2026-09-26 → 2026-10-05). The second case
+// is the failure the check exists for — the analyst's scope wired to the
+// root's model — and must still be named as the parent's. It needs a
+// provider that reports no model version: one that does is priced by
+// what it reports, whatever the scope says.
+func TestScopeCost_PricesTheTokenMixNotABlend(t *testing.T) {
+	const provider, root = "anthropic", "claude-opus-5"
+	specs := CostSpecs()
+
+	findings := func(t *testing.T, scopes map[string]budget.Limits, reportVersion bool) []string {
+		t.Helper()
+		meter := budget.New(budget.Config{
+			Limits: budget.Limits{RatePer1K: compose.RatePer1K(provider, root)},
+			Scopes: scopes,
+		})
+		ref := newRefMeters(specs, provider, root)
+		seen := &modelVersions{}
+		for _, s := range specs {
+			ev := &session.Event{
+				Author: s.Name,
+				LLMResponse: adkmodel.LLMResponse{
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     900,
+						CandidatesTokenCount: 100,
+						TotalTokenCount:      1000,
+					},
+				},
+			}
+			if reportVersion {
+				ev.ModelVersion = compose.SpecModelName(s, provider, root)
+			}
+			seen.record(ev)
+			if err := errors.Join(meter.Observe(ev), ref.observe(ev)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		b := &CostBoard{RootModel: root, RootRate: compose.RatePer1K(provider, root)}
+		for _, s := range specs {
+			b.Scopes = append(b.Scopes, scopeCost(s, meter, ref, seen, provider, root))
+		}
+		f, _ := judgeCost(b)
+		return f
+	}
+
+	for _, reported := range []bool{true, false} {
+		if f := findings(t, compose.MeterScopes(specs, provider, root), reported); len(f) != 0 {
+			t.Errorf("version reported=%v: a correctly priced roster reported a mispricing:\n%s",
+				reported, strings.Join(f, "\n"))
+		}
+	}
+
+	scopes := compose.MeterScopes(specs, provider, root)
+	scopes[costAnalystName] = compose.ModelLimits(provider, root)
+	if f := findings(t, scopes, false); len(f) != 1 || !strings.Contains(f[0], "the parent's") {
+		t.Errorf("analyst wired to the root's model: want one finding naming the parent's rate, got %d:\n%s",
+			len(f), strings.Join(f, "\n"))
 	}
 }
 

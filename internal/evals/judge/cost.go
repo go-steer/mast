@@ -76,16 +76,25 @@ const (
 	costAlert = "Alert: pod api-7d9f in namespace shop is OOMKilled, 5 restarts in 10 minutes."
 )
 
-// costRateTolerance is how far an effective rate may sit from the rate
-// the meter was configured with before the check calls it a mismatch.
+// costRateTolerance is how far, as a fraction, a row's effective rate
+// may sit from the rate its own model charges for the same tokens
+// before the check calls it a mismatch.
 //
-// Not zero, because the effective rate is a division of a float sum by
-// an int64 sum and both accumulate over several calls. Small enough that
-// the failure this exists to catch — an analyst billed at the parent's
-// rate — is orders of magnitude outside it: haiku and opus differ by
-// more than 10x, and the closest two rates in the table differ by more
-// than 20%.
-const costRateTolerance = 0.005
+// Relative, and measured against the exact price of the row's own token
+// mix rather than a flat blend. It was once an absolute 0.005/1K against
+// compose.RatePer1K's (input+output)/2, which was exact while the meter
+// billed scopes at that flat rate. Since #339 a scope is billed at the
+// catalog's exact input and output prices, so its effective rate moves
+// with how much of a call was output: a ~1K-token, mostly-input opus
+// call lands near $0.009–0.011/1K against a $0.015 blend, straddling
+// the old tolerance, and the nightly went red on about half its nights
+// with nothing mispriced.
+//
+// Not zero, because both sides are float sums over several calls. Small
+// enough that the failure this exists to catch — an analyst billed at
+// the parent's rate — is far outside it: haiku and opus differ by more
+// than 4x on every bucket.
+const costRateTolerance = 0.01
 
 // ErrCostNeedsLiveModel is returned when the root is one of mast's
 // offline fakes.
@@ -114,14 +123,15 @@ type ScopeCost struct {
 	Tokens  int64   `json:"tokens"`
 	CostUSD float64 `json:"cost_usd"`
 
-	// WantRate is the rate the meter was configured with for this scope
-	// (compose.RatePer1K of Resolved); GotRate is CostUSD/Tokens*1000,
-	// read back off what the meter actually accrued.
+	// WantRate is what Resolved charges for this row's own token mix,
+	// per 1K: the same events priced by a reference meter that knows
+	// only that model (compose.ModelLimits). GotRate is
+	// CostUSD/Tokens*1000, read back off what the meter actually accrued.
 	WantRate float64 `json:"want_rate_per_1k"`
 	GotRate  float64 `json:"got_rate_per_1k"`
 
 	// AtParentRate is the counterfactual: what these same tokens would
-	// have cost billed at the root model's rate. This is the number the
+	// have cost billed at the root model's prices, in USD. This is the number the
 	// row is about — "the analyst's tokens are not billed at the
 	// synthesizer's" is only meaningful next to what that would have
 	// been.
@@ -274,6 +284,7 @@ func RunCost(ctx context.Context, root adkmodel.LLM, rootName, provider, scratch
 		Limits: budget.Limits{RatePer1K: compose.RatePer1K(provider, rootName)},
 		Scopes: compose.MeterScopes(specs, provider, rootName),
 	})
+	ref := newRefMeters(specs, provider, rootName)
 	seen := &modelVersions{}
 
 	msg := genai.NewContentFromText(costAlert, genai.RoleUser)
@@ -284,7 +295,7 @@ func RunCost(ctx context.Context, root adkmodel.LLM, rootName, provider, scratch
 			return nil, fmt.Errorf("judge: cost: run: %w", rerr)
 		}
 		seen.record(ev)
-		if berr := meter.Observe(ev); berr != nil {
+		if berr := errors.Join(meter.Observe(ev), ref.observe(ev)); berr != nil {
 			// No ceilings are configured, so this cannot be a budget
 			// stop; if it ever is, the run is not measuring what it says.
 			return nil, fmt.Errorf("judge: cost: meter: %w", berr)
@@ -292,14 +303,47 @@ func RunCost(ctx context.Context, root adkmodel.LLM, rootName, provider, scratch
 	}
 
 	for _, s := range specs {
-		board.Scopes = append(board.Scopes, scopeCost(s, meter, seen, provider, rootName))
+		board.Scopes = append(board.Scopes, scopeCost(s, meter, ref, seen, provider, rootName))
 	}
 	board.Findings, board.Notes = judgeCost(board)
 	return board, nil
 }
 
+// refMeters are J-cost-tier's expected side: the run's events priced
+// with each scope at its own resolved model, and at the root's.
+type refMeters struct{ own, atRoot *budget.Meter }
+
+// newRefMeters builds the expected side from the resolved names rather
+// than through compose.MeterScopes, on purpose: the meter built from
+// MeterScopes is what is under test, and only these say what it should
+// have charged for the token mix the run actually produced.
+func newRefMeters(specs []specialists.Spec, provider, rootName string) refMeters {
+	own, atRoot := map[string]budget.Limits{}, map[string]budget.Limits{}
+	for _, s := range specs {
+		own[s.Name] = compose.ModelLimits(provider, compose.SpecModelName(s, provider, rootName))
+		atRoot[s.Name] = compose.ModelLimits(provider, rootName)
+	}
+	return refMeters{
+		own:    budget.New(budget.Config{Scopes: own}),
+		atRoot: budget.New(budget.Config{Scopes: atRoot}),
+	}
+}
+
+// observe feeds one event to both reference meters with the reported
+// model version stripped. The meter prices a call by the version the
+// provider reports before the scope's configured model, which is right
+// for billing and wrong for a reference: left in, all three meters
+// would price the same id and agree by construction. Stripped, these
+// price strictly at the resolved and root names, and whether the
+// version that ran is the one that resolved is ranAs's question.
+func (r refMeters) observe(ev *session.Event) error {
+	bare := *ev
+	bare.ModelVersion = ""
+	return errors.Join(r.own.Observe(&bare), r.atRoot.Observe(&bare))
+}
+
 // scopeCost reads one specialist's meter snapshot into a board row.
-func scopeCost(s specialists.Spec, m *budget.Meter, seen *modelVersions, provider, rootName string) ScopeCost {
+func scopeCost(s specialists.Spec, m *budget.Meter, ref refMeters, seen *modelVersions, provider, rootName string) ScopeCost {
 	resolved := compose.SpecModelName(s, provider, rootName)
 	row := ScopeCost{
 		Name:     s.Name,
@@ -314,8 +358,11 @@ func scopeCost(s specialists.Spec, m *budget.Meter, seen *modelVersions, provide
 	}
 	row.Calls, row.Tokens, row.CostUSD = calls, tokens, cost
 	if tokens > 0 {
+		_, want, _, _ := ref.own.ScopeSnapshot(s.Name)
+		_, atRoot, _, _ := ref.atRoot.ScopeSnapshot(s.Name)
+		row.WantRate = want / float64(tokens) * 1000
 		row.GotRate = cost / float64(tokens) * 1000
-		row.AtParentRate = float64(tokens) / 1000 * compose.RatePer1K(provider, rootName)
+		row.AtParentRate = atRoot
 	}
 	return row
 }
@@ -352,9 +399,9 @@ func judgeCost(b *CostBoard) (findings, notes []string) {
 				"%s resolved to %s, which internal/pricing has no rate for — a priced run cannot be checked against an unpriced model", s.Name, s.Resolved))
 			continue
 		}
-		if math.Abs(s.GotRate-s.WantRate) > costRateTolerance {
+		if !withinRate(s.GotRate, s.WantRate) {
 			at := "its own"
-			if math.Abs(s.GotRate-b.RootRate) <= costRateTolerance {
+			if parent := s.AtParentRate / float64(s.Tokens) * 1000; s.Resolved != b.RootModel && withinRate(s.GotRate, parent) {
 				// The specific failure the row exists to catch, named as
 				// such rather than left for the reader to spot.
 				at = fmt.Sprintf("the parent's (%s)", b.RootModel)
@@ -389,6 +436,12 @@ func judgeCost(b *CostBoard) (findings, notes []string) {
 			b.RootModel))
 	}
 	return findings, notes
+}
+
+// withinRate reports whether got is within costRateTolerance of want,
+// as a fraction of want.
+func withinRate(got, want float64) bool {
+	return math.Abs(got-want) <= costRateTolerance*want
 }
 
 // ranAs reports whether any reported model version names the resolved

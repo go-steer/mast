@@ -1036,8 +1036,8 @@ func MeterScopes(specs []specialists.Spec, provider, rootModelName string) map[s
 			// and the flat rate stays as its fallback, so a specialist on
 			// a model the catalog does not know still meters at roughly
 			// the right order of magnitude instead of at zero.
-			l.Backend, l.Model, l.Pricer = Backend(provider, name), name, builtinPricer()
-			l.RatePer1K = RatePer1K(provider, name)
+			p := ModelLimits(provider, name)
+			l.Backend, l.Model, l.Pricer, l.RatePer1K = p.Backend, p.Model, p.Pricer, p.RatePer1K
 		}
 		if l.IsZero() {
 			continue
@@ -1048,4 +1048,19 @@ func MeterScopes(specs []specialists.Spec, provider, rootModelName string) map[s
 		scopes[s.Name] = l
 	}
 	return scopes
+}
+
+// ModelLimits is the price half of a meter scope for one model served
+// under a --provider alias: the exact catalog price, with the flat rate
+// as its fallback. MeterScopes builds every scope's price from it, and
+// J-cost-tier (internal/evals/judge) builds its reference meters from
+// it, so the expected cost of a row is priced the same way the meter
+// prices the row.
+func ModelLimits(provider, modelName string) budget.Limits {
+	return budget.Limits{
+		Backend:   Backend(provider, modelName),
+		Model:     modelName,
+		Pricer:    builtinPricer(),
+		RatePer1K: RatePer1K(provider, modelName),
+	}
 }

@@ -583,6 +583,14 @@
 
 ### Bug or Regression
 
+- **The judged nightly no longer goes red on a correctly priced roster.**
+  J-cost-tier compared each specialist's billed rate with a flat
+  (input+output)/2 blend, but since #339 the meter bills a scope at the exact
+  input and output prices. A mostly-input opus call costs about $0.009–0.011
+  per 1K against a $0.015 blend, so the check failed on six of the ten nights
+  up to 2026-10-05 with nothing mispriced. It now compares against the same
+  events priced at the specialist's own model and at the root's.
+
 - **`mast --version` names the version for a `go install` and for a custom
   binary, not just for the release tarballs.**
   `go install github.com/go-steer/mast/cmd/mast@v1.0.0-rc.2` printed
