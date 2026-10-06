@@ -127,8 +127,8 @@ var introductoryRates = []introductoryRate{
 		introInput:  2,
 		introOutput: 10,
 		standard:    "$3 in / $15 out per MTok",
-		why: "claude-sonnet-5 is the anthropic mid-tier default (internal/modeltier), " +
-			"so every tier:mid specialist on Anthropic prices through this row — " +
+		why: "claude-sonnet-5 was the anthropic mid-tier default until 2026-10-06, " +
+			"so every tier:mid specialist on Anthropic priced through this row — " +
 			"including max_cost_usd, which means an understated rate lets a " +
 			"workload spend past its ceiling before the guardrail trips",
 		resolved: "checked 2026-08-20 against platform.claude.com/docs/en/about-claude/pricing: " +

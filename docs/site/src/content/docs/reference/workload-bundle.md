@@ -511,7 +511,7 @@ backend:
 | tier | Gemini | Anthropic |
 |---|---|---|
 | `small` | `gemini-3.5-flash-lite` | `claude-haiku-4-5` |
-| `mid` | `gemini-3.5-flash` | `claude-sonnet-5` |
+| `mid` | `gemini-3.5-flash` | `claude-sonnet-5-5` |
 | `frontier` | `gemini-3.8-flash` | `claude-opus-5` |
 
 Which provider a tier resolves against is the one mast dispatches on: the
