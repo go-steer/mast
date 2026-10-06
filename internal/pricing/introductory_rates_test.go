@@ -63,8 +63,8 @@ import (
 //   - gemini-3.7-flash and gemini-3.6-flash are BOTH on $0.75/$3.75
 //     through 2026-12-31, doubling to $1.50/$7.50 on 2027-01-01, with
 //     the cache-read rate doubling alongside. Nothing in the repo
-//     recorded either. gemini-3.7-flash is the gemini/vertex frontier
-//     default.
+//     recorded either. gemini-3.7-flash was the gemini/vertex frontier
+//     default then (gemini-3.8-flash is since 2026-10-06).
 //
 // The instructive one is gemini-3.6-flash, because mast had already seen
 // its rate move and drawn the wrong conclusion from it. The 2026-08-19
@@ -144,9 +144,9 @@ var introductoryRates = []introductoryRate{
 		introInput:  0.75,
 		introOutput: 3.75,
 		standard:    "$1.50 in / $7.50 out per MTok (and CachedInputPerMTok 0.075 -> 0.15)",
-		why: "gemini-3.7-flash is the gemini/vertex FRONTIER default (ModelForTier), so " +
-			"it is the most expensive model mast picks on its own and the one every " +
-			"unqualified frontier workload prices through. The scheduled move is a " +
+		why: "gemini-3.7-flash was the gemini/vertex FRONTIER default (ModelForTier) " +
+			"until 2026-10-06 and is still what bundles pinned in that time price " +
+			"through. The scheduled move is a " +
 			"doubling, not a nudge: a max_cost_usd sized against $0.75/$3.75 buys half " +
 			"the tokens it is budgeted for from the moment the rate changes, and buys " +
 			"them without the ceiling noticing",
@@ -161,11 +161,10 @@ var introductoryRates = []introductoryRate{
 			"the 2026-09-09 regen picked it up new, priced exactly like 3.7-flash. That is " +
 			"the case #188 was written about read from the other direction: a row whose " +
 			"rate never changes looks permanent, and nothing in LiteLLM distinguishes a " +
-			"launch price from a standard one. Not a mast default today (the frontier " +
-			"default is held at 3.7-flash pending a UAT — see deferredPromotions in " +
-			"internal/taskclass), which is why this entry has to exist before the promotion " +
-			"rather than with it: whoever promotes it must not have to rediscover that the " +
-			"rate doubles. Verified 2026-09-08 against ai.google.dev/gemini-api/docs/pricing, " +
+			"launch price from a standard one. It is the gemini/vertex FRONTIER default " +
+			"since 2026-10-06 (ModelForTier), so every unqualified frontier workload prices " +
+			"through it, and a max_cost_usd sized against $0.75/$3.75 buys half the tokens " +
+			"it is budgeted for once the rate doubles. Verified 2026-09-08 against ai.google.dev/gemini-api/docs/pricing, " +
 			"which dates every line item — input \"$0.75 through December 31, 2026\" / " +
 			"\"$1.50 starting January 1, 2027\", output $3.75 -> $7.50, cached $0.075 -> $0.15",
 	},

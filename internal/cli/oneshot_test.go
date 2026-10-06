@@ -139,7 +139,7 @@ func TestResolveModelSelection(t *testing.T) {
 		{name: "gemini provider rejects echo model", provider: "gemini", model: "echo", modelSet: true, wantErr: "conflicts"},
 		// No explicit --model: the --task profile's tier picks the
 		// default (debug -> frontier; no class -> mid).
-		{name: "gemini provider derives frontier from debug", provider: "gemini", model: "echo", class: "debug", want: "gemini-3.7-flash"},
+		{name: "gemini provider derives frontier from debug", provider: "gemini", model: "echo", class: "debug", want: "gemini-3.8-flash"},
 		{name: "gemini provider derives mid without class", provider: "gemini", model: "echo", want: "gemini-3.5-flash"},
 		{name: "anthropic provider accepts claude model", provider: "anthropic", model: "claude-sonnet-4-6", modelSet: true, want: "claude-sonnet-4-6"},
 		{name: "anthropic provider rejects gemini model", provider: "anthropic", model: "gemini-2.5-flash", modelSet: true, wantErr: "conflicts"},
@@ -152,7 +152,7 @@ func TestResolveModelSelection(t *testing.T) {
 		// consumed by compose.BuildModel, not here.
 		{name: "vertex resolves the same model ids", provider: "vertex", model: "gemini-3.5-flash-lite", modelSet: true, want: "gemini-3.5-flash-lite"},
 		{name: "vertex derives mid without class", provider: "vertex", model: "echo", want: "gemini-3.5-flash"},
-		{name: "vertex derives frontier from debug", provider: "vertex", model: "echo", class: "debug", want: "gemini-3.7-flash"},
+		{name: "vertex derives frontier from debug", provider: "vertex", model: "echo", class: "debug", want: "gemini-3.8-flash"},
 		{name: "vertex rejects a claude model", provider: "vertex", model: "claude-sonnet-5", modelSet: true, wantErr: "want a gemini-* model id"},
 		{name: "scripted provider defaults model", provider: "scripted", model: "echo", want: "scripted"},
 		{name: "scripted provider rejects other model", provider: "scripted", model: "gemini-2.5-flash", modelSet: true, wantErr: "conflicts"},

@@ -202,6 +202,16 @@
 
 ### Feature
 
+- **`tier: frontier` on Gemini and Vertex is `gemini-3.8-flash`.** It cleared
+  the bar `gemini-3.7-flash` cleared in August: the judged corpus within noise
+  of 3.7's board on the weekly candidate runs, and the outcome tier on the same
+  model with no mid-plan stall (14/15, gate green). The price is the same
+  ($0.75/$3.75, doubling 2027-01-01), but 3.8 made 31–62% more tool calls across
+  the corpus, so the same workload can spend more. Pin `model: gemini-3.7-flash`
+  to keep the old behaviour. The pricing catalog also picks up
+  `claude-opus-5-5` and `claude-sonnet-5-5`; they are priced but are **not**
+  tier defaults until they have run the same two evals.
+
 - **Build your own mast: `github.com/go-steer/mast/cli` is the binary as a
   package.** A `main.go` of
   `os.Exit(cli.Main(ctx, os.Args[1:], opts...))` is the whole `mast`

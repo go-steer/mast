@@ -21,7 +21,8 @@
 # TestModelForTier_ReturnsLatestInLine holds it to the newest model in
 # that line unless `deferredPromotions` records a reason to wait. The
 # reason recorded on 2026-09-09 for holding gemini-3.7-flash while
-# gemini-3.8-flash exists is not that 3.8 looks worse — on paper it
+# gemini-3.8-flash existed (discharged 2026-10-06, when 3.8 was
+# promoted on this board and the outcome tier) was not that 3.8 looked worse — on paper it
 # looks free, same price, same window — it is that nothing had run it.
 # core-agent#579 promoted a frontier default off a spec sheet and #580
 # reverted it a day later. So the deferral names a bar, and this
@@ -51,7 +52,7 @@
 # candidate, which nothing here can trigger — GITHUB_TOKEN cannot fire
 # a workflow_dispatch. Run that half by hand:
 #
-#   gh workflow run outcome.yml -f model=gemini-3.8-flash
+#   gh workflow run outcome.yml -f model=gemini-3.8-flash -f provider=vertex
 #
 # ## Gating
 #
@@ -77,8 +78,9 @@
 #   secrets.MAST_EVALS_WIF_PROVIDER     workload identity provider
 #   secrets.MAST_EVALS_SERVICE_ACCOUNT  service account to impersonate
 #   vars.MAST_EVALS_VERTEX_REGION       optional; defaults to global
-#   vars.MAST_EVALS_GEMINI_MODEL        the incumbent; defaults to gemini-3.7-flash
-#   vars.MAST_EVALS_GEMINI_CANDIDATE    optional; defaults to gemini-3.8-flash
+#   vars.MAST_EVALS_GEMINI_MODEL        the incumbent; defaults to gemini-3.8-flash
+#   vars.MAST_EVALS_GEMINI_CANDIDATE    optional; defaults to gemini-3.8-flash, i.e. no
+#                                       candidate until the next one is priced
 #
 # When a candidate is promoted, move MAST_EVALS_GEMINI_CANDIDATE to the
 # next one. A run whose candidate equals the incumbent measures nothing
@@ -120,9 +122,9 @@ jobs:
       # what its baseline must have measured — three uses of the same
       # two names, so they live at job scope.
       MAST_EVALS_MODEL: ${{ inputs.candidate || vars.MAST_EVALS_GEMINI_CANDIDATE || 'gemini-3.8-flash' }}
-      MAST_EVALS_GRADER: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
-      MAST_EVALS_BASELINE_MODEL: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
-      MAST_EVALS_BASELINE_GRADER: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
+      MAST_EVALS_GRADER: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.8-flash' }}
+      MAST_EVALS_BASELINE_MODEL: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.8-flash' }}
+      MAST_EVALS_BASELINE_GRADER: ${{ vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.8-flash' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -185,7 +187,7 @@ jobs:
               echo "> This board is half the bar in \`deferredPromotions\` (internal/taskclass/latest_in_line_test.go)."
               echo "> The other half is the outcome tier on the same model, which has to be started by hand:"
               echo ">"
-              echo ">     gh workflow run outcome.yml -f model=${MAST_EVALS_MODEL}"
+              echo ">     gh workflow run outcome.yml -f model=${MAST_EVALS_MODEL} -f provider=vertex"
             fi
           } >>"${GITHUB_STEP_SUMMARY}"
 

@@ -234,45 +234,33 @@ func ModelForTier(provider, tier string) string {
 	case "gemini", "vertex":
 		switch tier {
 		case TierFrontier:
-			// gemini-3.7-flash: the current top of the flash-first
-			// agentic line. Promoted 2026-08-17 off a live
-			// Vertex UAT — all 31 judged corpus scenarios ran through
-			// it, scoring within noise of the 3.6-era board, with no
-			// mid-plan stall. That UAT is the bar: the parent project
-			// shipped an un-UAT'd frontier bump on the strength of a
-			// spec sheet (core-agent#579) and reverted it a day later
-			// (#580) when the parent agent stopped mid-plan.
+			// gemini-3.8-flash: the current top of the flash-first
+			// agentic line. Promoted 2026-10-06 on the bar 3.7 set when
+			// it was promoted on 2026-08-17: the full 31-scenario judged
+			// corpus over live Vertex scoring within noise of the
+			// incumbent's board, and the outcome tier on the same model
+			// with no mid-plan stall. The evidence is the weekly
+			// evals-candidate-gemini boards (2026-09-21 → 2026-10-05,
+			// mean intent_coverage 0.928–0.949 against 3.7's 0.933,
+			// response_quality level) and outcome run 37440464277 (14/15,
+			// gate green, 4m05s). That UAT is the bar: the parent
+			// project shipped an un-UAT'd frontier bump on the strength
+			// of a spec sheet (core-agent#579) and reverted it a day
+			// later (#580) when the parent agent stopped mid-plan.
 			//
-			// This entry USED to justify itself partly on price — "half
-			// the per-token cost of the gemini-3.6-flash it replaced,
-			// $0.75/$3.75 against $1.50/$7.50". That was wrong by
-			// 2026-08-19 and was never a durable argument. Google put
-			// 3.6-flash onto the same $0.75/$3.75 introductory rate, and
-			// BOTH revert to $1.50/$7.50 on 2027-01-01 (recorded in
-			// internal/pricing's introductoryRates, which fails the build if
-			// the table has not moved by then). Promotion here rests on
-			// the UAT; price parity between the two is temporary and
-			// price is not what a frontier default is chosen on.
-			//
-			// NOT gemini-3.8-flash, which the 2026-09-09 regen priced
-			// and internal/modeltier classifies. Same rate, same window, so
-			// promoting it would move no ceiling and no compaction
-			// trigger — and a promotion whose paper case is free is the
-			// one that gets made without a UAT. The deferral is
-			// recorded, with its argument and its discharge condition,
-			// in deferredPromotions (latest_in_line_test.go); it
-			// excuses 3.8 and nothing after it, so a 3.9-flash reds the
-			// build rather than inheriting the reasoning. The corpus
-			// runs against 3.8-flash weekly
-			// (.github/workflows/evals-candidate-gemini.yml); read its
-			// board, and the outcome tier on the same model, before
-			// editing this line.
+			// Not a price decision. 3.8 prices exactly like 3.7
+			// ($0.75/$3.75, both doubling on 2027-01-01 — recorded in
+			// internal/pricing's introductoryRates), and price is not
+			// what a frontier default is chosen on. What did move is
+			// volume: those boards recorded 31–62% more tool calls across
+			// the corpus than 3.7's (133 → 216 on 2026-10-05), so the same
+			// workload spends more at the same rate.
 			//
 			// The ported table originally said gemini-3.5-pro — a
 			// model id that never shipped (inherited from core-agent,
 			// stale there too; corrected 2026-07-29 when the first
 			// live-credential run hit it).
-			return "gemini-3.7-flash"
+			return "gemini-3.8-flash"
 		case TierMid:
 			// gemini-3.5-flash, not the older 2.5-pro: mid-tier
 			// classes (research, chat) need built-in grounding to

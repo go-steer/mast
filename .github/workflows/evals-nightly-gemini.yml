@@ -43,7 +43,7 @@
 #
 # ## Model choice
 #
-# gemini-3.7-flash for both the model under test and the grader.
+# gemini-3.8-flash for both the model under test and the grader.
 # Deliberately one model rather than a frontier/small pair: this board
 # answers "how does mast behave on Gemini", and holding the grader at
 # the same model keeps the response_quality metric comparable
@@ -54,8 +54,8 @@
 # that test resolves tiers itself and ignores MAST_EVALS_MODEL, by
 # design, since a cost claim about tiers has to use the tiers the
 # product ships. The two happen to name the same model since
-# gemini-3.7-flash was promoted to the Gemini frontier default
-# (2026-08-17); they are still separate knobs, and a future
+# gemini-3.8-flash was promoted to the Gemini frontier default
+# (2026-10-06, after 3.7-flash on 2026-08-17); they are still separate knobs, and a future
 # MAST_EVALS_GEMINI_MODEL bump moves only the board.
 #
 # Flash pricing puts a run well under the Claude nightly's $5-15.
@@ -77,7 +77,7 @@
 #   secrets.MAST_EVALS_WIF_PROVIDER     workload identity provider
 #   secrets.MAST_EVALS_SERVICE_ACCOUNT  service account to impersonate
 #   vars.MAST_EVALS_VERTEX_REGION       optional; defaults to global
-#   vars.MAST_EVALS_GEMINI_MODEL        optional; defaults to gemini-3.7-flash
+#   vars.MAST_EVALS_GEMINI_MODEL        optional; defaults to gemini-3.8-flash
 #
 # The region default is `global`, not the Claude workflow's us-east5:
 # Gemini's capacity for the flash line is served from the global
@@ -124,8 +124,8 @@ jobs:
     # the same two values to decide whether a previous board measured
     # the same thing, and the two must not be able to drift apart.
     env:
-      MAST_EVALS_MODEL: ${{ inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
-      MAST_EVALS_GRADER: ${{ inputs.grader || inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.7-flash' }}
+      MAST_EVALS_MODEL: ${{ inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.8-flash' }}
+      MAST_EVALS_GRADER: ${{ inputs.grader || inputs.model || vars.MAST_EVALS_GEMINI_MODEL || 'gemini-3.8-flash' }}
     steps:
       - uses: actions/checkout@v4
 

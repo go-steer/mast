@@ -167,6 +167,16 @@ func TestBuiltinByBackend_Shape(t *testing.T) {
 	}
 }
 
+// vertexOnlyGemini names the Gemini models upstream prices on Vertex
+// alone, each with when and why. An entry excuses the missing gemini
+// row for that model and nothing else, and fails once the row is back.
+var vertexOnlyGemini = map[string]string{
+	"gemini-2.5-flash-preview-09-2025": "LiteLLM dropped the gemini/ row by the 2026-10-05 " +
+		"regen and kept the vertex_ai-language-models one",
+	"gemini-2.5-flash-lite-preview-09-2025": "same as gemini-2.5-flash-preview-09-2025, " +
+		"same regen",
+}
+
 // Every model is priced on the backend that actually serves it. Claude
 // is first-party everywhere and on Vertex for the subset Google resells;
 // Gemini is served by both the Developer API and Vertex for all of it.
@@ -181,6 +191,11 @@ func TestBuiltinByBackend_CoversTheServingBackends(t *testing.T) {
 			// Not anthropic-vertex: Google resells a subset, and the
 			// generator emits a pair only where upstream prices one.
 			want = []string{"anthropic"}
+		case vertexOnlyGemini[model] != "":
+			want = []string{"vertex"}
+			if _, ok := qualified["gemini/"+model]; ok {
+				t.Errorf("%q has a gemini row again; drop it from vertexOnlyGemini", model)
+			}
 		case strings.HasPrefix(model, "gemini-"):
 			want = []string{"gemini", "vertex"}
 		default:

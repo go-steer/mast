@@ -55,7 +55,7 @@ func TestClassify(t *testing.T) {
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
 		{"gemini-3.8-flash", modeltier.TierFrontier},         // priced, classified, NOT yet the default
 		{"gemini-3.8-flash-09-2026", modeltier.TierFrontier}, // dated snapshot
-		{"gemini-3.7-flash", modeltier.TierFrontier},         // taskclass frontier default
+		{"gemini-3.7-flash", modeltier.TierFrontier},         // taskclass frontier default until 2026-10-06
 		{"gemini-3.7-flash-08-2026", modeltier.TierFrontier}, // dated snapshot
 		{"gemini-3.6-flash", modeltier.TierFrontier},         // previous frontier default
 		{"gemini-3-pro-preview", modeltier.TierFrontier},
