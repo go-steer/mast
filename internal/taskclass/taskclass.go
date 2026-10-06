@@ -292,13 +292,7 @@ func ModelForTier(provider, tier string) string {
 			// model on offer.
 			return "claude-opus-5"
 		case TierMid:
-			// claude-sonnet-5-5, promoted 2026-10-06 off the outcome
-			// tier — the run that reads a mid-tier model, since the O
-			// gate measures the mid default — at 14/15, identical to
-			// claude-sonnet-5 on the same day (runs 37450664934 against
-			// 37449462697), no stall. It prices identically on every
-			// bucket, so the promotion moves no ceiling.
-			return "claude-sonnet-5-5"
+			return "claude-sonnet-5"
 		case TierSmall:
 			// claude-haiku-4-5 is still the latest Haiku — no
 			// 5-generation Haiku has shipped. Moves in lockstep with

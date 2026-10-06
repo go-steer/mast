@@ -61,6 +61,20 @@ var deferredPromotions = map[string]deferredPromotion{
 			"the outcome tier on it with no mid-plan stall (gh workflow run " +
 			"outcome.yml -f model=claude-opus-5-5).",
 	},
+	"claude-sonnet-5": {
+		Newer: "claude-sonnet-5-5",
+		Why: "held 2026-10-06, promoted the same day on the outcome tier alone (#497: " +
+			"14/15, identical to claude-sonnet-5) and reverted once the judged corpus came " +
+			"back. Four boards each, same day, same grader: response_quality 0.839-0.871 " +
+			"(mean 0.857) against claude-sonnet-5's 0.935-0.976 (mean 0.964) — the ranges " +
+			"do not overlap — with intent_coverage level (0.944 against 0.944-0.967). It " +
+			"diagnoses as well and reports worse. Prices identically on every bucket, so " +
+			"price argues nothing either way. The bar is both runs, not the outcome tier " +
+			"alone: judged boards on claude-sonnet-5-5 within noise of claude-sonnet-5's " +
+			"(gh workflow run evals-nightly.yml -f model=claude-sonnet-5-5, and the same " +
+			"for claude-sonnet-5 as the comparison, since the nightly scores the frontier " +
+			"root), plus the outcome tier on it.",
+	},
 }
 
 // TestModelForTier_ReturnsLatestInLine enforces the policy documented on

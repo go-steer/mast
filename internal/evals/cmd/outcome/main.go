@@ -71,7 +71,7 @@ import (
 // The same discipline as §7's wall-clock ceiling, applied to money:
 // decide the number first and let it constrain what runs. --model asks a
 // capability question of anything else without changing what gates.
-const defaultModel = "claude-sonnet-5-5"
+const defaultModel = "claude-sonnet-5"
 
 func main() {
 	var (

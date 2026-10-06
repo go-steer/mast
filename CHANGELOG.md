@@ -202,12 +202,6 @@
 
 ### Feature
 
-- **`tier: mid` on Anthropic is `claude-sonnet-5-5`, and so is the outcome
-  gate's model.** It passed the outcome tier at 14/15, the same as
-  `claude-sonnet-5` on the same day, and prices identically. Pin
-  `model: claude-sonnet-5` to keep the old behaviour. `claude-opus-5-5` stays
-  held.
-
 - **`tier: frontier` on Gemini and Vertex is `gemini-3.8-flash`.** It cleared
   the bar `gemini-3.7-flash` cleared in August: the judged corpus within noise
   of 3.7's board on the weekly candidate runs, and the outcome tier on the same
