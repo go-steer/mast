@@ -101,10 +101,12 @@ func Classify(modelID string) string {
 	m := strings.ToLower(modelID)
 	switch {
 	// Anthropic Claude 5.x. Fable is the Mythos-class tier above
-	// Opus — frontier a fortiori. LiteLLM publishes that tier under
+	// Opus — frontier a fortiori. LiteLLM published that tier under
 	// three ids at identical rates (claude-fable-5, claude-mythos-5,
-	// claude-mythos-preview); all three are priced, so all three must
-	// classify or TestBuiltinModelsKnownToCompanionTables fails. No
+	// claude-mythos-preview); a priced id must classify or
+	// TestBuiltinModelsKnownToCompanionTables fails. The preview left
+	// the table in the 2026-10-05 regen (deprecated upstream) and still
+	// classifies, for bundles that pinned it. No
 	// 5-generation Haiku exists yet; when one ships, add it (unknown
 	// ids conservatively classify "" rather than small, so nothing
 	// misfires meanwhile). Without these cases the whole family
@@ -142,10 +144,10 @@ func Classify(modelID string) string {
 	case containsAny(m, "flash-lite"):
 		return TierSmall
 
-	// Google Gemini 3.x. gemini-3.7-flash is taskclass's gemini
-	// frontier default as of 2026-08-17 (the two tables move
-	// together; see ModelForTier), and 3.6-flash stays classified
-	// behind it — a demoted default is still a model operators have
+	// Google Gemini 3.x. gemini-3.8-flash is taskclass's gemini
+	// frontier default as of 2026-10-06 (the two tables move
+	// together; see ModelForTier), and 3.7-flash and 3.6-flash stay
+	// classified behind it — a demoted default is still a model operators have
 	// pinned in bundles, and dropping the case would fall it through
 	// to "" (unclassified: the small-tier-parent guard can't reason
 	// about it, and the compaction threshold reverts to the universal

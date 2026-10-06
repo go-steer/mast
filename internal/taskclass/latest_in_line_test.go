@@ -43,34 +43,31 @@ type deferredPromotion struct {
 //
 // Empty is the healthy state: it means every tier default is the latest
 // model in its line. The gemini-3.6-flash → gemini-3.7-flash deferral
-// this map was ported with was discharged on 2026-08-17, when 3.7 ran
-// the full 31-scenario judged corpus over Vertex and scored within
-// noise of the 3.6-era board (see the comment on ModelForTier's gemini
-// frontier case).
+// this map was ported with was discharged on 2026-08-17, and the
+// gemini-3.7-flash → gemini-3.8-flash one on 2026-10-06, each when the
+// successor ran the full 31-scenario judged corpus over Vertex within
+// noise of the incumbent's board and passed the outcome tier (see the
+// comment on ModelForTier's gemini frontier case).
 var deferredPromotions = map[string]deferredPromotion{
-	"gemini-3.7-flash": {
-		Newer: "gemini-3.8-flash",
-		Why: "held 2026-09-09, and the reason is that the case for promoting is free. " +
-			"3.8-flash prices identically to 3.7-flash ($0.75/$3.75 per MTok, cached " +
-			"input $0.075, both introductory through 2026-12-31) on the same " +
-			"1,048,576-token window, so a promotion moves no cost ceiling and no " +
-			"compaction trigger — there is nothing on paper to weigh against the fact " +
-			"that nothing has run it. A free paper case is exactly the one that has " +
-			"been wrong before: core-agent#579 promoted a frontier default off a spec " +
-			"sheet and #580 reverted it a day later when the parent agent stopped " +
-			"mid-plan. The bar is the bar 3.7 cleared — the full 31-scenario judged " +
-			"corpus over live Vertex, scoring within noise of the current board, with " +
-			"no mid-plan stall. That run is scheduled, not aspirational: " +
-			".github/workflows/evals-candidate-gemini.yml runs the corpus against " +
-			"3.8-flash weekly, graded by the incumbent so only one variable moves, " +
-			"and diffs it against the nightly's board; the mid-plan half is the " +
-			"outcome tier on the same model (gh workflow run outcome.yml -f " +
-			"model=gemini-3.8-flash -f provider=vertex). Zero-config stays on 3.7-flash until both " +
-			"pass. Note the one number that did move and is not " +
-			"in mast's tables: Artificial Analysis measured ~30% more output tokens " +
-			"per task on 3.8-flash at high thinking, so at an identical output rate " +
-			"the same work bills more — the UAT should read cost per scenario, not " +
-			"cost per token.",
+	"claude-opus-5": {
+		Newer: "claude-opus-5-5",
+		Why: "held 2026-10-06 — the 2026-10-05 regen priced it and nothing has run it. " +
+			"Cheaper than the incumbent ($4/$20 per MTok against $5/$25, cache reads " +
+			"$0.20 against $0.50) on the same 1,000,000-token window, so the paper " +
+			"case is real, but a paper case is what core-agent#579 promoted on and " +
+			"#580 reverted. The bar is the one gemini-3.8-flash cleared on 2026-10-06: " +
+			"the judged corpus on this model within noise of the anthropic nightly's " +
+			"board (gh workflow run evals-nightly.yml -f model=claude-opus-5-5), and " +
+			"the outcome tier on it with no mid-plan stall (gh workflow run " +
+			"outcome.yml -f model=claude-opus-5-5).",
+	},
+	"claude-sonnet-5": {
+		Newer: "claude-sonnet-5-5",
+		Why: "held 2026-10-06 — same regen, same bar as claude-opus-5-5, and here the " +
+			"paper case is free: it prices identically to the incumbent on every bucket " +
+			"($2/$10 per MTok, cache reads $0.20). Mid is the tier the outcome tier runs " +
+			"by default, so that run is the one to read: gh workflow run outcome.yml " +
+			"-f model=claude-sonnet-5-5.",
 	},
 }
 
@@ -88,7 +85,7 @@ var deferredPromotions = map[string]deferredPromotion{
 // priced).
 //
 // SHARED LINES: for Gemini the tiers are separated by generation, not by
-// line — frontier is gemini-3.7-flash and mid is gemini-3.5-flash, both
+// line — frontier is gemini-3.8-flash and mid is gemini-3.5-flash, both
 // on the "flash" line. Applying the rule to the lower tier would demand
 // that mid and frontier be the same model. So a line is checked once,
 // at the highest tier that claims it; lower tiers sharing that line are
