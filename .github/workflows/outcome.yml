@@ -72,6 +72,10 @@ on:
         description: 'Model under test (overrides vars.MAST_OUTCOME_MODEL)'
         required: false
         type: string
+      provider:
+        description: 'Provider (overrides vars.MAST_OUTCOME_PROVIDER); vertex for a gemini-* model'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -137,6 +141,13 @@ jobs:
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.MAST_EVALS_VERTEX_PROJECT }}
           CLOUD_ML_REGION: ${{ vars.MAST_EVALS_VERTEX_REGION || 'us-east5' }}
+          # Gemini on Vertex (--provider=vertex). The auth step already
+          # exports GOOGLE_CLOUD_PROJECT; the location is the one the
+          # Gemini nightlies use. Without --provider a gemini-* model
+          # falls through to the Developer API and refuses for want of a
+          # key, which is how every dispatch against a Gemini candidate
+          # failed before this input existed.
+          GOOGLE_CLOUD_LOCATION: ${{ vars.MAST_EVALS_VERTEX_REGION || 'global' }}
           MAST_OUTCOME_MODEL: ${{ inputs.model || vars.MAST_OUTCOME_MODEL }}
-          MAST_OUTCOME_PROVIDER: ${{ vars.MAST_OUTCOME_PROVIDER }}
+          MAST_OUTCOME_PROVIDER: ${{ inputs.provider || vars.MAST_OUTCOME_PROVIDER }}
         run: dev/ci/outcome-gate.sh

@@ -51,7 +51,7 @@
 # candidate, which nothing here can trigger — GITHUB_TOKEN cannot fire
 # a workflow_dispatch. Run that half by hand:
 #
-#   gh workflow run outcome.yml -f model=gemini-3.8-flash
+#   gh workflow run outcome.yml -f model=gemini-3.8-flash -f provider=vertex
 #
 # ## Gating
 #
@@ -185,7 +185,7 @@ jobs:
               echo "> This board is half the bar in \`deferredPromotions\` (internal/taskclass/latest_in_line_test.go)."
               echo "> The other half is the outcome tier on the same model, which has to be started by hand:"
               echo ">"
-              echo ">     gh workflow run outcome.yml -f model=${MAST_EVALS_MODEL}"
+              echo ">     gh workflow run outcome.yml -f model=${MAST_EVALS_MODEL} -f provider=vertex"
             fi
           } >>"${GITHUB_STEP_SUMMARY}"
 

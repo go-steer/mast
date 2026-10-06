@@ -65,7 +65,7 @@ var deferredPromotions = map[string]deferredPromotion{
 			"3.8-flash weekly, graded by the incumbent so only one variable moves, " +
 			"and diffs it against the nightly's board; the mid-plan half is the " +
 			"outcome tier on the same model (gh workflow run outcome.yml -f " +
-			"model=gemini-3.8-flash). Zero-config stays on 3.7-flash until both " +
+			"model=gemini-3.8-flash -f provider=vertex). Zero-config stays on 3.7-flash until both " +
 			"pass. Note the one number that did move and is not " +
 			"in mast's tables: Artificial Analysis measured ~30% more output tokens " +
 			"per task on 3.8-flash at high thinking, so at an identical output rate " +
