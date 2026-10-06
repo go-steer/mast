@@ -144,9 +144,9 @@ func TestResolveModelSelection(t *testing.T) {
 		{name: "anthropic provider accepts claude model", provider: "anthropic", model: "claude-sonnet-4-6", modelSet: true, want: "claude-sonnet-4-6"},
 		{name: "anthropic provider rejects gemini model", provider: "anthropic", model: "gemini-2.5-flash", modelSet: true, wantErr: "conflicts"},
 		{name: "anthropic provider derives frontier from debug", provider: "anthropic", model: "echo", class: "debug", want: "claude-opus-5"},
-		{name: "anthropic provider derives mid without class", provider: "anthropic", model: "echo", want: "claude-sonnet-5"},
+		{name: "anthropic provider derives mid without class", provider: "anthropic", model: "echo", want: "claude-sonnet-5-5"},
 		{name: "anthropic-vertex resolves the same model ids", provider: "anthropic-vertex", model: "claude-haiku-4-5", modelSet: true, want: "claude-haiku-4-5"},
-		{name: "anthropic-vertex derives mid without class", provider: "anthropic-vertex", model: "echo", want: "claude-sonnet-5"},
+		{name: "anthropic-vertex derives mid without class", provider: "anthropic-vertex", model: "echo", want: "claude-sonnet-5-5"},
 		// vertex is to gemini what anthropic-vertex is to anthropic: the
 		// same model ids, a different backend. The backend half is
 		// consumed by compose.BuildModel, not here.

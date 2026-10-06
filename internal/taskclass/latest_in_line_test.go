@@ -61,14 +61,6 @@ var deferredPromotions = map[string]deferredPromotion{
 			"the outcome tier on it with no mid-plan stall (gh workflow run " +
 			"outcome.yml -f model=claude-opus-5-5).",
 	},
-	"claude-sonnet-5": {
-		Newer: "claude-sonnet-5-5",
-		Why: "held 2026-10-06 — same regen, same bar as claude-opus-5-5, and here the " +
-			"paper case is free: it prices identically to the incumbent on every bucket " +
-			"($2/$10 per MTok, cache reads $0.20). Mid is the tier the outcome tier runs " +
-			"by default, so that run is the one to read: gh workflow run outcome.yml " +
-			"-f model=claude-sonnet-5-5.",
-	},
 }
 
 // TestModelForTier_ReturnsLatestInLine enforces the policy documented on

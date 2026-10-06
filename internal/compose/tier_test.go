@@ -45,7 +45,7 @@ func TestTierModelName_FollowsTheRunningProvider(t *testing.T) {
 		{"gemini root, mid", "", "gemini-3.6-flash", taskclass.TierMid, "gemini-3.5-flash"},
 		{"claude root, frontier", "", "claude-haiku-4-5", taskclass.TierFrontier, "claude-opus-5"},
 		{"explicit vertex alias", "vertex", "gemini-3.6-flash", taskclass.TierSmall, "gemini-3.5-flash-lite"},
-		{"explicit anthropic-vertex alias", "anthropic-vertex", "claude-opus-4-7", taskclass.TierMid, "claude-sonnet-5"},
+		{"explicit anthropic-vertex alias", "anthropic-vertex", "claude-opus-4-7", taskclass.TierMid, "claude-sonnet-5-5"},
 		// The alias wins over the root's prefix. It is the operator's
 		// explicit statement of which provider this run is against.
 		{"alias beats the prefix", "anthropic", "gemini-3.6-flash", taskclass.TierSmall, "claude-haiku-4-5"},

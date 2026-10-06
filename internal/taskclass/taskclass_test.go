@@ -134,7 +134,7 @@ func TestModelForTier(t *testing.T) {
 
 		// Anthropic family.
 		{"anthropic", "frontier", "claude-opus-5"},
-		{"anthropic", "mid", "claude-sonnet-5"},
+		{"anthropic", "mid", "claude-sonnet-5-5"},
 		{"anthropic", "small", "claude-haiku-4-5"},
 		{"anthropic-vertex", "frontier", "claude-opus-5"},
 
