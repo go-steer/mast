@@ -65,11 +65,26 @@ ax resume mast-oneshot      # new tasks start Suspended
 ax watch mast-oneshot
 ```
 
-AX injects `GEMINI_API_KEY` when the atespace has a Gemini credential, and
-mast picks it up with `--provider=gemini`. Other providers need their
-credentials in `spec.env`, which AX stores in plain text in the task and its
-actor template. Don't put real secrets there until AX supports secret
-references.
+### Network and credentials
+
+On Agent Substrate v0.2.0 and later an actor has no outbound network until it
+has an egress policy, and upstream AX doesn't create one (google/ax#449).
+
+Keep credentials out of the task. AX's built-in `GEMINI_API_KEY` injection,
+and anything in `spec.env`, ends up in plain text in the actor template and
+its snapshots. Substrate's egress gateway can add credentials to outbound
+requests instead, so the sandbox never holds them:
+
+- **API keys** (Gemini API): an egress rule replaces `x-goog-api-key`; run
+  mast with `GEMINI_API_KEY=placeholder`.
+- **Google OAuth** (Vertex AI models, Google-managed MCP servers such as
+  GKE's): an egress rule replaces `Authorization` with a token served by a
+  credential provider; run mast with `MAST_GOOGLE_AUTH=injected`, which
+  makes it send `Authorization: Bearer placeholder` instead of looking for
+  Application Default Credentials.
+
+Both need Substrate's credential injection (`sdsmint` egress gateway with a
+credential provider) and the gateway's CA bundle in the sandbox.
 
 ## Try it locally
 
@@ -92,17 +107,20 @@ drop `--wait-for-egress`, which has no meaning outside Substrate.
 
 - **One-shot only, so no tools.** A one-shot turn has no workload bundle,
   so no MCP servers or specialists. Running a real workload means serve
-  mode, where turns arrive over HTTP on `:7777`. AX routes traffic to the
-  sandbox only on port 80, which the runner owns, so nothing outside can
-  reach mast yet. That needs a pass-through in AX's runner.
+  mode, where turns arrive over HTTP. Substrate's router reaches the sandbox
+  only on port 80, which AX's runner owns, so upstream AX gives callers no
+  way in. A runner pass-through (`spec.http.port`, currently on a fork of
+  AX) forwards those requests to mast's attach listener; with it, mast's
+  session API (`POST /sessions`, `POST /sessions/<sid>/inject`, the event
+  stream) works through the router, and a request wakes a suspended task.
 - **Repeated prompt after an interruption.** Each re-run appends the
   prompt to the session again, so after N interruptions the model sees it
   N+1 times. One-shot mode has no way to continue a session without a new
   message.
-- **Short shutdown window.** The runner kills the command 10s after
-  SIGTERM. `AX_STOP_GRACE_PERIOD` in `task.yaml` raises it once
-  google/ax#446 lands. Until then, a turn cut short re-runs on resume, and
-  mutating tools are at-least-once, as everywhere in mast.
+- **Suspend gives no warning.** Suspend checkpoints and freezes the sandbox
+  without sending SIGTERM (google/ax#451); only `/workspace` survives, and
+  on Substrate v0.3.0 the command starts again on resume. A turn cut short
+  re-runs, and mutating tools are at-least-once, as everywhere in mast.
 - **No status back to AX.** AX doesn't read exit codes, usage, or pending
   approvals from the task. Check `result.txt` and `mast sessions` inside
   the sandbox (`ax ssh` with `spec.debug: true`).
