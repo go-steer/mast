@@ -29,6 +29,8 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+
+	"github.com/go-steer/mast/internal/injectedauth"
 )
 
 // googleAuthTransport injects "Authorization: Bearer <token>" from an
@@ -66,6 +68,10 @@ func (t *googleAuthTransport) RoundTrip(req *http.Request) (*http.Response, erro
 func newGoogleAuthTransport(ctx context.Context, name string, scopes []string) (http.RoundTripper, error) {
 	if len(scopes) == 0 {
 		return nil, fmt.Errorf("mcp: %q: at least one OAuth scope is required", name)
+	}
+	if injectedauth.Enabled() {
+		// An egress gateway adds the real token; send the placeholder it replaces.
+		return &googleAuthTransport{base: http.DefaultTransport, source: injectedauth.TokenSource()}, nil
 	}
 	creds, err := google.FindDefaultCredentials(ctx, scopes...)
 	if err != nil {

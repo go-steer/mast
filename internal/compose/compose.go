@@ -43,6 +43,7 @@ import (
 	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/graph"
+	"github.com/go-steer/mast/internal/injectedauth"
 	"github.com/go-steer/mast/internal/modelretry"
 	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/internal/pricing"
@@ -759,11 +760,16 @@ func geminiClientConfig(provider string) (*genai.ClientConfig, error) {
 	if location == "" {
 		location = DefaultVertexLocation
 	}
-	return &genai.ClientConfig{
+	cfg := &genai.ClientConfig{
 		Backend:  genai.BackendVertexAI,
 		Project:  project,
 		Location: location,
-	}, nil
+	}
+	if injectedauth.Enabled() {
+		// An egress gateway adds the real token; don't look for ADC.
+		cfg.Credentials = injectedauth.Credentials()
+	}
+	return cfg, nil
 }
 
 // anthropicProvider picks the Anthropic backend for claude-* models.
