@@ -16,6 +16,9 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -217,6 +220,21 @@ func buildAttach(logger *slog.Logger, listenSpec, bearer string, store *transcri
 	opts := attach.Options{
 		Registry: reg,
 		Auth:     attach.AuthConfig{BearerToken: bearer},
+		// POST /sessions: a client (lookout's core-agent sink, switchboard)
+		// opens a session, then injects into it. Each one runs the same
+		// workload as inject-created sessions.
+		SessionFactory: func(ctx context.Context, caller auth.Caller) (attach.Registrant, context.CancelFunc, error) {
+			sid, err := newAttachSessionID()
+			if err != nil {
+				return nil, nil, err
+			}
+			ad, err := adapterFor(sid)
+			if err != nil {
+				return nil, nil, err
+			}
+			logger.Info("attach: session created", "session", sid, "caller", caller.Identity)
+			return ad, func() {}, nil
+		},
 	}
 	if path, ok := strings.CutPrefix(listenSpec, "unix:"); ok {
 		opts.UnixSocket = path
@@ -239,6 +257,15 @@ func buildAttach(logger *slog.Logger, listenSpec, bearer string, store *transcri
 		adapterFor: adapterFor,
 		logger:     logger,
 	}, nil
+}
+
+// newAttachSessionID returns a fresh id for a session created over attach.
+func newAttachSessionID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("attach: generating session id: %w", err)
+	}
+	return "attach-" + hex.EncodeToString(b), nil
 }
 
 // ensure registers sid's adapter on first sight so the session is
