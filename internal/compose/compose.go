@@ -207,6 +207,13 @@ type RootConfig struct {
 	// build as Task-mode (the same default pkg/specialists applies).
 	Specs []specialists.Spec
 
+	// ProjectInstruction is the deployment's project instructions
+	// (AGENTS.md, via internal/instruction). When non-empty it is
+	// placed ahead of every specialist's instruction and the
+	// coordinator's, so facts the workload can't know (which cluster,
+	// which project) reach whichever agent ends up doing the work.
+	ProjectInstruction string
+
 	// Model is the root model: the one the coordinator/planner runs on
 	// and the default for every specialist that declares no `model:`
 	// override.
@@ -310,6 +317,15 @@ type RootConfig struct {
 // there is no accessor for a built agent's tools (#51 / adk-go#1229).
 // A caller with no catalog to feed discards it.
 func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool, error) {
+	if cfg.ProjectInstruction != "" {
+		specs := make([]specialists.Spec, len(cfg.Specs))
+		for i, spec := range cfg.Specs {
+			spec.Instruction = router.WithPreamble(cfg.ProjectInstruction, spec.Instruction)
+			specs[i] = spec
+		}
+		cfg.Specs = specs
+	}
+
 	dispatch := cfg.Dispatch.Resolve(cfg.Bundle)
 	switch dispatch {
 	case DispatchCoordinator, DispatchGraph, DispatchFanout, DispatchBounded, DispatchAuto:
@@ -499,6 +515,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		Bundle:      cfg.Bundle,
 		Specialists: byName,
 		Model:       cfg.Model,
+		Preamble:    cfg.ProjectInstruction,
 	})
 	return root, nil, err
 }

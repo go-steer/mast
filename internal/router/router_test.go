@@ -104,3 +104,12 @@ func TestBuild_RequiresModel(t *testing.T) {
 		t.Fatal("expected error for missing Model, got nil")
 	}
 }
+
+func TestWithPreamble(t *testing.T) {
+	if got := router.WithPreamble("  \n", "own"); got != "own" {
+		t.Errorf("blank preamble: got %q, want the instruction unchanged", got)
+	}
+	if got, want := router.WithPreamble("cluster c\n", "own"), "cluster c\n\n---\n\nown"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

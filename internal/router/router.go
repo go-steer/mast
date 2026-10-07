@@ -42,6 +42,7 @@ package router
 
 import (
 	"fmt"
+	"strings"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -67,6 +68,23 @@ type Config struct {
 	// Instruction, when non-empty, replaces the default coordinator
 	// system prompt.
 	Instruction string
+
+	// Preamble, when non-empty, is placed before the coordinator's
+	// instruction (default or replaced): the deployment's project
+	// instructions (AGENTS.md), e.g. which cluster this agent serves.
+	Preamble string
+}
+
+// WithPreamble places the deployment's project instructions before an
+// agent's own instruction, separated by a rule. internal/instruction
+// already heads each file with its path, so no heading is added here.
+// An empty preamble returns the instruction unchanged.
+func WithPreamble(preamble, instruction string) string {
+	preamble = strings.TrimSpace(preamble)
+	if preamble == "" {
+		return instruction
+	}
+	return preamble + "\n\n---\n\n" + instruction
 }
 
 // Build assembles the coordinator + SubAgents shape and returns the
@@ -99,6 +117,7 @@ func Build(cfg Config) (adkagent.Agent, error) {
 	if instruction == "" {
 		instruction = defaultCoordinatorInstruction(cfg.Bundle)
 	}
+	instruction = WithPreamble(cfg.Preamble, instruction)
 
 	return mastagent.NewCoordinator(mastagent.CoordinatorConfig{
 		Name:        cfg.Bundle.Name + "_coordinator",

@@ -34,6 +34,7 @@ import (
 type runFlags struct {
 	workload         *string
 	dispatch         *string
+	instructions     *string
 	model            *string
 	provider         *string
 	task             *string
@@ -86,6 +87,10 @@ type runFlags struct {
 type workloadOpts struct {
 	arg      string // --workload: a discovery name or a directory path
 	dispatch string // --dispatch: empty means read it off the bundle
+	// instructions is --instructions: a project directory whose
+	// AGENTS.md is placed ahead of every agent's own instruction.
+	// Empty loads nothing.
+	instructions string
 }
 
 // modelOpts is the resolved model selection. Both fields have already
@@ -140,6 +145,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 	return &runFlags{
 		workload:         fs.String("workload", "", "workload to run: a name resolved via .agents/ discovery (see internal/config), or a path to a workload directory (containing workload.yaml + specialists/)"),
 		dispatch:         fs.String("dispatch", "", "dispatch shape: `coordinator` (spike-1 SubAgents pattern), `graph` (workflow-graph LLM-as-router), `fanout` (concurrent read-only analysts + a _synthesis merge), `bounded` (one SingleTurn specialist, one model call, a report forced to a schema), or `auto` (read the shape off the roster; never picks `bounded`). Unset takes the workload's own `dispatch:`, then coordinator"),
+		instructions:     fs.String("instructions", "", "serve mode: a project directory whose AGENTS.md (falling back to CLAUDE.md, then GEMINI.md; read from `<dir>/.agents/` or `<dir>/`, with @include and .agents/AGENTS.d/*.md) is placed ahead of the coordinator's and every specialist's instruction. Deployment facts the workload can't know, such as which cluster this agent serves. Empty (the default) loads nothing; the working directory is never read implicitly"),
 		model:            fs.String("model", "echo", "model to use: `echo` (fake, for smoke), `scripted` (JSONL replay; path via MAST_SCRIPT), a Gemini model id like `gemini-2.5-flash`, or a Claude model id like `claude-sonnet-4-6`"),
 		provider:         fs.String("provider", "", "model provider alias: `echo`, `scripted`, `gemini`, `vertex`, `anthropic`, or `anthropic-vertex`. Validates against --model when both are set; picks the provider's default model (the --task profile's tier via internal/taskclass) when --model is unset. The alias also picks the backend within a family: `vertex` runs gemini-* against Vertex AI (GOOGLE_CLOUD_PROJECT, ADC) without GOOGLE_GENAI_USE_VERTEXAI, and `anthropic` / `anthropic-vertex` pick first-party or Vertex for claude-*"),
 		task:             fs.String("task", "", "one-shot task class: `chat`, `debug`, `implement`, `research`, `review`, or `orchestrate` (requires a positional prompt; defaults to chat when a prompt is given without --task)"),

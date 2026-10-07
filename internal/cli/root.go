@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -31,6 +32,7 @@ import (
 	"github.com/go-steer/mast/internal/config"
 	"github.com/go-steer/mast/internal/digest"
 	"github.com/go-steer/mast/internal/effects"
+	"github.com/go-steer/mast/internal/instruction"
 	mastmcp "github.com/go-steer/mast/internal/mcp"
 	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/pkg/specialists"
@@ -267,24 +269,30 @@ func buildRoot(ctx context.Context, logger *slog.Logger, llm model.LLM, mdl mode
 		return rootBuild{}, err
 	}
 
+	project, err := loadProjectInstruction(logger, wl.instructions)
+	if err != nil {
+		return rootBuild{}, err
+	}
+
 	var lookup func(string) (model.LLM, bool)
 	if seams.ext.Models != nil {
 		lookup = seams.ext.lookupModel
 	}
 	a, builtin, err := compose.BuildRoot(ctx, compose.RootConfig{
-		HostToolsets:    seams.ext.Toolsets,
-		ModelLookup:     lookup,
-		Bundle:          bundle,
-		Specs:           loaded,
-		Model:           llm,
-		ModelName:       mdl.name,
-		Provider:        mdl.provider,
-		Toolsets:        toolsets,
-		SpecialistTools: extraTools,
-		Dispatch:        compose.Dispatch(resolved),
-		Logger:          logger,
-		PauseRecorder:   seams.pause,
-		SubRunObserver:  seams.subRun,
+		HostToolsets:       seams.ext.Toolsets,
+		ModelLookup:        lookup,
+		Bundle:             bundle,
+		Specs:              loaded,
+		ProjectInstruction: project,
+		Model:              llm,
+		ModelName:          mdl.name,
+		Provider:           mdl.provider,
+		Toolsets:           toolsets,
+		SpecialistTools:    extraTools,
+		Dispatch:           compose.Dispatch(resolved),
+		Logger:             logger,
+		PauseRecorder:      seams.pause,
+		SubRunObserver:     seams.subRun,
 	})
 	if err != nil {
 		return rootBuild{}, err
@@ -486,4 +494,28 @@ func newDigestOptions(logger *slog.Logger, enabled bool) *mastmcp.DigestOptions 
 	}
 	opts.Store = store
 	return opts
+}
+
+// loadProjectInstruction reads --instructions: the AGENTS.md (and what
+// it includes) of a directory the operator named. A directory with no
+// instruction file is refused, because the flag was set to say
+// something and saying nothing in silence is the failure it exists to
+// prevent.
+func loadProjectInstruction(logger *slog.Logger, dir string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	l, err := instruction.Load(dir, "")
+	if err != nil {
+		return "", fmt.Errorf("--instructions %s: %w", dir, err)
+	}
+	if l.Empty() {
+		return "", fmt.Errorf("--instructions %s: no AGENTS.md, CLAUDE.md or GEMINI.md found (searched %s)", dir, strings.Join(l.Searched, ", "))
+	}
+	paths := make([]string, 0, len(l.Sources))
+	for _, s := range l.Sources {
+		paths = append(paths, s.Path)
+	}
+	logger.Info("project instructions loaded", "dir", dir, "sources", paths, "bytes", len(l.Instruction))
+	return l.Instruction, nil
 }

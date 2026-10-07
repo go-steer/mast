@@ -108,6 +108,7 @@ func run(ctx context.Context, args []string, ext Options) int {
 	var (
 		workloadFlag     = f.workload
 		dispatchMode     = f.dispatch
+		instructionsDir  = f.instructions
 		modelName        = f.model
 		providerFlag     = f.provider
 		taskFlag         = f.task
@@ -280,7 +281,7 @@ func run(ctx context.Context, args []string, ext Options) int {
 	d := &daemon{
 		parent: ctx,
 		logger: logger,
-		wl:     workloadOpts{arg: *workloadFlag, dispatch: *dispatchMode},
+		wl:     workloadOpts{arg: *workloadFlag, dispatch: *dispatchMode, instructions: *instructionsDir},
 		mdl:    modelOpts{provider: *providerFlag, name: *modelName},
 		listeners: listenOpts{
 			inject:     *listen,

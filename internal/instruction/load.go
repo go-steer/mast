@@ -45,7 +45,7 @@
 // convention lands. That wiring is left to the workstream that gives
 // workload/specialist prompts a memory-file surface
 // (docs/config-layout-design.md defers instruction files in v0.1);
-// nothing in the daemon calls Load yet.
+// serve mode calls Load for --instructions (internal/cli/root.go).
 package instruction
 
 import (

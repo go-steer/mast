@@ -28,6 +28,7 @@ mast [flags] [prompt]
   --auto-resume          bool      "true"
   --auto-resume-window   duration  "1h0m0s"
   --dispatch             string    ""
+  --instructions         string    ""
   --listen               string    ":7777"
   --log-level            string    "info"
   --mcp-digest           bool      "true"
