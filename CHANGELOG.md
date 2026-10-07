@@ -251,6 +251,14 @@ deliberately** says how to keep the old behaviour.
   sinks, switchboard's agent picker) can drive mast. The daemon stays
   single-user: no owner, no ACL (#524).
 
+- **`--instructions <dir>`: project instructions in serve mode.** A
+  deployment can tell its agent what the workload can't know, such as which
+  cluster it serves. The directory's `AGENTS.md` (with the `CLAUDE.md` /
+  `GEMINI.md` fallbacks, `@include` and `.agents/AGENTS.d/`) goes ahead of
+  the coordinator's and every specialist's instruction. Off by default; the
+  working directory is never read implicitly, and a named directory with no
+  instruction file is refused at startup (#525).
+
 - **A turn now has a model-call cap by default.**
   `budget.max_model_calls_per_turn` caps the model calls one turn may
   make. It defaults to 100; set it negative to remove it. When a turn
