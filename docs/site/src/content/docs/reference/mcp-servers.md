@@ -101,8 +101,11 @@ required fields, reporting the first problem it finds.
 Speaks MCP over a streamable-HTTP endpoint. When the entry declares
 `auth.google_oauth`, mast attaches an ADC bearer token and **fails fast at
 startup** if credentials cannot be loaded — surfacing a misconfiguration as
-a clear load error rather than a mid-run tool failure. Without an `auth`
-block the endpoint is called unauthenticated.
+a clear load error rather than a mid-run tool failure. With
+`MAST_GOOGLE_AUTH=injected`, it sends a placeholder bearer for an egress
+gateway to replace instead
+([Credentials an egress gateway adds](/concepts/providers/#credentials-an-egress-gateway-adds)).
+Without an `auth` block the endpoint is called unauthenticated.
 
 ### stdio
 

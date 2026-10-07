@@ -135,6 +135,22 @@ to the API-key backend and fails asking for a key the deployment does not
 have. `--provider=vertex` names the backend outright and fails at startup
 naming the project variable if it is missing.
 
+### Credentials an egress gateway adds
+
+Some sandboxes hold no Google credentials at all. On
+[Agent Substrate](https://github.com/agent-substrate/substrate) with egress
+credential injection, for example, the egress gateway adds the real token to
+each outbound request by replacing an `Authorization` header that has to be
+there already. There are no Application Default Credentials to find, so
+building a Vertex model would fail.
+
+Set `MAST_GOOGLE_AUTH=injected`, the one mast-specific variable here, and mast
+stops looking for ADC. It sends `Authorization: Bearer placeholder` for the
+gateway to replace instead. It covers Gemini on Vertex, Claude on Vertex, and
+MCP servers with [`google_oauth`](/reference/mcp-servers/) auth. The
+project and location variables still apply. Leave it unset everywhere else:
+with nothing replacing the placeholder, Google rejects it with a 401.
+
 ### Vertex AI express mode
 
 Vertex AI also takes an API key instead of a project and ADC. mast runs a
