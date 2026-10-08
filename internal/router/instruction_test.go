@@ -43,3 +43,28 @@ func TestDefaultCoordinatorInstructionNamesFallbackOnlyWhenPresent(t *testing.T)
 		t.Errorf("the instruction lost its routing sentence:\n%s", generalist)
 	}
 }
+
+// A sender that re-sends a still-broken incident into the same session
+// must not buy a fresh investigation each time. The instruction has to
+// say so, key it on what makes a signal a repeat, and keep a person's
+// message out of the rule.
+func TestDefaultCoordinatorInstructionDoesNotReinvestigateARepeat(t *testing.T) {
+	// Compared with line breaks folded, so rewrapping the prose does not
+	// fail the test.
+	got := strings.Join(strings.Fields(defaultCoordinatorInstruction(workload.Bundle{
+		Name: "gke-triage", Specialists: []string{"diagnoser", "change-executor"},
+	})), " ")
+	for _, want := range []string{
+		"Not every signal is new work",
+		"same object and reason",
+		`"kind":"family.member"`,
+		"do not delegate",
+		"something new",
+		"resolved",
+		"anything a person typed gets a direct answer",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("instruction is missing %q:\n%s", want, got)
+		}
+	}
+}

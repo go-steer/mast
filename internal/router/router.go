@@ -118,6 +118,14 @@ func Build(cfg Config) (adkagent.Agent, error) {
 // a coordinator built for a named workload should be framed around
 // that workload, not around generic operator chat.
 //
+// The repeated-signal paragraph is ported from go-steer/core-agent's
+// examples/gke-platform-agent/AGENTS.md ("Not every signal is new
+// work"). k8s-lookout re-sends a still-broken incident into the same
+// session after each dedup window, and without it the coordinator ran a
+// full investigation every time: four re-diagnoses of one unchanged
+// unschedulable pod, about four times the cost, and a session that
+// never went idle.
+//
 // The "_fallback" sentence is said only to a roster that has one. A
 // roster without it (the stock gke-triage bundle is one generalist
 // diagnoser plus change-executor) would otherwise be told to delegate
@@ -135,6 +143,19 @@ summarise the specialist's finding as a short structured "INCIDENT
 SUMMARY" block for the operator.
 
 Each specialist is available as a tool. %s
+
+Not every signal is new work. A sender that sees a problem persist
+re-sends it into this same session, so before you delegate, check a
+machine signal (a JSON object with a "kind") against what this session
+has already established. If it is the same problem seen again (the same
+object and reason, or a "kind":"family.member" whose "family" you have
+already diagnosed), do not delegate: say in a line or two that this is
+the incident already reported and the finding stands, then stop.
+Investigate again only if the signal shows something new: a different
+reason, object or message, or evidence that contradicts the finding. A
+signal that says the problem is resolved gets a one-line
+acknowledgement. This rule is for machine signals only; anything a
+person typed gets a direct answer.
 
 Do not attempt remediations yourself — return analysis only. Be
 concise; operators are on-call.`, b.Name, pick)
