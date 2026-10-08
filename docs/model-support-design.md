@@ -6,6 +6,15 @@ answered. Targets v0.5 and later. Scope is **mast**; core-agent has the same
 shape of problem and is deliberately out of scope for this pass (see
 [§9](#9-core-agent)).
 
+**Update 2026-10-08 — the design moves to a shared library.** §9's question is
+answered: multi-dialect provider support is shared infrastructure, and it lives
+in neither repo but in a new one, [`go-steer/core-models`](https://github.com/go-steer/core-models), imported by
+both. **This doc stays authoritative for the requirements** — R1–R8, the seams
+inventory of §3, the prioritized lists of §5, the risks of §7, and the fantasy
+survey of §10. The *implementation* shape of §4 and the M3–M5 slices of §6 are
+restated at library scope in [core-models `docs/design.md`](https://github.com/go-steer/core-models/blob/main/docs/design.md), which is where
+they evolve from here. See [Resolved decisions](#resolved-decisions).
+
 ---
 
 ## 1. The ask, and why it is not "add two more adapters"
@@ -162,6 +171,13 @@ Claude-on-Vertex.
 **Decision proposed:** mast owns a `internal/providers/openai` package implementing
 **both** OpenAI-shaped dialects, with `openai-chat` as the default and
 `openai-responses` opt-in per profile.
+
+*(Superseded 2026-10-08: both dialects are built once in
+[`go-steer/core-models`](https://github.com/go-steer/core-models), not in `internal/providers`. The paragraph below
+is also stale on one point — ADK v2.5's `openaimodel` speaks Chat Completions as
+well as Responses — but it exists only in ADK v2 and core-agent is on v1.7, so
+core-models writes both dialects on `openai-go` directly rather than wrapping
+it.)*
 
 The alternative — adopt ADK's `model/openaimodel` and call it done — fails on
 coverage. That package is Responses-only and marked `EXPERIMENTAL`, so it
@@ -643,6 +659,15 @@ and the 2026-08-17 watchdog call is the precedent for how that gets decided —
 a feature both repos want is shared by definition. Worth answering before M3, not
 before M0.
 
+**Answered 2026-10-08: shared, and in a third repo.** Neither "core-agent first,
+then port" nor "mast first, port later" — both are the cherry-pick this section
+warns against, done on purpose. [`go-steer/core-models`](https://github.com/go-steer/core-models) owns the
+provider-intrinsic layer once: adapters, profiles, the usage record, and later
+the price catalog. mast and core-agent import it through thin per-ADK-major shims
+(`adkv2` for mast, `adkv1` for core-agent), since the two repos are on different
+ADK majors and `model.LLM` is a different type in each. Product policy — tier
+promotion, budgets, CLI and config surface, telemetry — stays here.
+
 ---
 
 ## 10. Prior art surveyed: `charmbracelet/fantasy`
@@ -774,8 +799,19 @@ checklist, not a blocker.
 
 ## Resolved decisions
 
-*(Empty. Everything in this doc is a proposal until it appears here and in the
-cross-reference table in [`./README.md`](./README.md).)*
+Recorded 2026-10-08. Everything not listed here is still a proposal.
+
+| Decision | Rationale |
+|---|---|
+| **Provider support is built in [`go-steer/core-models`](https://github.com/go-steer/core-models), a library both mast and core-agent import** (answers §9) | The two repos' adapter copies had drifted both ways — core-agent ahead on prompt caching and Gemini retry, mast ahead on the `usage.Detail` record (#352) and the library shape — and #312's third provider would have been written twice or ported once. A library is the only place a fix lands once |
+| **The library's core depends on genai and vendor SDKs only; nested `adkv1` / `adkv2` modules adapt it** | mast is on `adk/v2`, core-agent on `adk` v1.7; their `model.LLM` types are field-identical and nominally distinct. Nested modules keep each consumer's graph to its own ADK major |
+| **New providers first** — `openai-chat` (Vertex MaaS, xAI, vLLM, SGLang, Ollama), then `openai-responses` (OpenAI) — **then Gemini and Anthropic are extracted** into the library | The requirement is new providers; the contract is still designed against the two shipped adapters so extraction is a move, not a redesign |
+| **The price catalog moves into the library later** (after the extractions) | mast's (backend, model) keys and core-agent's 1h cache-write rate are each the other's missing half; merged once there. Until then a new backend is priced through this repo's catalog, or is explicitly unpriced (R4/R6) |
+| **fantasy stays prior art, not a dependency** (confirms §10's proposal) | §10.1's reasons hold at library scope; core-models lifts §10.2's test-suite shape, retry and openaicompat quirks with Charm's attribution |
+
+What this leaves open here: OQ-1/OQ-2 become "where does *mast* read profiles,
+and do they outrank `taskclass`" over a schema core-models owns; OQ-3–OQ-6 move
+to core-models' open questions.
 
 ---
 
