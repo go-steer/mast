@@ -9,7 +9,7 @@ place.
 
 The domain here is generic on purpose (support-ticket routing). The
 GKE-flavoured instance of the same shape is `internal/graph` + the
-`examples/workloads/gke-triage` workload; this starter does **not** import
+`examples/workloads/gke-triage-routed` workload; this starter does **not** import
 `internal/graph` — it copy-adapts the pattern, because starters are self-contained
 by design (see "Fork it" below).
 

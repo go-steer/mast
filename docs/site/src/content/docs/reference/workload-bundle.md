@@ -555,7 +555,7 @@ shape is a contract between the specialist that produces it and every
 consumer that reads it; inlining it in one specialist's frontmatter makes
 that contract private to that specialist, and a roster of a dozen
 diagnosers ends up with a dozen copies that drift. The shipped
-`gke-triage` bundle points all twelve diagnosers at one
+`gke-triage-routed` bundle points all twelve diagnosers at one
 `schemas/finding.json`.
 
 **A violation is a refusal, not a warning**, and the shape is the same in

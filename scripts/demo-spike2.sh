@@ -34,6 +34,11 @@ BASE="http://localhost:${PORT}"
 WORK="${TMPDIR:-/tmp}/mast-spike2-demo"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${WORK}/mast"
+# Every scenario runs under --dispatch=graph, which routes through a
+# SingleTurn classifier. The stock gke-triage bundle has none since it
+# became one generalist diagnoser (go-steer/mast#499); gke-triage-routed
+# is the classifier + per-failure-mode roster it used to be.
+ROUTED="${REPO}/examples/workloads/gke-triage-routed"
 PID=""
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -73,7 +78,7 @@ note "built ${BIN} (echo model — no credentials needed)"
 
 # ---------------------------------------------------------------- 1 --
 say "Scenario 1: graph dispatch (LLM-as-router as runner root)"
-cp -r "${REPO}/examples/workloads/gke-triage" "${WORK}/wl-graph"
+cp -r "${ROUTED}" "${WORK}/wl-graph"
 # No approval gate in this scenario; keep it pure routing.
 sed -i.bak 's/require_approval: true/require_approval: false/' "${WORK}/wl-graph/workload.yaml"
 start "${WORK}/graph.log" "${WORK}/wl-graph"
@@ -92,7 +97,7 @@ grep -E 'runner event' "${WORK}/graph.log" | sed 's/^/   | /'
 # ---------------------------------------------------------------- 2 --
 say "Scenario 2: durable HITL across kill -9"
 DB="${WORK}/sessions.db"
-start "${WORK}/hitl-1.log" "${REPO}/examples/workloads/gke-triage" --session-db="${DB}"
+start "${WORK}/hitl-1.log" "${ROUTED}" --session-db="${DB}"
 inject demo-hitl ImagePullBackOff >/dev/null
 sleep 1
 # awk-first-match rather than `| head -1`: head exits after one line,
@@ -102,7 +107,7 @@ note "paused: $(grep -o '"interrupt_id":"[^"]*"' "${WORK}/hitl-1.log" | awk 'NR 
 note "killing the process with -9 ..."
 kill -9 "${PID}"; wait "${PID}" 2>/dev/null || true; PID=""
 note "restarting a FRESH process on the same SQLite DB ..."
-start "${WORK}/hitl-2.log" "${REPO}/examples/workloads/gke-triage" --session-db="${DB}"
+start "${WORK}/hitl-2.log" "${ROUTED}" --session-db="${DB}"
 curl -s -m 30 -X POST "${BASE}/resume" -H 'Content-Type: application/json' -d '{
   "session_id":"incident-demo-hitl",
   "interrupt_id":"approve-ImagePullBackOff",
@@ -114,7 +119,7 @@ grep -E '"output"' "${WORK}/hitl-2.log" | sed 's/^/   | /'
 
 # ---------------------------------------------------------------- 3 --
 say "Scenario 3: budget enforcement (\$0.01 cap)"
-cp -r "${REPO}/examples/workloads/gke-triage" "${WORK}/wl-budget"
+cp -r "${ROUTED}" "${WORK}/wl-budget"
 sed -i.bak -e 's/max_wallclock_seconds: 300/max_wallclock_seconds: 300\n  max_cost_usd: 0.01/' \
            -e 's/require_approval: true/require_approval: false/' "${WORK}/wl-budget/workload.yaml"
 start "${WORK}/budget.log" "${WORK}/wl-budget"

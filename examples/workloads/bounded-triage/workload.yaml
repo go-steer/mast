@@ -6,12 +6,12 @@
 # See docs (in the mast repo): v0.4-plan.md (W4.3).
 #
 # Why this is a separate bundle from gke-triage rather than another
-# --dispatch on it: gke-triage's roster is fourteen specialists and a
-# router, and `bounded` refuses a roster it would have to choose
+# --dispatch on it: gke-triage's roster is a diagnoser plus a change
+# executor, and `bounded` refuses a roster it would have to choose
 # within — the chooser is the orchestrator this shape exists to remove.
 # The two bundles answer different questions about the same incident.
 # gke-triage asks "what is wrong and what should we do about it",
-# spends a router call plus a specialist tool loop, and can change the
+# spends a coordinator plus a specialist tool loop, and can change the
 # cluster. This one asks "what does the envelope alone say", spends
 # exactly one call, and cannot change anything. Point a scheduler at
 # this one when you want a standing signal whose monthly cost is

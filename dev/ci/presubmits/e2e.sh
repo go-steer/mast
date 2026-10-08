@@ -22,7 +22,7 @@
 #     /metrics, HTTP status, process exit codes, crash/drain/abort legs
 #     against a blocking stdio MCP tool (docs/uat-v0.2-plan.md).
 #   scripts/uat-v0.3.sh — the v0.3 parity work against the SHIPPED
-#     examples/workloads/gke-triage bundle: what an operator actually
+#     examples/workloads/gke-triage{,-routed} bundles: what an operator actually
 #     receives at the end of a run (docs/v0.3-plan.md §2, tier U).
 #   scripts/uat-v0.4.sh — the v0.4 change-set work: a finding carries
 #     the executable call, checked against the named tool's own input

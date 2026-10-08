@@ -53,12 +53,12 @@ func TestDaemonSubRunObserverMetersToTheOuterSession(t *testing.T) {
 	sub := &daemonSubRunObserver{}
 	sub.attach(pool, obs, nil, nil, built.bundle.Name, discardLogger())
 
-	sink := sub.SubRun("incident-abc", "OOMKilled")
+	sink := sub.SubRun("incident-abc", "change-executor")
 	defer sink.Close(planner.DispatchOutcome{})
 
 	// A modest dispatch: under every ceiling, so it must be silently
 	// counted rather than refused.
-	if err := sink.Observe(spend("OOMKilled", 100)); err != nil {
+	if err := sink.Observe(spend("change-executor", 100)); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 	tokens, _, calls := pool.meter("incident-abc").Snapshot()
@@ -66,17 +66,17 @@ func TestDaemonSubRunObserverMetersToTheOuterSession(t *testing.T) {
 		t.Errorf("outer session meter = %d tokens / %d calls, want 100/1", tokens, calls)
 	}
 	// The sub-run must not have invented a session of its own.
-	if other, _, _ := pool.meter("invoke-OOMKilled").Snapshot(); other != 0 {
+	if other, _, _ := pool.meter("invoke-change-executor").Snapshot(); other != 0 {
 		t.Errorf("a second session meter picked up %d tokens; the dispatch was billed to the wrong session", other)
 	}
 
 	// And the specialist's declared ceiling binds on this door: 10k
-	// tokens at echo's $0.05/1K is $0.50, twice OOMKilled's $0.25.
-	err = sink.Observe(spend("OOMKilled", 10_000))
+	// tokens at echo's $0.05/1K is $0.50, twice change-executor's $0.25.
+	err = sink.Observe(spend("change-executor", 10_000))
 	if !errors.Is(err, budget.ErrExceeded) {
 		t.Fatalf("a dispatched specialist overspent its declared cap; sink said %v", err)
 	}
-	if !strings.Contains(err.Error(), "OOMKilled") {
+	if !strings.Contains(err.Error(), "change-executor") {
 		t.Errorf("the refusal should name the specialist it stopped: %v", err)
 	}
 }
@@ -86,11 +86,11 @@ func TestDaemonSubRunObserverMetersToTheOuterSession(t *testing.T) {
 // reachable by construction even though no turn can be in flight there.
 func TestDaemonSubRunObserverBeforeAttachIsInert(t *testing.T) {
 	sub := &daemonSubRunObserver{}
-	sink := sub.SubRun("incident-abc", "OOMKilled")
+	sink := sub.SubRun("incident-abc", "change-executor")
 	if sink == nil {
 		t.Fatal("an unattached observer returned a nil sink; nil is a claim about the host, not about its wiring")
 	}
-	if err := sink.Observe(spend("OOMKilled", 100)); err != nil {
+	if err := sink.Observe(spend("change-executor", 100)); err != nil {
 		t.Fatalf("unattached sink refused a dispatch: %v", err)
 	}
 	if err := sink.Observe(nil); err != nil {
@@ -107,8 +107,8 @@ func TestDaemonSubRunObserverRefusesToInventASession(t *testing.T) {
 	sub := &daemonSubRunObserver{}
 	sub.attach(pool, observability.New(), newWatchdogPool(watchdog.ModeEnforce), nil, "w", discardLogger())
 
-	sink := sub.SubRun("", "OOMKilled")
-	if err := sink.Observe(spend("OOMKilled", 100)); err != nil {
+	sink := sub.SubRun("", "change-executor")
+	if err := sink.Observe(spend("change-executor", 100)); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 	sink.Close(planner.DispatchOutcome{})
@@ -150,12 +150,12 @@ func TestDaemonSubRunWatchdogSeesADispatchLoop(t *testing.T) {
 
 	sub := &daemonSubRunObserver{}
 	sub.attach(newMeterPool(nil, nil, "", "echo"), observability.New(), wds, tracker, "w", discardLogger())
-	sink := sub.SubRun("incident-abc", "OOMKilled")
+	sink := sub.SubRun("incident-abc", "change-executor")
 
 	// DefaultRepeatThreshold identical calls in one dispatch.
 	var halt error
 	for i := range watchdog.DefaultRepeatThreshold {
-		if err := sink.Observe(toolCallEvent("OOMKilled", "get_k8s_resource", string(rune('a'+i)))); err != nil {
+		if err := sink.Observe(toolCallEvent("change-executor", "get_k8s_resource", string(rune('a'+i)))); err != nil {
 			halt = err
 			break
 		}
@@ -190,10 +190,10 @@ func TestDaemonSubRunWatchdogUnderFeedbackDoesNotHalt(t *testing.T) {
 
 	sub := &daemonSubRunObserver{}
 	sub.attach(newMeterPool(nil, nil, "", "echo"), observability.New(), wds, tracker, "w", discardLogger())
-	sink := sub.SubRun("incident-abc", "OOMKilled")
+	sink := sub.SubRun("incident-abc", "change-executor")
 
 	for i := range watchdog.DefaultRepeatThreshold {
-		if err := sink.Observe(toolCallEvent("OOMKilled", "get_k8s_resource", string(rune('a'+i)))); err != nil {
+		if err := sink.Observe(toolCallEvent("change-executor", "get_k8s_resource", string(rune('a'+i)))); err != nil {
 			t.Fatalf("feedback mode stopped a dispatch: %v", err)
 		}
 	}
@@ -231,8 +231,8 @@ func TestDaemonSubRunDedupIsPerDispatchAndSignalsSpanThem(t *testing.T) {
 	// making the same call over and over, which is the signal.
 	var halt error
 	for range watchdog.DefaultRepeatThreshold {
-		sink := sub.SubRun("incident-abc", "OOMKilled")
-		if err := sink.Observe(toolCallEvent("OOMKilled", "get_k8s_resource", "same-id")); err != nil {
+		sink := sub.SubRun("incident-abc", "change-executor")
+		if err := sink.Observe(toolCallEvent("change-executor", "get_k8s_resource", "same-id")); err != nil {
 			halt = err
 		}
 		sink.Close(planner.DispatchOutcome{})
@@ -315,13 +315,13 @@ func TestDaemonSubRunObserverDoesNotRecordACallItStops(t *testing.T) {
 	sub.attach(newMeterPool(built.bundle, built.specs, "", "echo"), observability.New(), nil, nil, built.bundle.Name, discardLogger())
 	sub.attachRecording(store, effects.NewPredicate(nil), nil)
 
-	sink := sub.SubRun("incident-abc", "OOMKilled")
+	sink := sub.SubRun("incident-abc", "change-executor")
 	defer sink.Close(planner.DispatchOutcome{})
 
-	// 10k tokens at echo's $0.05/1K is $0.50, twice OOMKilled's $0.25:
+	// 10k tokens at echo's $0.05/1K is $0.50, twice change-executor's $0.25:
 	// the meter refuses, and the event carries a mutating call.
-	over := mutatingCallEvent("OOMKilled", "scale_up", "c9")
-	over.UsageMetadata = spend("OOMKilled", 10_000).UsageMetadata
+	over := mutatingCallEvent("change-executor", "scale_up", "c9")
+	over.UsageMetadata = spend("change-executor", 10_000).UsageMetadata
 	if err := sink.Observe(over); !errors.Is(err, budget.ErrExceeded) {
 		t.Fatalf("sink said %v, want the budget refusal", err)
 	}

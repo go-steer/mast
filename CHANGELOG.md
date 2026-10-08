@@ -202,6 +202,39 @@
 
 ### Feature
 
+- **The stock `gke-triage` workload is one generalist diagnoser
+  (`diagnoser`) plus `change-executor`.** The reason classifier and the
+  eleven per-failure-mode specialists are gone from it. On six real k8s-lookout incidents (3 runs
+  each, gemini-3.8-flash) the generalist found the cause 17/18 times against
+  13/18, with 3.8 reads per incident instead of 7.6 and $0.050 instead of
+  $0.084. Routing on the event's literal `reason` was the main loss: kubelet
+  reports crash loops, image pulls and OOM kills alike as `BackOff`. The
+  workload also turns on `budget.final_report`, and its prompt now says to
+  leave `proposed_change` empty when the deployment has no remediation tools
+  (a read-only GKE MCP endpoint), instead of naming `patch_k8s_resource` and
+  having the report refused. The stock bundle has no classifier, so it runs
+  under coordinator dispatch and `--dispatch=graph` is refused on it. The
+  coordinator's default instruction now mentions `_fallback` only to a roster
+  that has one, and **the coordinator no longer re-investigates a repeated
+  signal**: k8s-lookout re-sends a still-broken incident into the same session
+  after each dedup window, and the coordinator used to dispatch a full new
+  investigation every time (four re-diagnoses of one unchanged unschedulable
+  pod, $0.134 instead of $0.031, and a session that never went idle). A
+  machine signal (JSON with a `kind`) that repeats an incident already
+  diagnosed, by object and reason or by a `family.member`'s `family`, now gets
+  a one- or two-line "already reported, finding stands"; a resolved signal
+  gets a one-line acknowledgement; anything new still gets investigated, and
+  anything a person typed still gets a direct answer. The routed roster lives on as
+  `examples/workloads/gke-triage-routed`, with its prompts unchanged, for
+  models that do better with explicit routing and step-by-step procedures
+  (smaller, non-frontier or open-weight models) and for `--dispatch=graph`.
+  It adds a `triage-classifier` `mutating: false` catalog entry so the
+  classifier no longer parks at the write gate under coordinator dispatch.
+  The Helm chart ships the new roster.
+  [#499](https://github.com/go-steer/mast/issues/499),
+  [#500](https://github.com/go-steer/mast/issues/500),
+  [#503](https://github.com/go-steer/mast/issues/503)
+
 - **`tier: frontier` on Gemini and Vertex is `gemini-3.8-flash`.** It cleared
   the bar `gemini-3.7-flash` cleared in August: the judged corpus within noise
   of 3.7's board on the weekly candidate runs, and the outcome tier on the same

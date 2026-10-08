@@ -1,0 +1,65 @@
+{
+  "title": "Finding",
+  "type": "object",
+  "description": "The triage report a gke-triage specialist returns for one incident. One finding per affected object: if a diagnosis covers several pods, the coordinator dispatches several specialists rather than the specialist listing them here.",
+  "properties": {
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "warning", "info"],
+      "description": "critical = must fix now (down, crashlooping, OOMKilled); warning = fix soon (missing probes, no PDB, :latest images); info = an optimization opportunity, not an outage."
+    },
+    "title": {
+      "type": "string",
+      "description": "Short headline naming the object and the problem, e.g. 'CrashLoopBackOff on api-7d9f8b6c4-xk2p1'."
+    },
+    "detail": {
+      "type": "string",
+      "description": "The diagnosis: what is wrong, which evidence says so, and why. Name the resources and the values you read."
+    },
+    "namespace": {
+      "type": "string",
+      "description": "Kubernetes namespace of the affected object. Empty for cluster-scoped findings."
+    },
+    "kind": {
+      "type": "string",
+      "description": "Kubernetes kind of the affected object, capitalized and singular: Pod, Deployment, StatefulSet, DaemonSet, Node, Job, CronJob, Service, PersistentVolume, Namespace. Empty only for cluster-wide observations."
+    },
+    "resource_name": {
+      "type": "string",
+      "description": "Name of the single affected object, exactly as it appears in the cluster."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Stable machine-style cause in CamelCase — CrashLoopBackOff, OOMKilled, ImagePullBackOff, NodeNotReady, MissingResourceLimits. Reuse the same token for the same class of problem across runs; do not reword it."
+    },
+    "recommended_actions": {
+      "type": "array",
+      "description": "Concrete, ordered next steps in prose, for a human reader. Nothing here is executed — prose cannot be approved, only read. If a step is something this workload can actually do, say it again in proposed_change.",
+      "items": {"type": "string"}
+    },
+    "proposed_change": {
+      "type": "array",
+      "description": "The executable form of your recommendation: the exact calls an operator would approve. Every entry must name a tool from this workload's tool_catalog and carry that tool's own arguments; both are checked when you return, and a report naming a tool that does not exist, or arguments that do not fit its schema, is refused back to you. Send an empty list when you cannot name an exact call — that is a complete, valid report, and it is the right answer for a diagnosis that needs a human decision, a bigger change than triage covers, or a tool this workload was not given. Never invent a plausible-looking call to fill the field.",
+      "items": {
+        "type": "object",
+        "description": "One executable call.",
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "Name of the tool to call, exactly as the tool_catalog spells it."
+          },
+          "arguments": {
+            "type": "string",
+            "description": "That tool's arguments as a JSON object, encoded in a string — for example \"{\\\"namespace\\\":\\\"prod\\\",\\\"name\\\":\\\"api\\\"}\". Send \"{}\" for a tool that takes none. A string, not an object, because the arguments differ per tool and this schema cannot declare their keys in advance."
+          }
+        },
+        "required": ["tool", "arguments"]
+      }
+    },
+    "escalate": {
+      "type": "boolean",
+      "description": "True when the fix is not a triage-scope action — a bigger node pool, a suspected memory leak, an app-team bug. Say why in detail."
+    }
+  },
+  "required": ["severity", "title", "detail", "reason"]
+}

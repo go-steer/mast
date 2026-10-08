@@ -16,9 +16,9 @@
 # uat-v0.3.sh — end-to-end acceptance pass for the mast v0.3 parity work
 # (docs/v0.3-plan.md §2, tier U). Where uat-v0.2.sh drives a purpose-built
 # fixture through the durable-execution spine, this harness drives the
-# SHIPPED anchor workload — examples/workloads/gke-triage, the bundle a
-# reader of the README actually runs — and asserts on what an operator
-# sees at the end of it.
+# SHIPPED anchor workloads — examples/workloads/gke-triage-routed (the
+# graph-dispatch roster) and examples/workloads/gke-triage — and asserts
+# on what an operator sees at the end of it.
 #
 # Legs (all offline: --model=echo, no credentials, no network):
 #
@@ -101,7 +101,16 @@ BIN="${WORK}/mast"
 # specialist's `output_schema:` refusing every report the offline fake
 # could produce, W1.3 + W1.2 together) was invisible precisely because
 # nothing exercised the shipped roster end to end.
-WORKLOAD="${REPO}/examples/workloads/gke-triage"
+#
+# The graph legs drive the ROUTED shipped roster: graph dispatch routes
+# through a SingleTurn classifier, and the stock gke-triage bundle has
+# none since it became one generalist diagnoser (go-steer/mast#499).
+# gke-triage-routed is the classifier + per-failure-mode roster that
+# gke-triage used to be, so the assertions below (approve-OOMKilled in
+# particular) are unchanged. The stock bundle is still driven by
+# U-fanout/C.
+WORKLOAD="${REPO}/examples/workloads/gke-triage-routed"
+STOCK_WORKLOAD="${REPO}/examples/workloads/gke-triage"
 TOKEN="uat-v03-token"
 export MAST_INJECT_TOKEN="${TOKEN}"
 PID=""
@@ -551,7 +560,7 @@ unset MAST_FAKE_SCHEMA_VIOLATION
 say "U-fanout/C: a roster that can mutate is refused before the daemon serves"
 CLOG="${WORK}/h.log"
 set +e
-"${BIN}" --workload="${WORKLOAD}" --dispatch=fanout \
+"${BIN}" --workload="${STOCK_WORKLOAD}" --dispatch=fanout \
   --listen=":${PORT}" --model=echo --session-db="${WORK}/h.db" >"${CLOG}" 2>&1
 CRC=$?
 set -e
