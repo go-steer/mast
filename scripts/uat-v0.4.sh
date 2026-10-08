@@ -1241,8 +1241,9 @@ stop_term
 
 # ---- /steps: the count is a promise, so it is enforced --------------
 # A number is only a guarantee if the rosters that could not keep it are
-# refused. Same binary, same flag, pointed at the shipped fourteen-
-# specialist gke-triage roster: the daemon must not come up at all.
+# refused. Same binary, same flag, pointed at the shipped gke-triage
+# roster (a diagnoser plus change-executor, so two specialists and
+# something has to choose): the daemon must not come up at all.
 say "U-bounded-cost/steps: a roster that would need an orchestrator will not start"
 DB="${WORK}/b-refuse.db"
 LOG="${WORK}/b-refuse.log"
@@ -1261,8 +1262,8 @@ BREF="$(grep -- 'failed to construct root agent' "${LOG}" || true)"
 # makes the leg credential-free rather than merely credential-free
 # here.
 [ -n "${BREF}" ] || note "no refusal logged; last line was: $(tail -n 1 "${LOG}")"
-assert_has "the refusal counts what it found" "${BREF}" '14 specialists'
-assert_has "and names them" "${BREF}" 'triage-classifier'
+assert_has "the refusal counts what it found" "${BREF}" '2 specialists'
+assert_has "and names them" "${BREF}" 'change-executor'
 assert_has "and says what the shape takes instead" "${BREF}" 'takes exactly one'
 
 # ====================================================================

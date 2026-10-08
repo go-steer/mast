@@ -15,10 +15,8 @@ that bundle and the specialist files beside it, not compiled in.
 examples/workloads/gke-triage/
 ├── workload.yaml            the bundle
 ├── specialists/
-│   ├── triage-classifier.specialist.md
-│   ├── OOMKilled.specialist.md
-│   ├── ...
-│   └── change-executor.specialist.md
+│   ├── _fallback.specialist.md         the one diagnoser
+│   └── change-executor.specialist.md   the one writer
 └── schemas/
     ├── finding.json         the diagnosers' report contract
     └── change-report.json   the executor's
@@ -212,7 +210,13 @@ workflow graph routes to that specialist's node. Roster shape:
 
 Best when the roster is a dispatch table — twelve failure modes, one
 specialist each — and you want the routing to be cheap, legible, and
-identical every time. Two properties follow from it being a graph rather
+identical every time. `examples/workloads/gke-triage-routed` is that
+shape. Be sure the incident actually says which row it is: kubelet
+reports crash loops, image-pull retries and OOM kills alike as a bare
+`BackOff`, and on real k8s-lookout incidents a classifier routing on the
+literal reason did worse than the stock gke-triage bundle's single
+generalist diagnoser
+([#499](https://github.com/go-steer/mast/issues/499)). Two properties follow from it being a graph rather
 than a conversation:
 
 - **Interrupt ids are deterministic per specialist** (`approve-OOMKilled`),

@@ -1,17 +1,23 @@
 # Copyright 2026 Google LLC
 # Licensed under the Apache License, Version 2.0. See LICENSE for details.
 #
-# Anchor workload for mast: GKE incident triage. One read-only
-# diagnoser finds the cause and names the fix; `change-executor` carries
-# out a fix only after an operator approves it.
+# The routed shape of GKE triage: a SingleTurn classifier picks one of
+# eleven per-failure-mode specialists (or _fallback) from the incident's
+# `reason`. This was the stock gke-triage roster until go-steer/mast#499;
+# examples/workloads/gke-triage now ships one generalist diagnoser
+# instead, which scored better on real k8s-lookout incidents (17/18 vs
+# 13/18, half the reads; results on #499).
 #
-# Diagnose-only deployments: point mcp.json at
-# https://container.googleapis.com/mcp/read-only. The write tools below
-# then don't exist, the diagnoser leaves `proposed_change` empty, and the
-# fix reaches the operator as prose in `recommended_actions` (#503).
+# This bundle is kept because `--dispatch=graph` needs a classifier to
+# route on, and the graph walkthroughs and UAT legs drive it. Its
+# prompts are the old ones, unchanged: the classifier routes on the
+# literal `reason`, so a real crash loop (which kubelet reports as
+# `BackOff`) reaches the BackOff specialist (#499, #500). Prefer
+# examples/workloads/gke-triage for real incidents.
+# See docs (in the mast repo): triage-demo-plan.md.
 
-name: gke-triage
-description: Autonomous triage of GKE cluster incidents surfaced by k8s-event-watcher.
+name: gke-triage-routed
+description: Triage of GKE cluster incidents, routed by event reason to per-failure-mode specialists.
 mode: single_session
 
 tool_catalog:
@@ -89,14 +95,18 @@ tool_catalog:
       mutating: true
 
 specialists:
-  # One generalist diagnoser for every kind of incident. There is no
-  # classifier: routing on the event's `reason` sent real crash loops,
-  # image pulls and OOM kills (all reported as a bare `BackOff`) to the
-  # wrong specialist, and one specialist with good working principles
-  # beat the routed roster on real incidents (go-steer/mast#499). The
-  # name is `_fallback` so a roster that adds a classifier back still
-  # has graph dispatch's default route. The routed roster is
-  # examples/workloads/gke-triage-routed.
+  - triage-classifier
+  - CrashLoopBackOff
+  - ImagePullBackOff
+  - ErrImagePull
+  - OOMKilled
+  - FailedMount
+  - FailedScheduling
+  - BackOff
+  - Unhealthy
+  - NetworkNotReady
+  - NodeNotReady
+  - Evicted
   - _fallback
   # The one specialist that can change the cluster. Everything above it
   # diagnoses and stops — mast refuses to start this roster if a
@@ -105,9 +115,6 @@ specialists:
 
 budget:
   max_wallclock_seconds: 300
-  # A specialist that hits its cap gets one tool-less call to report
-  # what it already found, instead of ending with nothing (#280).
-  final_report: true
   # max_turns: 20  # cap on model calls ("turns") per session; absent/0 = unlimited
 
 # Change-safety-gate stand-in (spike 2): every specialist result pauses

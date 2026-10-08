@@ -3,8 +3,9 @@ title: "Quickstart: unattended triage (offline)"
 description: Run the GKE triage workload end to end with no credentials and no network — inject an incident, pause for approval, kill the process, resume.
 ---
 
-This walkthrough runs mast's anchor workload — GKE incident triage with 13
-specialists — entirely offline on the built-in `echo` model. No credentials,
+This walkthrough runs the routed form of mast's GKE incident triage
+workload — a classifier and twelve per-failure-mode specialists —
+entirely offline on the built-in `echo` model. No credentials,
 no network, no cluster. You'll inject an incident, watch the workload pause
 for operator approval, kill the daemon, and resume the approval in a fresh
 process: the durability pillar, live on your laptop.
@@ -24,12 +25,16 @@ mkdir -p /tmp/mast-demo
 go build -o /tmp/mast-demo/mast ./cmd/mast
 ```
 
-Start it with the triage workload, graph dispatch, and a SQLite session DB
-(that's the durability — omit `--session-db` and sessions are in-memory):
+Start it with the routed triage workload, graph dispatch, and a SQLite
+session DB (that's the durability — omit `--session-db` and sessions are
+in-memory). Graph dispatch routes through a classifier, which is why this
+walkthrough uses `gke-triage-routed`: the stock `gke-triage` bundle is one
+generalist diagnoser with no classifier, and runs under the default
+coordinator dispatch.
 
 ```sh
 /tmp/mast-demo/mast \
-  --workload=examples/workloads/gke-triage \
+  --workload=examples/workloads/gke-triage-routed \
   --dispatch=graph \
   --model=echo \
   --listen=127.0.0.1:7777 \
@@ -85,7 +90,7 @@ kill -9 $(pgrep -f 'mast-demo/mast --workload')
 
 ```sh
 /tmp/mast-demo/mast \
-  --workload=examples/workloads/gke-triage \
+  --workload=examples/workloads/gke-triage-routed \
   --dispatch=graph \
   --model=echo \
   --listen=127.0.0.1:7777 \
@@ -145,7 +150,11 @@ scripts/demo-spike2.sh
 - Set `MAST_INJECT_TOKEN` in the daemon's environment to require bearer
   auth on `/inject`, `/resume`, and `/abort` (unset = unauthenticated, dev
   only).
-- Against a real cluster the roster's shape starts to matter: the twelve
+- For real incidents, use `examples/workloads/gke-triage` without
+  `--dispatch=graph`: one generalist diagnoser that reads what k8s-lookout
+  hands it, which found the cause more often and in half the reads of the
+  routed roster ([#499](https://github.com/go-steer/mast/issues/499)).
+- Against a real cluster the roster's shape starts to matter: the
   diagnosers hold read tools only and name the remediation in their finding,
   and the one `change-executor` specialist is the only one that could carry
   it out — parking for your approval before each call that changes anything.

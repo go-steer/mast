@@ -65,13 +65,13 @@ func TestMeterPoolEnforcesSpecialistCeilings(t *testing.T) {
 
 	pool := newMeterPool(bundle, specs, "", "echo")
 
-	// 10k tokens at echo's $0.05/1K is $0.50 — twice OOMKilled's
+	// 10k tokens at echo's $0.05/1K is $0.50 — twice change-executor's
 	// declared $0.25, and against an unbounded session.
-	err = pool.meter("incident-abc").Observe(spend("OOMKilled", 10_000))
+	err = pool.meter("incident-abc").Observe(spend("change-executor", 10_000))
 	if !errors.Is(err, budget.ErrExceeded) {
-		t.Fatalf("OOMKilled overspent its declared cap; meter said %v", err)
+		t.Fatalf("change-executor overspent its declared cap; meter said %v", err)
 	}
-	if !strings.Contains(err.Error(), "OOMKilled") {
+	if !strings.Contains(err.Error(), "change-executor") {
 		t.Errorf("error should name the specialist whose ceiling stopped the run: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestMeterPoolEnforcesSpecialistCeilings(t *testing.T) {
 	}
 
 	// Scopes are per session: the next incident starts at zero.
-	if err := pool.meter("incident-xyz").Observe(spend("OOMKilled", 1_000)); err != nil {
+	if err := pool.meter("incident-xyz").Observe(spend("change-executor", 1_000)); err != nil {
 		t.Errorf("a fresh session inherited the previous one's spend: %v", err)
 	}
 }

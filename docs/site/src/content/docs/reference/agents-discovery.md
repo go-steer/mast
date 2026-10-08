@@ -55,4 +55,4 @@ daemon](/reference/workload-bundle/#changing-a-bundle-under-a-running-daemon).
   workloads).
 - **Path mode** — an existing directory is loaded directly as
   `<dir>/workload.yaml` + `<dir>/specialists/`. This is what the offline
-  quickstart uses with `examples/workloads/gke-triage`.
+  quickstart uses with `examples/workloads/gke-triage-routed`.

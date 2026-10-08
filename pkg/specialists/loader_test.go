@@ -16,6 +16,7 @@ package specialists_test
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,21 +115,16 @@ func TestLoadDir(t *testing.T) {
 	}
 }
 
-// TestLoadDir_ExampleWorkload pins the shipped GKE-triage roster to
-// the full shape in docs/triage-demo-plan.md: eleven per-failure-mode
-// Task specialists + the SingleTurn triage-classifier + _fallback, plus
-// the one change-executor W2.4 split the write surface out into.
+// TestLoadDir_ExampleWorkload pins the two shipped GKE-triage rosters.
+//
+// examples/workloads/gke-triage is one generalist diagnoser (_fallback)
+// plus the change-executor W2.4 split the write surface out into
+// (go-steer/mast#499). examples/workloads/gke-triage-routed keeps the
+// routed shape from docs/triage-demo-plan.md, which graph dispatch
+// needs: eleven per-failure-mode Task specialists + the SingleTurn
+// triage-classifier + _fallback, plus the same change-executor.
 func TestLoadDir_ExampleWorkload(t *testing.T) {
-	dir := filepath.Join("..", "..", "examples", "workloads", "gke-triage", "specialists")
-	specs, err := specialists.LoadDir(dir)
-	if err != nil {
-		t.Fatalf("LoadDir(%s): %v", dir, err)
-	}
-	if got, want := len(specs), 14; got != want {
-		t.Fatalf("got %d specs, want %d", got, want)
-	}
-
-	want := map[string]specialists.Mode{
+	routed := map[string]specialists.Mode{
 		"BackOff":           specialists.ModeTask,
 		"CrashLoopBackOff":  specialists.ModeTask,
 		"ErrImagePull":      specialists.ModeTask,
@@ -144,6 +140,39 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 		"change-executor":   specialists.ModeTask,
 		"triage-classifier": specialists.ModeSingleTurn,
 	}
+	for _, tc := range []struct {
+		bundle     string
+		want       map[string]specialists.Mode
+		diagnosers int
+	}{
+		{
+			bundle: "gke-triage",
+			want: map[string]specialists.Mode{
+				"_fallback":       specialists.ModeTask,
+				"change-executor": specialists.ModeTask,
+			},
+			diagnosers: 1,
+		},
+		{bundle: "gke-triage-routed", want: routed, diagnosers: 12},
+	} {
+		t.Run(tc.bundle, func(t *testing.T) {
+			checkExampleRoster(t, tc.bundle, tc.want, tc.diagnosers)
+		})
+	}
+}
+
+func checkExampleRoster(t *testing.T, bundle string, want map[string]specialists.Mode, diagnosers int) {
+	t.Helper()
+	dir := filepath.Join("..", "..", "examples", "workloads", bundle, "specialists")
+	specs, err := specialists.LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir(%s): %v", dir, err)
+	}
+	if got, want := len(specs), len(want); got != want {
+		t.Fatalf("got %d specs, want %d", got, want)
+	}
+	want = maps.Clone(want)
+
 	// W2.4: exactly one specialist in this roster may change the
 	// cluster, and it is the one named for it. Counted rather than
 	// spot-checked — the regression to catch is a second specialist
@@ -210,9 +239,9 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 	if len(schemaPaths) != 1 {
 		t.Errorf("diagnosers reference %d distinct schema files, want 1: %v", len(schemaPaths), schemaPaths)
 	}
-	shared := filepath.Join("..", "..", "examples", "workloads", "gke-triage", "schemas", "finding.json")
-	if n := schemaPaths[shared]; n != 12 {
-		t.Errorf("%d diagnosers reference %s, want 12 (paths seen: %v)", n, shared, schemaPaths)
+	shared := filepath.Join("..", "..", "examples", "workloads", bundle, "schemas", "finding.json")
+	if n := schemaPaths[shared]; n != diagnosers {
+		t.Errorf("%d diagnosers reference %s, want %d (paths seen: %v)", n, shared, diagnosers, schemaPaths)
 	}
 	if len(executors) != 1 || executors[0] != "change-executor" {
 		t.Errorf("specialists declaring capability: change_executor = %v, want [change-executor] — this roster's write surface is one specialist", executors)
