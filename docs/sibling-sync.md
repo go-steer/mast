@@ -2041,3 +2041,35 @@ line over `cli.Main`. Two consequences for this ledger:
   library-shaped package with options, which core-agent has no counterpart for. A fix in
   core-agent's daemon wiring is read for what it fixes and re-applied to `internal/cli`, the same
   way the 2026-09-20 triage already handled anything touching `cmd/`.
+
+## go-steer/core-models — the provider layer becomes a third repo, 2026-10-08
+
+Recorded so the next triage reads the provider rows correctly. Multi-dialect
+provider support was settled as shared infrastructure and placed in neither repo:
+[`go-steer/core-models`](https://github.com/go-steer/core-models) (design: [`docs/design.md`](https://github.com/go-steer/core-models/blob/main/docs/design.md)), imported by mast
+through an `adkv2` shim and by core-agent through `adkv1`.
+
+**What changes for this ledger, and when.**
+
+- **Now, nothing.** `internal/providers/{anthropic,gemini,vertexcache,usage}` and
+  `internal/vertexcacheerr` keep their trailers, and upstream commits to
+  core-agent's `pkg/models/**` keep getting verdicts here as before.
+- **New providers never enter this ledger.** The OpenAI-shaped dialects (and the
+  self-hosted profiles that ride on them) are written in core-models first, so
+  there is no core-agent SHA to port and no mast copy to drift.
+- **At the extractions (core-models L4 for Anthropic, L5 for Gemini and
+  vertexcache)** each package's rows close with a single verdict —
+  *absorbed into* `core-models@<tag>` — and its `Originally derived from` trailers
+  go with the code. From then on a provider fix is a core-models release and a
+  version bump in each repo, not a port, and `dev/upstream-drift`'s path map
+  (`internal/providers/* → pkg/models/*`, `internal/vertexcache`) drops those
+  entries.
+- **The merge carries both repos' halves**, which is the point: core-agent's
+  rolling/1h prompt caching, 1h cache-write share, Gemini transient retry and
+  `IsBelowCacheMinimum`, onto mast's option-struct shape, `usage.Detail`,
+  per-model thinking shape (#369) and shared eviction verdict (#325).
+
+The `purser` section above is the precedent for a third repo in shared code; the
+difference is direction — there the third repo was a consumer, here it becomes
+the owner.
+
