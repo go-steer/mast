@@ -150,10 +150,13 @@ scripts/demo-spike2.sh
 - Set `MAST_INJECT_TOKEN` in the daemon's environment to require bearer
   auth on `/inject`, `/resume`, and `/abort` (unset = unauthenticated, dev
   only).
-- For real incidents, use `examples/workloads/gke-triage` without
-  `--dispatch=graph`: one generalist diagnoser that reads what k8s-lookout
-  hands it, which found the cause more often and in half the reads of the
-  routed roster ([#499](https://github.com/go-steer/mast/issues/499)).
+- For real incidents on a frontier model, use `examples/workloads/gke-triage`
+  without `--dispatch=graph`: one generalist diagnoser that reads what
+  k8s-lookout hands it, which found the cause more often and in half the
+  reads of the routed roster
+  ([#499](https://github.com/go-steer/mast/issues/499)). The routed roster
+  remains the better fit for models that need explicit routing and
+  step-by-step procedures, such as smaller or open-weight models.
 - Against a real cluster the roster's shape starts to matter: the
   diagnosers hold read tools only and name the remediation in their finding,
   and the one `change-executor` specialist is the only one that could carry

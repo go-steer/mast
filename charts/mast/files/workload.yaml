@@ -93,11 +93,11 @@ specialists:
   # classifier: routing on the event's `reason` sent real crash loops,
   # image pulls and OOM kills (all reported as a bare `BackOff`) to the
   # wrong specialist, and one specialist with good working principles
-  # beat the routed roster on real incidents (go-steer/mast#499). The
-  # name is `_fallback` so a roster that adds a classifier back still
-  # has graph dispatch's default route. The routed roster is
-  # examples/workloads/gke-triage-routed.
-  - _fallback
+  # beat the routed roster on real incidents (go-steer/mast#499).
+  # Without a classifier this roster runs under the default coordinator
+  # dispatch; --dispatch=graph is not available on it. For the routed
+  # shape, see examples/workloads/gke-triage-routed.
+  - diagnoser
   # The one specialist that can change the cluster. Everything above it
   # diagnoses and stops — mast refuses to start this roster if a
   # diagnoser holds a write tool (internal/compose.CheckCapabilitySplit).

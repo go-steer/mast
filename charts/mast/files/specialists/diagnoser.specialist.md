@@ -1,5 +1,5 @@
 ---
-name: _fallback
+name: diagnoser
 description: |
   Diagnoses any GKE incident: crash loops, image pulls, scheduling,
   mounts, probes, evictions, node trouble. Hand it the whole incident.

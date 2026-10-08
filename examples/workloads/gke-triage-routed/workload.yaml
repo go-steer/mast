@@ -2,18 +2,25 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE for details.
 #
 # The routed shape of GKE triage: a SingleTurn classifier picks one of
-# eleven per-failure-mode specialists (or _fallback) from the incident's
-# `reason`. This was the stock gke-triage roster until go-steer/mast#499;
-# examples/workloads/gke-triage now ships one generalist diagnoser
-# instead, which scored better on real k8s-lookout incidents (17/18 vs
-# 13/18, half the reads; results on #499).
+# eleven per-failure-mode specialists (or _fallback), and each specialist
+# follows an explicit, step-by-step diagnostic procedure for its failure
+# mode.
 #
-# This bundle is kept because `--dispatch=graph` needs a classifier to
-# route on, and the graph walkthroughs and UAT legs drive it. Its
-# prompts are the old ones, unchanged: the classifier routes on the
-# literal `reason`, so a real crash loop (which kubelet reports as
-# `BackOff`) reaches the BackOff specialist (#499, #500). Prefer
-# examples/workloads/gke-triage for real incidents.
+# Use this bundle with models that do better with explicit routing and
+# procedures than with open-ended principles: smaller, non-frontier or
+# open-weight models. With a frontier model (gemini-3.8-flash in our
+# runs), examples/workloads/gke-triage, one generalist diagnoser, found
+# the cause more often and in half the reads on real k8s-lookout
+# incidents (17/18 vs 13/18; go-steer/mast#499). This was the stock
+# gke-triage roster until then.
+#
+# It is also the bundle for `--dispatch=graph`, which routes through a
+# classifier; the graph walkthroughs and UAT legs drive it.
+#
+# Know the classifier's limit: it routes on the literal `reason`, and
+# kubelet reports a real crash loop (and image-pull retries) as a bare
+# `BackOff`, so those reach the BackOff specialist (#499, #500). k8s-lookout's
+# `enrichment.bundle` names the real class (`kind=pod.crashloop`, ...).
 # See docs (in the mast repo): triage-demo-plan.md.
 
 name: gke-triage-routed
@@ -41,6 +48,13 @@ tool_catalog:
   # name the server does not offer *silently*, so a typo reads as a
   # specialist that simply holds fewer tools.
   tools:
+    # The classifier is a specialist, but under coordinator dispatch the
+    # coordinator calls it like a tool, and the write gate's
+    # default-deny treats an unlisted tool as mutating, so without this
+    # entry an incident routed through it parks waiting for approval.
+    # It reads the envelope and emits one token; it changes nothing.
+    - name: triage-classifier
+      mutating: false
     # Kubernetes reads.
     - name: get_k8s_resource
       mutating: false

@@ -15,7 +15,7 @@ that bundle and the specialist files beside it, not compiled in.
 examples/workloads/gke-triage/
 ├── workload.yaml            the bundle
 ├── specialists/
-│   ├── _fallback.specialist.md         the one diagnoser
+│   ├── diagnoser.specialist.md         the one diagnoser
 │   └── change-executor.specialist.md   the one writer
 └── schemas/
     ├── finding.json         the diagnosers' report contract

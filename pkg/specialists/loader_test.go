@@ -117,7 +117,7 @@ func TestLoadDir(t *testing.T) {
 
 // TestLoadDir_ExampleWorkload pins the two shipped GKE-triage rosters.
 //
-// examples/workloads/gke-triage is one generalist diagnoser (_fallback)
+// examples/workloads/gke-triage is one generalist diagnoser
 // plus the change-executor W2.4 split the write surface out into
 // (go-steer/mast#499). examples/workloads/gke-triage-routed keeps the
 // routed shape from docs/triage-demo-plan.md, which graph dispatch
@@ -148,7 +148,7 @@ func TestLoadDir_ExampleWorkload(t *testing.T) {
 		{
 			bundle: "gke-triage",
 			want: map[string]specialists.Mode{
-				"_fallback":       specialists.ModeTask,
+				"diagnoser":       specialists.ModeTask,
 				"change-executor": specialists.ModeTask,
 			},
 			diagnosers: 1,

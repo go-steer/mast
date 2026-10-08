@@ -202,9 +202,9 @@
 
 ### Feature
 
-- **The stock `gke-triage` workload is one generalist diagnoser plus
-  `change-executor`.** The reason classifier and the eleven per-failure-mode
-  specialists are gone from it. On six real k8s-lookout incidents (3 runs
+- **The stock `gke-triage` workload is one generalist diagnoser
+  (`diagnoser`) plus `change-executor`.** The reason classifier and the
+  eleven per-failure-mode specialists are gone from it. On six real k8s-lookout incidents (3 runs
   each, gemini-3.8-flash) the generalist found the cause 17/18 times against
   13/18, with 3.8 reads per incident instead of 7.6 and $0.050 instead of
   $0.084. Routing on the event's literal `reason` was the main loss: kubelet
@@ -212,9 +212,16 @@
   workload also turns on `budget.final_report`, and its prompt now says to
   leave `proposed_change` empty when the deployment has no remediation tools
   (a read-only GKE MCP endpoint), instead of naming `patch_k8s_resource` and
-  having the report refused. The routed roster lives on, unchanged, as
-  `examples/workloads/gke-triage-routed`; use it for `--dispatch=graph`,
-  which needs a classifier. The Helm chart ships the new roster.
+  having the report refused. The stock bundle has no classifier, so it runs
+  under coordinator dispatch and `--dispatch=graph` is refused on it. The
+  coordinator's default instruction now mentions `_fallback` only to a roster
+  that has one. The routed roster lives on as
+  `examples/workloads/gke-triage-routed`, with its prompts unchanged, for
+  models that do better with explicit routing and step-by-step procedures
+  (smaller, non-frontier or open-weight models) and for `--dispatch=graph`.
+  It adds a `triage-classifier` `mutating: false` catalog entry so the
+  classifier no longer parks at the write gate under coordinator dispatch.
+  The Helm chart ships the new roster.
   [#499](https://github.com/go-steer/mast/issues/499),
   [#500](https://github.com/go-steer/mast/issues/500),
   [#503](https://github.com/go-steer/mast/issues/503)

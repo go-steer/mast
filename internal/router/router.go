@@ -42,6 +42,7 @@ package router
 
 import (
 	"fmt"
+	"slices"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -116,7 +117,16 @@ func Build(cfg Config) (adkagent.Agent, error) {
 // intentionally shadows the generic agent.DefaultChatInstruction —
 // a coordinator built for a named workload should be framed around
 // that workload, not around generic operator chat.
+//
+// The "_fallback" sentence is said only to a roster that has one. A
+// roster without it (the stock gke-triage bundle is one generalist
+// diagnoser plus change-executor) would otherwise be told to delegate
+// to a specialist that does not exist.
 func defaultCoordinatorInstruction(b workload.Bundle) string {
+	pick := "Consult the tool descriptions\nto pick the right one for the reported failure mode."
+	if slices.Contains(b.Specialists, "_fallback") {
+		pick = "Consult the tool descriptions\nto pick the right one for the reported failure mode; fall back to the\n\"_fallback\" specialist when no per-failure-mode specialist applies."
+	}
 	return fmt.Sprintf(`You are the coordinator for the %q workload.
 
 You will receive an incident envelope on each turn. Your job is to
@@ -124,10 +134,8 @@ choose the right specialist for the incident and delegate to it, then
 summarise the specialist's finding as a short structured "INCIDENT
 SUMMARY" block for the operator.
 
-Each specialist is available as a tool. Consult the tool descriptions
-to pick the right one for the reported failure mode; fall back to the
-"_fallback" specialist when no per-failure-mode specialist applies.
+Each specialist is available as a tool. %s
 
 Do not attempt remediations yourself — return analysis only. Be
-concise; operators are on-call.`, b.Name)
+concise; operators are on-call.`, b.Name, pick)
 }
