@@ -129,7 +129,7 @@ jobs:
       # releases Pre-release for the same reason.
       - name: Compute tags, labels and annotations
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         env:
           # On a multi-arch image GHCR renders its package page from
           # INDEX annotations, not from per-platform LABELs; without
