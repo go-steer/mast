@@ -55,7 +55,7 @@ jobs:
       # on PRs — a dead or un-prefixed link never ships to Pages.
       - name: Verify internal links
         run: python3 scripts/verify-internal-links.py
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/site/dist
 
