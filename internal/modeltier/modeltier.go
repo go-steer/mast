@@ -106,16 +106,17 @@ func Classify(modelID string) string {
 	// claude-mythos-preview); a priced id must classify or
 	// TestBuiltinModelsKnownToCompanionTables fails. The preview left
 	// the table in the 2026-10-05 regen (deprecated upstream) and still
-	// classifies, for bundles that pinned it. No
-	// 5-generation Haiku exists yet; when one ships, add it (unknown
-	// ids conservatively classify "" rather than small, so nothing
-	// misfires meanwhile). Without these cases the whole family
+	// classifies, for bundles that pinned it. Haiku 5.5 is the
+	// first 5-generation Haiku (2026-10-07 regen); "claude-haiku-5"
+	// covers it and any later 5.x. Without these cases the whole family
 	// classified "" and Claude 5 sessions ran the universal 0.85
 	// compaction threshold on a 1M window instead of their tier's.
 	case containsAny(m, "claude-fable-5", "claude-mythos", "claude-opus-5"):
 		return TierFrontier
 	case containsAny(m, "claude-sonnet-5"):
 		return TierMid
+	case containsAny(m, "claude-haiku-5"):
+		return TierSmall
 
 	// Anthropic Claude 4.x.
 	case containsAny(m, "claude-opus-4"):

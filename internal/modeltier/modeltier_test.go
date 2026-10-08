@@ -32,7 +32,8 @@ func TestClassify(t *testing.T) {
 		{"claude-opus-5", modeltier.TierFrontier},
 		{"claude-sonnet-5", modeltier.TierMid},
 		{"claude-sonnet-5-1m", modeltier.TierMid},
-		{"claude-haiku-5", ""}, // no 5-gen Haiku shipped; unknown until it does
+		{"claude-haiku-5", modeltier.TierSmall},
+		{"claude-haiku-5-5", modeltier.TierSmall},
 
 		// Anthropic Claude 4.x.
 		{"claude-opus-4-7", modeltier.TierFrontier},
@@ -159,6 +160,7 @@ func TestIsSmall(t *testing.T) {
 		{"claude-haiku-4-5", true},
 		{"claude-haiku-4-5-20251001", true},
 		{"claude-3-5-haiku-latest", true},
+		{"claude-haiku-5-5", true},
 
 		// Not small — must NOT trigger. Note: gemini-3.5-flash is
 		// mid-tier (see Classify test above) so the small-tier-parent

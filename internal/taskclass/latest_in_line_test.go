@@ -68,12 +68,26 @@ var deferredPromotions = map[string]deferredPromotion{
 			"back. Four boards each, same day, same grader: response_quality 0.839-0.871 " +
 			"(mean 0.857) against claude-sonnet-5's 0.935-0.976 (mean 0.964) — the ranges " +
 			"do not overlap — with intent_coverage level (0.944 against 0.944-0.967). It " +
-			"diagnoses as well and reports worse. Prices identically on every bucket, so " +
-			"price argues nothing either way. The bar is both runs, not the outcome tier " +
+			"diagnoses as well and reports worse. Prices identically except cache reads " +
+			"($0.10 against $0.20 per MTok since the 2026-10-07 regen), which argues " +
+			"for it only on a quality tie it does not have. The bar is both runs, not the outcome tier " +
 			"alone: judged boards on claude-sonnet-5-5 within noise of claude-sonnet-5's " +
 			"(gh workflow run evals-nightly.yml -f model=claude-sonnet-5-5, and the same " +
 			"for claude-sonnet-5 as the comparison, since the nightly scores the frontier " +
 			"root), plus the outcome tier on it.",
+	},
+	"claude-haiku-4-5": {
+		Newer: "claude-haiku-5-5",
+		Why: "held 2026-10-07 — the 2026-10-07 regen priced it and nothing has run it. " +
+			"Two reasons, either sufficient. (1) Same bar as the other Claude 5.5 " +
+			"holds: the outcome tier and judged boards on a roster whose small tier is " +
+			"claude-haiku-5-5, within noise of claude-haiku-4-5's. (2) Its price steps with " +
+			"prompt length — $0.10/$0.50 per MTok up to 100,000 prompt tokens, " +
+			"$0.50/$2.50 above — and pricing.Rates carries one flat rate per bucket, so " +
+			"the catalog bills every call at the lower price. The Sonnet 4.5 and Gemini " +
+			"Pro rows have the same gap above 200K, but no tier default sits on them. On a 1,000,000-token window a long-running session crosses 100K, " +
+			"and a budget ceiling built on the catalog would let it spend up to 5x what " +
+			"the meter reports. Promote once Rates can price the tier, not before.",
 	},
 }
 

@@ -626,6 +626,19 @@
 
 ### Bug or Regression
 
+- **The weekly pricing regen is green again: `claude-haiku-5-5` is priced
+  and classified `small`, and `claude-sonnet-5-5` cache reads are $0.10.**
+  Three regens in a row had failed their own guard tests, so none opened a PR.
+  Haiku 5.5 arrived unclassified. The Claude 5.5 models had no promote-or-hold
+  decision until 2026-10-06. The catalog also had Sonnet 5.5 cache reads at
+  $0.20, where Anthropic charges $0.10.
+  - **`tier: small` stays `claude-haiku-4-5`.** Haiku 5.5 costs a tenth of Haiku
+    4.5 up to 100,000 prompt tokens, and five times that above. The catalog
+    carries one rate per bucket, so it bills every Haiku 5.5 call at the lower
+    price. The small default moves once the catalog can price that step.
+  - **Pinning `model: claude-haiku-5-5` works today.** A call with a prompt
+    over 100K tokens costs up to five times what mast reports for it.
+
 - **The judged nightly no longer goes red on a correctly priced roster.**
   J-cost-tier compared each specialist's billed rate with a flat
   (input+output)/2 blend, but since #339 the meter bills a scope at the exact

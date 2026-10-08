@@ -175,8 +175,11 @@ A tier default names the latest model in its line, and it moves only
 after that model has been run — not when the newer id appears in the
 pricing catalog. `gemini-3.8-flash` was priced on 2026-09-09 and became
 the `frontier` default on 2026-10-06, once it had passed both runs below.
-`claude-opus-5-5` and `claude-sonnet-5-5` are priced as of 2026-10-06 and
-are not defaults yet; pin one with `model:` if you want it today.
+`claude-opus-5-5` and `claude-sonnet-5-5` are priced as of 2026-10-06, and
+`claude-haiku-5-5` as of 2026-10-07; none is a default yet. Pin one with
+`model:` if you want it today. Mast's catalog bills `claude-haiku-5-5` at its
+up-to-100K-token price throughout, so a call with a longer prompt costs more
+than mast reports; Anthropic charges five times as much above that line.
 
 "Has been run" is a weekly job, not a judgement call: a candidate model
 runs the same 31-scenario judged corpus the incumbent default runs every
