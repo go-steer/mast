@@ -202,6 +202,12 @@
 
 ### Feature
 
+- **Provider profiles take `extra_body`** (core-models v0.4.0). These are
+  vendor request fields the dialect doesn't model, set per profile or per
+  model, for example `chat_template_kwargs: {enable_thinking: true}` for
+  Gemma 4 on vLLM, which loops on identical tool calls without it (#514).
+
+
 - **Judged evals: `--rows`, token totals, and provider profiles.**
   - `--rows LC-01-…,LC-20-…` runs a subset of the corpus, for a cost probe
     before a full run on a new model or for re-running a lost row. The
