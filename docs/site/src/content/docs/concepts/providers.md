@@ -89,13 +89,18 @@ What mast does with a profile:
   `--provider house-vllm` runs the profile's small model. Gemini and Claude
   keep mast's own tier tables; a profile only ever adds tiers for its own
   provider.
-- **Usage is measured; cost is unpriced.** Every call reports input and
-  output tokens. Cached and reasoning tokens are reported when the server
-  sends them, and shown as not reported (never as zero) when it doesn't.
-  There is no price for a profile model yet, so cost shows as `$—` and the
-  meter counts the call as unpriced. A `max_cost_usd` ceiling on one is
-  **refused at startup**, because it could never trip. Bound such a run
-  with `max_tokens` or `max_turns`.
+- **Usage is measured, and cost is priced where it can be.** Every call
+  reports input and output tokens. Cached and reasoning tokens are reported
+  when the server sends them, and shown as not reported (never as zero) when
+  it doesn't.
+  - **Vertex AI partner models** are priced from mast's catalog (published
+    rates, refreshed weekly).
+  - **A self-hosted model** is priced only if its profile declares what it
+    costs you, under `models[].rates` (USD per million tokens). Otherwise
+    cost shows as `$—` and the meter counts the call as unpriced.
+  - A `max_cost_usd` ceiling on an unpriced model is **refused at startup**,
+    because it could never trip. Declare rates, or bound the run with
+    `max_tokens` or `max_turns`.
 - **No server-side built-ins.** A bundle that turns on `builtin_tools`
   under a profile is refused rather than run without them.
 - **Which models are worth it.** Five Vertex AI partner models have been

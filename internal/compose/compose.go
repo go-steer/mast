@@ -917,7 +917,12 @@ type catalogPricer struct{ cat *pricing.Catalog }
 func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float64, bool) {
 	r, ok := p.cat.LookupFor(backend, modelID)
 	if !ok || r.IsZero() {
-		return 0, false
+		// A provider profile may declare what a model costs where no
+		// published catalog does (a self-hosted server). The catalog
+		// wins when it has a row; declared rates fill the gap.
+		if r, ok = declaredRates(backend, modelID); !ok {
+			return 0, false
+		}
 	}
 	return r.CostUSDWithCacheWrites(c.UncachedInputTokens, c.CachedInputTokens, c.CacheWriteTokens, c.OutputTokens), true
 }
@@ -986,12 +991,16 @@ func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
 		return 0.0006 // catalog miss: pre-catalog flat spike rate
 	default:
 		if IsProfileProvider(provider) {
-			// A profile-backed model is priced from the catalog or not at
-			// all: no invented flat rate (model-support §4.5(4)). The meter
-			// counts the call Unpriced and renders $—; a ceiling that
-			// depends on a price is refused at startup (CheckCeilingPriced).
+			// A profile-backed model is priced from the catalog, or from
+			// rates its profile declares, or not at all: no invented flat
+			// rate (model-support §4.5(4)). Unpriced, the meter counts the
+			// call Unpriced and renders $—, and a ceiling that depends on a
+			// price is refused at startup (CheckCeilingPriced).
 			if rate, ok := blend(); ok {
 				return rate
+			}
+			if r, ok := declaredRates(backend, modelName); ok {
+				return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000
 			}
 			return 0
 		}

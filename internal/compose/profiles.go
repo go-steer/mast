@@ -28,6 +28,7 @@ import (
 	coreusage "github.com/go-steer/core-models/usage"
 	"google.golang.org/adk/v2/model"
 
+	"github.com/go-steer/mast/internal/pricing"
 	"github.com/go-steer/mast/internal/providers/anthropic"
 	mastusage "github.com/go-steer/mast/internal/providers/usage"
 	"github.com/go-steer/mast/internal/taskclass"
@@ -244,6 +245,41 @@ func priced(backend, modelName string) bool {
 	return ok
 }
 
+// declaredRates returns the rates a provider profile declares for
+// modelName, where the profile is the one whose backend is backend:
+// the operator's price for a model no published catalog covers.
+func declaredRates(backend, modelName string) (pricing.Rates, bool) {
+	profiles.mu.RLock()
+	declared := profiles.declared
+	profiles.mu.RUnlock()
+	for _, name := range append(profile.BuiltinNames(), names(declared)...) {
+		p, err := profile.Find(name, declared)
+		if err != nil {
+			continue
+		}
+		if p, err = profile.Expand(p); err != nil || p.BackendName() != backend {
+			continue
+		}
+		if r, ok := p.RatesFor(modelName); ok {
+			return pricing.Rates{
+				InputPerMTok:              r.InputPerMTok,
+				CachedInputPerMTok:        r.CachedInputPerMTok,
+				CacheCreationInputPerMTok: r.CacheWritePerMTok,
+				OutputPerMTok:             r.OutputPerMTok,
+			}, true
+		}
+	}
+	return pricing.Rates{}, false
+}
+
+func names(ps []profile.Profile) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = p.Name
+	}
+	return out
+}
+
 // CheckCeilingPriced refuses a cost ceiling on a profile-backed model
 // mast cannot price (R6). The meter would price every call at $0 and
 // the ceiling would never trip — a ceiling in name only, which is worse
@@ -262,6 +298,6 @@ func CheckCeilingPriced(scope, provider, modelName string, maxCostUSD float64) e
 	if priced(p.BackendName(), modelName) {
 		return nil
 	}
-	return fmt.Errorf("%s: max_cost_usd %.2f cannot be enforced: model %q on provider profile %q has no price, so every call would cost $0 and the ceiling would never trip; remove max_cost_usd or bound the run with max_tokens / max_turns instead",
+	return fmt.Errorf("%s: max_cost_usd %.2f cannot be enforced: model %q on provider profile %q has no price, so every call would cost $0 and the ceiling would never trip; declare its rates in the profile (models[].rates), remove max_cost_usd, or bound the run with max_tokens / max_turns instead",
 		scope, maxCostUSD, modelName, p.Name)
 }
