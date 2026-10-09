@@ -202,6 +202,19 @@
 
 ### Feature
 
+- **Judged evals: `--rows`, token totals, and provider profiles.**
+  - `--rows LC-01-…,LC-20-…` runs a subset of the corpus, for a cost probe
+    before a full run on a new model or for re-running a lost row. The
+    corpus is still validated whole.
+  - The board reports the tokens the model under test and the grader used
+    (`under_test_usage`, `grader_usage`), which is what a run costs before
+    anything prices it.
+  - The evals CLI loads `.agents/providers/`, so a judged run can name a
+    profile with tiers.
+  - Picks up core-models v0.2.0: per-model capabilities, and gpt-oss's
+    forced-tool-choice limit, which mast's final report relies on.
+
+
 - **Provider profiles: Vertex AI partner models, Ollama, vLLM, SGLang and any
   OpenAI-compatible server.** `--provider` now also takes a profile name:
   - a [core-models](https://github.com/go-steer/core-models) built-in
@@ -648,6 +661,14 @@
   every in-flight turn ([#326](https://github.com/go-steer/mast/issues/326)).
 
 ### Bug or Regression
+
+- **A `claude-*` specialist under a provider-profile root reaches Claude.**
+  #510 said a specialist's cross-provider `model:` override keeps working
+  under `--provider <profile>`. For `claude-*` it didn't:
+  `anthropicBackend` refused any provider that wasn't an Anthropic alias.
+  A profile now picks Claude's backend from the environment, the same way a
+  Gemini alias does. Found when a judged eval run on a profile could not
+  build its Claude grader.
 
 - **A Gemini bundle that turns on a built-in tool works on the Developer
   API.** Gemini 3 and later reject a request that carries a built-in (web
