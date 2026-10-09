@@ -29,6 +29,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/internal/config"
 	"github.com/go-steer/mast/internal/taskclass"
 	buildversion "github.com/go-steer/mast/internal/version"
 	"github.com/go-steer/mast/internal/watchdog"
@@ -150,6 +152,14 @@ func run(ctx context.Context, args []string, ext Options) int {
 	// because --model's default is "echo", not empty.
 	explicit := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	// Provider profiles (.agents/providers/*.yaml) must be known before
+	// --provider can be validated, which is before any workload loads.
+	declared, err := config.DiscoverProviders(logger)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mast:", err)
+		return exitUsage
+	}
+	compose.RegisterProfiles(declared)
 	resolvedModel, err := resolveModelSelection(*providerFlag, *modelName, explicit["model"], *taskFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mast:", err)

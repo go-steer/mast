@@ -73,6 +73,11 @@ func providerFamily(provider, rootModelName string) (string, error) {
 // A roster that declares tiers and silently runs every specialist on
 // the parent's model is the exact fiction W1.1 removed for `model:`.
 func TierModelName(provider, rootModelName, tier string) (string, error) {
+	if p, ok, err := LookupProfile(provider); err != nil {
+		return "", fmt.Errorf("tier %q: %w", tier, err)
+	} else if ok {
+		return profileTierModel(p, tier)
+	}
 	family, err := providerFamily(provider, rootModelName)
 	if err != nil {
 		return "", fmt.Errorf("tier %q: %w", tier, err)

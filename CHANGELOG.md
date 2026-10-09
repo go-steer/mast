@@ -202,6 +202,29 @@
 
 ### Feature
 
+- **Provider profiles: Vertex AI partner models, Ollama, vLLM, SGLang and any
+  OpenAI-compatible server.** `--provider` now also takes a profile name:
+  - a [core-models](https://github.com/go-steer/core-models) built-in
+    (`vertex-maas`, `ollama`, `vllm`, `sglang`, `openai-compatible`);
+  - or one declared in `.agents/providers/<name>.yaml`, one per file.
+
+  Models run through core-models' OpenAI Chat Completions adapter, the one
+  core-agent will share.
+  - **Early refusals:** an unknown profile, an unserved model, a missing
+    tier, or a missing credential fails at startup and names the profile.
+  - **Tiers** resolve from the profile.
+  - **Usage:** input and output tokens are measured. Cached and reasoning
+    tokens are recorded when the server reports them, and never invented.
+  - **Cost** is unpriced (`$—`), so a `max_cost_usd` ceiling on a profile
+    model is refused at startup rather than silently never tripping.
+  - **Built-ins:** a bundle that turns on `builtin_tools` under a profile is
+    refused.
+  - **Retries:** core-models retries 429s at the HTTP layer, honoring
+    `retry-after`. mast's outer retry now also recognizes core-models'
+    errors.
+  - Tested against a local Ollama and Vertex AI.
+  [#312](https://github.com/go-steer/mast/issues/312)
+
 - **The stock `gke-triage` workload is one generalist diagnoser
   (`diagnoser`) plus `change-executor`.** The reason classifier and the
   eleven per-failure-mode specialists are gone from it. On six real k8s-lookout incidents (3 runs

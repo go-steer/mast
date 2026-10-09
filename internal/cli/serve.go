@@ -310,6 +310,10 @@ func (d *daemon) buildModel() error {
 			return err
 		}
 		d.roster = &loadedWorkload{bundle: bundle, specs: specs, cfgDir: cfgDir}
+		if err := checkCeilingsPriced(d.roster, d.mdl.provider, d.mdl.name); err != nil {
+			d.logger.Error("refusing a budget ceiling that cannot be enforced", "error", err.Error())
+			return err
+		}
 	}
 
 	d.llm, err = buildModel(d.turnCtx, d.ext, d.mdl.provider, d.mdl.name, d.roster.builtinTools())
@@ -1527,3 +1531,22 @@ func (d *daemon) serveUntilShutdown() error {
 // window expired with turns still in flight (their sessions carry
 // interruption markers where the write landed).
 var errDrainExpired = errors.New("drain window expired with interrupted sessions")
+
+// checkCeilingsPriced refuses, at startup, a max_cost_usd ceiling on a
+// model mast cannot price — the workload's own, and each specialist's
+// on the model that specialist resolves to (R6).
+func checkCeilingsPriced(w *loadedWorkload, provider, modelName string) error {
+	if w == nil {
+		return nil
+	}
+	if err := compose.CheckCeilingPriced("workload "+w.bundle.Name, provider, modelName, w.bundle.Budget.MaxCostUSD); err != nil {
+		return err
+	}
+	for _, s := range w.specs {
+		m := compose.SpecModelName(s, provider, modelName)
+		if err := compose.CheckCeilingPriced("specialist "+s.Name, provider, m, s.Budget.MaxCostUSD); err != nil {
+			return err
+		}
+	}
+	return nil
+}

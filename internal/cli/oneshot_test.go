@@ -23,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-steer/core-models/profile"
+
+	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/transcript"
 )
 
@@ -259,5 +262,45 @@ func TestRunOneShot_TimeoutTripsLoudly(t *testing.T) {
 	}
 	if strings.TrimSpace(out.String()) == "" {
 		t.Error("Timeout=0 run produced no output")
+	}
+}
+
+// TestResolveModelSelection_ProviderProfiles covers --provider naming a
+// core-models profile: a built-in, or one declared under
+// .agents/providers/. The model comes from --model (checked against the
+// profile's list) or from the profile's tier for the task class.
+func TestResolveModelSelection_ProviderProfiles(t *testing.T) {
+	compose.RegisterProfiles([]profile.Profile{{
+		Name: "house-vllm", Extends: "vllm", BaseURL: "http://vllm.infra.svc:8000/v1",
+		OpenModels: new(false),
+		Models:     []profile.Model{{ID: "Qwen/Qwen3-Coder-Next"}, {ID: "gpt-oss-20b"}},
+		Tiers:      map[profile.Tier]string{profile.Mid: "Qwen/Qwen3-Coder-Next", profile.Small: "gpt-oss-20b"},
+	}})
+	t.Cleanup(func() { compose.RegisterProfiles(nil) })
+
+	for _, tc := range []struct {
+		name, provider, model string
+		modelSet              bool
+		class, want, wantErr  string
+	}{
+		{name: "declared, explicit model", provider: "house-vllm", model: "gpt-oss-20b", modelSet: true, want: "gpt-oss-20b"},
+		{name: "declared, mid tier by default", provider: "house-vllm", model: "echo", want: "Qwen/Qwen3-Coder-Next"},
+		{name: "declared, model it does not serve", provider: "house-vllm", model: "llama3", modelSet: true, wantErr: "does not serve --model=llama3"},
+		{name: "built-in, open models", provider: "ollama", model: "qwen3:1.7b", modelSet: true, want: "qwen3:1.7b"},
+		{name: "built-in with no tiers needs --model", provider: "ollama", model: "echo", wantErr: `declares no "mid" tier`},
+		{name: "unknown names the profiles", provider: "olama", model: "x", modelSet: true, wantErr: "house-vllm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveModelSelection(tc.provider, tc.model, tc.modelSet, tc.class)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("resolveModelSelection = %q, %v; want %q", got, err, tc.want)
+			}
+		})
 	}
 }

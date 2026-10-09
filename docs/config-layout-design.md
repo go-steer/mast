@@ -40,6 +40,9 @@ The canonical layout under `.agents/`:
     internal-scanner.yaml
     peer-mast-fleet.yaml
     ...
+  providers/                    # provider profiles, one per file, core-models schema (see model-support-design.md)
+    house-vllm.yaml
+    ...
   skills/                       # SKILL.md skill bundles (see skills-design.md)
     gke-triage.skill/
       SKILL.md
@@ -52,7 +55,7 @@ The canonical layout under `.agents/`:
 mast.yaml                       # runtime config (or .mast/mast.yaml; both accepted)
 ```
 
-Directory names are canonical — mast looks for `specialists/`, `workloads/`, `mcp/`, `a2a/`, `remote/`, `skills/` (and any future additions) by those exact names under `.agents/`.
+Directory names are canonical — mast looks for `specialists/`, `workloads/`, `mcp/`, `a2a/`, `remote/`, `providers/`, `skills/` (and any future additions) by those exact names under `.agents/`.
 
 ## Discovery locations
 

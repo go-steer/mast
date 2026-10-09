@@ -517,7 +517,7 @@ func (p *Policy) emit(ev Event) {
 
 // isRetryable reports whether err is the provider saying "not now".
 //
-// Typed, for both providers mast can be pointed at:
+// Typed, for every provider mast can be pointed at:
 // google.golang.org/genai returns APIError by value and ADK's Gemini
 // path wraps it with %w; anthropic-sdk-go returns *anthropic.Error.
 // Either way errors.As reaches the status code without reading English.
@@ -540,6 +540,15 @@ func isRetryable(err error) bool {
 	var anthropicErr *anthropic.Error
 	if errors.As(err, &anthropicErr) {
 		return retryableCodes[anthropicErr.StatusCode]
+	}
+	// core-models' adapters (provider profiles) return errors that state
+	// their HTTP status. Still typed, still no string matching. Those
+	// adapters have already retried at the HTTP layer, honoring the
+	// provider's Retry-After; this is the one outer retry every model
+	// gets.
+	var status interface{ HTTPStatus() int }
+	if errors.As(err, &status) {
+		return retryableCodes[status.HTTPStatus()]
 	}
 	return false
 }
