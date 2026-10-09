@@ -17,13 +17,16 @@
 
 # ---- Builder stage ----
 #
-# GO_VERSION must be >= the `go` directive in go.mod. The golang images
+# GO_VERSION must be >= the `go` directive in go.mod, and should equal
+# its `toolchain` line when there is one: that line is the Go CI builds
+# and scans with (setup-go reads it), and it sits ahead of `go` only for
+# a stdlib security fix (#507). The golang images
 # set GOTOOLCHAIN=local, so a lower pin does not silently download the
 # newer toolchain — it fails `go mod download` outright. That is how
 # this file stopped building: go.mod moved to 1.26.6 and the pin stayed
 # at 1.26.3, with nothing in CI compiling the image to notice.
 # `.github/workflows/ci-image.yml` now builds it on every PR.
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.26.9
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
 WORKDIR /src
