@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/go-steer/core-models/dialect/openaichat"
 	"google.golang.org/genai"
 
 	adkmodel "google.golang.org/adk/v2/model"
@@ -302,6 +303,10 @@ func TestBothProvidersAre429AwareThroughTheirOwnErrorType(t *testing.T) {
 		{"anthropic 429", fmt.Errorf("wrapped: %w", anthropicErr(429)), true},
 		{"anthropic 503", anthropicErr(503), true},
 		{"anthropic 401", anthropicErr(401), false},
+		{"provider profile 429", fmt.Errorf("wrapped: %w", &openaichat.APIError{StatusCode: 429}), true},
+		{"provider profile 503", &openaichat.APIError{StatusCode: 503}, true},
+		{"provider profile 400", &openaichat.APIError{StatusCode: 400}, false},
+		{"provider profile in-stream error", &openaichat.APIError{Message: "out of memory"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Reports tc.name rather than the error: *anthropic.Error's

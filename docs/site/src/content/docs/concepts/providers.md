@@ -1,6 +1,6 @@
 ---
 title: Providers and models
-description: Gemini, Claude, and the offline fakes — how a model is selected, why a specialist may cross providers, and why an unresolvable override refuses to start.
+description: Gemini, Claude, provider profiles for OpenAI-compatible and self-hosted servers, and the offline fakes — how a model is selected, why a specialist may cross providers, and why an unresolvable override refuses to start.
 sidebar:
   order: 6
 ---
@@ -10,7 +10,8 @@ vendor's client into its agent layer is carrying that curve as a risk it
 cannot cheaply unwind — which is why multi-provider is a pillar here rather
 than a compatibility shim.
 
-Two vendors reach that table today, in four deployment paths, and the
+Gemini and Claude reach that table through mast's own adapters, and
+everything OpenAI-compatible reaches it through **provider profiles**. The
 pillar is the **substitutability** rather than the number: the tier
 indirection, a meter that prices the (backend, model) pair, and a judged
 corpus that runs nightly against both. There is no `pkg/provider`
@@ -26,6 +27,7 @@ of the six paths the [v1.0 promise](/reference/stability/) covers.
 | **Gemini on Vertex** | `--provider=vertex`, or `GOOGLE_GENAI_USE_VERTEXAI=true` | same models, ADC instead of a key |
 | **Claude, first-party** | `claude-*` with `ANTHROPIC_API_KEY` set | |
 | **Claude on Vertex** | `claude-*` with a Vertex project, or `--provider=anthropic-vertex` | context caching supported |
+| **A provider profile** | `--provider=<profile>` with `--model`, or the profile's tier | Vertex AI partner models (`vertex-maas`), Ollama (`ollama`), vLLM, SGLang, or any OpenAI-compatible endpoint. See [Provider profiles](#provider-profiles) |
 | **`echo`** | `--model=echo` (the default) | offline fake, no credentials, never emits tool calls |
 | **`scripted`** | `--model=scripted` | replays recorded turns from a JSONL file (`MAST_SCRIPT`) |
 | **`toolactor`** | `--model=toolactor` | offline fake that *does* drive tool calls |
@@ -38,6 +40,66 @@ different model line. Without an alias the backend comes from the
 environment: `GOOGLE_GENAI_USE_VERTEXAI` for `gemini-*`, and for `claude-*`
 `ANTHROPIC_API_KEY` selecting the first-party API with a Vertex project
 selecting Vertex.
+
+## Provider profiles
+
+A model outside the Gemini and Claude families is named by a **profile** plus
+a model id, not by a prefix. The same `gpt-oss-20b` is served by Vertex AI
+and by your own vLLM, at different prices and with different credentials.
+A profile declares the endpoint, the credential, the wire format, what the
+server can do, and which models it serves.
+
+Profiles come from [core-models](https://go-steer.github.io/core-models/),
+the provider library mast shares with core-agent. Its built-ins work with
+nothing else configured:
+
+```sh
+mast --provider ollama --model qwen3:1.7b "what does CrashLoopBackOff mean?"
+GOOGLE_CLOUD_PROJECT=my-project \
+  mast --provider vertex-maas --model openai/gpt-oss-20b-maas "..."
+```
+
+Your own go in `.agents/providers/<name>.yaml`, one profile per file. Most
+start from a built-in with `extends`:
+
+```yaml
+# .agents/providers/house-vllm.yaml
+name: house-vllm
+extends: vllm
+base_url: http://vllm.infra.svc:8000/v1
+usage: {cached_tokens: unreliable}   # this vLLM build reports nonsense cached counts
+models:
+  - {id: Qwen/Qwen3-Coder-Next, tier: mid, context_window: 262144}
+  - {id: gpt-oss-20b, tier: small}
+tiers: {mid: Qwen/Qwen3-Coder-Next, small: gpt-oss-20b}
+```
+
+Then run it with `mast --provider house-vllm`. That picks the profile's
+model for the task's tier; `--model` picks one explicitly. Every field and
+built-in is on the
+[profiles reference](https://go-steer.github.io/core-models/reference/profiles/).
+
+What mast does with a profile:
+
+- **It refuses early.** An unknown profile, a model it doesn't serve, a
+  tier it doesn't declare, or a missing API key or Google credential fails
+  at startup, naming the profile. A misspelled key in the YAML is a load
+  error.
+- **Tiers come from the profile.** A specialist's `tier: small` under
+  `--provider house-vllm` runs the profile's small model. Gemini and Claude
+  keep mast's own tier tables; a profile only ever adds tiers for its own
+  provider.
+- **Usage is measured; cost is unpriced.** Every call reports input and
+  output tokens. Cached and reasoning tokens are reported when the server
+  sends them, and shown as not reported (never as zero) when it doesn't.
+  There is no price for a profile model yet, so cost shows as `$—` and the
+  meter counts the call as unpriced. A `max_cost_usd` ceiling on one is
+  **refused at startup**, because it could never trip. Bound such a run
+  with `max_tokens` or `max_turns`.
+- **No server-side built-ins.** A bundle that turns on `builtin_tools`
+  under a profile is refused rather than run without them.
+- **Retries honor the server.** A 429 waits as long as `retry-after-ms` or
+  `retry-after` asks, at the HTTP layer, before mast's own one outer retry.
 
 ## Credentials
 

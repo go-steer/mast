@@ -67,6 +67,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,6 +128,10 @@ func Discover() (Root, error) {
 }
 
 // discover is the testable core of Discover.
+// ErrNoRoot is returned by Discover when no `.agents/` root exists in
+// any discovery location.
+var ErrNoRoot = errors.New("config: no .agents root found")
+
 func discover(envDir, cwd, userDir, systemDir string) (Root, error) {
 	if envDir != "" {
 		if !dirExists(envDir) {
@@ -171,7 +176,7 @@ func discover(envDir, cwd, userDir, systemDir string) (Root, error) {
 		consulted = append(consulted, c.dir)
 	}
 	return Root{}, fmt.Errorf(
-		"config: no .agents root found (set %s or create one of: %v)",
+		"%w (set %s or create one of: %v)", ErrNoRoot,
 		EnvConfigDir, consulted)
 }
 

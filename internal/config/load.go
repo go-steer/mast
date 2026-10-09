@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-steer/core-models/profile"
+
 	"github.com/go-steer/mast/internal/a2a"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/workload"
@@ -52,6 +54,10 @@ type Config struct {
 	// (<root>/a2a/*.yaml, flat scan). Consumed by a2a.NewAdapter for
 	// the federation registry's a2a:// scheme.
 	A2A map[string]a2a.AgentConfig
+
+	// Providers maps profile name → declared provider profile
+	// (<root>/providers/*.yaml, flat scan), in core-models' schema.
+	Providers map[string]profile.Profile
 }
 
 // A2AList returns the loaded A2A registrations in name order — the
@@ -97,6 +103,9 @@ func LoadRoot(root Root, logger *slog.Logger) (*Config, error) {
 		return nil, err
 	}
 	if cfg.A2A, err = loadA2A(filepath.Join(root.Dir, "a2a")); err != nil {
+		return nil, err
+	}
+	if cfg.Providers, err = loadProviders(filepath.Join(root.Dir, "providers")); err != nil {
 		return nil, err
 	}
 	if err := applyBudgetEnvOverrides(cfg.Workloads, logger); err != nil {

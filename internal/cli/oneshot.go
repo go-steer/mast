@@ -410,6 +410,24 @@ func resolveModelSelection(provider, model string, modelSet bool, class string) 
 		}
 		return tierDefault("anthropic"), nil
 	default:
-		return "", fmt.Errorf("unknown --provider %q (want `gemini`, `vertex`, `anthropic`, `anthropic-vertex`, `echo`, or `scripted`)", provider)
+		p, ok, err := compose.LookupProfile(provider)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("unknown --provider %q (want `gemini`, `vertex`, `anthropic`, `anthropic-vertex`, `echo`, `scripted`, or a provider profile: %s)",
+				provider, strings.Join(compose.ProfileNames(), ", "))
+		}
+		if modelSet {
+			if !p.Serves(model) {
+				return "", fmt.Errorf("--provider=%s does not serve --model=%s (the profile lists its models; add it there, or set open_models)", provider, model)
+			}
+			return model, nil
+		}
+		tier := ""
+		if tp, ok := taskclass.Resolve(class); ok {
+			tier = tp.Tier
+		}
+		return compose.ProfileDefaultModel(p, tier)
 	}
 }

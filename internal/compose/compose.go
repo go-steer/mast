@@ -582,8 +582,13 @@ func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinT
 			return nil, err
 		}
 		return p.Model(ctx, name)
+	case IsProfileProvider(provider):
+		// After the prefixes, so a specialist's cross-provider `model:`
+		// override (a claude-* under a profile root) still reaches its
+		// own family.
+		return buildProfileModel(ctx, provider, name, bt)
 	default:
-		return nil, fmt.Errorf("unknown model %q (want `echo`, `toolactor`, `scripted`, a `gemini-*` or a `claude-*` model id)", name)
+		return nil, fmt.Errorf("unknown model %q (want `echo`, `toolactor`, `scripted`, a `gemini-*` or a `claude-*` model id, or --provider naming a provider profile)", name)
 	}
 }
 
@@ -855,6 +860,9 @@ func Backend(provider, modelName string) string {
 		}
 		return ProviderGemini
 	default:
+		if p, ok, _ := LookupProfile(provider); ok {
+			return p.BackendName()
+		}
 		return ""
 	}
 }
@@ -971,6 +979,16 @@ func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
 		}
 		return 0.0006 // catalog miss: pre-catalog flat spike rate
 	default:
+		if IsProfileProvider(provider) {
+			// A profile-backed model is priced from the catalog or not at
+			// all: no invented flat rate (model-support §4.5(4)). The meter
+			// counts the call Unpriced and renders $—; a ceiling that
+			// depends on a price is refused at startup (CheckCeilingPriced).
+			if rate, ok := blend(); ok {
+				return rate
+			}
+			return 0
+		}
 		return 0.001
 	}
 }
