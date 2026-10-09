@@ -392,3 +392,49 @@ func TestBuildTools_EveryShapedToolIsDescribed(t *testing.T) {
 		}
 	}
 }
+
+// TestRig_ALoopingModelIsStoppedAndScored is #514 on the rig: a model
+// that calls one tool with one set of arguments forever used to run
+// until the server refused the context. The rig now runs the loop guard
+// at mast's default posture, so the run ends at the guard's stop, the
+// row completes, and it says why.
+func TestRig_ALoopingModelIsStoppedAndScored(t *testing.T) {
+	ds := loadCorpus(t)
+	tbl := loadIntents(t)
+	fx, err := Fixtures(ds, loadOverrides(t))
+	if err != nil {
+		t.Fatalf("Fixtures: %v", err)
+	}
+	var sc evals.Scenario
+	for _, s := range ds.Scenarios {
+		if s.ID == "LC-01-crashloopbackoff" {
+			sc = s
+		}
+	}
+
+	loop := func(*adkmodel.LLMRequest) *adkmodel.LLMResponse {
+		return call("k8s_triage_workload", map[string]any{"scope": "production/api-server"})
+	}
+	m := &scriptedModel{}
+	for i := 0; i < 50; i++ {
+		m.turns = append(m.turns, loop)
+	}
+
+	rig, err := NewRig(tbl, fx, m, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRig: %v", err)
+	}
+	out, err := rig.Run(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("Run: %v — a guard stop is a completed row, not a failed one", err)
+	}
+	if out.LoopStop == "" {
+		t.Fatal("LoopStop is empty: nothing stopped a model that called one tool 50 times")
+	}
+	if m.at >= 50 {
+		t.Errorf("the model was called %d times; the guard should have ended the turn well before the script ran out", m.at)
+	}
+	if len(out.Results) == 0 {
+		t.Error("the stopped row was not scored")
+	}
+}

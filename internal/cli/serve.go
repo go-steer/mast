@@ -590,6 +590,16 @@ func (d *daemon) buildGovernance() error {
 		plugins = append(plugins, d.writeGate.Plugin)
 		d.logger.Info("write gate registered", "on_mutation", d.declared.HITL.EffectiveOnMutation())
 	}
+	// The in-turn half of feedback (#514), last so it sees only calls
+	// that will actually run — see compose.LoopGuard.
+	guard, err := compose.LoopGuard(d.wdRes.Mode, d.logger)
+	if err != nil {
+		d.logger.Error("failed to construct loop guard", "error", err.Error())
+		return err
+	}
+	if guard != nil {
+		plugins = append(plugins, guard)
+	}
 
 	d.r, err = runner.New(runner.Config{
 		AppName:           appName,

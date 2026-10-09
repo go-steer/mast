@@ -60,6 +60,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/genai"
@@ -76,6 +77,7 @@ import (
 	"github.com/go-steer/mast/internal/planner"
 	itranscript "github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/internal/watchdog"
+	"github.com/go-steer/mast/pkg/approval"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
 	"github.com/go-steer/mast/pkg/transcript"
@@ -743,6 +745,20 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	if writeGate.Plugin != nil {
 		plugins = append(plugins, writeGate.Plugin)
 	}
+	// Resolved here rather than beside the watchdog tap below, because
+	// the in-turn half of feedback (#514) is a plugin and the runner is
+	// built now. Last in the list — see compose.LoopGuard.
+	wdMode, err := libraryWatchdogMode(bundle)
+	if err != nil {
+		return nil, err
+	}
+	guard, err := compose.LoopGuard(wdMode, cfg.Logger)
+	if err != nil {
+		return nil, fmt.Errorf("mast: construct loop guard: %w", err)
+	}
+	if guard != nil {
+		plugins = append(plugins, guard)
+	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
@@ -761,6 +777,13 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	// root has to be handed it at construction time (see subRunMeter).
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// The handle the loop guard (#514) and the write gate (#449) end a
+	// turn through. Without it the guard can refuse a repeated call but
+	// not end the turn, and the model keeps paying for model calls that
+	// propose it.
+	stop := &turnStop{cancel: cancel}
+	ctx = approval.WithTurnStop(ctx, stop)
 
 	// And in front of the call as well (W10.2). Observe below stays as
 	// the ledger; this is what keeps a workload one call from its cap
@@ -800,11 +823,8 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	// is the half that matters — the "refuse every later turn" half
 	// needs a session pool, and the daemon is where that lives.
 	// Feedback's next-turn injection has nothing to inject into, the
-	// same collapse one-shot mode has.
-	wdMode, err := libraryWatchdogMode(bundle)
-	if err != nil {
-		return nil, err
-	}
+	// same collapse one-shot mode has; its in-turn half, the loop guard
+	// registered with the runner above, works here as everywhere.
 	wd := watchdog.NewDefaultWatchdog()
 	enf := watchdog.NewEnforcer(wdMode, "The turn was abandoned; nothing is left halted — this process holds no cross-call session state.")
 	onAlert := func(a watchdog.Alert) {
@@ -824,6 +844,12 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 		StreamingMode: adkagent.StreamingModeNone,
 	}), wd, onAlert) {
 		if err != nil {
+			// A stop cancels the run, so the runner's own error is
+			// "context canceled"; the recorded reason is the one to
+			// return.
+			if why := stop.why(); why != nil {
+				return nil, fmt.Errorf("mast: session %q: %w", sessionID, why)
+			}
 			return nil, fmt.Errorf("mast: session %q: %w", sessionID, err)
 		}
 		// Tap drains alerts before it yields, so a halt raised by this
@@ -901,7 +927,36 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	if rerr := refused(); rerr != nil {
 		return nil, rerr
 	}
+	// And for a stop whose cancellation landed between events, which
+	// looks like a stream that simply ended.
+	if why := stop.why(); why != nil {
+		return nil, fmt.Errorf("mast: session %q: %w", sessionID, why)
+	}
 	return res, nil
+}
+
+// turnStop is approval.TurnStop for one RunWorkload call: it records
+// what ended the turn and cancels it, the shape of cmd/mast's
+// refusalStop.
+type turnStop struct {
+	mu     sync.Mutex
+	reason error
+	cancel context.CancelFunc
+}
+
+func (s *turnStop) StopTurn(reason error) {
+	s.mu.Lock()
+	if s.reason == nil {
+		s.reason = reason
+	}
+	s.mu.Unlock()
+	s.cancel()
+}
+
+func (s *turnStop) why() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reason
 }
 
 // newSessionID mints a fresh library-run session ID. Random rather

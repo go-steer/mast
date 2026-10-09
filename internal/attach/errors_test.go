@@ -243,20 +243,20 @@ func TestClassifyTurnError_LongMessageCapped(t *testing.T) {
 	}
 }
 
-// TestProtocolV1_7_0_IsAdditive pins what the #206, #208 and #449 bumps
-// did and did not do. The version moved three times because a client
-// negotiating on it needs to know three new turn-error kinds exist;
+// TestProtocolV1_8_0_IsAdditive pins what the #206, #208, #449 and #514
+// bumps did and did not do. The version moved four times because a
+// client negotiating on it needs to know four new turn-error kinds exist;
 // nothing else about the wire changed, and a future edit that adds an
 // event type or a field under cover of "we already bumped" fails here.
 //
 // The existing v1.4.0 conformance fixtures deliberately keep their
 // literal "1.4.0": they pin the shape that shipped under that version,
-// which none of the three changes touches.
-func TestProtocolV1_7_0_IsAdditive(t *testing.T) {
+// which none of the four changes touches.
+func TestProtocolV1_8_0_IsAdditive(t *testing.T) {
 	t.Parallel()
 
-	if protocolVersion != "1.7.0" {
-		t.Errorf("protocolVersion = %q, want 1.7.0 — a wire change needs its own entry in the version log above the constant", protocolVersion)
+	if protocolVersion != "1.8.0" {
+		t.Errorf("protocolVersion = %q, want 1.8.0 — a wire change needs its own entry in the version log above the constant", protocolVersion)
 	}
 
 	want := []string{
@@ -270,7 +270,7 @@ func TestProtocolV1_7_0_IsAdditive(t *testing.T) {
 		"tool-result",
 	}
 	if !slices.Equal(supportedEventTypes, want) {
-		t.Errorf("supportedEventTypes = %v, want %v — canceled, watchdog_halt and refusal_loop are new values in an existing enum, not new frames", supportedEventTypes, want)
+		t.Errorf("supportedEventTypes = %v, want %v — canceled, watchdog_halt, refusal_loop and loop_stop are new values in an existing enum, not new frames", supportedEventTypes, want)
 	}
 
 	// §2.6 requires a consumer to fall back to unknown on a kind it
@@ -288,6 +288,7 @@ func TestProtocolV1_7_0_IsAdditive(t *testing.T) {
 		"TurnErrorCanceled":      TurnErrorCanceled,
 		"TurnErrorWatchdogHalt":  TurnErrorWatchdogHalt,
 		"TurnErrorRefusalLoop":   TurnErrorRefusalLoop,
+		"TurnErrorLoopStop":      TurnErrorLoopStop,
 		"TurnErrorUnknown":       TurnErrorUnknown,
 	}
 	seen := make(map[string]string, len(kinds))
@@ -383,6 +384,29 @@ func TestClassifyTurnError_RefusalLoopIsNotAHalt(t *testing.T) {
 		t.Error("Retryable = true — re-driving the turn re-proposes the call the operator just refused")
 	}
 	if strings.Contains(got.Hint, "guardrails/reset") || strings.Contains(got.Hint, "watchdog") {
+		t.Errorf("Hint = %q — it offers a reset for a guardrail that did not trip", got.Hint)
+	}
+}
+
+// A loop stop ends one turn and latches nothing, so the same pin as a
+// refusal loop: no reset offered for a guardrail that did not trip (#514).
+func TestClassifyTurnError_LoopStopIsNotAHalt(t *testing.T) {
+	t.Parallel()
+
+	msg := `turn ended: the model called k8s_resource_spec with identical arguments 8 times in a row and kept going after being told the result would not change (args={"scope":"data/pvc"}). ` +
+		`The last call was not made. Nothing is latched; the next turn starts clean.`
+	got := ClassifyTurnError(&declaredKindError{kind: TurnErrorLoopStop, msg: msg})
+
+	if got.Kind != TurnErrorLoopStop {
+		t.Errorf("Kind = %q, want %q", got.Kind, TurnErrorLoopStop)
+	}
+	if got.Code != "LOOP_STOP" {
+		t.Errorf("Code = %q, want LOOP_STOP", got.Code)
+	}
+	if got.Retryable {
+		t.Error("Retryable = true — re-driving the turn hands the model the context that looped")
+	}
+	if strings.Contains(got.Hint, "guardrails/reset") {
 		t.Errorf("Hint = %q — it offers a reset for a guardrail that did not trip", got.Hint)
 	}
 }

@@ -62,6 +62,14 @@ const (
 	// queue of sessions waiting on a human. Separate from error
 	// because nothing failed.
 	OutcomeRefusalLoop = "refusal_loop"
+	// OutcomeLoopStop is a turn the in-turn loop guard ended because
+	// the model kept making one call, with the same arguments and the
+	// same result, after a note on that result told it so (#514). It
+	// latches nothing, like refusal_loop, and is separate from it for
+	// the same reason refusal_loop is separate from watchdog_halt: the
+	// remedy differs. This one points at the model or the workload's
+	// tools, not at an operator's decision.
+	OutcomeLoopStop = "loop_stop"
 )
 
 // Token kinds for the mast_tokens_total{kind} label.
@@ -577,7 +585,7 @@ func (r *Registry) Prime(workload string) {
 	if r == nil {
 		return
 	}
-	for _, outcome := range []string{OutcomeOK, OutcomeError, OutcomeBudgetExceeded, OutcomeWatchdogHalt, OutcomeRefusalLoop} {
+	for _, outcome := range []string{OutcomeOK, OutcomeError, OutcomeBudgetExceeded, OutcomeWatchdogHalt, OutcomeRefusalLoop, OutcomeLoopStop} {
 		r.turns.WithLabelValues(workload, outcome)
 	}
 	r.modelCalls.WithLabelValues(workload)

@@ -79,6 +79,17 @@ func classifyDeclaredKind(kind string, err error) (TurnError, bool) {
 			// turn is all that stands in the way.
 			Hint: "The turn ended; nothing is latched and nothing needs resetting. The refusal stands for this turn only. If the change should happen after all, send a new turn and approve the call when it parks.",
 		}, true
+	case TurnErrorLoopStop:
+		return TurnError{
+			Kind:      TurnErrorLoopStop,
+			Code:      "LOOP_STOP",
+			Message:   firstSentence(err.Error()),
+			Retryable: false,
+			// Not a reset instruction either, for refusal_loop's reason.
+			// What an operator can change is the model or the tool, so
+			// that is where the hint points.
+			Hint: "The turn ended; nothing is latched and nothing needs resetting. The model kept repeating one call with the same result after being told to stop. If it recurs, look at what that tool returns, or try a different model.",
+		}, true
 	}
 	return TurnError{}, false
 }

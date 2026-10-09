@@ -124,6 +124,9 @@ type JudgeScenario struct {
 	Ceiling   float64        `json:"intent_coverage_ceiling"`
 	Authored  bool           `json:"authored_fixture,omitempty"`
 	Error     string         `json:"error,omitempty"`
+	// LoopStop is why the in-turn loop guard ended this row's run (#514),
+	// empty when it did not. The row is scored all the same.
+	LoopStop string `json:"loop_stop,omitempty"`
 
 	// Calls are the row's tool calls with their arguments and a digest
 	// of each result, and Violations what was wrong with them. Both are
@@ -486,6 +489,10 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		row.Calls = out.Calls
 		row.Violations = out.Violations
 		row.Misses = out.Misses
+		row.LoopStop = out.LoopStop
+		if out.LoopStop != "" {
+			note("[loop] %s: %s", sc.ID, out.LoopStop)
+		}
 		if out.Authored {
 			board.Authored++
 		}
@@ -801,6 +808,7 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 			p("  %s scored %.2f against a ceiling of %.2f — %s", c.ID, c.Scored, c.Ceiling, c.Why)
 		}
 	}
+	j.writeLoopStops(p)
 	j.writeCost(p)
 	j.writeUsage(p)
 
@@ -811,6 +819,25 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 	p("")
 	p("a low score here is a finding, not a red build: this tier's scoring reports and does not gate.")
 	p("J-cost-tier is the exception — its verdict is arithmetic, so a mispriced tier is a Problem.")
+}
+
+// writeLoopStops lists the rows the in-turn loop guard ended. Silent
+// when there are none, which is the common case.
+func (j *JudgeSummary) writeLoopStops(p func(string, ...any)) {
+	var stopped []JudgeScenario
+	for _, s := range j.Scenes {
+		if s.LoopStop != "" {
+			stopped = append(stopped, s)
+		}
+	}
+	if len(stopped) == 0 {
+		return
+	}
+	p("")
+	p("loop stops (#514) — %d run(s) ended by the in-turn loop guard, scored on what they did before it:", len(stopped))
+	for _, s := range stopped {
+		p("  %s: %s", s.ID, s.LoopStop)
+	}
 }
 
 // writeValidity renders how the runs used their tools.

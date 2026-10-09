@@ -370,8 +370,9 @@ has when a session stops responding: *what stopped it, and what do I do?*
 It reports the budget ceilings in force and the usage against them across
 all three dimensions plus each specialist's own, and the watchdog's posture
 (`advisory: true` under `--watchdog=warn` and under the default
-`--watchdog=feedback`, which corrects but never stops; `false` under
-`--watchdog=enforce`, whether or not it has fired yet).
+`--watchdog=feedback`, which corrects and can end a looping turn but never
+halts the session; `false` under `--watchdog=enforce`, whether or not it
+has fired yet).
 
 #### The signals
 
@@ -417,9 +418,13 @@ each rung includes the one below it:
   block: *an automated observation about your own previous turn — this is
   not a message from the user*. Every posture below this one routes the
   observation to a reader who may not be there; the model about to repeat
-  the call is the party that can decide not to. It is a correction, not a
-  backstop — nothing stops a model that reads the block and loops anyway,
-  which is why a workload with a bounded tool loop still wants `enforce`.
+  the call is the party that can decide not to. Inside a turn, a call
+  repeated with the same arguments and the same result is told on its
+  result and the turn ends if the model keeps going — see [a loop inside
+  one turn](#a-loop-inside-one-turn). Across turns it is a correction, not
+  a backstop: nothing halts a session whose model reads the block and
+  loops anyway, which is why a workload with a bounded tool loop still
+  wants `enforce`.
 - **`--watchdog=enforce`** also cancels the turn in flight on a
   **Critical** alert and refuses the session's every subsequent turn —
   auto-resume, a scheduled fire, and an attach inject all included — until
@@ -457,6 +462,13 @@ that rendered the halt's remedy here would send an operator off to clear
 a guardrail that never tripped. Its hint says so, and says what to do
 instead — if the change should happen after all, send a new turn and
 approve the call when it parks.
+
+**`loop_stop`** is the fifth. It ends a turn in which the model kept
+repeating one call after being told, inside the turn, that it was looping
+— see [a loop inside one turn](#a-loop-inside-one-turn). Also
+`retryable: false`, since re-driving the turn hands the same model the
+context that looped, and like `refusal_loop` it latches nothing. Its hint
+points at what an operator can change: the tool's output or the model.
 
 `enforce` including `feedback` is deliberate. An enforce halt is cleared
 by an operator reset, and a reset resumes a model whose context still ends
@@ -504,7 +516,45 @@ The library-embedded surface (`mast.RunWorkload`) reads the same
 `safety.watchdog` field and taps the same signals, with the rungs bounded
 by what that surface holds: `enforce` abandons the runaway turn, but there
 is no cross-call session state for the "refuse every later turn" half, and
-no next turn for `feedback` to inject into.
+no next turn for `feedback` to inject into — though its in-turn loop guard
+works there as it does everywhere.
+
+#### A loop inside one turn
+
+The `[watchdog]` block arrives on the session's *next* turn, and the loop
+the watchdog exists for usually lives inside a single one. Measured: a
+self-hosted Gemma 4 called one tool with identical arguments 441 times in
+one turn until the server refused the context
+([#514](https://github.com/go-steer/mast/issues/514)). The repeat signal
+fired at five, the observation was queued for a turn that never came, and
+nothing reached the model.
+
+So under `feedback` and `enforce`, a loop guard also acts inside the turn,
+on the tool side:
+
+- From the **fifth** consecutive call to one tool with the same arguments
+  and the same result, the result carries a `watchdog` field: an
+  automated observation that the result will not change, what to do
+  instead, and how many more repeats end the turn.
+- The **third** repeat after that is not made, and the turn ends as
+  **`loop_stop`** — a `mast_turns_total` outcome and a turn-error kind of
+  its own. Nothing latches: the next turn starts clean, with the usual
+  `[watchdog]` block in front of it.
+
+The result has to match as well as the arguments, which is stricter than
+the signal. The signal can count calls alone because under `feedback` its
+false positive costs a paragraph; this one ends a turn, and the false
+positive named below — a daemon polling a rollout with the same call on
+purpose — is exactly a run of identical calls whose results change. A
+changed result starts the count again.
+
+Under `enforce` the session halts at the fifth call as before, so the
+guard's stop is never reached; under `warn` the guard is off. It runs on
+the daemon, a one-shot, and `mast.RunWorkload` alike, and in the eval
+harness's judged tier, so a looping model is scored the way a daemon
+would run it. It does not yet reach inside a planner dispatch, whose
+sub-runner carries no plugins
+([#235](https://github.com/go-steer/mast/issues/235)).
 
 #### It watches inside a planner dispatch too
 

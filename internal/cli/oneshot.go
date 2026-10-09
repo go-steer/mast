@@ -166,6 +166,16 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	if writeGate.Plugin != nil {
 		oneShotPlugins = append(oneShotPlugins, writeGate.Plugin)
 	}
+	// The in-turn half of feedback (#514), last — see compose.LoopGuard.
+	// It is the one feedback mechanism a one-shot can use, because it
+	// acts inside the turn rather than at the boundary a one-shot lacks.
+	guard, err := compose.LoopGuard(opts.Watchdog.Mode, logger)
+	if err != nil {
+		return fmt.Errorf("construct loop guard: %w", err)
+	}
+	if guard != nil {
+		oneShotPlugins = append(oneShotPlugins, guard)
+	}
 	r, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             root,
@@ -198,10 +208,10 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	ctx, ts := startTurnSpan(ctx, nil, "oneshot", sessionID, "oneshot")
 	defer func() { ts.end(err) }()
 
-	// The write gate's turn stop (#449), wired on the same terms as the
-	// gate above: inert today because a one-shot carries no bundle, and
-	// here so that the day one does, the gate's cut surfaces as its own
-	// reason instead of as "context canceled".
+	// The turn stop the write gate (#449) and the loop guard (#514) end
+	// a turn through, so their cut surfaces as its own reason instead of
+	// as "context canceled". The gate's half is inert today because a
+	// one-shot carries no bundle; the guard's is live under feedback.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	refused := &refusalStop{}
@@ -221,21 +231,11 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// bill enforce mode exists to stop. The remedy is empty because
 	// there is no operator surface to reset through: the process ends.
 	//
-	// The feedback rung is the one that does not carry over. Its whole
-	// mechanism is prepending the observation to the session's *next*
-	// prompt, and a one-shot has none — the injection point is the turn
-	// boundary this mode does not have. Say so rather than quietly
-	// running warn behind an operator who asked for more.
-	//
-	// Only when they asked, though: feedback is also mast's default
-	// posture, and a notice that fires on every one-shot invocation is
-	// one operators learn to scroll past — including on the run where
-	// they did ask and it did matter.
+	// The feedback rung carries over in part. Its next-turn half —
+	// prepending the observation to the session's next prompt — has no
+	// next turn here; its in-turn half, the loop guard registered with
+	// the runner above, works exactly as it does in the daemon.
 	wd := watchdog.NewDefaultWatchdog()
-	if opts.Watchdog.Mode == watchdog.ModeFeedback && opts.Watchdog.Source != watchdogSourceDefault {
-		logger.Warn("--watchdog=feedback has no effect in one-shot mode: the observation is delivered on the session's next turn, and there is none. Alerts are still logged; use --watchdog=enforce to stop an intra-turn loop.",
-			"task", opts.Class, "source", opts.Watchdog.Source)
-	}
 	logger.Info("watchdog posture resolved",
 		"task", opts.Class, "mode", string(opts.Watchdog.Mode), "source", opts.Watchdog.Source)
 	enf := watchdog.NewEnforcer(opts.Watchdog.Mode, "")
@@ -258,7 +258,7 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	}), wd, onAlert) {
 		if err != nil {
 			if rerr := refused.why(); rerr != nil {
-				ts.complete(observability.OutcomeRefusalLoop, rerr)
+				ts.complete(stopOutcome(rerr), rerr)
 				return rerr
 			}
 			if opts.Timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -297,7 +297,7 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// A cancelled stream can also just end. Same backstop the daemon
 	// path keeps, for the same reason.
 	if rerr := refused.why(); rerr != nil {
-		ts.complete(observability.OutcomeRefusalLoop, rerr)
+		ts.complete(stopOutcome(rerr), rerr)
 		return rerr
 	}
 	logger.Info("one-shot turn complete", "task", opts.Class, "session", sessionID, "events", events)
