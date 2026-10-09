@@ -202,6 +202,13 @@
 
 ### Feature
 
+- **A self-hosted model can be priced:** declare `models[].rates` in its
+  provider profile (core-models v0.5.0). The meter prices calls from the
+  catalog first and falls back to declared rates, so a `max_cost_usd`
+  ceiling on that model is accepted and enforced. Without rates it is still
+  refused at startup, and the refusal now says how to fix it.
+
+
 - **Vertex AI partner models are priced.** `vertex-maas` joins the price
   catalog's backends, from LiteLLM's `vertex_ai/<publisher>/<model>-maas`
   rows (21 models, including GLM 5.2, Kimi K2 Thinking, Qwen3 Coder, the

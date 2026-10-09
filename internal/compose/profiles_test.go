@@ -266,3 +266,45 @@ func TestVertexMaaSModelsArePriced(t *testing.T) {
 		t.Error("a self-hosted model became priced")
 	}
 }
+
+// A self-hosted model the operator declares rates for is priced from
+// them: the ceiling is enforceable and the meter bills the call.
+func TestDeclaredRatesPriceASelfHostedModel(t *testing.T) {
+	s := newChatServer(t)
+	RegisterProfiles([]profile.Profile{{
+		Name: "lab", Extends: "vllm", BaseURL: s.srv.URL + "/v1",
+		Models: []profile.Model{
+			{ID: "Qwen/Qwen3-Coder-Next", Rates: &profile.Rates{InputPerMTok: 0.5, CachedInputPerMTok: 0.05, OutputPerMTok: 2}},
+			{ID: "unpriced-model"},
+		},
+	}})
+	t.Cleanup(func() { RegisterProfiles(nil) })
+
+	if err := CheckCeilingPriced("workload triage", "lab", "Qwen/Qwen3-Coder-Next", 5); err != nil {
+		t.Errorf("CheckCeilingPriced with declared rates = %v", err)
+	}
+	if err := CheckCeilingPriced("workload triage", "lab", "unpriced-model", 5); err == nil || !strings.Contains(err.Error(), "models[].rates") {
+		t.Errorf("CheckCeilingPriced without rates = %v, want a refusal pointing at models[].rates", err)
+	}
+	if r := RatePer1K("lab", "Qwen/Qwen3-Coder-Next"); r != (0.5+2)/2/1000 {
+		t.Errorf("RatePer1K = %v, want the declared blend", r)
+	}
+
+	m, err := NewRuntimeModel(context.Background(), "lab", "Qwen/Qwen3-Coder-Next", workload.BuiltinTools{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := generate(t, m, &adkmodel.LLMRequest{Contents: []*genai.Content{genai.NewContentFromText("x", genai.RoleUser)}})
+	meter := budget.NewMeter(ModelLimits("lab", "Qwen/Qwen3-Coder-Next"))
+	ev := session.NewEvent(context.Background(), "inv-1")
+	ev.LLMResponse = *resp
+	if err := meter.Observe(ev); err != nil {
+		t.Fatal(err)
+	}
+	// chatReply: 120 prompt (64 cached), 30 completion.
+	want := (56*0.5 + 64*0.05 + 30*2) / 1e6
+	_, cost, _ := meter.Snapshot()
+	if meter.Unpriced() != 0 || cost < want*0.999 || cost > want*1.001 {
+		t.Errorf("cost = %.9f, unpriced %d; want %.9f priced from the declared rates", cost, meter.Unpriced(), want)
+	}
+}
