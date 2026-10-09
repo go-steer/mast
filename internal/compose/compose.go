@@ -565,9 +565,16 @@ func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinT
 		if err != nil {
 			return nil, err
 		}
+		onVertex := geminiOnVertex(provider)
 		return geminiprov.Wrap(base, geminiprov.Options{
-			BuiltinTools:        geminiBuiltins(bt),
-			TolerateEmptyChunks: geminiOnVertex(provider),
+			BuiltinTools: geminiBuiltins(bt),
+			// The Developer API rejects built-ins beside function tools
+			// unless the request says include_server_side_tool_invocations;
+			// Vertex rejects the parameter itself (#505). Same predicate
+			// as the chunk tolerance, so the two cannot disagree about
+			// which backend this is.
+			IncludeServerSideToolInvocations: !onVertex,
+			TolerateEmptyChunks:              onVertex,
 		}), nil
 	case strings.HasPrefix(name, "claude-"):
 		p, err := anthropicProvider(ctx, provider, bt)
