@@ -98,6 +98,12 @@ What mast does with a profile:
   with `max_tokens` or `max_turns`.
 - **No server-side built-ins.** A bundle that turns on `builtin_tools`
   under a profile is refused rather than run without them.
+- **Which models are worth it.** Five Vertex AI partner models have been
+  through mast's judged corpus against Claude. GLM 5.2 and Kimi K2 Thinking
+  match it on intent coverage. Llama 4 Maverick is unsupported for tool
+  use. The results, and what the numbers mean, are on core-models'
+  [Tested models](https://go-steer.github.io/core-models/reference/tested-models/)
+  page.
 - **Retries honor the server.** A 429 waits as long as `retry-after-ms` or
   `retry-after` asks, at the HTTP layer, before mast's own one outer retry.
 
