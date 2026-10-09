@@ -104,6 +104,13 @@ type JudgeSummary struct {
 	// left as a nil Cost so the board states the absence instead of
 	// having one fewer section than the reader expected.
 	CostSkipped string `json:"cost_skipped,omitempty"`
+
+	// UnderTestUsage and GraderUsage are the tokens each model reported
+	// across the whole run, J-cost-tier's calls included. They are what a
+	// run costs before anyone has priced it — the number needed to try a
+	// model the catalog has no rate for — and what a nightly costs after.
+	UnderTestUsage *TokenUsage `json:"under_test_usage,omitempty"`
+	GraderUsage    *TokenUsage `json:"grader_usage,omitempty"`
 }
 
 // JudgeScenario is one corpus row's run.
@@ -330,6 +337,11 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
+	// After the fixtures, which check every override against the whole
+	// corpus: a subset run must not make a valid override look orphaned.
+	if ds, err = selectRows(ds, cfg.Rows); err != nil {
+		return Summary{}, err
+	}
 
 	modelName := cfg.Model
 	if modelName == "" {
@@ -383,8 +395,9 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		note("[retry] %s: %v — waiting %s before attempt %d", who, err, wait, attempt+1)
 	}
 	retries := modelretry.New(retryCfg)
-	under := retries.Wrap(rawUnder)
-	grading := retries.Wrap(rawGrading)
+	underUsage := &usageCounter{inner: retries.Wrap(rawUnder)}
+	gradingUsage := &usageCounter{inner: retries.Wrap(rawGrading)}
+	under, grading := model.LLM(underUsage), model.LLM(gradingUsage)
 
 	scratch, cleanup, err := scratchDir(cfg)
 	if err != nil {
@@ -496,6 +509,8 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 	retryCount, _, retryWait := retries.Stats()
 	board.Retries = retryCount
 	board.RetryWaitSeconds = retryWait.Seconds()
+	board.UnderTestUsage = underUsage.snapshot()
+	board.GraderUsage = gradingUsage.snapshot()
 
 	board.Aggregate = aggregate(board.Scenes)
 	board.Validity = summarizeValidity(board.Scenes)
@@ -787,6 +802,7 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 		}
 	}
 	j.writeCost(p)
+	j.writeUsage(p)
 
 	for _, n := range j.Notes {
 		p("")
@@ -937,4 +953,19 @@ func cell(results []evals.Result, metric string) string {
 		}
 	}
 	return "-"
+}
+
+// writeUsage renders the token totals.
+func (j *JudgeSummary) writeUsage(p func(string, ...any)) {
+	for _, u := range []struct {
+		who string
+		u   *TokenUsage
+	}{{"model under test (" + j.Model + ")", j.UnderTestUsage}, {"grader (" + j.Grader + ")", j.GraderUsage}} {
+		if u.u == nil {
+			continue
+		}
+		p("")
+		p("tokens, %s: %d calls, %d prompt (%d cached), %d output, %d thoughts",
+			u.who, u.u.Calls, u.u.PromptTokens, u.u.CachedTokens, u.u.OutputTokens, u.u.ThoughtsTokens)
+	}
 }

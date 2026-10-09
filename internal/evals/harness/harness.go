@@ -100,6 +100,12 @@ type Config struct {
 	// the environment.
 	Provider string
 
+	// Rows limits the judge tier to these corpus rows, by scenario id.
+	// Empty runs the whole corpus. For a cost probe before a full run on
+	// a new model, or re-running the one row a nightly lost. The corpus
+	// is still validated whole, so a subset cannot hide a broken row.
+	Rows []string
+
 	// Progress, when set, receives a line per scenario as the judge tier
 	// works through the corpus. Thirty-one live runs take minutes and the
 	// report is written all at once at the end, so without this the tier

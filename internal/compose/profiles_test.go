@@ -233,3 +233,20 @@ func TestToolWire_ProfileModelPresentsEveryTool(t *testing.T) {
 		t.Logf("catalog under test:\n%s", toolcatalog.Summary(catalog))
 	}
 }
+
+// A specialist's claude-* override under a profile root reaches
+// Anthropic, picking its backend from the environment the way it does
+// under a gemini root.
+func TestAClaudeOverrideUnderAProfileRoot(t *testing.T) {
+	withLabProfile(t, newChatServer(t))
+	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
+	if _, err := BuildModel(context.Background(), "lab", "claude-haiku-4-5", workload.BuiltinTools{}); err != nil {
+		t.Fatalf("BuildModel(claude under a profile root) = %v", err)
+	}
+	if got := Backend("lab", "claude-haiku-4-5"); got != "anthropic" {
+		t.Errorf("Backend = %q, want anthropic", got)
+	}
+	if got := Backend("lab", "gemini-3.7-flash"); got != ProviderGemini && got != ProviderVertex {
+		t.Errorf("Backend(gemini under a profile root) = %q", got)
+	}
+}

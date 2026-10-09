@@ -824,6 +824,12 @@ func anthropicBackend(provider string) (string, error) {
 		}
 		return "", fmt.Errorf("claude-* models need ANTHROPIC_API_KEY (first-party) or a Vertex project (ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT), or an explicit --provider=anthropic|anthropic-vertex")
 	default:
+		// A provider profile says nothing about Anthropic's backend
+		// either, and a claude-* specialist under a profile root is the
+		// same cross-provider override a gemini root allows.
+		if IsProfileProvider(provider) {
+			return anthropicBackend("")
+		}
 		return "", fmt.Errorf("provider %q cannot serve claude-* models (want `anthropic` or `anthropic-vertex`)", provider)
 	}
 }

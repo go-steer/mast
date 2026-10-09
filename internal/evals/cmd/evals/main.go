@@ -41,7 +41,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/go-steer/mast/internal/compose"
+	"github.com/go-steer/mast/internal/config"
 	"github.com/go-steer/mast/internal/evals/harness"
 )
 
@@ -52,18 +55,30 @@ func main() {
 		format   = flag.String("format", "text", "output format: text or json")
 		model    = flag.String("model", "", "judge tier: the model under test (default: the Anthropic default)")
 		grader   = flag.String("grader", "", "judge tier: the model that scores response_quality (default: the small Anthropic model)")
-		provider = flag.String("provider", "", "judge tier: gemini, vertex, anthropic, or anthropic-vertex (default: whichever the environment provides)")
+		provider = flag.String("provider", "", "judge tier: gemini, vertex, anthropic, anthropic-vertex, or a provider profile such as vertex-maas (default: whichever the environment provides)")
+		rows     = flag.String("rows", "", "judge tier: comma-separated scenario ids to run instead of the whole corpus (a cost probe, or re-running one row)")
 		baseline = flag.String("baseline", "", "a previous board (--format=json output) to report this run's delta against")
 		out      = flag.String("out", "", "also write the JSON board to this path, whatever --format prints")
 	)
 	flag.Parse()
 
-	err := run(harness.Config{
+	// Declared provider profiles (.agents/providers/*.yaml), so a judge
+	// run can name one — a profile with tiers is what J-cost-tier needs
+	// to price a tiered roster on a provider beyond Gemini and Claude.
+	declared, err := config.DiscoverProviders(nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "evals:", err)
+		os.Exit(2)
+	}
+	compose.RegisterProfiles(declared)
+
+	err = run(harness.Config{
 		Tier:     *tier,
 		Root:     *root,
 		Model:    *model,
 		Grader:   *grader,
 		Provider: *provider,
+		Rows:     splitRows(*rows),
 		// stderr, so a run piped through tee still writes a clean board.
 		Progress: os.Stderr,
 	}, *format, *baseline, *out)
@@ -163,4 +178,14 @@ func findRoot() (string, error) {
 		}
 		dir = parent
 	}
+}
+
+func splitRows(s string) []string {
+	var out []string
+	for _, r := range strings.Split(s, ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
