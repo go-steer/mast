@@ -250,3 +250,19 @@ func TestAClaudeOverrideUnderAProfileRoot(t *testing.T) {
 		t.Errorf("Backend(gemini under a profile root) = %q", got)
 	}
 }
+
+// Vertex AI partner models are priced from the catalog
+// (vertex-maas/<publisher>/<model> rows), so a cost ceiling on one is
+// enforceable; a self-hosted model is still unpriced, and refused.
+func TestVertexMaaSModelsArePriced(t *testing.T) {
+	withLabProfile(t, newChatServer(t))
+	if err := CheckCeilingPriced("workload triage", "vertex-maas", "zai-org/glm-5.2-maas", 5); err != nil {
+		t.Errorf("CheckCeilingPriced(glm-5.2 on vertex-maas) = %v, want priced", err)
+	}
+	if r := RatePer1K("vertex-maas", "zai-org/glm-5.2-maas"); r <= 0 {
+		t.Errorf("RatePer1K = %v, want the catalog's blended rate", r)
+	}
+	if err := CheckCeilingPriced("workload triage", "lab", "Qwen/Qwen3-Coder-Next", 5); err == nil {
+		t.Error("a self-hosted model became priced")
+	}
+}

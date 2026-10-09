@@ -202,6 +202,17 @@
 
 ### Feature
 
+- **Vertex AI partner models are priced.** `vertex-maas` joins the price
+  catalog's backends, from LiteLLM's `vertex_ai/<publisher>/<model>-maas`
+  rows (21 models, including GLM 5.2, Kimi K2 Thinking, Qwen3 Coder, the
+  gpt-oss pair and Gemma 4).
+  - The meter now prices those calls instead of counting them unpriced.
+  - A `max_cost_usd` ceiling on one is accepted at startup.
+  - J-cost-tier can check that a tiered roster on them is billed at each
+    tier's own rate.
+  - Self-hosted models stay unpriced until rates are declared.
+
+
 - **Provider profiles take `extra_body`** (core-models v0.4.0). These are
   vendor request fields the dialect doesn't model, set per profile or per
   model, for example `chat_template_kwargs: {enable_thinking: true}` for
