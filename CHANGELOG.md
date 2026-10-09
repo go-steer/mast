@@ -662,6 +662,12 @@
 
 ### Bug or Regression
 
+- **A provider-profile model that never answers no longer hangs a turn.**
+  core-models v0.3.0 abandons an attempt that gets no response headers
+  within five minutes and retries it. An eval run on a Vertex AI partner
+  model had frozen for an hour on one silent request. The limit never
+  applies to a stream that has started.
+
 - **A `claude-*` specialist under a provider-profile root reaches Claude.**
   #510 said a specialist's cross-provider `model:` override keeps working
   under `--provider <profile>`. For `claude-*` it didn't:
