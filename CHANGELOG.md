@@ -626,6 +626,15 @@
 
 ### Bug or Regression
 
+- **A Gemini bundle that turns on a built-in tool works on the Developer
+  API.** Gemini 3 and later reject a request that carries a built-in (web
+  search, URL context, code execution) beside function tools unless it sets
+  `include_server_side_tool_invocations`. mast never set it, so any bundle
+  with `builtin_tools:` enabled, running `gemini-*` on an API key rather
+  than Vertex, would have every turn rejected. The flag is now on for the
+  Developer API and absent on Vertex, which rejects the parameter.
+  [#505](https://github.com/go-steer/mast/issues/505)
+
 - **The weekly pricing regen is green again: `claude-haiku-5-5` is priced
   and classified `small`, and `claude-sonnet-5-5` cache reads are $0.10.**
   Three regens in a row had failed their own guard tests, so none opened a PR.

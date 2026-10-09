@@ -330,3 +330,57 @@ func TestBuiltinToolNamesUseTheNeutralVocabulary(t *testing.T) {
 		t.Errorf("anthropic names off = %v, want none", got)
 	}
 }
+
+// TestServerSideToolInvocationsFollowTheBackend is #505. The Developer
+// API rejects a request that carries built-ins beside function tools
+// unless it sets include_server_side_tool_invocations; Vertex rejects
+// the parameter itself. So the flag has to be on exactly when the model
+// is NOT on Vertex — observable, like every built-in assertion here, on
+// the request the wrapper hands to the backend.
+func TestServerSideToolInvocationsFollowTheBackend(t *testing.T) {
+	webSearch := true
+	bt := workload.BuiltinTools{WebSearch: &webSearch}
+	adc := filepath.Join(t.TempDir(), "adc.json")
+	if err := os.WriteFile(adc, []byte(`{"type":"authorized_user","client_id":"id","client_secret":"s","refresh_token":"rt"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		provider string
+		env      map[string]string
+		want     bool
+	}{
+		{"developer API", ProviderGemini, nil, true},
+		{"developer API, no alias", "", nil, true},
+		{"vertex alias", ProviderVertex, map[string]string{"GOOGLE_CLOUD_PROJECT": "offline"}, false},
+		{"vertex by env", "", map[string]string{"GOOGLE_GENAI_USE_VERTEXAI": "true", "GOOGLE_CLOUD_PROJECT": "offline", "GOOGLE_CLOUD_LOCATION": "global"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearVertexEnv(t)
+			offlineGeminiCreds(t)
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adc)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			m, err := BuildModel(context.Background(), tc.provider, "gemini-3.7-flash", bt)
+			if err != nil {
+				t.Fatalf("BuildModel: %v", err)
+			}
+			req := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{
+				Tools: []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "read_file"}}}},
+			}}
+			_ = m.GenerateContent(context.Background(), req, false)
+			if !hasGoogleSearch(req.Config.Tools) {
+				t.Fatalf("fixture is not discriminating: web_search did not reach the request")
+			}
+			cfg := req.Config.ToolConfig
+			got := cfg != nil && cfg.IncludeServerSideToolInvocations != nil && *cfg.IncludeServerSideToolInvocations
+			if got != tc.want {
+				t.Errorf("include_server_side_tool_invocations = %v, want %v", got, tc.want)
+			}
+			if !tc.want && cfg != nil && cfg.IncludeServerSideToolInvocations != nil {
+				t.Errorf("the parameter is present on Vertex, which rejects it outright")
+			}
+		})
+	}
+}
