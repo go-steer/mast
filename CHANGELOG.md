@@ -686,6 +686,19 @@
 
 ### Bug or Regression
 
+- **A model looping inside one turn is now told, and then stopped.**
+  Under `--watchdog=feedback`, mast's default, the watchdog's advice
+  waited for the session's next turn. A self-hosted Gemma 4 called one
+  tool with identical arguments 441 times in a single turn, until the
+  server refused the context (#514). Now, from the fifth call with the
+  same arguments and the same result, the tool result carries a
+  `watchdog` note. If the model makes that call three more times, the
+  last one is not made and the turn ends as `loop_stop`, a new turn
+  outcome and turn-error kind (attach protocol 1.8.0). Nothing latches,
+  and a call whose result changes, such as a poll, never counts. This
+  applies to the daemon, one-shot mode, `mast.RunWorkload` and the judged
+  eval tier, where a stopped row is still scored.
+
 - **A provider-profile model that never answers no longer hangs a turn.**
   core-models v0.3.0 abandons an attempt that gets no response headers
   within five minutes and retries it. An eval run on a Vertex AI partner

@@ -416,7 +416,7 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 			// heavier fact — if a turn somehow managed both, the session
 			// is the thing that needs attention.
 			if rerr := refused.why(); rerr != nil {
-				ts.complete(observability.OutcomeRefusalLoop, rerr)
+				ts.complete(stopOutcome(rerr), rerr)
 				return rerr
 			}
 			d.logger.Error("runner emitted error", "turn", label, "session", sessionID, "error", err.Error(), "events_before_error", events)
@@ -489,7 +489,7 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	// the cancellation can land between events, and a stream that ends
 	// quietly is exactly what that looks like from here.
 	if rerr := refused.why(); rerr != nil {
-		ts.complete(observability.OutcomeRefusalLoop, rerr)
+		ts.complete(stopOutcome(rerr), rerr)
 		return rerr
 	}
 	// The backstop for the same check. A refusal that produced no event on

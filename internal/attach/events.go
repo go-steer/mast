@@ -115,6 +115,14 @@ import "time"
 // operator to clear a guardrail that never tripped. Additive on the same
 // terms as 1.6.0.
 //
+// v1.8.0 (#514): new `loop_stop` value in the same enum, also
+// `retryable: false`. It reports a turn the loop guard ended because the
+// model kept making one call, with the same arguments and the same
+// result, after being told inside the turn that it was looping. Like
+// `refusal_loop` it latches nothing; it is separate from it because the
+// remedy is different — the model or the workload's tools, not an
+// operator's decision. Additive on the same terms as 1.6.0.
+//
 // The two version lines have diverged, and a client should not read
 // across them. core-agent shipped the same `canceled` value at its
 // 1.8.0, having spent 1.5.0-1.7.0 on session titles, ACLs and wake
@@ -123,7 +131,7 @@ import "time"
 // `features` map rather than inferring a kind's existence from a
 // number. Both servers do agree on the fallback that makes this safe:
 // §2.6 requires an unrecognized kind to read as `unknown`.
-const protocolVersion = "1.7.0"
+const protocolVersion = "1.8.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -439,7 +447,15 @@ const (
 	// /guardrails/reset for a guardrail that did not trip is worse than
 	// telling them nothing.
 	TurnErrorRefusalLoop = "refusal_loop"
-	TurnErrorUnknown     = "unknown"
+	// TurnErrorLoopStop fires when the loop guard ended a turn because
+	// the model kept making one call — same arguments, same result —
+	// after a note on that result told it the result would not change
+	// (#514). Retryable=false: re-driving the turn hands the same model
+	// the same context that produced the loop. Not watchdog_halt for the
+	// reason refusal_loop is not: nothing latched, and the next turn
+	// starts clean.
+	TurnErrorLoopStop = "loop_stop"
+	TurnErrorUnknown  = "unknown"
 )
 
 // TurnError is emitted on a pipeline failure that should reach the

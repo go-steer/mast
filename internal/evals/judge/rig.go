@@ -32,6 +32,7 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/session/database"
@@ -39,8 +40,11 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 
 	mastagent "github.com/go-steer/mast/internal/agent"
+	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/evals"
+	"github.com/go-steer/mast/internal/watchdog"
+	"github.com/go-steer/mast/pkg/approval"
 )
 
 const (
@@ -164,6 +168,10 @@ type Outcome struct {
 	// Quality is the judge's grade. Zero value when grading was not
 	// requested.
 	Quality *Grade `json:"quality,omitempty"`
+	// LoopStop is why the in-turn loop guard ended this run, empty when
+	// it did not. The row is still scored: a daemon would have stopped
+	// the model at the same call.
+	LoopStop string `json:"loop_stop,omitempty"`
 }
 
 // Rig runs corpus scenarios against a real model over the fixture
@@ -251,11 +259,25 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 		return Outcome{}, fmt.Errorf("judge: %s: build agent: %w", sc.ID, err)
 	}
 
+	// The in-turn loop guard, at mast's default posture, so a model that
+	// loops is scored the way a daemon would run it: told inside the
+	// turn, and stopped if it keeps going (#514). Without it one looping
+	// row runs until the server refuses the context, and the board
+	// prices that as the model's cost rather than mast's.
+	guard, err := compose.LoopGuard(watchdog.DefaultMode, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		return Outcome{}, fmt.Errorf("judge: %s: build loop guard: %w", sc.ID, err)
+	}
+	var plugins []*plugin.Plugin
+	if guard != nil {
+		plugins = append(plugins, guard)
+	}
 	run, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             agent,
 		SessionService:    svc,
 		AutoCreateSession: true,
+		PluginConfig:      runner.PluginConfig{Plugins: plugins},
 	})
 	if err != nil {
 		return Outcome{}, fmt.Errorf("judge: %s: construct runner: %w", sc.ID, err)
@@ -263,12 +285,25 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 
 	sessionID := sc.ID
 	msg := genai.NewContentFromText(sc.Inputs.Scenario, genai.RoleUser)
-	for _, rerr := range run.Run(ctx, userID, sessionID, msg, adkagent.RunConfig{
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := &turnStop{cancel: cancel}
+	runCtx = approval.WithTurnStop(runCtx, stop)
+	for _, rerr := range run.Run(runCtx, userID, sessionID, msg, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeNone,
 	}) {
 		if rerr != nil {
+			if stop.why() != nil {
+				// The guard ended the turn. That is a completed row,
+				// scored on what the model did before it was stopped.
+				break
+			}
 			return Outcome{}, fmt.Errorf("judge: %s: run: %w", sc.ID, rerr)
 		}
+	}
+	var loopStop string
+	if why := stop.why(); why != nil {
+		loopStop = why.Error()
 	}
 
 	resp, err := svc.Get(ctx, &adksession.GetRequest{
@@ -292,7 +327,31 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 		Results:    evals.EvaluateAll(r.tbl, sc, trace),
 		Ceiling:    r.ceiling(sc),
 		Authored:   !obs.Derived,
+		LoopStop:   loopStop,
 	}, nil
+}
+
+// turnStop is approval.TurnStop for one rig run: it records why the
+// turn ended and cancels it, the way the daemon's refusalStop does.
+type turnStop struct {
+	mu     sync.Mutex
+	reason error
+	cancel context.CancelFunc
+}
+
+func (s *turnStop) StopTurn(reason error) {
+	s.mu.Lock()
+	if s.reason == nil {
+		s.reason = reason
+	}
+	s.mu.Unlock()
+	s.cancel()
+}
+
+func (s *turnStop) why() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reason
 }
 
 // ceiling is the highest intent_coverage a read-only surface can reach
