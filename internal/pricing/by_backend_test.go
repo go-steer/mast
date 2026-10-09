@@ -135,7 +135,11 @@ func TestBuiltinByBackend_Shape(t *testing.T) {
 	t.Parallel()
 	backends := map[string]bool{
 		"anthropic": true, "anthropic-vertex": true, "gemini": true, "vertex": true,
+		"vertex-maas": true,
 	}
+	// Profile backends price models that exist only on that backend
+	// (zai-org/glm-5.2-maas): no bare row, no tier or context-window row.
+	profileBackends := map[string]bool{"vertex-maas": true}
 	bare := Builtin()
 	qualified := BuiltinByBackend()
 	if len(qualified) == 0 {
@@ -151,7 +155,7 @@ func TestBuiltinByBackend_Shape(t *testing.T) {
 			t.Errorf("%q names backend %q, which is not one mast resolves; "+
 				"a key nothing can construct is a row nothing will ever read", key, backend)
 		}
-		if _, ok := bare[model]; !ok {
+		if _, ok := bare[model]; !ok && !profileBackends[backend] {
 			t.Errorf("%q prices a model the bare table does not carry; "+
 				"the fallback path and the tier/context-window tables all key on %q", key, model)
 		}

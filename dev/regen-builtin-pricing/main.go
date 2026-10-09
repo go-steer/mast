@@ -162,6 +162,22 @@ var backends = []struct{ Mast, Prefix, Family string }{
 	{"vertex", "", "gemini-"},
 }
 
+// profileBackends are backends reached through a core-models provider
+// profile, priced straight from LiteLLM's qualified keys. Their models
+// are not gemini-*/claude-* families and have no bare row: an id like
+// zai-org/glm-5.2-maas names one model on one backend, so the
+// (backend, model) row is the only row, and the tier and context-window
+// tables (keyed on bare ids, for mast's own adapters) do not apply.
+//
+// Mast is the profile's backend name (what usage.Detail.Backend and
+// compose.Backend report), Prefix is LiteLLM's, and Suffix narrows the
+// keys to the profile's models.
+var profileBackends = []struct{ Mast, Prefix, Suffix string }{
+	// Vertex AI's partner models (MaaS), served through the
+	// OpenAI-compatible endpoint: vertex_ai/<publisher>/<model>-maas.
+	{"vertex-maas", "vertex_ai/", "-maas"},
+}
+
 // nameExclusions drops models that pass every metadata check but are
 // not general-purpose chat agents. Each needs a name rule because
 // LiteLLM's own fields do not distinguish them: `mode` is "chat",
@@ -289,6 +305,8 @@ func main() {
 	}
 
 	qualified := qualifyByBackend(kept, all)
+	qualified = append(qualified, qualifyProfileBackends(all, now)...)
+	sort.Slice(qualified, func(i, j int) bool { return qualified[i].Name < qualified[j].Name })
 
 	src, err := render(kept, qualified, now, *source)
 	if err != nil {
@@ -648,6 +666,52 @@ func eligible(name string, e liteLLMEntry, today time.Time) (ok bool, family boo
 		}
 	}
 	return true, true, ""
+}
+
+// eligibleProfile is eligible()'s rule for a profile backend's row:
+// the same screens, except that supports_function_calling may be
+// unpublished. LiteLLM leaves it blank on the gpt-oss partner models,
+// which call tools correctly through the openai-chat dialect (measured
+// in the 2026-10-09 parity run). An explicit false still disqualifies.
+func eligibleProfile(e liteLLMEntry, today time.Time) (bool, string) {
+	switch {
+	case e.Mode != "chat":
+		return false, fmt.Sprintf("mode is %q, not \"chat\"", e.Mode)
+	case e.SupportsFunctionCalling != nil && !*e.SupportsFunctionCalling:
+		return false, "supports_function_calling is false"
+	case e.InputCostPerToken == nil || e.OutputCostPerToken == nil:
+		return false, "missing input/output cost fields"
+	case *e.InputCostPerToken == 0 && *e.OutputCostPerToken == 0:
+		return false, "zero cost (LiteLLM's not-published placeholder)"
+	case e.SupportedOutputModalities != nil && !slices.Contains(e.SupportedOutputModalities, "text"):
+		return false, fmt.Sprintf("emits %v, not text", e.SupportedOutputModalities)
+	}
+	if e.DeprecationDate != "" {
+		if d, err := time.Parse("2006-01-02", e.DeprecationDate); err == nil && !d.After(today) {
+			return false, "deprecated upstream on " + e.DeprecationDate
+		}
+	}
+	return true, ""
+}
+
+// qualifyProfileBackends emits a "<backend>/<publisher>/<model>" row for
+// every eligible LiteLLM key under a profile backend's prefix.
+func qualifyProfileBackends(all map[string]liteLLMEntry, today time.Time) []generatedEntry {
+	var out []generatedEntry
+	for _, b := range profileBackends {
+		for key, e := range all {
+			model, ok := strings.CutPrefix(key, b.Prefix)
+			if !ok || !strings.HasSuffix(model, b.Suffix) || !strings.Contains(model, "/") {
+				continue
+			}
+			if ok, _ := eligibleProfile(e, today); !ok {
+				continue
+			}
+			out = append(out, ratesOf(b.Mast+"/"+model, e))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // selectModels applies eligible() across the whole catalog, returning
