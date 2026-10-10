@@ -29,7 +29,6 @@ import (
 	"google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/mast/internal/pricing"
-	"github.com/go-steer/mast/internal/providers/anthropic"
 	mastusage "github.com/go-steer/mast/internal/providers/usage"
 	"github.com/go-steer/mast/internal/taskclass"
 	"github.com/go-steer/mast/pkg/budget"
@@ -70,7 +69,7 @@ func RegisterProfiles(ps []profile.Profile) {
 // (or empty, meaning prefix inference), which profiles never shadow.
 func mastProvider(provider string) bool {
 	switch provider {
-	case "", ProviderGemini, ProviderVertex, anthropic.ProviderName, anthropic.VertexProviderName, "echo", "scripted":
+	case "", ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, "echo", "scripted":
 		return true
 	}
 	return false

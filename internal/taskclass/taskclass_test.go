@@ -19,7 +19,6 @@ package taskclass_test
 import (
 	"testing"
 
-	"github.com/go-steer/mast/internal/providers/anthropic"
 	"github.com/go-steer/mast/internal/taskclass"
 )
 
@@ -173,21 +172,18 @@ func TestModelForTier_CoversAllProviders(t *testing.T) {
 }
 
 func TestModelForTier_ConsistentWithSmallModelDefaulters(t *testing.T) {
-	// The "small" tier for each provider should match what that
-	// provider package hands out when nobody pins a cheap model. For
-	// Anthropic that is a real constant, so this compares against it
-	// rather than a literal: a drift there is a build-time failure,
-	// not a stale copy in a test. internal/providers/gemini exposes no
-	// such constant (mast's Gemini adapter is a Wrap, not a registry
-	// Provider), so ModelForTier is the only source of truth and the
-	// literal below is it.
+	// The "small" tier for each provider should match what mast hands
+	// out when nobody pins a cheap model. Anthropic's is
+	// compose.DefaultAnthropicSmallModel; compose imports this package,
+	// so the literal is pinned from that side too
+	// (TestAnthropicSmallDefaultMatchesTheTierTable).
 	cases := []struct {
 		provider, want string
 	}{
 		{"gemini", "gemini-3.5-flash-lite"},
 		{"vertex", "gemini-3.5-flash-lite"},
-		{"anthropic", anthropic.DefaultSmallModelID},
-		{"anthropic-vertex", anthropic.DefaultSmallModelID},
+		{"anthropic", "claude-haiku-4-5"},
+		{"anthropic-vertex", "claude-haiku-4-5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {
