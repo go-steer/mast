@@ -64,7 +64,8 @@ const (
 	OutcomeRefusalLoop = "refusal_loop"
 	// OutcomeLoopStop is a turn the in-turn loop guard ended because
 	// the model kept making one call, with the same arguments and the
-	// same result, after a note on that result told it so (#514). It
+	// same result, after a note on that result told it so (#514), or
+	// because it reached budget.max_model_calls_per_turn (#519). It
 	// latches nothing, like refusal_loop, and is separate from it for
 	// the same reason refusal_loop is separate from watchdog_halt: the
 	// remedy differs. This one points at the model or the workload's

@@ -592,7 +592,11 @@ func (d *daemon) buildGovernance() error {
 	}
 	// The in-turn half of feedback (#514), last so it sees only calls
 	// that will actually run — see compose.LoopGuard.
-	guard, err := compose.LoopGuard(d.wdRes.Mode, d.logger)
+	guard, err := compose.LoopGuard(compose.LoopGuardConfig{
+		Mode:                 d.wdRes.Mode,
+		MaxModelCallsPerTurn: compose.MaxModelCallsPerTurn(d.bundle),
+		Logger:               d.logger,
+	})
 	if err != nil {
 		d.logger.Error("failed to construct loop guard", "error", err.Error())
 		return err

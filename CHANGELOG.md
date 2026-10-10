@@ -202,6 +202,16 @@
 
 ### Feature
 
+- **A turn now has a model-call cap by default.**
+  `budget.max_model_calls_per_turn` caps the model calls one turn may
+  make. It defaults to 100; set it negative to remove it. When a turn
+  reaches it, the next call is not made and the turn ends as `loop_stop`,
+  with nothing latched. It covers runaways the repeated-call guard from
+  #514 doesn't recognize, works under every watchdog posture, and needs no
+  price. A turn of Gemma 4 on vLLM that made no identical repeats still
+  ran until it overflowed a 65k context (#519). On the judged corpus,
+  healthy turns made at most 35 calls and runaway ones 99 to 221.
+
 - **A self-hosted model can be priced:** declare `models[].rates` in its
   provider profile (core-models v0.5.0). The meter prices calls from the
   catalog first and falls back to declared rates, so a `max_cost_usd`

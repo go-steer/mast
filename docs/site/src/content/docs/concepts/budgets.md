@@ -20,6 +20,15 @@ budget:
 
 Any of the three may be omitted; what you set is what is enforced.
 
+A fourth, `max_model_calls_per_turn`, is on unless you turn it off: it caps
+the model calls one *turn* may make, default 100. `max_turns` counts across
+the whole session, which on a daemon is a lifetime rather than a runaway
+stop; this one resets every turn, needs no price, and ends only the turn,
+as `loop_stop`. Healthy turns on the judged corpus made at most 35 calls
+across every model tried, and runaway ones 99 to 221. Raise it in the
+bundle for a workload whose honest turns run long, or set it negative to
+remove it.
+
 - **`max_turns`** counts *model calls*. Tool calls are free — a specialist
   reading twelve pods costs one turn if it batched them into one model
   step. This is the cap that catches a genuine loop.
@@ -427,6 +436,8 @@ Two consequences for which knob to reach for:
   the worst observed turn count with room, and let it catch a loop rather
   than a thorough investigation. The [watchdog](/concepts/interop/) is the
   better instrument for the loop case anyway; it can tell the difference.
+  Within one turn, `max_model_calls_per_turn` already plays this role by
+  default.
 
 None of this can be inferred from the bundle, which is why mast declines to
 pick numbers for you. It will, however, tell you what the last run cost:

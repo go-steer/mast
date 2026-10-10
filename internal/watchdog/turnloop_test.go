@@ -127,3 +127,32 @@ func TestLoopStopErrorKindMatchesAttach(t *testing.T) {
 		t.Errorf("TurnErrorKind = %q, want loop_stop (attach.TurnErrorLoopStop)", got)
 	}
 }
+
+// TestTurnLoopCapsModelCallsPerTurn: the cap admits exactly Cap calls a
+// turn, refuses the next, and counts each turn on its own (#519).
+func TestTurnLoopCapsModelCallsPerTurn(t *testing.T) {
+	l := NewTurnLoop(DefaultRepeatThreshold, DefaultStopAfterNote)
+	if stop := l.BeforeModel("a"); stop != nil {
+		t.Fatalf("an uncapped TurnLoop refused a call: %v", stop)
+	}
+	l = NewTurnLoop(DefaultRepeatThreshold, DefaultStopAfterNote)
+	l.SetMaxModelCalls(3)
+	for i := 1; i <= 3; i++ {
+		if stop := l.BeforeModel("a"); stop != nil {
+			t.Fatalf("call %d of 3 refused: %v", i, stop)
+		}
+	}
+	stop := l.BeforeModel("a")
+	if stop == nil || stop.Calls != 3 || stop.Cap != 3 {
+		t.Fatalf("call 4 = %+v, want a TurnCallsError at 3/3", stop)
+	}
+	if !IsLoopStop(fmt.Errorf("wrapped: %w", stop)) || !IsLoopStop(&LoopStopError{}) {
+		t.Error("IsLoopStop misses one of the two guard errors")
+	}
+	if stop := l.BeforeModel("b"); stop != nil {
+		t.Fatalf("turn b inherited turn a's count: %v", stop)
+	}
+	if got := stop.TurnErrorKind(); got != "loop_stop" {
+		t.Errorf("TurnErrorKind = %q, want loop_stop", got)
+	}
+}

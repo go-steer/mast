@@ -450,8 +450,9 @@ const (
 	// TurnErrorLoopStop fires when the loop guard ended a turn because
 	// the model kept making one call — same arguments, same result —
 	// after a note on that result told it the result would not change
-	// (#514). Retryable=false: re-driving the turn hands the same model
-	// the same context that produced the loop. Not watchdog_halt for the
+	// (#514), or because the turn reached its model-call cap (#519).
+	// Retryable=false: re-driving the turn hands the same model the same
+	// context that produced the loop. Not watchdog_halt for the
 	// reason refusal_loop is not: nothing latched, and the next turn
 	// starts clean.
 	TurnErrorLoopStop = "loop_stop"

@@ -88,7 +88,7 @@ func classifyDeclaredKind(kind string, err error) (TurnError, bool) {
 			// Not a reset instruction either, for refusal_loop's reason.
 			// What an operator can change is the model or the tool, so
 			// that is where the hint points.
-			Hint: "The turn ended; nothing is latched and nothing needs resetting. The model kept repeating one call with the same result after being told to stop. If it recurs, look at what that tool returns, or try a different model.",
+			Hint: "The turn ended; nothing is latched and nothing needs resetting. It ran away: either the model kept repeating one call after being told to stop, or the turn reached budget.max_model_calls_per_turn. If it recurs, look at what the tools return, try a different model, or raise the cap if the turn was doing honest work.",
 		}, true
 	}
 	return TurnError{}, false

@@ -264,7 +264,11 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 	// turn, and stopped if it keeps going (#514). Without it one looping
 	// row runs until the server refuses the context, and the board
 	// prices that as the model's cost rather than mast's.
-	guard, err := compose.LoopGuard(watchdog.DefaultMode, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	guard, err := compose.LoopGuard(compose.LoopGuardConfig{
+		Mode:                 watchdog.DefaultMode,
+		MaxModelCallsPerTurn: compose.MaxModelCallsPerTurn(nil),
+		Logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	if err != nil {
 		return Outcome{}, fmt.Errorf("judge: %s: build loop guard: %w", sc.ID, err)
 	}

@@ -549,7 +549,17 @@ purpose — is exactly a run of identical calls whose results change. A
 changed result starts the count again.
 
 Under `enforce` the session halts at the fifth call as before, so the
-guard's stop is never reached; under `warn` the guard is off. It runs on
+guard's stop is never reached; under `warn` the repeated-call guard is off.
+
+A run of identical calls is one shape of runaway. For the rest — a cycle
+through two or three calls, a repeat with other calls wedged in,
+exploration that never converges — the same guard enforces
+**`budget.max_model_calls_per_turn`**, default 100, under every posture:
+the call over the cap is not made and the turn ends as `loop_stop`
+([#519](https://github.com/go-steer/mast/issues/519)). It is a budget
+rather than a detector, so it needs no price and recognizes nothing; it
+just stops counting at a number no healthy turn on the judged corpus came
+near. It runs on
 the daemon, a one-shot, and `mast.RunWorkload` alike, and in the eval
 harness's judged tier, so a looping model is scored the way a daemon
 would run it. It does not yet reach inside a planner dispatch, whose

@@ -169,7 +169,12 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// The in-turn half of feedback (#514), last — see compose.LoopGuard.
 	// It is the one feedback mechanism a one-shot can use, because it
 	// acts inside the turn rather than at the boundary a one-shot lacks.
-	guard, err := compose.LoopGuard(opts.Watchdog.Mode, logger)
+	guard, err := compose.LoopGuard(compose.LoopGuardConfig{
+		Mode: opts.Watchdog.Mode,
+		// No bundle on this path, so the default cap.
+		MaxModelCallsPerTurn: compose.MaxModelCallsPerTurn(nil),
+		Logger:               logger,
+	})
 	if err != nil {
 		return fmt.Errorf("construct loop guard: %w", err)
 	}

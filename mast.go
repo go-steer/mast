@@ -752,7 +752,11 @@ func runTurn(ctx context.Context, cfg Config, root adkagent.Agent, bundle *workl
 	if err != nil {
 		return nil, err
 	}
-	guard, err := compose.LoopGuard(wdMode, cfg.Logger)
+	guard, err := compose.LoopGuard(compose.LoopGuardConfig{
+		Mode:                 wdMode,
+		MaxModelCallsPerTurn: compose.MaxModelCallsPerTurn(bundle),
+		Logger:               cfg.Logger,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("mast: construct loop guard: %w", err)
 	}

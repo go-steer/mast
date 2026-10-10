@@ -1381,6 +1381,7 @@ token.
 | Field | Meaning |
 |---|---|
 | `budget.max_turns` | Cap on **model calls** per session. One "turn" = one model call — a Task specialist looping through five model calls before `finish_task` has spent five turns, not one. Absent/0 = unlimited. |
+| `budget.max_model_calls_per_turn` | Cap on model calls in **one turn**, where `max_turns` caps the session. The backstop for a turn that runs away in a shape the watchdog does not recognize; it needs no price, so it holds for unpriced models. The call over the cap is not made and the turn ends as `loop_stop`, with nothing latched. Absent/0 = mast's default of **100**; negative = unlimited. Applies under every watchdog posture. See [a loop inside one turn](/concepts/interop/#a-loop-inside-one-turn). |
 | `budget.max_wallclock_seconds` | Bounds each whole turn with a context timeout. |
 | `budget.max_cost_usd` | Session-cumulative cost ceiling, derived by the budget meter from streamed usage metadata (flat per-1K-token spike pricing in v0.1). |
 | `budget.final_report` | Grants a specialist stopped by a ceiling **one** model call past it, with every tool but its report tool withdrawn, to file what it already established. Default `false`. Once per specialist per session, and never to one that has spent nothing. See [letting a stopped specialist file what it found](/concepts/budgets/#letting-a-stopped-specialist-file-what-it-found). |
