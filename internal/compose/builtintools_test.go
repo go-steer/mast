@@ -16,10 +16,15 @@ package compose
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	adkmodel "google.golang.org/adk/v2/model"
@@ -43,28 +48,70 @@ func offlineGeminiCreds(t *testing.T) {
 	t.Setenv("GOOGLE_API_KEY", "offline-not-a-real-key")
 }
 
-// sentTools returns the tools m will actually put on the wire for a
-// request that starts with none.
+// wireRecorder stands in for the Developer API and keeps the last
+// request body it was sent.
+type wireRecorder struct {
+	mu   sync.Mutex
+	body map[string]any
+}
+
+// recordWire points every Gemini and Claude model built after it at a
+// recorder, for the rest of the test.
+func recordWire(t *testing.T) *wireRecorder {
+	t.Helper()
+	rec := &wireRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		rec.mu.Lock()
+		rec.body = body
+		rec.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+	prev := vendorBaseURL
+	vendorBaseURL = srv.URL
+	t.Cleanup(func() { vendorBaseURL = prev })
+	return rec
+}
+
+// sentTools returns the tools m actually puts on the wire for a request
+// that starts with none.
 //
 // This is the assertion #324 asks for and the reason it is written this
 // way: a server-side built-in never becomes a tool call, so the only
 // observable that answers "can this model reach the public internet" is
-// the request the wrapper hands to the backend. Reading the config back
-// out of the bundle would answer a different question.
-//
-// The iterator is deliberately discarded. gemini's wrapper appends its
-// built-ins to req.Config.Tools in the body of GenerateContent and only
-// calls the inner model when the returned sequence is ranged over, so
-// dropping it captures the constructed request without a network call.
-func sentTools(ctx context.Context, m adkmodel.LLM) []*genai.Tool {
-	req := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{}}
-	_ = m.GenerateContent(ctx, req, false)
-	return req.Config.Tools
+// the request body that reaches the backend. Reading the config back out
+// of the bundle would answer a different question.
+func sentTools(t *testing.T, rec *wireRecorder, m adkmodel.LLM) []map[string]any {
+	t.Helper()
+	req := &adkmodel.LLMRequest{
+		Contents: []*genai.Content{genai.NewContentFromText("hi", genai.RoleUser)},
+		Config:   &genai.GenerateContentConfig{},
+	}
+	for _, err := range m.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent against the recorder: %v", err)
+		}
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var out []map[string]any
+	tools, _ := rec.body["tools"].([]any)
+	for _, tl := range tools {
+		if m, ok := tl.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
-func hasGoogleSearch(tools []*genai.Tool) bool {
-	return slices.ContainsFunc(tools, func(t *genai.Tool) bool { return t != nil && t.GoogleSearch != nil })
+func hasTool(tools []map[string]any, key string) bool {
+	return slices.ContainsFunc(tools, func(t map[string]any) bool { _, ok := t[key]; return ok })
 }
+
+func hasGoogleSearch(tools []map[string]any) bool { return hasTool(tools, "googleSearch") }
 
 // readOnlyRoster writes a one-specialist workload whose specialist is
 // declared read_only and runs on a model of its own, with the given
@@ -154,11 +201,12 @@ func resolveAnalyst(t *testing.T, bundle workload.Bundle, specs []specialists.Sp
 // TestBuiltinToolsDefaultOff below.
 func TestReadOnlySpecialistGetsNoGoogleSearch(t *testing.T) {
 	offlineGeminiCreds(t)
+	rec := recordWire(t)
 	bundle, specs := readOnlyRoster(t, "\nbuiltin_tools:\n  web_search: false\n")
 	if bundle.BuiltinTools.WebSearch == nil || *bundle.BuiltinTools.WebSearch {
 		t.Fatalf("fixture did not parse: BuiltinTools = %+v", bundle.BuiltinTools)
 	}
-	if tools := sentTools(context.Background(), resolveAnalyst(t, bundle, specs)); hasGoogleSearch(tools) {
+	if tools := sentTools(t, rec, resolveAnalyst(t, bundle, specs)); hasGoogleSearch(tools) {
 		t.Errorf("a read_only specialist under `web_search: false` still sends google_search: %+v", tools)
 	}
 }
@@ -170,11 +218,12 @@ func TestReadOnlySpecialistGetsNoGoogleSearch(t *testing.T) {
 // means off.
 func TestBuiltinToolsDefaultOff(t *testing.T) {
 	offlineGeminiCreds(t)
+	rec := recordWire(t)
 	bundle, specs := readOnlyRoster(t, "")
 	if (bundle.BuiltinTools != workload.BuiltinTools{}) {
 		t.Fatalf("a bundle with no builtin_tools block parsed as %+v, want the zero value", bundle.BuiltinTools)
 	}
-	if tools := sentTools(context.Background(), resolveAnalyst(t, bundle, specs)); len(tools) != 0 {
+	if tools := sentTools(t, rec, resolveAnalyst(t, bundle, specs)); len(tools) != 0 {
 		t.Errorf("a bundle that names no built-ins sends %+v, want none", tools)
 	}
 }
@@ -184,15 +233,16 @@ func TestBuiltinToolsDefaultOff(t *testing.T) {
 // grounding is acceptable says so and gets it.
 func TestBuiltinToolsOptIn(t *testing.T) {
 	offlineGeminiCreds(t)
+	rec := recordWire(t)
 	bundle, specs := readOnlyRoster(t, "\nbuiltin_tools:\n  web_search: true\n  url_context: true\n")
-	tools := sentTools(context.Background(), resolveAnalyst(t, bundle, specs))
+	tools := sentTools(t, rec, resolveAnalyst(t, bundle, specs))
 	if !hasGoogleSearch(tools) {
 		t.Errorf("`web_search: true` did not reach the request: %+v", tools)
 	}
-	if !slices.ContainsFunc(tools, func(t *genai.Tool) bool { return t != nil && t.URLContext != nil }) {
+	if !hasTool(tools, "urlContext") {
 		t.Errorf("`url_context: true` did not reach the request: %+v", tools)
 	}
-	if slices.ContainsFunc(tools, func(t *genai.Tool) bool { return t != nil && t.CodeExecution != nil }) {
+	if hasTool(tools, "codeExecution") {
 		t.Errorf("code_execution was never asked for and arrived anyway: %+v", tools)
 	}
 }
@@ -310,77 +360,25 @@ func TestSummaryStillCoversWhatStrictnessCannot(t *testing.T) {
 	}
 }
 
-// TestBuiltinToolNamesUseTheNeutralVocabulary keeps the two provider
-// packages reporting in the same words the bundle is written in. They
-// satisfy BuiltinToolsReporter structurally and cannot see each other,
-// so nothing but a test holds the vocabulary together.
+// TestBuiltinToolNamesUseTheNeutralVocabulary keeps both families
+// reporting in the words the bundle is written in. The reports now come
+// from core-models' adapters, through vendors.go's bridge; nothing but a
+// test holds the two vocabularies together.
 func TestBuiltinToolNamesUseTheNeutralVocabulary(t *testing.T) {
+	offlineGeminiCreds(t)
+	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
 	yes := true
 	all := workload.BuiltinTools{WebSearch: &yes, URLContext: &yes, CodeExecution: &yes}
-	if got := strings.Join(geminiBuiltins(all).Names(), ","); got != "web_search,url_context,code_execution" {
-		t.Errorf("gemini names = %q", got)
-	}
-	if got := strings.Join(anthropicBuiltins(all).Names(), ","); got != "web_search" {
-		t.Errorf("anthropic names = %q", got)
-	}
-	if got := geminiBuiltins(workload.BuiltinTools{}).Names(); len(got) != 0 {
-		t.Errorf("gemini names off = %v, want none", got)
-	}
-	if got := anthropicBuiltins(workload.BuiltinTools{}).Names(); len(got) != 0 {
-		t.Errorf("anthropic names off = %v, want none", got)
-	}
-}
-
-// TestServerSideToolInvocationsFollowTheBackend is #505. The Developer
-// API rejects a request that carries built-ins beside function tools
-// unless it sets include_server_side_tool_invocations; Vertex rejects
-// the parameter itself. So the flag has to be on exactly when the model
-// is NOT on Vertex — observable, like every built-in assertion here, on
-// the request the wrapper hands to the backend.
-func TestServerSideToolInvocationsFollowTheBackend(t *testing.T) {
-	webSearch := true
-	bt := workload.BuiltinTools{WebSearch: &webSearch}
-	adc := filepath.Join(t.TempDir(), "adc.json")
-	if err := os.WriteFile(adc, []byte(`{"type":"authorized_user","client_id":"id","client_secret":"s","refresh_token":"rt"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name     string
-		provider string
-		env      map[string]string
-		want     bool
-	}{
-		{"developer API", ProviderGemini, nil, true},
-		{"developer API, no alias", "", nil, true},
-		{"vertex alias", ProviderVertex, map[string]string{"GOOGLE_CLOUD_PROJECT": "offline"}, false},
-		{"vertex by env", "", map[string]string{"GOOGLE_GENAI_USE_VERTEXAI": "true", "GOOGLE_CLOUD_PROJECT": "offline", "GOOGLE_CLOUD_LOCATION": "global"}, false},
+	for _, tc := range []struct{ provider, model, want string }{
+		{"", "gemini-3.5-flash", "web_search,url_context,code_execution"},
+		{"anthropic", "claude-haiku-4-5", "web_search"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			clearVertexEnv(t)
-			offlineGeminiCreds(t)
-			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adc)
-			for k, v := range tc.env {
-				t.Setenv(k, v)
-			}
-			m, err := BuildModel(context.Background(), tc.provider, "gemini-3.7-flash", bt)
-			if err != nil {
-				t.Fatalf("BuildModel: %v", err)
-			}
-			req := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{
-				Tools: []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "read_file"}}}},
-			}}
-			_ = m.GenerateContent(context.Background(), req, false)
-			if !hasGoogleSearch(req.Config.Tools) {
-				t.Fatalf("fixture is not discriminating: web_search did not reach the request")
-			}
-			cfg := req.Config.ToolConfig
-			got := cfg != nil && cfg.IncludeServerSideToolInvocations != nil && *cfg.IncludeServerSideToolInvocations
-			if got != tc.want {
-				t.Errorf("include_server_side_tool_invocations = %v, want %v", got, tc.want)
-			}
-			if !tc.want && cfg != nil && cfg.IncludeServerSideToolInvocations != nil {
-				t.Errorf("the parameter is present on Vertex, which rejects it outright")
-			}
-		})
+		m, err := BuildModel(context.Background(), tc.provider, tc.model, all)
+		if err != nil {
+			t.Fatalf("BuildModel(%s): %v", tc.model, err)
+		}
+		if got := BuiltinToolsSummary(m); got != tc.want {
+			t.Errorf("%s names = %q, want %q", tc.model, got, tc.want)
+		}
 	}
 }

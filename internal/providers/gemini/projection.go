@@ -14,6 +14,11 @@
 
 // Originally derived from go-steer/core-agent@b8dd225e9ae7fdeb3ff23772cc5be25eed34b818
 
+// Package gemini holds the one piece of mast's Gemini layer that did not
+// move to core-models: projecting grounding evidence into ADK session
+// events. core-models' core is ADK-free and carries only the evidence
+// (gemini.GroundingEvidence); the session-event half is ADK-shaped and
+// stays here. Nothing in mast wires it today.
 package gemini
 
 import (

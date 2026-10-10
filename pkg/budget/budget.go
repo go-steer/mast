@@ -694,7 +694,7 @@ func callOf(ev *session.Event, u genai.GenerateContentResponseUsageMetadata) Cal
 	// model it is not a rounding error — a triage run measured here spent
 	// 6,449 thinking tokens against 1,180 candidate tokens, so the omitted
 	// term was 85% of billable output. The field is Gemini-only;
-	// internal/providers/anthropic never sets it, and Anthropic's own output
+	// core-models' Anthropic adapter never sets it, and Anthropic's own output
 	// count already includes thinking.
 	return Call{
 		UncachedInputTokens: prompt - read - write,

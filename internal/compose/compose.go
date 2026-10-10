@@ -37,7 +37,6 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
-	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/adk/v2/tool"
 
 	mastagent "github.com/go-steer/mast/internal/agent"
@@ -46,8 +45,6 @@ import (
 	"github.com/go-steer/mast/internal/modelretry"
 	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/internal/pricing"
-	"github.com/go-steer/mast/internal/providers/anthropic"
-	geminiprov "github.com/go-steer/mast/internal/providers/gemini"
 	"github.com/go-steer/mast/internal/providers/mock"
 	"github.com/go-steer/mast/internal/router"
 	"github.com/go-steer/mast/pkg/budget"
@@ -92,10 +89,8 @@ const (
 	DispatchAuto Dispatch = "auto"
 )
 
-// Provider aliases for the Gemini family. The Anthropic pair lives in
-// internal/providers/anthropic (ProviderName / VertexProviderName); these
-// two have no provider package of their own because both backends are
-// the same genai client under different configuration.
+// Provider aliases for the Gemini family. The Anthropic pair is in
+// vendors.go. All four are also core-models built-in profile names.
 //
 // The names match internal/taskclass.Providers(), which has carried a
 // "vertex" family since the port — the tier table could always resolve
@@ -532,12 +527,11 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //   - "scripted": JSONL recorded-turn replay via internal/providers/mock;
 //     the recording path comes from MAST_SCRIPT, and
 //     MAST_SCRIPT_STRICT=1 enables strict Contents matching.
-//   - "gemini-*": ADK's Gemini model wrapped in internal/providers/gemini's
-//     builtin-tool layer. `--provider=vertex` names the Vertex backend
-//     outright; with no alias it stays genai's env-driven selection.
-//     See geminiClientConfig.
-//   - "claude-*": internal/providers/anthropic; see anthropicProvider for
-//     backend selection.
+//   - "gemini-*": core-models' Gemini adapter (vendors.go).
+//     `--provider=vertex` names the Vertex backend outright; with no
+//     alias GOOGLE_GENAI_USE_VERTEXAI picks it. See geminiClientConfig.
+//   - "claude-*": core-models' Anthropic adapter; see anthropicBackend
+//     for backend selection.
 //
 // bt gates the provider's server-side built-in tools. Its zero value is
 // mast's baseline — every one of them off, whichever backend resolves —
@@ -557,31 +551,9 @@ func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinT
 		}
 		return mock.NewScripted(path, os.Getenv("MAST_SCRIPT_STRICT") == "1")
 	case strings.HasPrefix(name, "gemini-"):
-		cfg, err := geminiClientConfig(provider)
-		if err != nil {
-			return nil, err
-		}
-		base, err := gemini.NewModel(ctx, name, cfg)
-		if err != nil {
-			return nil, err
-		}
-		onVertex := geminiOnVertex(provider)
-		return geminiprov.Wrap(base, geminiprov.Options{
-			BuiltinTools: geminiBuiltins(bt),
-			// The Developer API rejects built-ins beside function tools
-			// unless the request says include_server_side_tool_invocations;
-			// Vertex rejects the parameter itself (#505). Same predicate
-			// as the chunk tolerance, so the two cannot disagree about
-			// which backend this is.
-			IncludeServerSideToolInvocations: !onVertex,
-			TolerateEmptyChunks:              onVertex,
-		}), nil
+		return buildGemini(ctx, provider, name, bt)
 	case strings.HasPrefix(name, "claude-"):
-		p, err := anthropicProvider(ctx, provider, bt)
-		if err != nil {
-			return nil, err
-		}
-		return p.Model(ctx, name)
+		return buildClaude(ctx, provider, name, bt)
 	case IsProfileProvider(provider):
 		// After the prefixes, so a specialist's cross-provider `model:`
 		// override (a claude-* under a profile root) still reaches its
@@ -778,24 +750,6 @@ func geminiClientConfig(provider string) (*genai.ClientConfig, error) {
 	}, nil
 }
 
-// anthropicProvider picks the Anthropic backend for claude-* models.
-// An explicit --provider alias wins; with no alias, ANTHROPIC_API_KEY
-// selects the first-party API and a resolvable Vertex project selects
-// Anthropic-on-Vertex — the same detection order core-agent's registry
-// used, scoped to the two Anthropic backends. CacheSystem stays off,
-// matching core-agent's default (no non-test caller ever enabled it).
-func anthropicProvider(ctx context.Context, provider string, bt workload.BuiltinTools) (*anthropic.Provider, error) {
-	backend, err := anthropicBackend(provider)
-	if err != nil {
-		return nil, err
-	}
-	builtins := anthropicBuiltins(bt)
-	if backend == anthropic.VertexProviderName {
-		return anthropic.NewVertex(ctx, anthropic.VertexOptions{BuiltinTools: builtins})
-	}
-	return anthropic.New(anthropic.Options{BuiltinTools: builtins})
-}
-
 // anthropicBackend resolves a --provider alias plus the environment to
 // the Anthropic backend that will actually serve claude-* models.
 //
@@ -807,7 +761,7 @@ func anthropicProvider(ctx context.Context, provider string, bt workload.Builtin
 // this split exists to make unrepresentable.
 func anthropicBackend(provider string) (string, error) {
 	switch provider {
-	case anthropic.ProviderName, anthropic.VertexProviderName:
+	case ProviderAnthropic, ProviderAnthropicVertex:
 		return provider, nil
 	case ProviderGemini, ProviderVertex, "":
 		// A Gemini-family alias picks a Gemini backend; it says nothing
@@ -816,11 +770,11 @@ func anthropicBackend(provider string) (string, error) {
 		// allowed (see NewModelResolver) — so detect the backend the
 		// same way the no-alias path does rather than refusing a model
 		// the alias was never about.
-		if os.Getenv(anthropic.EnvAPIKey) != "" {
-			return anthropic.ProviderName, nil
+		if os.Getenv(EnvAnthropicAPIKey) != "" {
+			return ProviderAnthropic, nil
 		}
-		if os.Getenv(anthropic.EnvVertexProject) != "" || os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
-			return anthropic.VertexProviderName, nil
+		if os.Getenv(EnvAnthropicVertexProject) != "" || os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
+			return ProviderAnthropicVertex, nil
 		}
 		return "", fmt.Errorf("claude-* models need ANTHROPIC_API_KEY (first-party) or a Vertex project (ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT), or an explicit --provider=anthropic|anthropic-vertex")
 	default:
@@ -835,8 +789,8 @@ func anthropicBackend(provider string) (string, error) {
 }
 
 // Backend resolves the --provider alias and the environment to the
-// backend that will serve modelName: one of anthropic.ProviderName,
-// anthropic.VertexProviderName, ProviderGemini, or ProviderVertex.
+// backend that will serve modelName: one of ProviderAnthropic,
+// ProviderAnthropicVertex, ProviderGemini, or ProviderVertex.
 //
 // It returns "" — meaning "price this by bare model id" — for an
 // offline fake, for a model in neither family, and for a claude-* model

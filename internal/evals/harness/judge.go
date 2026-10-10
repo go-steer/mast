@@ -30,7 +30,6 @@ import (
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
 	"github.com/go-steer/mast/internal/modelretry"
-	"github.com/go-steer/mast/internal/providers/anthropic"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -348,11 +347,11 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 
 	modelName := cfg.Model
 	if modelName == "" {
-		modelName = anthropic.DefaultModel
+		modelName = compose.DefaultAnthropicModel
 	}
 	graderName := cfg.Grader
 	if graderName == "" {
-		graderName = anthropic.DefaultSmallModelID
+		graderName = compose.DefaultAnthropicSmallModel
 	}
 
 	note := progressFn(cfg.Progress)

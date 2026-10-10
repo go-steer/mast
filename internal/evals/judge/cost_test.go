@@ -27,7 +27,6 @@ import (
 
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/graph"
-	"github.com/go-steer/mast/internal/providers/anthropic"
 	"github.com/go-steer/mast/internal/taskclass"
 	"github.com/go-steer/mast/pkg/budget"
 	"github.com/go-steer/mast/pkg/specialists"
@@ -45,7 +44,7 @@ import (
 // two rates it was handed are the same number.
 func TestCostSpecs_PricesTwoDifferentRates(t *testing.T) {
 	specs := CostSpecs()
-	root := anthropic.DefaultModel
+	root := compose.DefaultAnthropicModel
 
 	scopes := compose.MeterScopes(specs, "anthropic", root)
 	analyst, ok := scopes[costAnalystName]
@@ -139,14 +138,14 @@ func TestRunCost_Refuses(t *testing.T) {
 	}{
 		{
 			name:    "no model",
-			root:    anthropic.DefaultModel,
+			root:    compose.DefaultAnthropicModel,
 			scratch: t.TempDir(),
 			want:    "no model",
 		},
 		{
 			name:  "no scratch dir",
-			model: stubLLM{name: anthropic.DefaultModel},
-			root:  anthropic.DefaultModel,
+			model: stubLLM{name: compose.DefaultAnthropicModel},
+			root:  compose.DefaultAnthropicModel,
 			want:  "no scratch dir",
 		},
 		{

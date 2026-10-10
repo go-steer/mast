@@ -18,7 +18,7 @@
 // genai.GenerateContentResponseUsageMetadata is Gemini's shape. Every
 // provider mast speaks to is projected onto it, and the projection is
 // lossy in both directions: Anthropic's cache_creation_input_tokens has
-// nowhere to go at all (internal/providers/anthropic/stream.go folds it into
+// nowhere to go at all (core-models' Anthropic adapter folds it into
 // the prompt total, where it bills at 1x instead of 1.25x), and a
 // counter a provider simply did not report is indistinguishable from
 // one it reported as zero.
@@ -94,7 +94,7 @@ type Detail struct {
 	// ServedModel is what the backend says it actually ran, which is not
 	// always what was asked for. Duplicated from LLMResponse.ModelVersion
 	// on purpose: that field is a pricing key the adapter may have had to
-	// substitute (internal/providers/anthropic/llm.go falls back to the
+	// substitute (core-models' Anthropic adapter falls back to the
 	// requested id when the echo is a Vertex resource path), and this one
 	// is the unedited echo.
 	ServedModel string `json:"served_model,omitempty"`

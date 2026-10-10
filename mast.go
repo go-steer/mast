@@ -465,7 +465,7 @@ func resolveModel(ctx context.Context, cfg Config, bt workload.BuiltinTools) (mo
 	// No provider alias on the library surface: claude-* backend
 	// selection is env-driven here (ANTHROPIC_API_KEY vs Vertex
 	// project). Consumers who need to force a backend construct the
-	// model via internal/providers/anthropic and set Config.Model.
+	// model via core-models' Anthropic adapter and set Config.Model.
 	llm, err := compose.NewRuntimeModel(ctx, "", cfg.ModelName, bt)
 	if err != nil {
 		return nil, "", fmt.Errorf("mast: %w", err)

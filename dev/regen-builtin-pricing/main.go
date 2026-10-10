@@ -141,7 +141,7 @@ var familyPrefixes = []string{"gemini-", "claude-"}
 //
 // Mast is the name mast uses for the backend — the same strings as
 // internal/compose.ProviderGemini / ProviderVertex and
-// internal/providers/anthropic.ProviderName / VertexProviderName — and it is
+// compose.ProviderAnthropic / ProviderAnthropicVertex — and it is
 // what gets emitted as the "<backend>/<model>" key prefix. Using mast's
 // vocabulary rather than LiteLLM's keeps upstream's spelling
 // ("vertex_ai-anthropic_models") out of mast's own namespace, so a
@@ -187,7 +187,7 @@ var profileBackends = []struct{ Mast, Prefix, Suffix string }{
 // its place.
 var nameExclusions = []struct{ Pattern, Why string }{
 	{"-latest", "floating alias — identity AND price move underneath a pinned config, " +
-		"and internal/providers/gemini's geminiMajorVersion() reads 0 from it, which makes " +
+		"and core-models dialect/gemini's geminiMajorVersion() reads 0 from it, which makes " +
 		"builtinsCompatible drop search grounding on every turn"},
 	{"exp-", "unversioned experimental build; no stability promise from the provider"},
 	{"computer-use", "computer-use model — a different tool surface, not an agent-loop chat model"},
