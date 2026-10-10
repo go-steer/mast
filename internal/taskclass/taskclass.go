@@ -279,7 +279,7 @@ func ModelForTier(provider, tier string) string {
 			// it replaced also predates the Gemini 3.0 line's support
 			// for built-ins alongside function declarations, so every
 			// small-tier specialist silently ran unGrounded (see
-			// builtinsCompatible in internal/providers/gemini).
+			// geminiMajorVersion in core-models dialect/gemini).
 			return "gemini-3.5-flash-lite"
 		}
 	case "anthropic", "anthropic-vertex":
@@ -296,7 +296,7 @@ func ModelForTier(provider, tier string) string {
 		case TierSmall:
 			// claude-haiku-4-5 is still the latest Haiku — no
 			// 5-generation Haiku has shipped. Moves in lockstep with
-			// internal/providers/anthropic's DefaultSmallModelID; pinned by
+			// compose.DefaultAnthropicSmallModel; pinned by
 			// TestModelForTier_ConsistentWithSmallModelDefaulters.
 			return "claude-haiku-4-5"
 		}
