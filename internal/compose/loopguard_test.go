@@ -37,6 +37,7 @@ import (
 
 	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/approval"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 // loopingModel is the #514 model: it calls one tool with one set of
@@ -108,7 +109,7 @@ type guardProbe struct {
 	stop       *recordingStop
 }
 
-func runGuardProbe(t *testing.T, mode watchdog.Mode, withStop bool, limit int) *guardProbe {
+func runGuardProbe(t *testing.T, mode watchdog.Mode, maxCalls int, withStop bool, limit int) *guardProbe {
 	t.Helper()
 	probe := &guardProbe{model: &loopingModel{limit: limit}}
 
@@ -134,7 +135,7 @@ func runGuardProbe(t *testing.T, mode watchdog.Mode, withStop bool, limit int) *
 	}
 
 	var plugins []*plugin.Plugin
-	guard, err := LoopGuard(mode, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	guard, err := LoopGuard(LoopGuardConfig{Mode: mode, MaxModelCallsPerTurn: maxCalls, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatalf("LoopGuard: %v", err)
 	}
@@ -172,7 +173,7 @@ func runGuardProbe(t *testing.T, mode watchdog.Mode, withStop bool, limit int) *
 // and the turn ends before the call that would have been the
 // threshold+stopAfter-th execution.
 func TestLoopGuardNotesThenEndsTheTurn(t *testing.T) {
-	p := runGuardProbe(t, watchdog.ModeFeedback, true, 100)
+	p := runGuardProbe(t, watchdog.ModeFeedback, 0, true, 100)
 
 	var loop *watchdog.LoopStopError
 	if !errors.As(p.stop.reason, &loop) {
@@ -212,7 +213,7 @@ func TestLoopGuardNotesThenEndsTheTurn(t *testing.T) {
 // hand the model a fresh allowance either — every later repeat is
 // refused without running.
 func TestLoopGuardWithoutATurnStopKeepsRefusing(t *testing.T) {
-	p := runGuardProbe(t, watchdog.ModeFeedback, false, 20)
+	p := runGuardProbe(t, watchdog.ModeFeedback, 0, false, 20)
 	want := watchdog.DefaultRepeatThreshold + watchdog.DefaultStopAfterNote - 1
 	if p.executions != want {
 		t.Errorf("tool ran %d times over 20 identical calls, want %d", p.executions, want)
@@ -225,11 +226,63 @@ func TestLoopGuardWithoutATurnStopKeepsRefusing(t *testing.T) {
 
 // TestLoopGuardIsOffBelowFeedback: warn means nothing intervenes.
 func TestLoopGuardIsOffBelowFeedback(t *testing.T) {
-	if g, err := LoopGuard(watchdog.ModeWarn, nil); g != nil || err != nil {
-		t.Fatalf("LoopGuard(warn) = %v, %v; want nil, nil", g, err)
+	if g, err := LoopGuard(LoopGuardConfig{Mode: watchdog.ModeWarn}); g != nil || err != nil {
+		t.Fatalf("LoopGuard(warn, no cap) = %v, %v; want nil, nil", g, err)
 	}
-	p := runGuardProbe(t, watchdog.ModeWarn, true, 12)
+	p := runGuardProbe(t, watchdog.ModeWarn, 0, true, 12)
 	if p.executions != 12 {
 		t.Errorf("tool ran %d times under warn, want all 12", p.executions)
+	}
+}
+
+// TestModelCallCapEndsTheTurnUnderEveryPosture is #519: the cap is a
+// budget, so it holds under warn, where the repeated-call guard is off.
+// The probe's model repeats one call, but the cap is set below the
+// repeat guard's threshold so it is the cap that fires.
+func TestModelCallCapEndsTheTurnUnderEveryPosture(t *testing.T) {
+	for _, mode := range []watchdog.Mode{watchdog.ModeWarn, watchdog.ModeFeedback, watchdog.ModeEnforce} {
+		t.Run(string(mode), func(t *testing.T) {
+			p := runGuardProbe(t, mode, 3, true, 100)
+			var capped *watchdog.TurnCallsError
+			if !errors.As(p.stop.reason, &capped) {
+				t.Fatalf("turn ended with %v, want a *watchdog.TurnCallsError", p.stop.reason)
+			}
+			if p.model.rounds != 3 {
+				t.Errorf("model called %d times, want exactly the cap of 3", p.model.rounds)
+			}
+			if !watchdog.IsLoopStop(p.stop.reason) {
+				t.Error("a cap stop does not classify as loop_stop")
+			}
+		})
+	}
+}
+
+// TestModelCallCapWithoutATurnStopStillEndsTheTurn: the refused call is
+// answered with text and no function call, so a library embed with no
+// TurnStop ends the turn too, rather than the flow asking again.
+func TestModelCallCapWithoutATurnStopStillEndsTheTurn(t *testing.T) {
+	p := runGuardProbe(t, watchdog.ModeWarn, 3, false, 100)
+	if p.model.rounds != 3 {
+		t.Errorf("model called %d times, want 3", p.model.rounds)
+	}
+}
+
+func TestMaxModelCallsPerTurnResolution(t *testing.T) {
+	b := func(n int) *workload.Bundle {
+		return &workload.Bundle{Budget: workload.Budget{MaxModelCallsPerTurn: n}}
+	}
+	for _, tc := range []struct {
+		name string
+		b    *workload.Bundle
+		want int
+	}{
+		{"no bundle takes the default", nil, DefaultMaxModelCallsPerTurn},
+		{"unset takes the default", b(0), DefaultMaxModelCallsPerTurn},
+		{"declared", b(40), 40},
+		{"negative is uncapped", b(-1), 0},
+	} {
+		if got := MaxModelCallsPerTurn(tc.b); got != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }

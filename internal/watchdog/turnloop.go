@@ -38,6 +38,7 @@
 package watchdog
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -83,6 +84,40 @@ func (e *LoopStopError) Error() string {
 // in turnloop_test.go.
 func (e *LoopStopError) TurnErrorKind() string { return "loop_stop" }
 
+// TurnCallsError is the reason a turn ended because it made more model
+// calls than the per-turn cap allows (#519): the backstop for a turn
+// that runs away in a shape TurnLoop's run of identical calls does not
+// describe — an alternating cycle, a repeat with interleaves, or
+// exploration that never converges.
+//
+// Same kind as LoopStopError, on purpose. Both are a turn that ran away
+// and was ended with nothing latched, and the remedy is the same — the
+// model, the tools, or the cap — so a client has nothing to do
+// differently between them.
+type TurnCallsError struct {
+	Calls int
+	Cap   int
+}
+
+func (e *TurnCallsError) Error() string {
+	return fmt.Sprintf(
+		"turn ended: it made %d model calls, the per-turn cap (budget.max_model_calls_per_turn). "+
+			"The next call was not made. Nothing is latched; the next turn starts clean.",
+		e.Calls)
+}
+
+// TurnErrorKind implements attach.SelfClassifyingError; see
+// LoopStopError.
+func (e *TurnCallsError) TurnErrorKind() string { return "loop_stop" }
+
+// IsLoopStop reports whether err is a turn the in-turn guard ended,
+// for either reason.
+func IsLoopStop(err error) bool {
+	var a *LoopStopError
+	var b *TurnCallsError
+	return errors.As(err, &a) || errors.As(err, &b)
+}
+
 // TurnLoop tracks consecutive identical tool calls per turn, keyed by
 // invocation ID, and decides when a result carries the in-turn note and
 // when a call ends the turn.
@@ -102,12 +137,14 @@ func (e *LoopStopError) TurnErrorKind() string { return "loop_stop" }
 type TurnLoop struct {
 	threshold int
 	stopAfter int
+	maxCalls  int // model calls per turn; 0 = uncapped
 
 	mu    sync.Mutex
 	turns map[string]*turnRun
 }
 
 type turnRun struct {
+	calls  int // model calls this turn
 	last   ToolCall
 	result string // digest of the run's result so far; "" until one lands
 	length int
@@ -118,7 +155,8 @@ type turnRun struct {
 
 // NewTurnLoop returns a TurnLoop that notes from the threshold-th
 // identical call and stops stopAfter calls later. Values below the
-// floors (2 and 1) are raised to them.
+// floors (2 and 1) are raised to them. Model calls are uncapped until
+// SetMaxModelCalls says otherwise.
 func NewTurnLoop(threshold, stopAfter int) *TurnLoop {
 	if threshold < 2 {
 		threshold = 2
@@ -127,6 +165,41 @@ func NewTurnLoop(threshold, stopAfter int) *TurnLoop {
 		stopAfter = 1
 	}
 	return &TurnLoop{threshold: threshold, stopAfter: stopAfter, turns: map[string]*turnRun{}}
+}
+
+// SetMaxModelCalls caps the model calls one turn may make; n <= 0
+// removes the cap. Call it before the TurnLoop is in use.
+func (l *TurnLoop) SetMaxModelCalls(n int) {
+	if n < 0 {
+		n = 0
+	}
+	l.maxCalls = n
+}
+
+// BeforeModel counts one model call about to be made, and returns a
+// non-nil TurnCallsError when it would exceed the per-turn cap — the
+// call should not be made and the turn should end.
+func (l *TurnLoop) BeforeModel(invocationID string) *TurnCallsError {
+	if invocationID == "" || l.maxCalls == 0 {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	t := l.turn(invocationID)
+	if t.calls >= l.maxCalls {
+		return &TurnCallsError{Calls: t.calls, Cap: l.maxCalls}
+	}
+	t.calls++
+	return nil
+}
+
+func (l *TurnLoop) turn(invocationID string) *turnRun {
+	t := l.turns[invocationID]
+	if t == nil {
+		t = &turnRun{notes: map[string]string{}}
+		l.turns[invocationID] = t
+	}
+	return t
 }
 
 // Before observes one call about to run. It returns a non-nil
@@ -142,11 +215,7 @@ func (l *TurnLoop) Before(invocationID, callID, name string, args map[string]any
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	t := l.turns[invocationID]
-	if t == nil {
-		t = &turnRun{notes: map[string]string{}}
-		l.turns[invocationID] = t
-	}
+	t := l.turn(invocationID)
 	tc := ToolCall{Name: name, Args: serializeArgs(args)}
 	if t.length > 0 && t.last.Name == tc.Name && argsEquivalent(t.last.Args, tc.Args) {
 		t.length++

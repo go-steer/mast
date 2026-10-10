@@ -243,6 +243,19 @@ type Budget struct {
 	// cap is a guardrail against a runaway and an unresolved delegation
 	// is the more expensive outcome. See pkg/budget/finalreport.go.
 	FinalReport bool `yaml:"final_report,omitempty"`
+
+	// MaxModelCallsPerTurn caps the model calls one turn may make, as a
+	// backstop against a turn that runs away in a shape no loop detector
+	// recognizes (#519). Per turn, where MaxTurns is per session: a
+	// daemon session lives across many turns, and a cap that accumulates
+	// across them is a lifetime limit rather than a runaway guard. It
+	// needs no price, so it holds for models MaxCostUSD cannot meter.
+	//
+	// 0 means mast's default; negative means unbounded — the convention
+	// Fanout.MaxConcurrency uses. On by default because the turn it
+	// stops otherwise runs until the provider refuses the context, and
+	// on a long-context model that is thousands of calls.
+	MaxModelCallsPerTurn int `yaml:"max_model_calls_per_turn,omitempty"`
 }
 
 // Watchdog postures a bundle may declare, in ladder order. These are

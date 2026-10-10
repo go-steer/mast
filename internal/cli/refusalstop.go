@@ -16,7 +16,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	"github.com/go-steer/mast/internal/observability"
@@ -26,7 +25,8 @@ import (
 // refusalStop is the daemon's implementation of approval.TurnStop: the
 // handle the write gate ends a turn through when the model will not
 // take no for an answer (#449), and the loop guard ends one through
-// when the model will not stop repeating a call (#514).
+// when the model will not stop repeating a call (#514) or the turn
+// reaches its model-call cap (#519).
 //
 // One per turn, armed with that turn's cancel, installed on the run
 // context. The gate reaches it through the context rather than through
@@ -93,8 +93,7 @@ func (s *refusalStop) why() error {
 // with their operators and a rate on the other counts models stuck on a
 // tool.
 func stopOutcome(reason error) string {
-	var loop *watchdog.LoopStopError
-	if errors.As(reason, &loop) {
+	if watchdog.IsLoopStop(reason) {
 		return observability.OutcomeLoopStop
 	}
 	return observability.OutcomeRefusalLoop
