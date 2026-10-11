@@ -2,7 +2,38 @@
 
 ## Unreleased
 
+**A silent breaking change to read before upgrading.** Claude prompt
+caching is now on by default: a Claude workload's bill changes shape on
+upgrade, cheaper on the judged corpus, and nothing errors.
+`prompt_cache: {enabled: false}` turns it off.
+
 ### API Change
+
+- **Claude prompt caching is on by default.** Breaking, and deliberately
+  so: before this release mast sent no cache breakpoints, and on upgrade
+  every `claude-*` model — and every Anthropic-dialect provider profile —
+  starts sending them, with no bundle change. Claude then bills cache
+  writes at 1.25x input and cache reads at 0.1x. On the judged corpus
+  (`claude-sonnet-5`, ten incidents) scores were unchanged and the run cost
+  30% less; a workload of single-call turns pays the write premium without
+  the re-reads. This applies to the paths with no bundle as well: a
+  one-shot, and `mast.Run` / `mast.RunWorkload` from Go. To keep the old
+  behaviour:
+
+  ```yaml
+  prompt_cache:
+    enabled: false
+  ```
+
+  The new `prompt_cache` block also takes `ttl: 5m | 1h`, and a 1-hour
+  write is billed at its own rate (2x base input): the usage record, the
+  meter and the pricing catalog carry the 1-hour share, read from
+  LiteLLM's `cache_creation_input_token_cost_above_1hr`. The default
+  matches core-agent's (`--prompt-cache-ttl`), and it moves before v1.0
+  because the compatibility policy (rule 6) makes a default change
+  breaking from then on. The eval harness follows the default and takes
+  `--prompt-cache=off|5m|1h`.
+
 
 - **`pkg/transcript` is the read half of the operator store; the writes and
   the daemon's bookkeeping moved under `internal/`.** `Store` keeps `List`,
@@ -201,19 +232,6 @@
   other side of v1.0 ([#384](https://github.com/go-steer/mast/issues/384)).
 
 ### Feature
-
-- **Claude prompt caching, opt-in from the bundle.** A new `prompt_cache`
-  block (`enabled: true`, `ttl: 5m | 1h`) turns on cache breakpoints on
-  `claude-*` models and Anthropic-dialect provider profiles: the system
-  prompt plus rolling breakpoints over the conversation, the caching
-  core-agent has, now in core-models' adapter. Off unless a bundle sets
-  `enabled: true`, as before the block existed; core-agent defaults it
-  on. The eval harness takes `--prompt-cache=off|5m|1h`. On the judged
-  corpus with `claude-sonnet-5`, scores were unchanged and cost fell 30%. A 1-hour
-  write is billed at its own rate (2x base input): the usage record, the
-  meter and the pricing catalog carry the 1-hour share, and
-  `cache_creation_1h_input_per_mtok` is read from LiteLLM. core-agent
-  exposes the same setting as `--prompt-cache-ttl`.
 
 - **A turn now has a model-call cap by default.**
   `budget.max_model_calls_per_turn` caps the model calls one turn may

@@ -119,10 +119,12 @@ one, and the meter prices from that when it is there. A long-running
 session's total moves up, not down; nothing else about it changed.
 :::
 
-A cache write is billed at the TTL it was written with. A bundle that
-turns on [`prompt_cache`](/reference/workload-bundle/#prompt_cache--claude-prompt-caching)
-with `ttl: 1h` writes at 2x base input where the 5-minute default writes
-at 1.25x, and
+Claude prompt caching is on by default
+([`prompt_cache`](/reference/workload-bundle/#prompt_cache--claude-prompt-caching)),
+so a Claude workload's bill has cache writes and cache reads in it. A
+cache write is billed at the TTL it was written with: a bundle's
+`ttl: 1h` writes at 2x base input where the 5-minute default writes at
+1.25x, and
 Anthropic reports how each turn's writes split between the two. The meter
 prices the 1-hour share at the catalog's 1-hour rate
 (`cache_creation_1h_input_per_mtok`, from LiteLLM's

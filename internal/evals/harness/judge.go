@@ -361,8 +361,9 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		// built-ins stay at mast's default-off baseline (#324) — the
 		// same posture a shipped workload gets unless it asks
 		// otherwise, which is the posture these tiers are measuring.
-		// Prompt caching follows --prompt-cache, for the model under
-		// test only.
+		// Prompt caching follows --prompt-cache (the product default
+		// when unset), for the model under test only; the grader never
+		// caches.
 		build = func(ctx context.Context, provider, name string) (model.LLM, error) {
 			return compose.BuildModel(ctx, provider, name, compose.ModelOptions{})
 		}

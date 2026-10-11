@@ -535,9 +535,9 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //
 // mo carries the bundle's model settings. Its zero value is mast's
 // baseline — every server-side built-in tool off, whichever backend
-// resolves, and no Claude prompt caching — so a caller with no bundle
-// to read (a one-shot, a library embed, an eval rig) gets the default
-// posture by construction. See builtintools.go
+// resolves, and Claude prompt caching on with the 5-minute TTL — so a
+// caller with no bundle to read (a one-shot, a library embed, an eval
+// rig) gets the default posture by construction. See builtintools.go
 // for why mast does not inherit the vendor's own built-in default.
 func BuildModel(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
 	switch {

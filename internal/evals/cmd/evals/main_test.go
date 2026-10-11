@@ -21,13 +21,13 @@ import (
 )
 
 // TestPromptCacheFlag: --prompt-cache stands in for a bundle's
-// prompt_cache block, off by default as the block is.
+// prompt_cache block; unset is the product default, on at 5 minutes.
 func TestPromptCacheFlag(t *testing.T) {
 	for in, want := range map[string]struct {
 		on  bool
 		ttl string
 	}{
-		"":    {false, workload.PromptCacheTTL5m},
+		"":    {true, workload.PromptCacheTTL5m},
 		"off": {false, workload.PromptCacheTTL5m},
 		"5m":  {true, workload.PromptCacheTTL5m},
 		"1h":  {true, workload.PromptCacheTTL1h},

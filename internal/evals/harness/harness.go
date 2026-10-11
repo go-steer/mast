@@ -109,9 +109,9 @@ type Config struct {
 
 	// PromptCache is the Claude prompt caching the judge tier's model
 	// under test runs with — a bundle's prompt_cache block, since an eval
-	// run has no bundle. Zero is off, the default a workload gets. The
-	// grader never caches, so turning this on changes only the row being
-	// measured and the A/B stays reproducible from the flag alone.
+	// run has no bundle. Zero is the product default (on, 5 minutes). The
+	// grader never caches, so this changes only the row being measured,
+	// and an A/B against `off` stays reproducible from the flag alone.
 	PromptCache workload.PromptCache
 
 	// Progress, when set, receives a line per scenario as the judge tier

@@ -52,7 +52,7 @@ builtin_tools:
   web_search: true
 
 prompt_cache:
-  enabled: true
+  ttl: 5m
 
 planner:
   enabled: false
@@ -123,8 +123,8 @@ agui:
 | `builtin_tools.web_search` | bool | The provider's **server-side** web search, run inside the vendor's infrastructure. Omitted means **off**, on every provider. See [`builtin_tools:`](#builtin_tools--the-providers-own-server-side-tools) below — this is reach the permissions gate cannot see, so mast makes you ask for it. |
 | `builtin_tools.url_context` | bool | The provider's server-side URL fetch-and-ground. Omitted means off. Gemini only; no Anthropic equivalent, and a bundle that asks for it on Claude gets nothing rather than an error. |
 | `builtin_tools.code_execution` | bool | Sandboxed code execution on the provider's servers. Omitted means off. Gemini only. |
-| `prompt_cache.enabled` | bool | Claude prompt caching. Omitted means **off**; `true` turns it on. Anthropic only; see [`prompt_cache:`](#prompt_cache--claude-prompt-caching) below. |
-| `prompt_cache.ttl` | string | Breakpoint lifetime when caching is on: `5m` (default) or `1h`. Any other value refuses the bundle. A 1-hour write bills at 2x base input against 1.25x, so it pays only when turns are routinely more than five minutes apart. |
+| `prompt_cache.enabled` | bool | Claude prompt caching. Omitted means **on**; `false` turns it off. Anthropic only; see [`prompt_cache:`](#prompt_cache--claude-prompt-caching) below. |
+| `prompt_cache.ttl` | string | Breakpoint lifetime: `5m` (default) or `1h`. Any other value refuses the bundle. A 1-hour write bills at 2x base input against 1.25x, so it pays only when turns are routinely more than five minutes apart. |
 | `planner.enabled` | bool | v0.1 scaffold: switches the root agent to the supervisor-body planner with the bundle's specialists as its `invoke_specialist` roster (`--dispatch` is then ignored). The planner's `run_shape_*` vocabulary tools return `not_implemented` until v0.2. |
 | `edge_trigger.http.path`, `.auth` | strings | **Informational, and not wired** — the inject server declares its routes globally and reads nothing from the bundle; per-workload path prefixes come later. Declaring a path does not create one: POST your envelope to `/inject`. A bundle that declares one is warned about at startup, and the declared path answers `404` naming the real route. See [a declared path is not a route](#a-declared-path-is-not-a-route). |
 | `edge_trigger.scheduled.interval` | duration | Required in the block. How often the workload wakes itself, with nothing calling in — `15m`, `1h`, `24h`. Minimum `1s`. A malformed or missing value is a load error naming the file, because a cadence that fails to parse at runtime is a workload you believe is running and that never wakes up. See [`scheduled:`](#scheduled--a-workload-that-wakes-itself) below. |
@@ -1337,7 +1337,7 @@ a change to make then; until it exists, the missing axis fails closed.
 
 ## `prompt_cache:` — Claude prompt caching
 
-When a bundle turns it on, mast places a cache breakpoint on a `claude-*` model's system prompt
+Unless a bundle turns it off, mast places a cache breakpoint on a `claude-*` model's system prompt
 (which caches the tool schemas with it, since they render first) and
 rolling breakpoints over the end of the conversation. An incident
 re-sends its whole growing transcript on every model call; with the
@@ -1346,15 +1346,19 @@ fresh input, instead of billing it in full again.
 
 ```yaml
 prompt_cache:
-  enabled: true   # off unless set
+  enabled: true   # the default; false turns it off
   ttl: 5m         # the default; or 1h
 ```
 
-**Off by default.** A bundle without the block runs as it did before the
-block existed, with no breakpoints: mast's compatibility policy does not
-let a new field's absence change behaviour. core-agent turns caching on
-by default; mast may too, in a release that calls it out as a breaking
-change.
+**On by default, and that is a breaking change.** Before this block
+existed mast sent no cache breakpoints, so a workload that upgrades
+starts caching without touching its bundle: Claude bills the cache
+writes at 1.25x input and the re-reads at 0.1x. On the judged corpus the
+run came out 30% cheaper; a workload of single-call turns could come out
+slightly dearer, and `enabled: false` restores the old behaviour. The
+default matches core-agent's, and it changed before v1.0 on purpose,
+while the [compatibility policy](https://github.com/go-steer/mast/blob/main/docs/compatibility-policy.md)
+still allows a default to move without a deprecation window.
 
 Measured on the judged corpus (`claude-sonnet-5` on Vertex's `global`
 endpoint, ten incidents, `--prompt-cache=5m` against off), caching left
@@ -1379,12 +1383,13 @@ The block is workload-wide: the root and every specialist on a `claude-*`
 model cache the same way, and so does a provider profile on the
 Anthropic dialect. It changes nothing on Gemini, whose caching is
 implicit (or the Vertex context cache). With no bundle to read — `mast
-run`, a library embed that sets only a model name — caching is off. The
-eval harness takes `--prompt-cache=off|5m|1h`, so a cached run is
+run`, a library embed that sets only a model name — the default applies:
+on, 5 minutes. The eval harness follows the same default and takes
+`--prompt-cache=off|5m|1h` to override it, so the measurement above is
 reproducible from the command line.
 
 core-agent has the same setting, as `--prompt-cache-ttl` / `--no-prompt-cache`
-and `model.anthropic.prompt_cache` in its config, on by default there.
+and `model.anthropic.prompt_cache` in its config, on by default there too.
 Both products get it from the same core-models adapter.
 
 ## `run_queue:` — bounding concurrent runs on one thread

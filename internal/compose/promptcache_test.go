@@ -76,11 +76,10 @@ func sentCacheControls(t *testing.T, rec *wireRecorder, m adkmodel.LLM) []map[st
 }
 
 // TestClaudePromptCacheFollowsTheBundle reads the bundle's prompt_cache
-// block off the request a claude-* model actually sends: no breakpoints
-// unless the bundle turns caching on (the previous release sent none),
-// Anthropic's default (5-minute) TTL when it does, and the 1-hour TTL on
-// every breakpoint when it asks for one. A ttl without enabled: true
-// turns nothing on.
+// block off the request a claude-* model actually sends: breakpoints on
+// by default with Anthropic's default (5-minute) TTL, none when the
+// bundle turns caching off, and the 1-hour TTL on every breakpoint when
+// it asks for one.
 func TestClaudePromptCacheFollowsTheBundle(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
 	off, on := false, true
@@ -89,11 +88,11 @@ func TestClaudePromptCacheFollowsTheBundle(t *testing.T) {
 		markers bool
 		ttl     string // "" = no ttl field, Anthropic's 5-minute default
 	}{
-		"no bundle":   {},
+		"no bundle":   {markers: true},
 		"enabled":     {pc: workload.PromptCache{Enabled: &on}, markers: true},
 		"5m":          {pc: workload.PromptCache{Enabled: &on, TTL: workload.PromptCacheTTL5m}, markers: true},
 		"disabled":    {pc: workload.PromptCache{Enabled: &off}},
-		"ttl alone":   {pc: workload.PromptCache{TTL: workload.PromptCacheTTL1h}},
+		"ttl alone":   {pc: workload.PromptCache{TTL: workload.PromptCacheTTL1h}, markers: true, ttl: "1h"},
 		"one hour":    {pc: workload.PromptCache{Enabled: &on, TTL: workload.PromptCacheTTL1h}, markers: true, ttl: "1h"},
 		"off wins 1h": {pc: workload.PromptCache{Enabled: &off, TTL: workload.PromptCacheTTL1h}},
 	} {
@@ -202,10 +201,10 @@ func TestAOneHourCacheWriteIsBilledAtTheOneHourRate(t *testing.T) {
 }
 
 // TestAnthropicProfileModelsFollowThePromptCache: a provider profile on
-// the anthropic dialect gets the bundle's prompt cache too — off unless
-// the bundle turns it on, where the library's own default would be on.
-// Off then on in one process, so a profile cache keyed on the name
-// alone would hand the second build the first one's posture.
+// the anthropic dialect gets the bundle's prompt cache too — on by
+// default, off when the bundle says so. On, then off, then on again in
+// one process, so a profile cache keyed on the name alone would hand a
+// later build an earlier one's posture.
 func TestAnthropicProfileModelsFollowThePromptCache(t *testing.T) {
 	t.Setenv("LAB_ANTHROPIC_KEY", "offline-not-a-real-key")
 	rec := &wireRecorder{}
@@ -227,14 +226,15 @@ func TestAnthropicProfileModelsFollowThePromptCache(t *testing.T) {
 	}})
 	t.Cleanup(func() { RegisterProfiles(nil) })
 
-	on := true
+	off := false
 	for _, tc := range []struct {
 		name    string
 		pc      workload.PromptCache
 		markers bool
 	}{
-		{"off by default", workload.PromptCache{}, false},
-		{"on when the bundle asks", workload.PromptCache{Enabled: &on}, true},
+		{"on by default", workload.PromptCache{}, true},
+		{"off when the bundle says", workload.PromptCache{Enabled: &off}, false},
+		{"on again", workload.PromptCache{}, true},
 	} {
 		m, err := BuildModel(t.Context(), "lab-claude", "house-sonnet", ModelOptions{PromptCache: tc.pc})
 		if err != nil {

@@ -24,7 +24,8 @@ type ModelOptions struct {
 	// BuiltinTools gates the provider's server-side built-in tools.
 	// Zero is every one of them off.
 	BuiltinTools workload.BuiltinTools
-	// PromptCache configures Claude prompt caching. Zero is off.
+	// PromptCache configures Claude prompt caching. Zero is on, with
+	// the 5-minute TTL.
 	PromptCache workload.PromptCache
 }
 

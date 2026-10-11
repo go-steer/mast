@@ -21,9 +21,9 @@ import (
 	"github.com/go-steer/mast/pkg/workload"
 )
 
-// TestLoad_PromptCache: absent is off (the previous release sent no
-// breakpoints — compatibility policy rule 4), only enabled: true turns
-// it on, each field loads as written, and a typo'd TTL is a refused bundle naming the file
+// TestLoad_PromptCache: absent is on with the 5-minute TTL (the
+// default, a breaking change from the release before the block),
+// enabled: false turns it off, each field loads as written, and a typo'd TTL is a refused bundle naming the file
 // rather than a cache that quietly runs on the default.
 func TestLoad_PromptCache(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -32,9 +32,9 @@ func TestLoad_PromptCache(t *testing.T) {
 		ttl     string
 		wantErr string
 	}{
-		"absent":    {yaml: "", on: false, ttl: workload.PromptCacheTTL5m},
+		"absent":    {yaml: "", on: true, ttl: workload.PromptCacheTTL5m},
 		"off":       {yaml: "prompt_cache:\n  enabled: false\n", on: false, ttl: workload.PromptCacheTTL5m},
-		"ttl alone": {yaml: "prompt_cache:\n  ttl: 1h\n", on: false, ttl: workload.PromptCacheTTL1h},
+		"ttl alone": {yaml: "prompt_cache:\n  ttl: 1h\n", on: true, ttl: workload.PromptCacheTTL1h},
 		"one hour":  {yaml: "prompt_cache:\n  enabled: true\n  ttl: 1h\n", on: true, ttl: workload.PromptCacheTTL1h},
 		"5m":        {yaml: "prompt_cache:\n  enabled: true\n  ttl: 5m\n", on: true, ttl: workload.PromptCacheTTL5m},
 		"typo":      {yaml: "prompt_cache:\n  ttl: 60m\n", wantErr: `unknown prompt_cache.ttl "60m"`},

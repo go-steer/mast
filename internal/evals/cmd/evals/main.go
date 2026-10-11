@@ -60,7 +60,7 @@ func main() {
 		rows     = flag.String("rows", "", "judge tier: comma-separated scenario ids to run instead of the whole corpus (a cost probe, or re-running one row)")
 		baseline = flag.String("baseline", "", "a previous board (--format=json output) to report this run's delta against")
 		out      = flag.String("out", "", "also write the JSON board to this path, whatever --format prints")
-		cache    = flag.String("prompt-cache", "off", "judge tier: Claude prompt caching for the model under test, as a bundle's prompt_cache block would set it: off, 5m or 1h")
+		cache    = flag.String("prompt-cache", "", "judge tier: Claude prompt caching for the model under test, as a bundle's prompt_cache block would set it: off, 5m or 1h (default: the product default, 5m)")
 	)
 	flag.Parse()
 
@@ -191,12 +191,14 @@ func findRoot() (string, error) {
 }
 
 // promptCache maps --prompt-cache onto the bundle block it stands in
-// for.
+// for. Unset is the block left out: the product default.
 func promptCache(s string) (workload.PromptCache, error) {
-	on := true
+	on, off := true, false
 	switch s {
-	case "", "off":
+	case "":
 		return workload.PromptCache{}, nil
+	case "off":
+		return workload.PromptCache{Enabled: &off}, nil
 	case workload.PromptCacheTTL5m, workload.PromptCacheTTL1h:
 		return workload.PromptCache{Enabled: &on, TTL: s}, nil
 	}

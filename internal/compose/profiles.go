@@ -145,9 +145,10 @@ func openProfile(ctx context.Context, provider string, pc workload.PromptCache) 
 	if err != nil {
 		return nil, err
 	}
-	// PromptCache is passed explicitly, off unless the bundle turned it
-	// on: nil would mean the library's default, which is on. Only the
-	// anthropic dialect reads it.
+	// PromptCache is passed explicitly, so the bundle's posture rather
+	// than the library's default decides — the two agree today (on, 5
+	// minutes), and a bundle that turns caching off must reach the
+	// adapter as off. Only the anthropic dialect reads it.
 	p, err := coremodels.Open(ctx, prof, coremodels.Options{
 		PromptCache: claudeCache(pc),
 		Logf:        vendorLogf(provider),
