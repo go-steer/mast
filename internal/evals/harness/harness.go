@@ -60,6 +60,7 @@ import (
 
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/differentiators"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 // Tiers, per docs/v0.3-plan.md §2. S (smoke) and U (UAT) have their own
@@ -105,6 +106,13 @@ type Config struct {
 	// a new model, or re-running the one row a nightly lost. The corpus
 	// is still validated whole, so a subset cannot hide a broken row.
 	Rows []string
+
+	// PromptCache is the Claude prompt caching the judge tier's model
+	// under test runs with — a bundle's prompt_cache block, since an eval
+	// run has no bundle. Zero is off, the default a workload gets. The
+	// grader never caches, so turning this on changes only the row being
+	// measured and the A/B stays reproducible from the flag alone.
+	PromptCache workload.PromptCache
 
 	// Progress, when set, receives a line per scenario as the judge tier
 	// works through the corpus. Thirty-one live runs take minutes and the

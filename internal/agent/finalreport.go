@@ -142,9 +142,9 @@ func applyFinalReport(req *model.LLMRequest, tools []*genai.Tool, reason string)
 	// instruction, because it is news: it describes what just happened
 	// to this request, not a standing fact about the agent. A system
 	// instruction assembled before the turn began is also the one thing
-	// a provider cache may be holding (core-models dialect/gemini),
-	// and rewriting it here would miss the cache for a single call whose
-	// entire point is to be cheap.
+	// a provider cache may be holding — a Vertex context cache, or a
+	// Claude prompt-cache breakpoint — and rewriting it here would miss
+	// the cache for a single call whose entire point is to be cheap.
 	text := FinalReportInstruction
 	if reason = strings.TrimSpace(reason); reason != "" {
 		text += "\n\nReason: " + reason
@@ -159,10 +159,11 @@ func applyFinalReport(req *model.LLMRequest, tools []*genai.Tool, reason string)
 // finish_task removed, dropping any genai.Tool left with nothing in it.
 //
 // It rebuilds rather than filtering in place: the slice and the
-// declarations under it are assembled per-request by ADK, but a
-// provider-side builtin loader appends to the same slice
-// (core-models dialect/gemini) and saves it for restore, so
-// mutating the backing array would edit what that restore hands back.
+// declarations under it are assembled per-request by ADK and belong to
+// the request, so filtering the backing array would edit a slice other
+// code may still hold. (mast's former Gemini layer did hold it, to
+// restore after appending built-ins; core-models' adapters build from a
+// copy, but the rebuild costs nothing and assumes nothing.)
 //
 // Non-function tools — a provider builtin like Google Search — are
 // dropped with everything else. They are exactly the kind of "one more

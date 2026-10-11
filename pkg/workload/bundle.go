@@ -373,7 +373,8 @@ func (b BuiltinTools) WebSearchOn() bool     { return on(b.WebSearch) }
 func (b BuiltinTools) URLContextOn() bool    { return on(b.URLContext) }
 func (b BuiltinTools) CodeExecutionOn() bool { return on(b.CodeExecution) }
 
-// PromptCache is the workload's Claude prompt caching. Anthropic only:
+// PromptCache is the workload's Claude prompt caching, off unless a
+// bundle turns it on. Anthropic only:
 // Gemini's caching is implicit, or the Vertex context cache, and
 // neither takes a breakpoint, so this block changes nothing on a
 // gemini-* or profile model.
@@ -388,12 +389,18 @@ func (b BuiltinTools) CodeExecutionOn() bool { return on(b.CodeExecution) }
 //
 // Workload-wide: every claude-* model the bundle builds, root and
 // specialists alike, caches the same way.
+//
+// Opt-in, where core-agent's is on by default, because of the
+// compatibility policy (docs/compatibility-policy.md, rule 4): the
+// release before this block sent no cache breakpoints, so its zero
+// value has to mean none. Turning the default on is a breaking change
+// for a later release to make deliberately.
 type PromptCache struct {
-	// Enabled defaults to true (nil = on). false turns caching off.
+	// Enabled turns caching on. Absent (nil) or false is off.
 	Enabled *bool `yaml:"enabled,omitempty"`
 
 	// TTL is the breakpoint lifetime requested on cache writes: "5m"
-	// (the default) or "1h".
+	// (the default) or "1h". It applies only when Enabled is true.
 	//
 	// The trade is a real one and the reason this is a knob rather
 	// than a default: a 1-hour breakpoint bills writes at 2x base
@@ -413,8 +420,8 @@ const (
 	PromptCacheTTL1h = "1h"
 )
 
-// On resolves Enabled against the default: absent is on.
-func (p PromptCache) On() bool { return p.Enabled == nil || *p.Enabled }
+// On resolves Enabled against the default: only an explicit true is on.
+func (p PromptCache) On() bool { return p.Enabled != nil && *p.Enabled }
 
 // EffectiveTTL is TTL with the default applied: PromptCacheTTL5m or
 // PromptCacheTTL1h. The loader refuses any other value, so only a
@@ -1267,7 +1274,7 @@ type Bundle struct {
 	BuiltinTools BuiltinTools `yaml:"builtin_tools,omitempty"`
 
 	// PromptCache configures Claude prompt caching. The zero value is
-	// on, with the 5-minute TTL.
+	// off, as before the block existed.
 	PromptCache PromptCache `yaml:"prompt_cache,omitempty"`
 
 	// HITL is the human-in-the-loop policy for this workload.

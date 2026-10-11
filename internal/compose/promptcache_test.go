@@ -16,6 +16,7 @@ package compose
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"math"
 	"net/http"
@@ -25,6 +26,9 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-models/auth"
+	"github.com/go-steer/core-models/profile"
 
 	mastusage "github.com/go-steer/mast/internal/providers/usage"
 	"github.com/go-steer/mast/pkg/budget"
@@ -72,10 +76,11 @@ func sentCacheControls(t *testing.T, rec *wireRecorder, m adkmodel.LLM) []map[st
 }
 
 // TestClaudePromptCacheFollowsTheBundle reads the bundle's prompt_cache
-// block off the request a claude-* model actually sends: breakpoints on
-// by default with Anthropic's default (5-minute) TTL, none when the
-// bundle turns caching off, and the 1-hour TTL on every breakpoint when
-// it asks for one.
+// block off the request a claude-* model actually sends: no breakpoints
+// unless the bundle turns caching on (the previous release sent none),
+// Anthropic's default (5-minute) TTL when it does, and the 1-hour TTL on
+// every breakpoint when it asks for one. A ttl without enabled: true
+// turns nothing on.
 func TestClaudePromptCacheFollowsTheBundle(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
 	off, on := false, true
@@ -84,10 +89,12 @@ func TestClaudePromptCacheFollowsTheBundle(t *testing.T) {
 		markers bool
 		ttl     string // "" = no ttl field, Anthropic's 5-minute default
 	}{
-		"no bundle":   {markers: true},
+		"no bundle":   {},
+		"enabled":     {pc: workload.PromptCache{Enabled: &on}, markers: true},
 		"5m":          {pc: workload.PromptCache{Enabled: &on, TTL: workload.PromptCacheTTL5m}, markers: true},
 		"disabled":    {pc: workload.PromptCache{Enabled: &off}},
-		"one hour":    {pc: workload.PromptCache{TTL: workload.PromptCacheTTL1h}, markers: true, ttl: "1h"},
+		"ttl alone":   {pc: workload.PromptCache{TTL: workload.PromptCacheTTL1h}},
+		"one hour":    {pc: workload.PromptCache{Enabled: &on, TTL: workload.PromptCacheTTL1h}, markers: true, ttl: "1h"},
 		"off wins 1h": {pc: workload.PromptCache{Enabled: &off, TTL: workload.PromptCacheTTL1h}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -150,8 +157,9 @@ func TestAOneHourCacheWriteIsBilledAtTheOneHourRate(t *testing.T) {
 	vendorBaseURL = srv.URL
 	t.Cleanup(func() { vendorBaseURL = prev })
 
+	on := true
 	m, err := BuildModel(t.Context(), "anthropic", "claude-sonnet-5",
-		ModelOptions{PromptCache: workload.PromptCache{TTL: workload.PromptCacheTTL1h}})
+		ModelOptions{PromptCache: workload.PromptCache{Enabled: &on, TTL: workload.PromptCacheTTL1h}})
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
 	}
@@ -190,5 +198,50 @@ func TestAOneHourCacheWriteIsBilledAtTheOneHourRate(t *testing.T) {
 	want := (10*2.0 + 28804*4.0 + 4*10.0) / 1e6
 	if math.Abs(got-want) > 1e-9 {
 		t.Errorf("metered $%.6f, want $%.6f (at the 5-minute rate it would be $%.6f)", got, want, (10*2.0+28804*2.5+4*10.0)/1e6)
+	}
+}
+
+// TestAnthropicProfileModelsFollowThePromptCache: a provider profile on
+// the anthropic dialect gets the bundle's prompt cache too — off unless
+// the bundle turns it on, where the library's own default would be on.
+// Off then on in one process, so a profile cache keyed on the name
+// alone would hand the second build the first one's posture.
+func TestAnthropicProfileModelsFollowThePromptCache(t *testing.T) {
+	t.Setenv("LAB_ANTHROPIC_KEY", "offline-not-a-real-key")
+	rec := &wireRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		rec.mu.Lock()
+		rec.body = body
+		rec.mu.Unlock()
+	}))
+	t.Cleanup(srv.Close)
+	open := true
+	RegisterProfiles([]profile.Profile{{
+		Name:       "lab-claude",
+		Extends:    "anthropic",
+		BaseURL:    srv.URL,
+		Auth:       auth.Config{Kind: auth.APIKey, Env: "LAB_ANTHROPIC_KEY"},
+		OpenModels: &open,
+	}})
+	t.Cleanup(func() { RegisterProfiles(nil) })
+
+	on := true
+	for _, tc := range []struct {
+		name    string
+		pc      workload.PromptCache
+		markers bool
+	}{
+		{"off by default", workload.PromptCache{}, false},
+		{"on when the bundle asks", workload.PromptCache{Enabled: &on}, true},
+	} {
+		m, err := BuildModel(t.Context(), "lab-claude", "house-sonnet", ModelOptions{PromptCache: tc.pc})
+		if err != nil {
+			t.Fatalf("%s: BuildModel: %v", tc.name, err)
+		}
+		if got := sentCacheControls(t, rec, m); (len(got) > 0) != tc.markers {
+			t.Errorf("%s: %d cache_control markers, want markers=%v", tc.name, len(got), tc.markers)
+		}
 	}
 }

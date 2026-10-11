@@ -355,17 +355,22 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 
 	note := progressFn(cfg.Progress)
 
-	build := cfg.buildModel
+	build, buildUnder := cfg.buildModel, cfg.buildModel
 	if build == nil {
 		// No bundle on an eval run, so the provider's server-side
 		// built-ins stay at mast's default-off baseline (#324) — the
 		// same posture a shipped workload gets unless it asks
 		// otherwise, which is the posture these tiers are measuring.
+		// Prompt caching follows --prompt-cache, for the model under
+		// test only.
 		build = func(ctx context.Context, provider, name string) (model.LLM, error) {
 			return compose.BuildModel(ctx, provider, name, compose.ModelOptions{})
 		}
+		buildUnder = func(ctx context.Context, provider, name string) (model.LLM, error) {
+			return compose.BuildModel(ctx, provider, name, compose.ModelOptions{PromptCache: cfg.PromptCache})
+		}
 	}
-	rawUnder, err := build(ctx, cfg.Provider, modelName)
+	rawUnder, err := buildUnder(ctx, cfg.Provider, modelName)
 	if err != nil {
 		return Summary{}, fmt.Errorf("harness: build model under test: %w", err)
 	}

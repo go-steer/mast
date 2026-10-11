@@ -46,6 +46,7 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/config"
 	"github.com/go-steer/mast/internal/evals/harness"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 func main() {
@@ -59,6 +60,7 @@ func main() {
 		rows     = flag.String("rows", "", "judge tier: comma-separated scenario ids to run instead of the whole corpus (a cost probe, or re-running one row)")
 		baseline = flag.String("baseline", "", "a previous board (--format=json output) to report this run's delta against")
 		out      = flag.String("out", "", "also write the JSON board to this path, whatever --format prints")
+		cache    = flag.String("prompt-cache", "off", "judge tier: Claude prompt caching for the model under test, as a bundle's prompt_cache block would set it: off, 5m or 1h")
 	)
 	flag.Parse()
 
@@ -72,6 +74,12 @@ func main() {
 	}
 	compose.RegisterProfiles(declared)
 
+	pc, err := promptCache(*cache)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "evals:", err)
+		os.Exit(2)
+	}
+
 	err = run(harness.Config{
 		Tier:     *tier,
 		Root:     *root,
@@ -79,6 +87,8 @@ func main() {
 		Grader:   *grader,
 		Provider: *provider,
 		Rows:     splitRows(*rows),
+		// The bundle block an eval run does not have.
+		PromptCache: pc,
 		// stderr, so a run piped through tee still writes a clean board.
 		Progress: os.Stderr,
 	}, *format, *baseline, *out)
@@ -178,6 +188,19 @@ func findRoot() (string, error) {
 		}
 		dir = parent
 	}
+}
+
+// promptCache maps --prompt-cache onto the bundle block it stands in
+// for.
+func promptCache(s string) (workload.PromptCache, error) {
+	on := true
+	switch s {
+	case "", "off":
+		return workload.PromptCache{}, nil
+	case workload.PromptCacheTTL5m, workload.PromptCacheTTL1h:
+		return workload.PromptCache{Enabled: &on, TTL: s}, nil
+	}
+	return workload.PromptCache{}, fmt.Errorf("--prompt-cache=%q: want off, %s or %s", s, workload.PromptCacheTTL5m, workload.PromptCacheTTL1h)
 }
 
 func splitRows(s string) []string {

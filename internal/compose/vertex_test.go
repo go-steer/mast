@@ -15,10 +15,18 @@
 package compose
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/go-steer/core-models/auth"
+	"github.com/go-steer/core-models/profile"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -131,7 +139,7 @@ func TestGeminiClientConfig_EnvPathUnchanged(t *testing.T) {
 			t.Fatalf("geminiClientConfig(%q) = err %v, want a config", provider, err)
 		}
 		if !reflect.DeepEqual(*cfg, genai.ClientConfig{}) {
-			t.Errorf("geminiClientConfig(%q) = %+v, want an empty config (genai's env-driven selection)", provider, *cfg)
+			t.Errorf("geminiClientConfig(%q) = %+v, want an empty config (the Developer API takes no project)", provider, *cfg)
 		}
 	}
 }
@@ -203,5 +211,59 @@ func TestTierModelName_VertexResolves(t *testing.T) {
 		if !strings.HasPrefix(viaVertex, "gemini-") {
 			t.Errorf("tier %q under vertex resolved %q, want a gemini-* id", tier, viaVertex)
 		}
+	}
+}
+
+// fakeToken is a Google token source for tests that open an ADC-backed
+// built-in profile without real credentials.
+type fakeToken struct{}
+
+func (fakeToken) Token(context.Context) (string, error) { return "test-token", nil }
+
+// TestVertexLocationReachesTheRequest: since core-models v0.6.2 the
+// built-in vertex profile resolves mast's whole location chain itself,
+// GOOGLE_CLOUD_REGION included, so mast no longer pins it. This reads the
+// location off the request path, end to end through buildGemini.
+func TestVertexLocationReachesTheRequest(t *testing.T) {
+	for name, tc := range map[string]struct{ location, region, want string }{
+		"location":       {location: "europe-west4", region: "us-east5", want: "europe-west4"},
+		"region":         {region: "us-east5", want: "us-east5"},
+		"global default": {want: DefaultVertexLocation},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearVertexEnv(t)
+			t.Setenv("GOOGLE_CLOUD_PROJECT", "demo-project")
+			t.Setenv("GOOGLE_CLOUD_LOCATION", tc.location)
+			t.Setenv("GOOGLE_CLOUD_REGION", tc.region)
+			var mu sync.Mutex
+			var path string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				path = r.URL.Path
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+			}))
+			t.Cleanup(srv.Close)
+			prevURL, prevResolve := vendorBaseURL, vendorResolve
+			vendorBaseURL = srv.URL
+			vendorResolve = &profile.Options{Auth: auth.Options{
+				DetectGoogle: func(context.Context, []string) (auth.TokenSource, error) { return fakeToken{}, nil },
+			}}
+			t.Cleanup(func() { vendorBaseURL, vendorResolve = prevURL, prevResolve })
+
+			m, err := BuildModel(t.Context(), ProviderVertex, "gemini-3.5-flash", ModelOptions{})
+			if err != nil {
+				t.Fatalf("BuildModel: %v", err)
+			}
+			req := &adkmodel.LLMRequest{Contents: []*genai.Content{genai.NewContentFromText("hi", genai.RoleUser)}, Config: &genai.GenerateContentConfig{}}
+			for range m.GenerateContent(context.Background(), req, false) {
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if want := "/projects/demo-project/locations/" + tc.want + "/"; !strings.Contains(path, want) {
+				t.Errorf("request path = %q, want it to contain %q", path, want)
+			}
+		})
 	}
 }

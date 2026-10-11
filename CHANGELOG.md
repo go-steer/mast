@@ -202,12 +202,14 @@
 
 ### Feature
 
-- **Claude prompt caching, configured in the bundle.** A new `prompt_cache`
-  block (`enabled`, `ttl: 5m | 1h`) controls cache breakpoints on
-  `claude-*` models: the system prompt plus rolling breakpoints over the
-  conversation, the caching core-agent has, now in core-models' adapter.
-  It is on by default with the 5-minute TTL. On the judged corpus with
-  `claude-sonnet-5`, scores were unchanged and cost fell 30%. A 1-hour
+- **Claude prompt caching, opt-in from the bundle.** A new `prompt_cache`
+  block (`enabled: true`, `ttl: 5m | 1h`) turns on cache breakpoints on
+  `claude-*` models and Anthropic-dialect provider profiles: the system
+  prompt plus rolling breakpoints over the conversation, the caching
+  core-agent has, now in core-models' adapter. Off unless a bundle sets
+  `enabled: true`, as before the block existed; core-agent defaults it
+  on. The eval harness takes `--prompt-cache=off|5m|1h`. On the judged
+  corpus with `claude-sonnet-5`, scores were unchanged and cost fell 30%. A 1-hour
   write is billed at its own rate (2x base input): the usage record, the
   meter and the pricing catalog carry the 1-hour share, and
   `cache_creation_1h_input_per_mtok` is read from LiteLLM. core-agent

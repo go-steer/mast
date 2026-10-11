@@ -17,7 +17,7 @@ package compose
 import (
 	"context"
 	"fmt"
-	"maps"
+	"os"
 
 	coremodels "github.com/go-steer/core-models"
 	"github.com/go-steer/core-models/adkv2"
@@ -64,20 +64,24 @@ const (
 // recorder and reads back what mast actually puts on the wire.
 var vendorBaseURL string
 
-// openVendor opens a core-models built-in profile, after mutate (if
-// any) adjusts a copy of it, and returns name as an ADK model carrying
-// mast's usage sidecar.
-func openVendor(ctx context.Context, builtin, name string, mutate func(*profile.Profile), opts coremodels.Options) (model.LLM, error) {
+// vendorResolve, when set, is how a built-in profile is resolved against
+// the environment. A test seam, beside vendorBaseURL: a test hands the
+// ADC-backed profiles a fake token source instead of needing real
+// Google credentials.
+var vendorResolve *profile.Options
+
+// openVendor opens a core-models built-in profile and returns name as
+// an ADK model carrying mast's usage sidecar.
+func openVendor(ctx context.Context, builtin, name string, opts coremodels.Options) (model.LLM, error) {
 	p, ok := profile.Builtin(builtin)
 	if !ok {
 		return nil, fmt.Errorf("core-models has no built-in profile %q", builtin)
 	}
-	if mutate != nil {
-		p.Params = maps.Clone(p.Params)
-		mutate(&p)
-	}
 	if vendorBaseURL != "" {
 		p.BaseURL = vendorBaseURL
+	}
+	if vendorResolve != nil {
+		opts.Resolve = *vendorResolve
 	}
 	prov, err := coremodels.Open(ctx, p, opts)
 	if err != nil {
@@ -94,21 +98,21 @@ func openVendor(ctx context.Context, builtin, name string, mutate func(*profile.
 // says so, otherwise the Developer API keyed from GOOGLE_API_KEY or
 // GEMINI_API_KEY — genai's own env selection, restated.
 func buildGemini(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
-	opts := coremodels.Options{BuiltinTools: builtinsOn(bt)}
+	opts := coremodels.Options{BuiltinTools: builtinsOn(bt), Logf: vendorLogf("gemini")}
 	if !geminiOnVertex(provider) {
-		return openVendor(ctx, ProviderGemini, name, nil, opts)
+		return openVendor(ctx, ProviderGemini, name, opts)
 	}
-	cfg, err := geminiClientConfig(ProviderVertex)
-	if err != nil {
+	if key, ok := vertexExpressKey(provider); ok {
+		return buildGeminiVertexExpress(ctx, name, key, opts)
+	}
+	// Checked here for its error, which names the variable to set; the
+	// built-in vertex profile resolves the same project and location
+	// chain (GOOGLE_CLOUD_LOCATION, then GOOGLE_CLOUD_REGION, then
+	// global) itself.
+	if _, err := geminiClientConfig(ProviderVertex); err != nil {
 		return nil, err
 	}
-	// mast's location chain (GOOGLE_CLOUD_LOCATION, GOOGLE_CLOUD_REGION,
-	// global) is one variable longer than the profile's; pin both
-	// params to what mast resolved so the two cannot disagree.
-	return openVendor(ctx, ProviderVertex, name, func(p *profile.Profile) {
-		p.Params["project"] = cfg.Project
-		p.Params["region"] = cfg.Location
-	}, opts)
+	return openVendor(ctx, ProviderVertex, name, opts)
 }
 
 // buildClaude serves a claude-* model on the backend anthropicBackend
@@ -125,14 +129,37 @@ func buildClaude(ctx context.Context, provider, name string, mo ModelOptions) (m
 	if err != nil {
 		return nil, err
 	}
-	var builtins []string
-	if mo.BuiltinTools.WebSearchOn() {
-		builtins = []string{"web_search"}
-	}
-	return openVendor(ctx, backend, name, nil, coremodels.Options{
-		BuiltinTools: builtins,
+	return openVendor(ctx, backend, name, coremodels.Options{
+		BuiltinTools: anthropicBuiltins(mo.BuiltinTools),
 		PromptCache:  claudeCache(mo.PromptCache),
+		Logf:         vendorLogf("anthropic"),
 	})
+}
+
+// anthropicBuiltins is builtinsOn narrowed to the built-ins the
+// Anthropic adapter has, asked of the adapter itself so the two lists
+// cannot drift. A name it lacks is dropped rather than sent: mast has
+// always treated a built-in with no equivalent as off, where the
+// library refuses the request.
+func anthropicBuiltins(bt workload.BuiltinTools) []string {
+	var out []string
+	for _, n := range builtinsOn(bt) {
+		if _, err := anthropic.BuiltinToolsFromNames([]string{n}); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// vendorLogf routes an adapter's operator-facing notices — a pre-3.0
+// Gemini model running without its built-ins, an empty response
+// retried or persisting, a context cache evicted — to the daemon's
+// stderr in the line format mast's own adapters used ("mast: gemini:
+// ..."). Package-level so a test can intercept it.
+var vendorLogf = func(family string) func(format string, args ...any) {
+	return func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "mast: "+family+": "+format+"\n", args...)
+	}
 }
 
 // claudeCache maps the bundle's prompt_cache block onto the adapter's

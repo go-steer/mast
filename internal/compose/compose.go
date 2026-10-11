@@ -535,9 +535,9 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //
 // mo carries the bundle's model settings. Its zero value is mast's
 // baseline — every server-side built-in tool off, whichever backend
-// resolves, and Claude prompt caching on with the 5-minute TTL — so a
-// caller with no bundle to read (a one-shot, a library embed, an eval
-// rig) gets the default posture by construction. See builtintools.go
+// resolves, and no Claude prompt caching — so a caller with no bundle
+// to read (a one-shot, a library embed, an eval rig) gets the default
+// posture by construction. See builtintools.go
 // for why mast does not inherit the vendor's own built-in default.
 func BuildModel(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
 	switch {
@@ -559,7 +559,7 @@ func BuildModel(ctx context.Context, provider, name string, mo ModelOptions) (mo
 		// After the prefixes, so a specialist's cross-provider `model:`
 		// override (a claude-* under a profile root) still reaches its
 		// own family.
-		return buildProfileModel(ctx, provider, name, mo.BuiltinTools)
+		return buildProfileModel(ctx, provider, name, mo)
 	default:
 		return nil, fmt.Errorf("unknown model %q (want `echo`, `toolactor`, `scripted`, a `gemini-*` or a `claude-*` model id, or --provider naming a provider profile)", name)
 	}
@@ -708,27 +708,19 @@ func geminiOnVertex(provider string) bool {
 	return v == "true" || v == "1"
 }
 
-// geminiClientConfig builds the genai client config for a gemini-*
-// model under the given --provider alias.
+// geminiClientConfig resolves the Vertex AI project and location for a
+// gemini-* model under the given --provider alias, and refuses a missing
+// project with an error naming the variable to set rather than leaving
+// it to surface from deep inside the client.
 //
-// Two paths, and the split is deliberate:
-//
-// With no alias (or any alias that is not `vertex`) the config stays
-// empty and genai decides everything from the environment, exactly as
-// it did before the alias existed — GOOGLE_GENAI_USE_VERTEXAI picks the
-// backend, GOOGLE_API_KEY / GEMINI_API_KEY or GOOGLE_CLOUD_* supply the
-// credentials. Nothing about that path changes here.
-//
-// `--provider=vertex` names the backend outright, which is the whole
-// point of the alias: a deployment whose credential is the service
-// account's ADC should not have to also set an env var whose absence
-// surfaces as an API-key error from the *other* backend. Project and
-// location still come from the environment (there is no config file for
-// them), but a missing project fails here, naming the variable, rather
-// than inside genai as a struct dump.
-//
-// Location defaults to genai's own default rather than mast inventing
-// one, and is passed explicitly so the resolved value is deterministic.
+// buildGemini asks it whenever geminiOnVertex holds, whether the
+// `vertex` alias named the backend or GOOGLE_GENAI_USE_VERTEXAI selected
+// it — except in Vertex express mode (an API key and no project; see
+// vertexexpress.go), which needs no project. The core-models vertex
+// profile then resolves the same chain itself: GOOGLE_CLOUD_PROJECT, and
+// GOOGLE_CLOUD_LOCATION, then GOOGLE_CLOUD_REGION, then
+// DefaultVertexLocation. Under any other alias the config is empty: the
+// Developer API takes no project.
 func geminiClientConfig(provider string) (*genai.ClientConfig, error) {
 	if provider != ProviderVertex {
 		return &genai.ClientConfig{}, nil

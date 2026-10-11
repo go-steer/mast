@@ -353,13 +353,15 @@ func (r *retryingLLM) Name() string { return r.inner.Name() }
 func (r *retryingLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	// The first inner call happens HERE, not inside the closure, so that
 	// calling this method has the same effects at the same moment as
-	// calling the model it wraps. mast's own Gemini layer populates
-	// req.Config.Tools when GenerateContent is invoked rather than when
-	// the sequence is walked (core-models dialect/gemini), so a wrapper that
-	// deferred everything to first iteration would quietly move the
-	// built-in-tool gate — a security boundary — to a later moment, and
-	// would erase it entirely for any caller that asks for a sequence it
-	// does not walk.
+	// calling the model it wraps. A model may do its work when
+	// GenerateContent is invoked rather than when the sequence is walked
+	// — mast's former Gemini layer applied the built-in-tool gate, a
+	// security boundary, to the request at that moment — and a wrapper
+	// that deferred everything to first iteration would move that work to
+	// a later moment, or erase it for a caller that asks for a sequence it
+	// does not walk. core-models' adapters build their request from a
+	// copy and leave the caller's alone; the wrapper keeps the eager call
+	// because it may not assume which model it wraps.
 	first := r.inner.GenerateContent(ctx, req, stream)
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		var (

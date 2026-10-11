@@ -70,8 +70,8 @@ type loadedWorkload struct {
 }
 
 // modelOptions is nil-safe: no --workload means no bundle to read, and
-// the baseline applies — every server-side tool off, Claude prompt
-// caching on with the 5-minute TTL.
+// the baseline applies — every server-side tool off, no Claude prompt
+// caching.
 func (w *loadedWorkload) modelOptions() compose.ModelOptions {
 	if w == nil {
 		return compose.ModelOptions{}

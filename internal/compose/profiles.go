@@ -119,12 +119,22 @@ func ProfileNames() []string {
 	return slices.Compact(names)
 }
 
-// openProfile opens a profile once per process. Opening resolves it
-// against the environment — variables, credentials — so a missing key
-// fails here, at construction, naming the profile (R1).
-func openProfile(ctx context.Context, provider string) (coremodels.Provider, error) {
+// openProfile opens a profile once per process for each prompt-cache
+// posture. Opening resolves it against the environment — variables,
+// credentials — so a missing key fails here, at construction, naming
+// the profile (R1).
+//
+// The cache is keyed on the posture as well as the name, because the
+// posture is baked into the opened provider: an anthropic-dialect
+// profile caches per its Options.PromptCache, and two bundles in one
+// process (a library embed) may ask for different ones.
+func openProfile(ctx context.Context, provider string, pc workload.PromptCache) (coremodels.Provider, error) {
+	key := provider
+	if pc.On() {
+		key += "\x00cache=" + pc.EffectiveTTL()
+	}
 	profiles.mu.RLock()
-	if p, ok := profiles.opened[provider]; ok {
+	if p, ok := profiles.opened[key]; ok {
 		profiles.mu.RUnlock()
 		return p, nil
 	}
@@ -135,7 +145,13 @@ func openProfile(ctx context.Context, provider string) (coremodels.Provider, err
 	if err != nil {
 		return nil, err
 	}
-	p, err := coremodels.Open(ctx, prof, coremodels.Options{})
+	// PromptCache is passed explicitly, off unless the bundle turned it
+	// on: nil would mean the library's default, which is on. Only the
+	// anthropic dialect reads it.
+	p, err := coremodels.Open(ctx, prof, coremodels.Options{
+		PromptCache: claudeCache(pc),
+		Logf:        vendorLogf(provider),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -144,19 +160,20 @@ func openProfile(ctx context.Context, provider string) (coremodels.Provider, err
 	if profiles.opened == nil {
 		profiles.opened = map[string]coremodels.Provider{}
 	}
-	profiles.opened[provider] = p
+	profiles.opened[key] = p
 	return p, nil
 }
 
 // buildProfileModel is BuildModel for a profile-backed provider.
-func buildProfileModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+func buildProfileModel(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
+	bt := mo.BuiltinTools
 	// The openai-chat dialect sends function tools only. A bundle that
 	// asked for a server-side search or code tool would otherwise run
 	// without it and never say so (the shape #340 closed for Gemini).
 	if on := builtinsOn(bt); len(on) > 0 {
 		return nil, fmt.Errorf("provider profile %q: the bundle turns on server-side built-in tools %v, which this provider cannot run; turn them off in builtin_tools", provider, on)
 	}
-	p, err := openProfile(ctx, provider)
+	p, err := openProfile(ctx, provider, mo.PromptCache)
 	if err != nil {
 		return nil, err
 	}

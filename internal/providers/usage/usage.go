@@ -18,12 +18,14 @@
 // genai.GenerateContentResponseUsageMetadata is Gemini's shape. Every
 // provider mast speaks to is projected onto it, and the projection is
 // lossy in both directions: Anthropic's cache_creation_input_tokens has
-// nowhere to go at all (core-models' Anthropic adapter folds it into
-// the prompt total, where it bills at 1x instead of 1.25x), and a
-// counter a provider simply did not report is indistinguishable from
-// one it reported as zero.
+// nowhere to go (core-models' Anthropic adapter folds it into the
+// prompt total, where on its own it would bill at 1x instead of 1.25x,
+// or 2x for a 1-hour write), and a counter a provider simply did not
+// report is indistinguishable from one it reported as zero.
 //
-// Detail is the sidecar that fixes both. An adapter attaches one beside
+// Detail is the sidecar that fixes both. It carries cache reads, cache
+// writes and the 1-hour share of the writes as separate counts, so the
+// meter bills each at its own rate. An adapter attaches one beside
 // the genai record, under budget.DetailKey in
 // model.LLMResponse.CustomMetadata; pkg/budget's meter reads the
 // buckets it prices and ignores the rest. See
