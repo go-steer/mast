@@ -35,10 +35,10 @@ import (
 // in this package cannot import it back, and the contract being
 // implementable by a type this package has never heard of is the
 // property worth having.
-type stubDetail struct{ read, write *int64 }
+type stubDetail struct{ read, write, write1h *int64 }
 
 func (d stubDetail) UsageBuckets() Buckets {
-	return Buckets{CacheReadTokens: d.read, CacheWriteTokens: d.write}
+	return Buckets{CacheReadTokens: d.read, CacheWriteTokens: d.write, CacheWrite1hTokens: d.write1h}
 }
 
 func i64(n int64) *int64 { return &n }
@@ -274,5 +274,52 @@ func TestCallOf(t *testing.T) {
 func TestBucketsOfToleratesAnAbsentMap(t *testing.T) {
 	if got := bucketsOf(&session.Event{}); got != (Buckets{}) {
 		t.Errorf("bucketsOf(no CustomMetadata) = %+v, want the zero Buckets", got)
+	}
+}
+
+// callRecorder is a Pricer that keeps the first Call it was asked
+// about: the call itself. The meter then prices an uncached reference
+// (uncachedReference), which has no write bucket to carry.
+type callRecorder struct {
+	first Call
+	seen  bool
+}
+
+func (r *callRecorder) PriceCall(_, _ string, c Call) (float64, bool) {
+	if !r.seen {
+		r.first, r.seen = c, true
+	}
+	return 0, true
+}
+
+// TestCallOfCarriesTheOneHourShare: the 1-hour subset reaches the
+// pricer as a subset of the write bucket, so a pricer can bill it at its
+// own rate, and a provider that over-reports it is clipped to the
+// writes it is a share of rather than billed beyond them.
+func TestCallOfCarriesTheOneHourShare(t *testing.T) {
+	for name, tc := range map[string]struct {
+		write1h *int64
+		want    int
+	}{
+		"not split":      {write1h: nil, want: 0},
+		"all one hour":   {write1h: i64(warmWrite), want: warmWrite},
+		"part one hour":  {write1h: i64(1_000), want: 1_000},
+		"over-reported":  {write1h: i64(warmWrite + 500), want: warmWrite},
+		"negative count": {write1h: i64(-3), want: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := &callRecorder{}
+			m := NewMeter(Limits{Pricer: rec})
+			ev := warmingEvent(false)
+			ev.CustomMetadata = map[string]any{
+				DetailKey: stubDetail{read: i64(0), write: i64(warmWrite), write1h: tc.write1h},
+			}
+			if err := m.Observe(ev); err != nil {
+				t.Fatalf("observe: %v", err)
+			}
+			if rec.first.CacheWriteTokens != warmWrite || rec.first.CacheWrite1hTokens != tc.want {
+				t.Errorf("call = %+v, want %d writes of which %d one-hour", rec.first, warmWrite, tc.want)
+			}
+		})
 	}
 }

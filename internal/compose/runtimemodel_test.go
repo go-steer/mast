@@ -27,7 +27,6 @@ import (
 	"testing"
 
 	"github.com/go-steer/mast/internal/modelretry"
-	"github.com/go-steer/mast/pkg/workload"
 )
 
 // TestARuntimeModelIsDrivenByTheProcessPolicy. Asserting the policy
@@ -43,7 +42,7 @@ func TestARuntimeModelIsDrivenByTheProcessPolicy(t *testing.T) {
 
 	for _, name := range []string{"gemini-3.7-flash", "claude-opus-5"} {
 		t.Run(name, func(t *testing.T) {
-			m, err := NewRuntimeModel(context.Background(), "", name, workload.BuiltinTools{})
+			m, err := NewRuntimeModel(context.Background(), "", name, ModelOptions{})
 			if err != nil {
 				t.Fatalf("NewRuntimeModel: %v", err)
 			}
@@ -62,7 +61,7 @@ func TestARuntimeModelIsDrivenByTheProcessPolicy(t *testing.T) {
 // every e2e and UAT run takes.
 func TestAnOfflineFakeIsNotWrapped(t *testing.T) {
 	for _, name := range []string{"echo", "toolactor"} {
-		m, err := NewRuntimeModel(context.Background(), "", name, workload.BuiltinTools{})
+		m, err := NewRuntimeModel(context.Background(), "", name, ModelOptions{})
 		if err != nil {
 			t.Fatalf("NewRuntimeModel(%s): %v", name, err)
 		}
@@ -75,7 +74,7 @@ func TestAnOfflineFakeIsNotWrapped(t *testing.T) {
 // TestNewRuntimeModelPassesTheBuildErrorThrough, rather than turning a
 // missing credential into a wrapper around nil.
 func TestNewRuntimeModelPassesTheBuildErrorThrough(t *testing.T) {
-	m, err := NewRuntimeModel(context.Background(), "", "not-a-model", workload.BuiltinTools{})
+	m, err := NewRuntimeModel(context.Background(), "", "not-a-model", ModelOptions{})
 	if err == nil {
 		t.Fatalf("NewRuntimeModel returned %v, want the unknown-model error", m)
 	}

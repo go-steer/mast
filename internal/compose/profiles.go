@@ -201,12 +201,13 @@ func (b usageBridge) GenerateContent(ctx context.Context, req *model.LLMRequest,
 			if resp != nil {
 				if d, ok := coreusage.FromMetadata(resp.CustomMetadata); ok {
 					mastusage.Attach(resp, &mastusage.Detail{
-						CacheReadTokens:   d.CacheReadTokens,
-						CacheWriteTokens:  d.CacheWriteTokens,
-						ReasoningTokens:   d.ReasoningTokens,
-						ToolUseTokens:     d.ToolUseTokens,
-						ServedModel:       d.ServedModel,
-						ProviderRequestID: d.ProviderRequestID,
+						CacheReadTokens:    d.CacheReadTokens,
+						CacheWriteTokens:   d.CacheWriteTokens,
+						CacheWrite1hTokens: d.CacheWrite1hTokens,
+						ReasoningTokens:    d.ReasoningTokens,
+						ToolUseTokens:      d.ToolUseTokens,
+						ServedModel:        d.ServedModel,
+						ProviderRequestID:  d.ProviderRequestID,
 					})
 				}
 			}

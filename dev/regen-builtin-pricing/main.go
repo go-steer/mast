@@ -205,9 +205,12 @@ type liteLLMEntry struct {
 	OutputCostPerToken          *float64 `json:"output_cost_per_token,omitempty"`
 	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
-	MaxInputTokens              *int     `json:"max_input_tokens,omitempty"`
-	Mode                        string   `json:"mode,omitempty"`
-	LiteLLMProvider             string   `json:"litellm_provider,omitempty"`
+	// CacheCreationInputTokenCostAbove1hr is the write rate at a 1-hour
+	// breakpoint (Anthropic's 2x base input).
+	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	MaxInputTokens                      *int     `json:"max_input_tokens,omitempty"`
+	Mode                                string   `json:"mode,omitempty"`
+	LiteLLMProvider                     string   `json:"litellm_provider,omitempty"`
 
 	// SupportsFunctionCalling is a POINTER on purpose. It is absent on
 	// roughly 40% of LiteLLM's catalog, and absent must mean "unknown",
@@ -238,9 +241,12 @@ type generatedEntry struct {
 	InputPerMTok              float64
 	CachedInputPerMTok        float64
 	CacheCreationInputPerMTok float64
-	OutputPerMTok             float64
-	ContextWindowTokens       int
-	Provider                  string
+	// CacheCreation1hInputPerMTok is zero when LiteLLM publishes no
+	// 1-hour rate; pricing then bills 1h writes at the 5-minute rate.
+	CacheCreation1hInputPerMTok float64
+	OutputPerMTok               float64
+	ContextWindowTokens         int
+	Provider                    string
 }
 
 func main() {
@@ -769,6 +775,12 @@ func ratesOf(key string, e liteLLMEntry) generatedEntry {
 	if e.CacheCreationInputTokenCost != nil && *e.CacheCreationInputTokenCost > 0 {
 		out.CacheCreationInputPerMTok = round6(*e.CacheCreationInputTokenCost * million)
 	}
+	// The 1-hour breakpoint's write rate, under the same zero rule. A
+	// model that publishes the 5-minute rate and not this one leaves it
+	// zero, and pricing bills its 1h writes at the 5-minute rate.
+	if e.CacheCreationInputTokenCostAbove1hr != nil && *e.CacheCreationInputTokenCostAbove1hr > 0 {
+		out.CacheCreation1hInputPerMTok = round6(*e.CacheCreationInputTokenCostAbove1hr * million)
+	}
 	return out
 }
 
@@ -902,6 +914,9 @@ func renderEntry(e generatedEntry, updatedAt time.Time) string {
 	}
 	if e.CacheCreationInputPerMTok > 0 {
 		fields = append(fields, fmt.Sprintf("CacheCreationInputPerMTok: %v", e.CacheCreationInputPerMTok))
+	}
+	if e.CacheCreation1hInputPerMTok > 0 {
+		fields = append(fields, fmt.Sprintf("CacheCreation1hInputPerMTok: %v", e.CacheCreation1hInputPerMTok))
 	}
 	fields = append(fields,
 		fmt.Sprintf("OutputPerMTok: %v", e.OutputPerMTok),

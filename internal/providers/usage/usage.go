@@ -75,6 +75,12 @@ type Detail struct {
 	// storage per hour, not per written token.
 	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`
 
+	// CacheWrite1hTokens is the subset of CacheWriteTokens written with a
+	// 1-hour breakpoint (a bundle's prompt_cache.ttl: 1h), which bills at
+	// 2x base input against the 5-minute 1.25x. Nil when the provider did
+	// not split the bucket.
+	CacheWrite1hTokens *int64 `json:"cache_write_1h_tokens,omitempty"`
+
 	// ReasoningTokens is thinking billed apart from the visible output —
 	// Gemini's thoughtsTokenCount. Nil for Anthropic, whose output count
 	// already includes thinking, so it is a genuine "did not say" rather
@@ -112,8 +118,9 @@ func (d *Detail) UsageBuckets() budget.Buckets {
 		return budget.Buckets{}
 	}
 	return budget.Buckets{
-		CacheReadTokens:  d.CacheReadTokens,
-		CacheWriteTokens: d.CacheWriteTokens,
+		CacheReadTokens:    d.CacheReadTokens,
+		CacheWriteTokens:   d.CacheWriteTokens,
+		CacheWrite1hTokens: d.CacheWrite1hTokens,
 	}
 }
 

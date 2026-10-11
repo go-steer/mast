@@ -20,8 +20,6 @@ import (
 	"testing"
 
 	"google.golang.org/genai"
-
-	"github.com/go-steer/mast/pkg/workload"
 )
 
 // clearVertexEnv unsets every variable the two Gemini backends read, so
@@ -178,7 +176,7 @@ func TestGeminiOnVertex(t *testing.T) {
 func TestBuildModel_VertexAliasRefusesWithoutProject(t *testing.T) {
 	clearVertexEnv(t)
 
-	if _, err := BuildModel(t.Context(), ProviderVertex, "gemini-3.5-flash", workload.BuiltinTools{}); err == nil ||
+	if _, err := BuildModel(t.Context(), ProviderVertex, "gemini-3.5-flash", ModelOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
 		t.Errorf("BuildModel(vertex, gemini-3.5-flash) with no project: err = %v, want the project guidance", err)
 	}

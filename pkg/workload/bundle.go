@@ -373,6 +373,59 @@ func (b BuiltinTools) WebSearchOn() bool     { return on(b.WebSearch) }
 func (b BuiltinTools) URLContextOn() bool    { return on(b.URLContext) }
 func (b BuiltinTools) CodeExecutionOn() bool { return on(b.CodeExecution) }
 
+// PromptCache is the workload's Claude prompt caching. Anthropic only:
+// Gemini's caching is implicit, or the Vertex context cache, and
+// neither takes a breakpoint, so this block changes nothing on a
+// gemini-* or profile model.
+//
+// On, it places a breakpoint on the system prompt (which, rendered
+// after the tools, caches their schemas too) and rolling breakpoints
+// over the tail of the conversation, so the transcript an incident
+// re-sends every turn is re-read at the cache rate instead of re-billed
+// in full. It is core-agent's caching, which mast picks up through
+// core-models' Anthropic adapter; core-agent exposes the same knob as
+// --prompt-cache-ttl / model.anthropic.prompt_cache.
+//
+// Workload-wide: every claude-* model the bundle builds, root and
+// specialists alike, caches the same way.
+type PromptCache struct {
+	// Enabled defaults to true (nil = on). false turns caching off.
+	Enabled *bool `yaml:"enabled,omitempty"`
+
+	// TTL is the breakpoint lifetime requested on cache writes: "5m"
+	// (the default) or "1h".
+	//
+	// The trade is a real one and the reason this is a knob rather
+	// than a default: a 1-hour breakpoint bills writes at 2x base
+	// input where a 5-minute one bills 1.25x, so it pays only when the
+	// gaps between turns routinely exceed five minutes — a turn parked
+	// on an operator's approval, a scheduler-driven daemon. A tight
+	// agentic loop refreshes the 5-minute window on every call and
+	// should stay on the default, where the extra 0.75x would be pure
+	// loss. Both are priced at their own rate, because the provider
+	// reports which TTL each write used.
+	TTL string `yaml:"ttl,omitempty"`
+}
+
+// Prompt-cache breakpoint TTLs PromptCache.TTL accepts.
+const (
+	PromptCacheTTL5m = "5m"
+	PromptCacheTTL1h = "1h"
+)
+
+// On resolves Enabled against the default: absent is on.
+func (p PromptCache) On() bool { return p.Enabled == nil || *p.Enabled }
+
+// EffectiveTTL is TTL with the default applied: PromptCacheTTL5m or
+// PromptCacheTTL1h. The loader refuses any other value, so only a
+// bundle built in code can reach the fallback.
+func (p PromptCache) EffectiveTTL() string {
+	if p.TTL == PromptCacheTTL1h {
+		return PromptCacheTTL1h
+	}
+	return PromptCacheTTL5m
+}
+
 // OnMutation is what happens before a state-mutating tool call
 // (docs/orchestration-design.md, hitl_policy.on_mutation). Which calls
 // are mutating is the mutation predicate's answer, not this field's:
@@ -1212,6 +1265,10 @@ type Bundle struct {
 	// (web search, URL context, code execution). The zero value is
 	// mast's baseline: all of them off, on every provider.
 	BuiltinTools BuiltinTools `yaml:"builtin_tools,omitempty"`
+
+	// PromptCache configures Claude prompt caching. The zero value is
+	// on, with the 5-minute TTL.
+	PromptCache PromptCache `yaml:"prompt_cache,omitempty"`
 
 	// HITL is the human-in-the-loop policy for this workload.
 	HITL HITL `yaml:"hitl,omitempty"`

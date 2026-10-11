@@ -271,7 +271,10 @@ type liteLLMEntry struct {
 	// instead of folding it into uncached input
 	// (go-steer/core-agent#263).
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
-	Mode                        string   `json:"mode,omitempty"`
+	// CacheCreationInputTokenCostAbove1hr is the write rate for a
+	// 1-hour breakpoint. Feeds Rates.CacheCreation1hInputPerMTok.
+	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	Mode                                string   `json:"mode,omitempty"`
 }
 
 // parseLiteLLMBody decodes the LiteLLM JSON and maps it into our
@@ -326,6 +329,9 @@ func parseLiteLLMBody(body []byte) (map[string]ModelRates, error) {
 		// Same zero-means-unsupported treatment as the read rate.
 		if e.CacheCreationInputTokenCost != nil && *e.CacheCreationInputTokenCost > 0 {
 			rates.CacheCreationInputPerMTok = *e.CacheCreationInputTokenCost * million
+		}
+		if e.CacheCreationInputTokenCostAbove1hr != nil && *e.CacheCreationInputTokenCostAbove1hr > 0 {
+			rates.CacheCreation1hInputPerMTok = *e.CacheCreationInputTokenCostAbove1hr * million
 		}
 		out[strings.ToLower(strings.TrimSpace(name))] = rates
 	}

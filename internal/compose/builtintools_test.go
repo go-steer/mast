@@ -182,7 +182,7 @@ func resolveAnalyst(t *testing.T, bundle workload.Bundle, specs []specialists.Sp
 	// A nil root is what makes the override build its own model rather
 	// than collapse back (see NewModelResolver); the root's name is a
 	// different tier so the reuse shortcut cannot fire either.
-	resolve := NewModelResolver(context.Background(), "", "gemini-3.7-flash", nil, bundle.BuiltinTools, nil, nil)
+	resolve := NewModelResolver(context.Background(), "", "gemini-3.7-flash", nil, ModelOptionsFor(&bundle), nil, nil)
 	m, err := resolve(specs[0].Model)
 	if err != nil {
 		t.Fatalf("resolve the specialist's model: %v", err)
@@ -255,7 +255,7 @@ func TestBuildModelDefaultsOffOnBothProviders(t *testing.T) {
 	offlineGeminiCreds(t)
 	ctx := context.Background()
 
-	g, err := BuildModel(ctx, "", "gemini-3.5-flash", workload.BuiltinTools{})
+	g, err := BuildModel(ctx, "", "gemini-3.5-flash", ModelOptions{})
 	if err != nil {
 		t.Fatalf("BuildModel(gemini): %v", err)
 	}
@@ -264,7 +264,7 @@ func TestBuildModelDefaultsOffOnBothProviders(t *testing.T) {
 	}
 
 	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
-	a, err := BuildModel(ctx, "anthropic", "claude-sonnet-4-6", workload.BuiltinTools{})
+	a, err := BuildModel(ctx, "anthropic", "claude-sonnet-4-6", ModelOptions{})
 	if err != nil {
 		t.Fatalf("BuildModel(anthropic): %v", err)
 	}
@@ -284,7 +284,7 @@ func TestBuiltinToolsSummaryReportsWhatEachProviderCanSend(t *testing.T) {
 	yes := true
 	bt := workload.BuiltinTools{WebSearch: &yes, URLContext: &yes}
 
-	g, err := BuildModel(ctx, "", "gemini-3.5-flash", bt)
+	g, err := BuildModel(ctx, "", "gemini-3.5-flash", ModelOptions{BuiltinTools: bt})
 	if err != nil {
 		t.Fatalf("BuildModel(gemini): %v", err)
 	}
@@ -293,7 +293,7 @@ func TestBuiltinToolsSummaryReportsWhatEachProviderCanSend(t *testing.T) {
 	}
 
 	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
-	a, err := BuildModel(ctx, "anthropic", "claude-sonnet-4-6", bt)
+	a, err := BuildModel(ctx, "anthropic", "claude-sonnet-4-6", ModelOptions{BuiltinTools: bt})
 	if err != nil {
 		t.Fatalf("BuildModel(anthropic): %v", err)
 	}
@@ -351,7 +351,7 @@ func TestSummaryStillCoversWhatStrictnessCannot(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
 	yes := true
 	bt := workload.BuiltinTools{URLContext: &yes}
-	m, err := BuildModel(t.Context(), "anthropic", "claude-haiku-4-5", bt)
+	m, err := BuildModel(t.Context(), "anthropic", "claude-haiku-4-5", ModelOptions{BuiltinTools: bt})
 	if err != nil {
 		t.Fatalf("BuildModel(anthropic): %v", err)
 	}
@@ -373,7 +373,7 @@ func TestBuiltinToolNamesUseTheNeutralVocabulary(t *testing.T) {
 		{"", "gemini-3.5-flash", "web_search,url_context,code_execution"},
 		{"anthropic", "claude-haiku-4-5", "web_search"},
 	} {
-		m, err := BuildModel(context.Background(), tc.provider, tc.model, all)
+		m, err := BuildModel(context.Background(), tc.provider, tc.model, ModelOptions{BuiltinTools: all})
 		if err != nil {
 			t.Fatalf("BuildModel(%s): %v", tc.model, err)
 		}

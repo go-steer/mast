@@ -196,7 +196,7 @@ type Result struct {
 // wrapping budget.ErrExceeded. bundle.Budget.MaxWallclockSeconds
 // bounds the whole turn.
 func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs []specialists.Spec, input string) (*Result, error) {
-	llm, modelName, err := resolveModel(ctx, cfg, bundle.BuiltinTools)
+	llm, modelName, err := resolveModel(ctx, cfg, compose.ModelOptionsFor(&bundle))
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +235,7 @@ func RunWorkload(ctx context.Context, cfg Config, bundle workload.Bundle, specs 
 // given system instruction, one turn on input. No workload, no
 // specialists, no dispatch — the "hello world" of embedding mast.
 func Run(ctx context.Context, cfg Config, instruction, input string) (*Result, error) {
-	llm, modelName, err := resolveModel(ctx, cfg, workload.BuiltinTools{})
+	llm, modelName, err := resolveModel(ctx, cfg, compose.ModelOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +290,7 @@ func ResumeSession(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 			sessionID, d.PauseReason, d.PauseMessage)
 	}
 
-	llm, modelName, err := resolveModel(ctx, cfg, bundle.BuiltinTools)
+	llm, modelName, err := resolveModel(ctx, cfg, compose.ModelOptionsFor(&bundle))
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +451,7 @@ func ResumeByToken(ctx context.Context, cfg Config, bundle workload.Bundle, spec
 // applied when mast constructs the model, so a caller that brought its
 // own has already chosen what that model sends, and the bundle cannot
 // take it back.
-func resolveModel(ctx context.Context, cfg Config, bt workload.BuiltinTools) (model.LLM, string, error) {
+func resolveModel(ctx context.Context, cfg Config, mo compose.ModelOptions) (model.LLM, string, error) {
 	if cfg.Model != nil {
 		name := cfg.ModelName
 		if name == "" {
@@ -466,7 +466,7 @@ func resolveModel(ctx context.Context, cfg Config, bt workload.BuiltinTools) (mo
 	// selection is env-driven here (ANTHROPIC_API_KEY vs Vertex
 	// project). Consumers who need to force a backend construct the
 	// model via core-models' Anthropic adapter and set Config.Model.
-	llm, err := compose.NewRuntimeModel(ctx, "", cfg.ModelName, bt)
+	llm, err := compose.NewRuntimeModel(ctx, "", cfg.ModelName, mo)
 	if err != nil {
 		return nil, "", fmt.Errorf("mast: %w", err)
 	}

@@ -101,7 +101,7 @@ func TestTheBinarysModelLookupIsAskedAndRemembered(t *testing.T) {
 		}
 		return nil, false
 	}
-	resolve := NewModelResolver(context.Background(), "", "gemini-3.5-flash", root, workload.BuiltinTools{}, nil, lookup)
+	resolve := NewModelResolver(context.Background(), "", "gemini-3.5-flash", root, ModelOptions{}, nil, lookup)
 	for i := 0; i < 2; i++ {
 		got, err := resolve("acme-large")
 		if err != nil || got != acme {
@@ -119,7 +119,7 @@ func TestTheBinarysModelLookupIsAskedAndRemembered(t *testing.T) {
 func TestAnOfflineFakeRootOutranksTheBinarysModels(t *testing.T) {
 	root := mastagent.NewEchoModel("echo")
 	lookup := func(string) (model.LLM, bool) { return mastagent.NewEchoModel("acme"), true }
-	resolve := NewModelResolver(context.Background(), "", "echo", root, workload.BuiltinTools{}, nil, lookup)
+	resolve := NewModelResolver(context.Background(), "", "echo", root, ModelOptions{}, nil, lookup)
 	if got, _ := resolve("acme-large"); got != root {
 		t.Error("under --model=echo a specialist's model went to the binary instead of collapsing to the fake")
 	}

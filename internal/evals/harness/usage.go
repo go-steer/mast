@@ -39,8 +39,11 @@ type TokenUsage struct {
 	// prompt cache (Anthropic's cache_creation_input_tokens), read from
 	// the usage sidecar: genai's usage struct has no field for it.
 	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
-	OutputTokens     int64 `json:"output_tokens"`
-	ThoughtsTokens   int64 `json:"thoughts_tokens"`
+	// CacheWrite1hTokens is the share of CacheWriteTokens written with a
+	// 1-hour breakpoint, billed at its own rate.
+	CacheWrite1hTokens int64 `json:"cache_write_1h_tokens,omitempty"`
+	OutputTokens       int64 `json:"output_tokens"`
+	ThoughtsTokens     int64 `json:"thoughts_tokens"`
 }
 
 // usageCounter sums the usage a model reports. It counts complete
@@ -77,8 +80,13 @@ func (c *usageCounter) add(resp *model.LLMResponse) {
 		c.u.OutputTokens += int64(m.CandidatesTokenCount)
 		c.u.ThoughtsTokens += int64(m.ThoughtsTokenCount)
 	}
-	if d, ok := resp.CustomMetadata[budget.DetailKey].(*mastusage.Detail); ok && d.CacheWriteTokens != nil {
-		c.u.CacheWriteTokens += *d.CacheWriteTokens
+	if d, ok := resp.CustomMetadata[budget.DetailKey].(*mastusage.Detail); ok {
+		if d.CacheWriteTokens != nil {
+			c.u.CacheWriteTokens += *d.CacheWriteTokens
+		}
+		if d.CacheWrite1hTokens != nil {
+			c.u.CacheWrite1hTokens += *d.CacheWrite1hTokens
+		}
 	}
 }
 

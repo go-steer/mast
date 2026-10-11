@@ -94,7 +94,7 @@ func TestAProfileModelRunsThroughADKAndTheMeter(t *testing.T) {
 	s := newChatServer(t)
 	withLabProfile(t, s)
 
-	m, err := NewRuntimeModel(context.Background(), "lab", "Qwen/Qwen3-Coder-Next", workload.BuiltinTools{})
+	m, err := NewRuntimeModel(context.Background(), "lab", "Qwen/Qwen3-Coder-Next", ModelOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,15 +151,15 @@ func TestProfileBackendTiersAndRates(t *testing.T) {
 func TestProfileModelRefusals(t *testing.T) {
 	withLabProfile(t, newChatServer(t))
 	ctx := context.Background()
-	if _, err := BuildModel(ctx, "lab", "llama3", workload.BuiltinTools{}); err == nil || !strings.Contains(err.Error(), `does not serve model "llama3"`) {
+	if _, err := BuildModel(ctx, "lab", "llama3", ModelOptions{}); err == nil || !strings.Contains(err.Error(), `does not serve model "llama3"`) {
 		t.Errorf("unserved model = %v", err)
 	}
 	on := true
-	if _, err := BuildModel(ctx, "lab", "Qwen/Qwen3-Coder-Next", workload.BuiltinTools{WebSearch: &on}); err == nil || !strings.Contains(err.Error(), "web_search") {
+	if _, err := BuildModel(ctx, "lab", "Qwen/Qwen3-Coder-Next", ModelOptions{BuiltinTools: workload.BuiltinTools{WebSearch: &on}}); err == nil || !strings.Contains(err.Error(), "web_search") {
 		t.Errorf("built-in tools on a profile = %v, want a refusal naming them", err)
 	}
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
-	if _, err := BuildModel(ctx, "vertex-maas", "openai/gpt-oss-20b-maas", workload.BuiltinTools{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
+	if _, err := BuildModel(ctx, "vertex-maas", "openai/gpt-oss-20b-maas", ModelOptions{}); err == nil || !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
 		t.Errorf("vertex-maas with no project = %v, want a construction-time refusal", err)
 	}
 }
@@ -205,7 +205,7 @@ func TestToolWire_ProfileModelPresentsEveryTool(t *testing.T) {
 	for _, e := range catalog {
 		decls = append(decls, e.Declaration)
 	}
-	m, err := BuildModel(context.Background(), "lab", "Qwen/Qwen3-Coder-Next", workload.BuiltinTools{})
+	m, err := BuildModel(context.Background(), "lab", "Qwen/Qwen3-Coder-Next", ModelOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestToolWire_ProfileModelPresentsEveryTool(t *testing.T) {
 func TestAClaudeOverrideUnderAProfileRoot(t *testing.T) {
 	withLabProfile(t, newChatServer(t))
 	t.Setenv("ANTHROPIC_API_KEY", "offline-not-a-real-key")
-	if _, err := BuildModel(context.Background(), "lab", "claude-haiku-4-5", workload.BuiltinTools{}); err != nil {
+	if _, err := BuildModel(context.Background(), "lab", "claude-haiku-4-5", ModelOptions{}); err != nil {
 		t.Fatalf("BuildModel(claude under a profile root) = %v", err)
 	}
 	if got := Backend("lab", "claude-haiku-4-5"); got != "anthropic" {
@@ -290,7 +290,7 @@ func TestDeclaredRatesPriceASelfHostedModel(t *testing.T) {
 		t.Errorf("RatePer1K = %v, want the declared blend", r)
 	}
 
-	m, err := NewRuntimeModel(context.Background(), "lab", "Qwen/Qwen3-Coder-Next", workload.BuiltinTools{})
+	m, err := NewRuntimeModel(context.Background(), "lab", "Qwen/Qwen3-Coder-Next", ModelOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

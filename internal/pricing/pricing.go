@@ -90,8 +90,13 @@ type Rates struct {
 	InputPerMTok              float64
 	CachedInputPerMTok        float64
 	CacheCreationInputPerMTok float64
-	OutputPerMTok             float64
-	UpdatedAt                 time.Time
+	// CacheCreation1hInputPerMTok is the write rate for a 1-hour
+	// breakpoint (2x base input on Anthropic, against 1.25x for the
+	// 5-minute one CacheCreationInputPerMTok holds). Zero when the
+	// source publishes none; see CostUSDWithCacheTTLs for the fallback.
+	CacheCreation1hInputPerMTok float64
+	OutputPerMTok               float64
+	UpdatedAt                   time.Time
 }
 
 // IsZero reports whether the rates carry no useful pricing.
@@ -130,7 +135,27 @@ func (r Rates) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, outputTo
 // rates fall back to InputPerMTok for both cache buckets rather than to
 // zero, so a missing catalog entry degrades to the old (understated)
 // number instead of billing cached or written tokens as free.
+//
+// Every write token is billed at the 5-minute rate. Callers that know
+// how the write bucket split across TTLs should use
+// CostUSDWithCacheTTLs; this signature has no bucket for the 1-hour
+// share, so it understates a 1h write by the gap between the two rates.
 func (r Rates) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, outputTokens int) float64 {
+	return r.CostUSDWithCacheTTLs(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, 0, outputTokens)
+}
+
+// CostUSDWithCacheTTLs is CostUSDWithCacheWrites with the write bucket
+// split by breakpoint TTL. cacheWrite1hTokens is a SUBSET of
+// cacheWriteTokens — the share Anthropic reports under
+// usage.cache_creation.ephemeral_1h_input_tokens — and is billed at
+// CacheCreation1hInputPerMTok; the remainder goes at the 5-minute rate.
+//
+// A 1-hour rate of zero falls back to the 5-minute rate rather than to
+// base input, as core-agent's pricing does (core-agent #770): a model
+// that publishes one write rate and not the other is far likelier to be
+// missing a catalog field than to bill 1h writes at base, so the nearer
+// neighbour is the better estimate.
+func (r Rates) CostUSDWithCacheTTLs(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens int) float64 {
 	const million = 1_000_000.0
 	readRate := r.CachedInputPerMTok
 	if readRate == 0 {
@@ -140,9 +165,20 @@ func (r Rates) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, cach
 	if writeRate == 0 {
 		writeRate = r.InputPerMTok
 	}
+	write1hRate := r.CacheCreation1hInputPerMTok
+	if write1hRate == 0 {
+		write1hRate = writeRate
+	}
+	if cacheWrite1hTokens > cacheWriteTokens {
+		cacheWrite1hTokens = cacheWriteTokens
+	}
+	if cacheWrite1hTokens < 0 {
+		cacheWrite1hTokens = 0
+	}
 	return (float64(uncachedInputTokens)/million)*r.InputPerMTok +
 		(float64(cacheReadTokens)/million)*readRate +
-		(float64(cacheWriteTokens)/million)*writeRate +
+		(float64(cacheWriteTokens-cacheWrite1hTokens)/million)*writeRate +
+		(float64(cacheWrite1hTokens)/million)*write1hRate +
 		(float64(outputTokens)/million)*r.OutputPerMTok
 }
 

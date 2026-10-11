@@ -250,6 +250,12 @@ type Call struct {
 	// prompt.
 	CacheWriteTokens int
 
+	// CacheWrite1hTokens is the subset of CacheWriteTokens written with
+	// a 1-hour breakpoint, billed at the 1-hour write rate; the rest of
+	// CacheWriteTokens bills at the 5-minute rate. A subset, not a fourth
+	// bucket, so the three above still sum to the prompt.
+	CacheWrite1hTokens int
+
 	// OutputTokens is everything the model generated, billed at the
 	// output rate. On a reasoning model this includes thinking tokens.
 	OutputTokens int
@@ -307,6 +313,14 @@ type Buckets struct {
 	// into the uncached bucket it is billed at 1x instead of 1.25x and
 	// every cache-warming turn is undercounted (#352).
 	CacheWriteTokens *int64
+
+	// CacheWrite1hTokens is the SUBSET of CacheWriteTokens written with
+	// a 1-hour breakpoint — Anthropic's
+	// usage.cache_creation.ephemeral_1h_input_tokens. Those bill at 2x
+	// base input against the 5-minute 1.25x, so a meter that folded them
+	// into the write bucket would understate every 1h turn. Nil when the
+	// provider did not split the bucket, which reads as "all 5-minute".
+	CacheWrite1hTokens *int64
 }
 
 // Config is the full meter shape: the session's ceilings plus the
@@ -686,6 +700,10 @@ func callOf(ev *session.Event, u genai.GenerateContentResponseUsageMetadata) Cal
 	// sidecar. The error is attributed to the newer counter.
 	read = fitBucket(read, prompt)
 	write = fitBucket(write, prompt-read)
+	var write1h int
+	if b.CacheWrite1hTokens != nil {
+		write1h = fitBucket(int(*b.CacheWrite1hTokens), write)
+	}
 
 	// Thoughts are billed at the output rate and counted separately from
 	// the candidates: Gemini reports promptTokenCount +
@@ -700,6 +718,7 @@ func callOf(ev *session.Event, u genai.GenerateContentResponseUsageMetadata) Cal
 		UncachedInputTokens: prompt - read - write,
 		CachedInputTokens:   read,
 		CacheWriteTokens:    write,
+		CacheWrite1hTokens:  write1h,
 		OutputTokens:        int(u.CandidatesTokenCount) + int(u.ThoughtsTokenCount),
 	}
 }

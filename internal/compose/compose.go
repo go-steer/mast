@@ -367,7 +367,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		}
 	}
 
-	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Bundle.BuiltinTools, cfg.Logger, cfg.ModelLookup)
+	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, ModelOptionsFor(&cfg.Bundle), cfg.Logger, cfg.ModelLookup)
 	resolveTier := NewTierResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, resolve, cfg.Logger)
 	logTierResolution(cfg.Specs, cfg.Provider, cfg.ModelName, cfg.Logger)
 
@@ -533,12 +533,13 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //   - "claude-*": core-models' Anthropic adapter; see anthropicBackend
 //     for backend selection.
 //
-// bt gates the provider's server-side built-in tools. Its zero value is
-// mast's baseline — every one of them off, whichever backend resolves —
-// so a caller with no bundle to read (a one-shot, a library embed, an
-// eval rig) gets the safe posture by construction. See builtintools.go
-// for why mast does not inherit the vendor's own default.
-func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+// mo carries the bundle's model settings. Its zero value is mast's
+// baseline — every server-side built-in tool off, whichever backend
+// resolves, and Claude prompt caching on with the 5-minute TTL — so a
+// caller with no bundle to read (a one-shot, a library embed, an eval
+// rig) gets the default posture by construction. See builtintools.go
+// for why mast does not inherit the vendor's own built-in default.
+func BuildModel(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
 	switch {
 	case name == "echo":
 		return mastagent.NewEchoModel("mast-echo"), nil
@@ -551,14 +552,14 @@ func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinT
 		}
 		return mock.NewScripted(path, os.Getenv("MAST_SCRIPT_STRICT") == "1")
 	case strings.HasPrefix(name, "gemini-"):
-		return buildGemini(ctx, provider, name, bt)
+		return buildGemini(ctx, provider, name, mo.BuiltinTools)
 	case strings.HasPrefix(name, "claude-"):
-		return buildClaude(ctx, provider, name, bt)
+		return buildClaude(ctx, provider, name, mo)
 	case IsProfileProvider(provider):
 		// After the prefixes, so a specialist's cross-provider `model:`
 		// override (a claude-* under a profile root) still reaches its
 		// own family.
-		return buildProfileModel(ctx, provider, name, bt)
+		return buildProfileModel(ctx, provider, name, mo.BuiltinTools)
 	default:
 		return nil, fmt.Errorf("unknown model %q (want `echo`, `toolactor`, `scripted`, a `gemini-*` or a `claude-*` model id, or --provider naming a provider profile)", name)
 	}
@@ -589,8 +590,8 @@ func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinT
 // and a cooldown scoped to a model instance would be no cooldown at all
 // here — [NewModelResolver] builds a separate model per `model:`
 // override.
-func NewRuntimeModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
-	m, err := BuildModel(ctx, provider, name, bt)
+func NewRuntimeModel(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
+	m, err := BuildModel(ctx, provider, name, mo)
 	if err != nil {
 		return nil, err
 	}
@@ -656,7 +657,7 @@ func IsOfflineFake(name string) bool { return offlineFakes[name] }
 // double, a host's models included. A model it returns is used as
 // given — no retry decorator, because the host owns its client — and
 // memoized like any other.
-func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, bt workload.BuiltinTools, logger *slog.Logger, lookup func(string) (model.LLM, bool)) specialists.ModelResolver {
+func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, mo ModelOptions, logger *slog.Logger, lookup func(string) (model.LLM, bool)) specialists.ModelResolver {
 	var (
 		mu       sync.Mutex
 		cache    = map[string]model.LLM{}
@@ -683,7 +684,7 @@ func NewModelResolver(ctx context.Context, provider, rootName string, root model
 				return m, nil
 			}
 		}
-		m, err := NewRuntimeModel(ctx, provider, name, bt)
+		m, err := NewRuntimeModel(ctx, provider, name, mo)
 		if err != nil {
 			return nil, err
 		}
@@ -862,12 +863,11 @@ type catalogPricer struct{ cat *pricing.Catalog }
 // the meter's fallback to the flat rate is the right answer for an
 // unpriceable call either way. It counts both the same.
 //
-// CostUSDWithCacheWrites rather than CostUSDWithCache: the latter is
-// the same arithmetic with a hard-coded zero write bucket, which was
-// the right call only while nothing could count cache writes. The
-// sidecar counts them now (#352), and a row whose
-// CacheCreationInputPerMTok is zero still degrades to the input rate
-// inside pricing rather than here.
+// CostUSDWithCacheTTLs rather than CostUSDWithCache: the latter is the
+// same arithmetic with a hard-coded zero write bucket, which was the
+// right call only while nothing could count cache writes. The sidecar
+// counts them now (#352), including the 1-hour share, and a row whose
+// write rates are zero still degrades inside pricing rather than here.
 func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float64, bool) {
 	r, ok := p.cat.LookupFor(backend, modelID)
 	if !ok || r.IsZero() {
@@ -878,7 +878,7 @@ func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float6
 			return 0, false
 		}
 	}
-	return r.CostUSDWithCacheWrites(c.UncachedInputTokens, c.CachedInputTokens, c.CacheWriteTokens, c.OutputTokens), true
+	return r.CostUSDWithCacheTTLs(c.UncachedInputTokens, c.CachedInputTokens, c.CacheWriteTokens, c.CacheWrite1hTokens, c.OutputTokens), true
 }
 
 // builtinPricer prices against the compiled-in catalog. LookupFor

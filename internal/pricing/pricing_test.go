@@ -18,6 +18,7 @@ package pricing
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -404,5 +405,48 @@ func writeJSON(t *testing.T, path string, v any) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil { //nolint:gosec // test-only
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestCostUSDWithCacheTTLs prices a write bucket split across the two
+// breakpoint TTLs at Anthropic's own figures, and falls back to the
+// 5-minute rate — not base input — for a row that publishes no 1-hour
+// rate (core-agent #770's rule).
+func TestCostUSDWithCacheTTLs(t *testing.T) {
+	sonnet := Rates{InputPerMTok: 2, CachedInputPerMTok: 0.2, CacheCreationInputPerMTok: 2.5, CacheCreation1hInputPerMTok: 4, OutputPerMTok: 10}
+	const uncached, read, write, write1h, out = 10, 1_000, 3_000, 2_000, 4
+	want := (uncached*2.0 + read*0.2 + (write-write1h)*2.5 + write1h*4.0 + out*10.0) / 1e6
+	if got := sonnet.CostUSDWithCacheTTLs(uncached, read, write, write1h, out); math.Abs(got-want) > 1e-12 {
+		t.Errorf("split write bucket = $%.6f, want $%.6f", got, want)
+	}
+	if got, want := sonnet.CostUSDWithCacheWrites(uncached, read, write, out), (uncached*2.0+read*0.2+write*2.5+out*10.0)/1e6; math.Abs(got-want) > 1e-12 {
+		t.Errorf("CostUSDWithCacheWrites = $%.6f, want every write at the 5-minute rate ($%.6f)", got, want)
+	}
+
+	no1h := sonnet
+	no1h.CacheCreation1hInputPerMTok = 0
+	if got, want := no1h.CostUSDWithCacheTTLs(0, 0, write, write1h, 0), write*2.5/1e6; math.Abs(got-want) > 1e-12 {
+		t.Errorf("no 1h rate: $%.6f, want the 5-minute rate on every write ($%.6f)", got, want)
+	}
+	if got, want := sonnet.CostUSDWithCacheTTLs(0, 0, write, write+10, 0), write*4.0/1e6; math.Abs(got-want) > 1e-12 {
+		t.Errorf("1h share above the bucket: $%.6f, want it clipped to the writes ($%.6f)", got, want)
+	}
+}
+
+// TestBuiltinCarriesOneHourRates: the regenerated catalog has the
+// 1-hour write rate for the Claude rows LiteLLM publishes it for, at
+// twice base input.
+func TestBuiltinCarriesOneHourRates(t *testing.T) {
+	for _, key := range []string{"claude-sonnet-5", "anthropic-vertex/claude-sonnet-5", "anthropic/claude-haiku-4-5"} {
+		r, ok := builtin[key]
+		if !ok {
+			r, ok = builtinByBackend[key]
+		}
+		if !ok {
+			t.Fatalf("builtin has no %q row", key)
+		}
+		if r.CacheCreation1hInputPerMTok != 2*r.InputPerMTok {
+			t.Errorf("%s: 1h write rate = %v, want 2x input (%v)", key, r.CacheCreation1hInputPerMTok, 2*r.InputPerMTok)
+		}
 	}
 }

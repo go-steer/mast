@@ -115,28 +115,39 @@ func buildGemini(ctx context.Context, provider, name string, bt workload.Builtin
 // resolves.
 //
 // Two postures are mast's and are passed explicitly. Prompt caching
-// stays off — no breakpoints — as mast's adapter shipped it; the
-// library defaults it on, and turning it on is a measured decision of
-// its own. And only web_search reaches Claude: url_context and
-// code_execution have no Anthropic equivalent, which mast always
-// treated as fail-safe (the tool cannot be on), where the library
-// refuses the request to send them.
-func buildClaude(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+// follows the bundle's prompt_cache block (see claudeCache). And only
+// web_search reaches Claude: url_context and code_execution have no
+// Anthropic equivalent, which mast always treated as fail-safe (the
+// tool cannot be on), where the library refuses the request to send
+// them.
+func buildClaude(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
 	backend, err := anthropicBackend(provider)
 	if err != nil {
 		return nil, err
 	}
 	var builtins []string
-	if bt.WebSearchOn() {
+	if mo.BuiltinTools.WebSearchOn() {
 		builtins = []string{"web_search"}
 	}
 	return openVendor(ctx, backend, name, nil, coremodels.Options{
 		BuiltinTools: builtins,
-		// History plus system breakpoints on the 5-minute TTL: the
-		// transcript an incident re-sends every turn is re-read at the
-		// cache rate. mast had a system-only marker no caller enabled.
-		PromptCache: &anthropic.CacheOptions{System: true, History: true},
+		PromptCache:  claudeCache(mo.PromptCache),
 	})
+}
+
+// claudeCache maps the bundle's prompt_cache block onto the adapter's
+// breakpoints: history plus system on the bundle's TTL, or none at all.
+// Never nil, because nil means the library's own default — and what a
+// workload caches is the bundle's to say.
+func claudeCache(pc workload.PromptCache) *anthropic.CacheOptions {
+	if !pc.On() {
+		return &anthropic.CacheOptions{}
+	}
+	ttl := anthropic.TTL5m
+	if pc.EffectiveTTL() == workload.PromptCacheTTL1h {
+		ttl = anthropic.TTL1h
+	}
+	return &anthropic.CacheOptions{System: true, History: true, TTL: ttl}
 }
 
 // bridged adapts a core-models model to ADK with mast's usage sidecar,

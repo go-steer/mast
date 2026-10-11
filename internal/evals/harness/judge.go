@@ -30,7 +30,6 @@ import (
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
 	"github.com/go-steer/mast/internal/modelretry"
-	"github.com/go-steer/mast/pkg/workload"
 )
 
 // JudgeSummary is the metered tier's board: the 31 ported LangChain
@@ -363,7 +362,7 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		// same posture a shipped workload gets unless it asks
 		// otherwise, which is the posture these tiers are measuring.
 		build = func(ctx context.Context, provider, name string) (model.LLM, error) {
-			return compose.BuildModel(ctx, provider, name, workload.BuiltinTools{})
+			return compose.BuildModel(ctx, provider, name, compose.ModelOptions{})
 		}
 	}
 	rawUnder, err := build(ctx, cfg.Provider, modelName)
