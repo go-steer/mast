@@ -991,7 +991,7 @@ func (j *JudgeSummary) writeUsage(p func(string, ...any)) {
 			continue
 		}
 		p("")
-		p("tokens, %s: %d calls, %d prompt (%d cached), %d output, %d thoughts",
-			u.who, u.u.Calls, u.u.PromptTokens, u.u.CachedTokens, u.u.OutputTokens, u.u.ThoughtsTokens)
+		p("tokens, %s: %d calls, %d prompt (%d cached, %d cache writes), %d output, %d thoughts",
+			u.who, u.u.Calls, u.u.PromptTokens, u.u.CachedTokens, u.u.CacheWriteTokens, u.u.OutputTokens, u.u.ThoughtsTokens)
 	}
 }

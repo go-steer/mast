@@ -132,7 +132,10 @@ func buildClaude(ctx context.Context, provider, name string, bt workload.Builtin
 	}
 	return openVendor(ctx, backend, name, nil, coremodels.Options{
 		BuiltinTools: builtins,
-		PromptCache:  &anthropic.CacheOptions{},
+		// History plus system breakpoints on the 5-minute TTL: the
+		// transcript an incident re-sends every turn is re-read at the
+		// cache rate. mast had a system-only marker no caller enabled.
+		PromptCache: &anthropic.CacheOptions{System: true, History: true},
 	})
 }
 
