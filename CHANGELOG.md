@@ -211,6 +211,12 @@
   price. A turn of Gemma 4 on vLLM that made no identical repeats still
   ran until it overflowed a 65k context (#519). On the judged corpus,
   healthy turns made at most 35 calls and runaway ones 99 to 221.
+  **Breaking, deliberately:** a bundle (or a Go `workload.Bundle`) that
+  leaves the field unset had no cap in v0.9.0 and now has one at 100. A
+  workload whose honest turns run longer, such as a wide coordinator,
+  raises it or sets it negative. Changed before v1.0 on purpose: under
+  `docs/compatibility-policy.md` rule 6, after v1.0 this default would
+  need a major.
 
 - **A self-hosted model can be priced:** declare `models[].rates` in its
   provider profile (core-models v0.5.0). The meter prices calls from the
