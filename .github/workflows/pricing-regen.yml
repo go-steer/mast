@@ -228,7 +228,7 @@ jobs:
       # app's account.
       - name: Open / update auto-PR
         if: steps.drift.outputs.drift == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ steps.app-token.outputs.token }}
           branch: ${{ env.BRANCH }}
