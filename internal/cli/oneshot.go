@@ -47,7 +47,6 @@ import (
 	"github.com/go-steer/mast/internal/transcript"
 	"github.com/go-steer/mast/internal/watchdog"
 	"github.com/go-steer/mast/pkg/approval"
-	"github.com/go-steer/mast/pkg/workload"
 )
 
 // oneShotUserID owns one-shot sessions in the session store,
@@ -97,7 +96,7 @@ func runOneShot(ctx context.Context, logger *slog.Logger, opts oneShotOptions, o
 	// baseline (#324). That is the whole reason the baseline is off
 	// rather than the vendor's: this path has nowhere to write the key,
 	// so the safe posture has to be the one you get by saying nothing.
-	llm, err := buildModel(ctx, opts.Ext, opts.Provider, opts.Model, workload.BuiltinTools{})
+	llm, err := buildModel(ctx, opts.Ext, opts.Provider, opts.Model, compose.ModelOptions{})
 	if err != nil {
 		return fmt.Errorf("construct model %q: %w", opts.Model, err)
 	}

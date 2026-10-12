@@ -27,17 +27,15 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
 
-	"google.golang.org/genai"
-
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
-	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/adk/v2/tool"
 
 	mastagent "github.com/go-steer/mast/internal/agent"
@@ -46,8 +44,6 @@ import (
 	"github.com/go-steer/mast/internal/modelretry"
 	"github.com/go-steer/mast/internal/planner"
 	"github.com/go-steer/mast/internal/pricing"
-	"github.com/go-steer/mast/internal/providers/anthropic"
-	geminiprov "github.com/go-steer/mast/internal/providers/gemini"
 	"github.com/go-steer/mast/internal/providers/mock"
 	"github.com/go-steer/mast/internal/router"
 	"github.com/go-steer/mast/pkg/budget"
@@ -92,10 +88,8 @@ const (
 	DispatchAuto Dispatch = "auto"
 )
 
-// Provider aliases for the Gemini family. The Anthropic pair lives in
-// internal/providers/anthropic (ProviderName / VertexProviderName); these
-// two have no provider package of their own because both backends are
-// the same genai client under different configuration.
+// Provider aliases for the Gemini family. The Anthropic pair is in
+// vendors.go. All four are also core-models built-in profile names.
 //
 // The names match internal/taskclass.Providers(), which has carried a
 // "vertex" family since the port — the tier table could always resolve
@@ -112,11 +106,10 @@ const (
 	ProviderVertex = "vertex"
 )
 
-// DefaultVertexLocation is the location a Vertex client falls back to
-// when neither GOOGLE_CLOUD_LOCATION nor GOOGLE_CLOUD_REGION is set.
-// It is genai's own default for the backend, restated here only so
-// that the value mast passes is explicit and loggable rather than
-// filled in somewhere inside the SDK.
+// DefaultVertexLocation is the location Gemini on Vertex AI falls back
+// to when neither GOOGLE_CLOUD_LOCATION nor GOOGLE_CLOUD_REGION is set:
+// the default of core-models' vertex profile, and genai's own for the
+// backend, restated here so it is named.
 const DefaultVertexLocation = "global"
 
 // Resolve returns the dispatch shape to build, given the caller's
@@ -372,7 +365,7 @@ func BuildRoot(ctx context.Context, cfg RootConfig) (adkagent.Agent, []tool.Tool
 		}
 	}
 
-	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, cfg.Bundle.BuiltinTools, cfg.Logger, cfg.ModelLookup)
+	resolve := NewModelResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, ModelOptionsFor(&cfg.Bundle), cfg.Logger, cfg.ModelLookup)
 	resolveTier := NewTierResolver(ctx, cfg.Provider, cfg.ModelName, cfg.Model, resolve, cfg.Logger)
 	logTierResolution(cfg.Specs, cfg.Provider, cfg.ModelName, cfg.Logger)
 
@@ -532,19 +525,21 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //   - "scripted": JSONL recorded-turn replay via internal/providers/mock;
 //     the recording path comes from MAST_SCRIPT, and
 //     MAST_SCRIPT_STRICT=1 enables strict Contents matching.
-//   - "gemini-*": ADK's Gemini model wrapped in internal/providers/gemini's
-//     builtin-tool layer. `--provider=vertex` names the Vertex backend
-//     outright; with no alias it stays genai's env-driven selection.
-//     See geminiClientConfig.
-//   - "claude-*": internal/providers/anthropic; see anthropicProvider for
-//     backend selection.
+//   - "gemini-*": core-models' Gemini adapter (vendors.go).
+//     `--provider=vertex` names the Vertex backend outright; with no
+//     alias the environment picks it (geminiOnVertex), and an API key
+//     with no project or location is Vertex AI express mode
+//     (vertexExpress).
+//   - "claude-*": core-models' Anthropic adapter; see anthropicBackend
+//     for backend selection.
 //
-// bt gates the provider's server-side built-in tools. Its zero value is
-// mast's baseline — every one of them off, whichever backend resolves —
-// so a caller with no bundle to read (a one-shot, a library embed, an
-// eval rig) gets the safe posture by construction. See builtintools.go
-// for why mast does not inherit the vendor's own default.
-func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+// mo carries the bundle's model settings. Its zero value is mast's
+// baseline — every server-side built-in tool off, whichever backend
+// resolves, and Claude prompt caching on with the 5-minute TTL — so a
+// caller with no bundle to read (a one-shot, a library embed, an eval
+// rig) gets the default posture by construction. See builtintools.go
+// for why mast does not inherit the vendor's own built-in default.
+func BuildModel(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
 	switch {
 	case name == "echo":
 		return mastagent.NewEchoModel("mast-echo"), nil
@@ -557,36 +552,14 @@ func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinT
 		}
 		return mock.NewScripted(path, os.Getenv("MAST_SCRIPT_STRICT") == "1")
 	case strings.HasPrefix(name, "gemini-"):
-		cfg, err := geminiClientConfig(provider)
-		if err != nil {
-			return nil, err
-		}
-		base, err := gemini.NewModel(ctx, name, cfg)
-		if err != nil {
-			return nil, err
-		}
-		onVertex := geminiOnVertex(provider)
-		return geminiprov.Wrap(base, geminiprov.Options{
-			BuiltinTools: geminiBuiltins(bt),
-			// The Developer API rejects built-ins beside function tools
-			// unless the request says include_server_side_tool_invocations;
-			// Vertex rejects the parameter itself (#505). Same predicate
-			// as the chunk tolerance, so the two cannot disagree about
-			// which backend this is.
-			IncludeServerSideToolInvocations: !onVertex,
-			TolerateEmptyChunks:              onVertex,
-		}), nil
+		return buildGemini(ctx, provider, name, mo.BuiltinTools)
 	case strings.HasPrefix(name, "claude-"):
-		p, err := anthropicProvider(ctx, provider, bt)
-		if err != nil {
-			return nil, err
-		}
-		return p.Model(ctx, name)
+		return buildClaude(ctx, provider, name, mo)
 	case IsProfileProvider(provider):
 		// After the prefixes, so a specialist's cross-provider `model:`
 		// override (a claude-* under a profile root) still reaches its
 		// own family.
-		return buildProfileModel(ctx, provider, name, bt)
+		return buildProfileModel(ctx, provider, name, mo)
 	default:
 		return nil, fmt.Errorf("unknown model %q (want `echo`, `toolactor`, `scripted`, a `gemini-*` or a `claude-*` model id, or --provider naming a provider profile)", name)
 	}
@@ -617,8 +590,8 @@ func BuildModel(ctx context.Context, provider, name string, bt workload.BuiltinT
 // and a cooldown scoped to a model instance would be no cooldown at all
 // here — [NewModelResolver] builds a separate model per `model:`
 // override.
-func NewRuntimeModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
-	m, err := BuildModel(ctx, provider, name, bt)
+func NewRuntimeModel(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
+	m, err := BuildModel(ctx, provider, name, mo)
 	if err != nil {
 		return nil, err
 	}
@@ -684,7 +657,7 @@ func IsOfflineFake(name string) bool { return offlineFakes[name] }
 // double, a host's models included. A model it returns is used as
 // given — no retry decorator, because the host owns its client — and
 // memoized like any other.
-func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, bt workload.BuiltinTools, logger *slog.Logger, lookup func(string) (model.LLM, bool)) specialists.ModelResolver {
+func NewModelResolver(ctx context.Context, provider, rootName string, root model.LLM, mo ModelOptions, logger *slog.Logger, lookup func(string) (model.LLM, bool)) specialists.ModelResolver {
 	var (
 		mu       sync.Mutex
 		cache    = map[string]model.LLM{}
@@ -711,7 +684,7 @@ func NewModelResolver(ctx context.Context, provider, rootName string, root model
 				return m, nil
 			}
 		}
-		m, err := NewRuntimeModel(ctx, provider, name, bt)
+		m, err := NewRuntimeModel(ctx, provider, name, mo)
 		if err != nil {
 			return nil, err
 		}
@@ -721,79 +694,67 @@ func NewModelResolver(ctx context.Context, provider, rootName string, root model
 }
 
 // geminiOnVertex reports whether a gemini-* model will run against
-// Vertex: either the --provider=vertex alias says so outright, or
-// GOOGLE_GENAI_USE_VERTEXAI is truthy and genai's own env-driven
-// selection will pick Vertex. Vertex streaming interleaves
-// candidate-less heartbeat chunks, so the builtins wrapper's
-// empty-chunk tolerance follows the backend actually in use — which is
-// why this asks about the alias too, and not only the environment.
+// Vertex: either the --provider=vertex alias says so outright, or the
+// environment selects it the way genai's own env selection does (the
+// behaviour mast had before core-models): GOOGLE_GENAI_USE_ENTERPRISE
+// when it is set, whichever its value, otherwise
+// GOOGLE_GENAI_USE_VERTEXAI; "1" or "true", in any case, is Vertex.
 func geminiOnVertex(provider string) bool {
 	if provider == ProviderVertex {
 		return true
 	}
-	v := strings.ToLower(os.Getenv("GOOGLE_GENAI_USE_VERTEXAI"))
-	return v == "true" || v == "1"
+	if v, ok := os.LookupEnv("GOOGLE_GENAI_USE_ENTERPRISE"); ok {
+		return envTrue(v)
+	}
+	v, ok := os.LookupEnv("GOOGLE_GENAI_USE_VERTEXAI")
+	return ok && envTrue(v)
 }
 
-// geminiClientConfig builds the genai client config for a gemini-*
-// model under the given --provider alias.
-//
-// Two paths, and the split is deliberate:
-//
-// With no alias (or any alias that is not `vertex`) the config stays
-// empty and genai decides everything from the environment, exactly as
-// it did before the alias existed — GOOGLE_GENAI_USE_VERTEXAI picks the
-// backend, GOOGLE_API_KEY / GEMINI_API_KEY or GOOGLE_CLOUD_* supply the
-// credentials. Nothing about that path changes here.
-//
-// `--provider=vertex` names the backend outright, which is the whole
-// point of the alias: a deployment whose credential is the service
-// account's ADC should not have to also set an env var whose absence
-// surfaces as an API-key error from the *other* backend. Project and
-// location still come from the environment (there is no config file for
-// them), but a missing project fails here, naming the variable, rather
-// than inside genai as a struct dump.
-//
-// Location defaults to genai's own default rather than mast inventing
-// one, and is passed explicitly so the resolved value is deterministic.
-func geminiClientConfig(provider string) (*genai.ClientConfig, error) {
+// envTrue is genai's reading of a boolean environment variable.
+func envTrue(v string) bool {
+	v = strings.ToLower(v)
+	return v == "1" || v == "true"
+}
+
+// envLocation is the location genai reads from the environment:
+// GOOGLE_CLOUD_LOCATION when it is set — even to the empty string, which
+// then hides GOOGLE_CLOUD_REGION — and GOOGLE_CLOUD_REGION otherwise.
+func envLocation() string {
+	if v, ok := os.LookupEnv("GOOGLE_CLOUD_LOCATION"); ok {
+		return v
+	}
+	return os.Getenv("GOOGLE_CLOUD_REGION")
+}
+
+// requireVertexProject refuses a gemini-* model selected onto Vertex AI
+// (by the `vertex` alias or by the environment) when there is no
+// project, with an error naming what to set, rather than leaving it to
+// surface from deep inside the client. buildGemini asks it on every
+// Vertex path except express mode, which needs no project. The project
+// and location themselves are resolved by core-models' vertex profile:
+// GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION, then
+// GOOGLE_CLOUD_REGION, then DefaultVertexLocation.
+func requireVertexProject(provider string) error {
+	if os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
+		return nil
+	}
+	how := "--provider=" + ProviderVertex
 	if provider != ProviderVertex {
-		return &genai.ClientConfig{}, nil
+		how = "the environment (GOOGLE_GENAI_USE_VERTEXAI or GOOGLE_GENAI_USE_ENTERPRISE)"
 	}
-	project := os.Getenv("GOOGLE_CLOUD_PROJECT")
-	if project == "" {
-		return nil, fmt.Errorf("--provider=%s needs a project: set GOOGLE_CLOUD_PROJECT (and authenticate with Application Default Credentials, e.g. `gcloud auth application-default login`)", ProviderVertex)
+	msg := how + " selects Vertex AI for a gemini-* model, which needs a project: set GOOGLE_CLOUD_PROJECT (and authenticate with Application Default Credentials, e.g. `gcloud auth application-default login`)"
+	// An API key with no project would be express mode, unless a location
+	// in the environment ruled it out (genai's rule, mirrored in
+	// vertexExpress). Say which variable did, or the key's presence makes
+	// the refusal look like a bug.
+	if provider != ProviderVertex && (os.Getenv("GOOGLE_API_KEY") != "" || os.Getenv("GEMINI_API_KEY") != "") && envLocation() != "" {
+		v := "GOOGLE_CLOUD_REGION"
+		if _, ok := os.LookupEnv("GOOGLE_CLOUD_LOCATION"); ok {
+			v = "GOOGLE_CLOUD_LOCATION"
+		}
+		msg += ". An API key is set, but " + v + " is too, and a location in the environment rules out Vertex AI express mode (an API key with no project or location); unset " + v + " to use express mode"
 	}
-	location := os.Getenv("GOOGLE_CLOUD_LOCATION")
-	if location == "" {
-		location = os.Getenv("GOOGLE_CLOUD_REGION")
-	}
-	if location == "" {
-		location = DefaultVertexLocation
-	}
-	return &genai.ClientConfig{
-		Backend:  genai.BackendVertexAI,
-		Project:  project,
-		Location: location,
-	}, nil
-}
-
-// anthropicProvider picks the Anthropic backend for claude-* models.
-// An explicit --provider alias wins; with no alias, ANTHROPIC_API_KEY
-// selects the first-party API and a resolvable Vertex project selects
-// Anthropic-on-Vertex — the same detection order core-agent's registry
-// used, scoped to the two Anthropic backends. CacheSystem stays off,
-// matching core-agent's default (no non-test caller ever enabled it).
-func anthropicProvider(ctx context.Context, provider string, bt workload.BuiltinTools) (*anthropic.Provider, error) {
-	backend, err := anthropicBackend(provider)
-	if err != nil {
-		return nil, err
-	}
-	builtins := anthropicBuiltins(bt)
-	if backend == anthropic.VertexProviderName {
-		return anthropic.NewVertex(ctx, anthropic.VertexOptions{BuiltinTools: builtins})
-	}
-	return anthropic.New(anthropic.Options{BuiltinTools: builtins})
+	return errors.New(msg)
 }
 
 // anthropicBackend resolves a --provider alias plus the environment to
@@ -807,7 +768,7 @@ func anthropicProvider(ctx context.Context, provider string, bt workload.Builtin
 // this split exists to make unrepresentable.
 func anthropicBackend(provider string) (string, error) {
 	switch provider {
-	case anthropic.ProviderName, anthropic.VertexProviderName:
+	case ProviderAnthropic, ProviderAnthropicVertex:
 		return provider, nil
 	case ProviderGemini, ProviderVertex, "":
 		// A Gemini-family alias picks a Gemini backend; it says nothing
@@ -816,11 +777,11 @@ func anthropicBackend(provider string) (string, error) {
 		// allowed (see NewModelResolver) — so detect the backend the
 		// same way the no-alias path does rather than refusing a model
 		// the alias was never about.
-		if os.Getenv(anthropic.EnvAPIKey) != "" {
-			return anthropic.ProviderName, nil
+		if os.Getenv(EnvAnthropicAPIKey) != "" {
+			return ProviderAnthropic, nil
 		}
-		if os.Getenv(anthropic.EnvVertexProject) != "" || os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
-			return anthropic.VertexProviderName, nil
+		if os.Getenv(EnvAnthropicVertexProject) != "" || os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
+			return ProviderAnthropicVertex, nil
 		}
 		return "", fmt.Errorf("claude-* models need ANTHROPIC_API_KEY (first-party) or a Vertex project (ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT), or an explicit --provider=anthropic|anthropic-vertex")
 	default:
@@ -835,8 +796,8 @@ func anthropicBackend(provider string) (string, error) {
 }
 
 // Backend resolves the --provider alias and the environment to the
-// backend that will serve modelName: one of anthropic.ProviderName,
-// anthropic.VertexProviderName, ProviderGemini, or ProviderVertex.
+// backend that will serve modelName: one of ProviderAnthropic,
+// ProviderAnthropicVertex, ProviderGemini, or ProviderVertex.
 //
 // It returns "" — meaning "price this by bare model id" — for an
 // offline fake, for a model in neither family, and for a claude-* model
@@ -908,12 +869,11 @@ type catalogPricer struct{ cat *pricing.Catalog }
 // the meter's fallback to the flat rate is the right answer for an
 // unpriceable call either way. It counts both the same.
 //
-// CostUSDWithCacheWrites rather than CostUSDWithCache: the latter is
-// the same arithmetic with a hard-coded zero write bucket, which was
-// the right call only while nothing could count cache writes. The
-// sidecar counts them now (#352), and a row whose
-// CacheCreationInputPerMTok is zero still degrades to the input rate
-// inside pricing rather than here.
+// CostUSDWithCacheTTLs rather than CostUSDWithCache: the latter is the
+// same arithmetic with a hard-coded zero write bucket, which was the
+// right call only while nothing could count cache writes. The sidecar
+// counts them now (#352), including the 1-hour share, and a row whose
+// write rates are zero still degrades inside pricing rather than here.
 func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float64, bool) {
 	r, ok := p.cat.LookupFor(backend, modelID)
 	if !ok || r.IsZero() {
@@ -924,7 +884,7 @@ func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float6
 			return 0, false
 		}
 	}
-	return r.CostUSDWithCacheWrites(c.UncachedInputTokens, c.CachedInputTokens, c.CacheWriteTokens, c.OutputTokens), true
+	return r.CostUSDWithCacheTTLs(c.UncachedInputTokens, c.CachedInputTokens, c.CacheWriteTokens, c.CacheWrite1hTokens, c.OutputTokens), true
 }
 
 // builtinPricer prices against the compiled-in catalog. LookupFor

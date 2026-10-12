@@ -18,12 +18,14 @@
 // genai.GenerateContentResponseUsageMetadata is Gemini's shape. Every
 // provider mast speaks to is projected onto it, and the projection is
 // lossy in both directions: Anthropic's cache_creation_input_tokens has
-// nowhere to go at all (internal/providers/anthropic/stream.go folds it into
-// the prompt total, where it bills at 1x instead of 1.25x), and a
-// counter a provider simply did not report is indistinguishable from
-// one it reported as zero.
+// nowhere to go (core-models' Anthropic adapter folds it into the
+// prompt total, where on its own it would bill at 1x instead of 1.25x,
+// or 2x for a 1-hour write), and a counter a provider simply did not
+// report is indistinguishable from one it reported as zero.
 //
-// Detail is the sidecar that fixes both. An adapter attaches one beside
+// Detail is the sidecar that fixes both. It carries cache reads, cache
+// writes and the 1-hour share of the writes as separate counts, so the
+// meter bills each at its own rate. An adapter attaches one beside
 // the genai record, under budget.DetailKey in
 // model.LLMResponse.CustomMetadata; pkg/budget's meter reads the
 // buckets it prices and ignores the rest. See
@@ -75,6 +77,12 @@ type Detail struct {
 	// storage per hour, not per written token.
 	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`
 
+	// CacheWrite1hTokens is the subset of CacheWriteTokens written with a
+	// 1-hour breakpoint (a bundle's prompt_cache.ttl: 1h), which bills at
+	// 2x base input against the 5-minute 1.25x. Nil when the provider did
+	// not split the bucket.
+	CacheWrite1hTokens *int64 `json:"cache_write_1h_tokens,omitempty"`
+
 	// ReasoningTokens is thinking billed apart from the visible output —
 	// Gemini's thoughtsTokenCount. Nil for Anthropic, whose output count
 	// already includes thinking, so it is a genuine "did not say" rather
@@ -94,7 +102,7 @@ type Detail struct {
 	// ServedModel is what the backend says it actually ran, which is not
 	// always what was asked for. Duplicated from LLMResponse.ModelVersion
 	// on purpose: that field is a pricing key the adapter may have had to
-	// substitute (internal/providers/anthropic/llm.go falls back to the
+	// substitute (core-models' Anthropic adapter falls back to the
 	// requested id when the echo is a Vertex resource path), and this one
 	// is the unedited echo.
 	ServedModel string `json:"served_model,omitempty"`
@@ -112,8 +120,9 @@ func (d *Detail) UsageBuckets() budget.Buckets {
 		return budget.Buckets{}
 	}
 	return budget.Buckets{
-		CacheReadTokens:  d.CacheReadTokens,
-		CacheWriteTokens: d.CacheWriteTokens,
+		CacheReadTokens:    d.CacheReadTokens,
+		CacheWriteTokens:   d.CacheWriteTokens,
+		CacheWrite1hTokens: d.CacheWrite1hTokens,
 	}
 }
 

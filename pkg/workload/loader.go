@@ -153,6 +153,12 @@ func (b *Bundle) validate() error {
 		return fmt.Errorf("unknown safety.watchdog %q (want %s, %s, or %s)",
 			b.Safety.Watchdog, WatchdogWarn, WatchdogFeedback, WatchdogEnforce)
 	}
+	switch b.PromptCache.TTL {
+	case "", PromptCacheTTL5m, PromptCacheTTL1h:
+	default:
+		return fmt.Errorf("unknown prompt_cache.ttl %q (want %s or %s)",
+			b.PromptCache.TTL, PromptCacheTTL5m, PromptCacheTTL1h)
+	}
 	switch b.HITL.OnMutation {
 	case "", OnMutationRequireApproval, OnMutationApply, OnMutationDryRun:
 	default:

@@ -30,7 +30,6 @@ import (
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
 	"github.com/go-steer/mast/internal/modelretry"
-	"github.com/go-steer/mast/internal/providers/anthropic"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -348,26 +347,32 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 
 	modelName := cfg.Model
 	if modelName == "" {
-		modelName = anthropic.DefaultModel
+		modelName = compose.DefaultAnthropicModel
 	}
 	graderName := cfg.Grader
 	if graderName == "" {
-		graderName = anthropic.DefaultSmallModelID
+		graderName = compose.DefaultAnthropicSmallModel
 	}
 
 	note := progressFn(cfg.Progress)
 
-	build := cfg.buildModel
+	build, buildUnder := cfg.buildModel, cfg.buildModel
 	if build == nil {
 		// No bundle on an eval run, so the provider's server-side
 		// built-ins stay at mast's default-off baseline (#324) — the
 		// same posture a shipped workload gets unless it asks
 		// otherwise, which is the posture these tiers are measuring.
+		// Prompt caching follows --prompt-cache (the product default
+		// when unset), for the model under test only; the grader never
+		// caches.
 		build = func(ctx context.Context, provider, name string) (model.LLM, error) {
-			return compose.BuildModel(ctx, provider, name, workload.BuiltinTools{})
+			return compose.BuildModel(ctx, provider, name, graderModelOptions())
+		}
+		buildUnder = func(ctx context.Context, provider, name string) (model.LLM, error) {
+			return compose.BuildModel(ctx, provider, name, underTestModelOptions(cfg))
 		}
 	}
-	rawUnder, err := build(ctx, cfg.Provider, modelName)
+	rawUnder, err := buildUnder(ctx, cfg.Provider, modelName)
 	if err != nil {
 		return Summary{}, fmt.Errorf("harness: build model under test: %w", err)
 	}
@@ -992,7 +997,23 @@ func (j *JudgeSummary) writeUsage(p func(string, ...any)) {
 			continue
 		}
 		p("")
-		p("tokens, %s: %d calls, %d prompt (%d cached), %d output, %d thoughts",
-			u.who, u.u.Calls, u.u.PromptTokens, u.u.CachedTokens, u.u.OutputTokens, u.u.ThoughtsTokens)
+		p("tokens, %s: %d calls, %d prompt (%d cached, %d cache writes), %d output, %d thoughts",
+			u.who, u.u.Calls, u.u.PromptTokens, u.u.CachedTokens, u.u.CacheWriteTokens, u.u.OutputTokens, u.u.ThoughtsTokens)
 	}
+}
+
+// underTestModelOptions is what the model under test is built with: no
+// bundle, so built-ins at mast's default-off baseline, and the prompt
+// cache --prompt-cache asked for (the product default when unset).
+func underTestModelOptions(cfg Config) compose.ModelOptions {
+	return compose.ModelOptions{PromptCache: cfg.PromptCache}
+}
+
+// graderModelOptions is what the grader is built with. Caching is off
+// explicitly, because the zero block now means the product default (on):
+// a grader whose cost moved with --prompt-cache would muddy the A/B the
+// flag exists for.
+func graderModelOptions() compose.ModelOptions {
+	off := false
+	return compose.ModelOptions{PromptCache: workload.PromptCache{Enabled: &off}}
 }

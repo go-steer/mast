@@ -29,7 +29,6 @@ import (
 	"google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/mast/internal/pricing"
-	"github.com/go-steer/mast/internal/providers/anthropic"
 	mastusage "github.com/go-steer/mast/internal/providers/usage"
 	"github.com/go-steer/mast/internal/taskclass"
 	"github.com/go-steer/mast/pkg/budget"
@@ -70,7 +69,7 @@ func RegisterProfiles(ps []profile.Profile) {
 // (or empty, meaning prefix inference), which profiles never shadow.
 func mastProvider(provider string) bool {
 	switch provider {
-	case "", ProviderGemini, ProviderVertex, anthropic.ProviderName, anthropic.VertexProviderName, "echo", "scripted":
+	case "", ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, "echo", "scripted":
 		return true
 	}
 	return false
@@ -120,23 +119,46 @@ func ProfileNames() []string {
 	return slices.Compact(names)
 }
 
-// openProfile opens a profile once per process. Opening resolves it
-// against the environment — variables, credentials — so a missing key
-// fails here, at construction, naming the profile (R1).
-func openProfile(ctx context.Context, provider string) (coremodels.Provider, error) {
+// openProfile opens a profile once per process for each prompt-cache
+// posture. Opening resolves it against the environment — variables,
+// credentials — so a missing key fails here, at construction, naming
+// the profile (R1).
+//
+// For an anthropic-dialect profile the cache is keyed on the posture as
+// well as the name, because the posture is baked into the opened
+// provider (Options.PromptCache), and two bundles in one process (a
+// library embed) may ask for different ones.
+func openProfile(ctx context.Context, provider string, pc workload.PromptCache) (coremodels.Provider, error) {
 	profiles.mu.RLock()
-	if p, ok := profiles.opened[provider]; ok {
-		profiles.mu.RUnlock()
-		return p, nil
-	}
 	declared := profiles.declared
 	profiles.mu.RUnlock()
-
 	prof, err := profile.Find(provider, declared)
 	if err != nil {
 		return nil, err
 	}
-	p, err := coremodels.Open(ctx, prof, coremodels.Options{})
+	// The posture is part of the key only where it is part of the
+	// provider: the anthropic dialect bakes it in, every other dialect
+	// ignores it, and keying those on it would open one provider per
+	// posture for nothing.
+	key := provider
+	if expanded, err := profile.Expand(prof); err == nil && expanded.Dialect == profile.Anthropic && pc.On() {
+		key += "\x00cache=" + pc.EffectiveTTL()
+	}
+	profiles.mu.RLock()
+	if p, ok := profiles.opened[key]; ok {
+		profiles.mu.RUnlock()
+		return p, nil
+	}
+	profiles.mu.RUnlock()
+
+	// PromptCache is passed explicitly, so the bundle's posture rather
+	// than the library's default decides — the two agree today (on, 5
+	// minutes), and a bundle that turns caching off must reach the
+	// adapter as off. Only the anthropic dialect reads it.
+	p, err := coremodels.Open(ctx, prof, coremodels.Options{
+		PromptCache: claudeCache(pc),
+		Logf:        vendorLogf(provider),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -145,19 +167,20 @@ func openProfile(ctx context.Context, provider string) (coremodels.Provider, err
 	if profiles.opened == nil {
 		profiles.opened = map[string]coremodels.Provider{}
 	}
-	profiles.opened[provider] = p
+	profiles.opened[key] = p
 	return p, nil
 }
 
 // buildProfileModel is BuildModel for a profile-backed provider.
-func buildProfileModel(ctx context.Context, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+func buildProfileModel(ctx context.Context, provider, name string, mo ModelOptions) (model.LLM, error) {
+	bt := mo.BuiltinTools
 	// The openai-chat dialect sends function tools only. A bundle that
 	// asked for a server-side search or code tool would otherwise run
 	// without it and never say so (the shape #340 closed for Gemini).
 	if on := builtinsOn(bt); len(on) > 0 {
 		return nil, fmt.Errorf("provider profile %q: the bundle turns on server-side built-in tools %v, which this provider cannot run; turn them off in builtin_tools", provider, on)
 	}
-	p, err := openProfile(ctx, provider)
+	p, err := openProfile(ctx, provider, mo.PromptCache)
 	if err != nil {
 		return nil, err
 	}
@@ -202,12 +225,13 @@ func (b usageBridge) GenerateContent(ctx context.Context, req *model.LLMRequest,
 			if resp != nil {
 				if d, ok := coreusage.FromMetadata(resp.CustomMetadata); ok {
 					mastusage.Attach(resp, &mastusage.Detail{
-						CacheReadTokens:   d.CacheReadTokens,
-						CacheWriteTokens:  d.CacheWriteTokens,
-						ReasoningTokens:   d.ReasoningTokens,
-						ToolUseTokens:     d.ToolUseTokens,
-						ServedModel:       d.ServedModel,
-						ProviderRequestID: d.ProviderRequestID,
+						CacheReadTokens:    d.CacheReadTokens,
+						CacheWriteTokens:   d.CacheWriteTokens,
+						CacheWrite1hTokens: d.CacheWrite1hTokens,
+						ReasoningTokens:    d.ReasoningTokens,
+						ToolUseTokens:      d.ToolUseTokens,
+						ServedModel:        d.ServedModel,
+						ProviderRequestID:  d.ProviderRequestID,
 					})
 				}
 			}

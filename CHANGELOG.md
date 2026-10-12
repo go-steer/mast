@@ -2,7 +2,40 @@
 
 ## Unreleased
 
+**Defaults that change what a workload does — read before upgrading.**
+Two are silent: Claude prompt caching is now on by default, so a Claude
+workload's bill changes shape (cheaper on the judged corpus) and nothing
+errors; and a turn now stops at 100 model calls unless the bundle sets
+`budget.max_model_calls_per_turn`. Each entry marked **Breaking,
+deliberately** says how to keep the old behaviour.
+
 ### API Change
+
+- **Claude prompt caching is on by default.** **Breaking, deliberately:**
+  before this release mast sent no cache breakpoints, and on upgrade
+  every `claude-*` model — and every Anthropic-dialect provider profile —
+  starts sending them, with no bundle change. Claude then bills cache
+  writes at 1.25x input and cache reads at 0.1x. On the judged corpus
+  (`claude-sonnet-5`, ten incidents) scores were unchanged and the run cost
+  30% less; a workload of single-call turns pays the write premium without
+  the re-reads. This applies to the paths with no bundle as well: a
+  one-shot, and `mast.Run` / `mast.RunWorkload` from Go. To keep the old
+  behaviour:
+
+  ```yaml
+  prompt_cache:
+    enabled: false
+  ```
+
+  The new `prompt_cache` block also takes `ttl: 5m | 1h`, and a 1-hour
+  write is billed at its own rate (2x base input): the usage record, the
+  meter and the pricing catalog carry the 1-hour share, read from
+  LiteLLM's `cache_creation_input_token_cost_above_1hr`. The default
+  matches core-agent's (`--prompt-cache-ttl`), and it moves before v1.0
+  because the compatibility policy (rule 6) makes a default change
+  breaking from then on. The eval harness follows the default and takes
+  `--prompt-cache=off|5m|1h`.
+
 
 - **`pkg/transcript` is the read half of the operator store; the writes and
   the daemon's bookkeeping moved under `internal/`.** `Store` keeps `List`,
@@ -714,6 +747,26 @@
   and a call whose result changes, such as a poll, never counts. This
   applies to the daemon, one-shot mode, `mast.RunWorkload` and the judged
   eval tier, where a stopped row is still scored.
+
+- **Vertex AI express mode is documented, and follows the GenAI SDK's rule
+  exactly.** With `GOOGLE_GENAI_USE_VERTEXAI=true` (or
+  `GOOGLE_GENAI_USE_ENTERPRISE=true`), an API key (`GOOGLE_API_KEY`, then
+  `GEMINI_API_KEY`) and no project or location in the environment, a
+  `gemini-*` model runs on Vertex AI with the key. mast did this before,
+  through genai's own environment selection; it now goes through
+  core-models' `vertex-express` profile, and `GOOGLE_GENAI_USE_ENTERPRISE`
+  is honoured as genai honours it. A missing-project error now says when a
+  location variable is what ruled express mode out. See the providers page.
+
+- **A Gemini or Claude call that gets no response no longer hangs a turn.**
+  Moving to core-models gives both families the header timeout profile
+  models already had. Each attempt waits up to ten minutes for the
+  provider's response headers on an unstreamed call (Gemini) or five on a
+  stream (Claude), and the library makes up to three attempts. So a
+  provider that never answers now ends the call after about 30 minutes
+  (15 for Claude), where before it hung until the turn's own deadline.
+  The turn reports `transient_network` / `HEADER_TIMEOUT`, retryable, with
+  a hint saying what was already tried.
 
 - **A provider-profile model that never answers no longer hangs a turn.**
   core-models v0.3.0 abandons an attempt that gets no response headers

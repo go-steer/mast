@@ -44,6 +44,9 @@ export GEMINI_API_KEY=...
 # ...or Gemini on Vertex AI, on the service account's own credentials
 export GOOGLE_CLOUD_PROJECT=my-project
 export GOOGLE_CLOUD_LOCATION=global   # and run with --provider=vertex
+
+# ...or Gemini on Vertex AI express mode: an API key, no project or location
+export GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_API_KEY=...
 ```
 
 ```bash

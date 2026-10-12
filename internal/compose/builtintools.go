@@ -18,10 +18,6 @@ import (
 	"strings"
 
 	"google.golang.org/adk/v2/model"
-
-	"github.com/go-steer/mast/internal/providers/anthropic"
-	geminiprov "github.com/go-steer/mast/internal/providers/gemini"
-	"github.com/go-steer/mast/pkg/workload"
 )
 
 // The provider's server-side built-in tools, and mast's posture on
@@ -59,34 +55,15 @@ import (
 // the rest not, that is the change to make, and it fails safe until
 // then.
 
-// geminiBuiltins maps the neutral block onto Gemini's toggles. All
-// three names have an equivalent here.
-func geminiBuiltins(bt workload.BuiltinTools) geminiprov.BuiltinTools {
-	return geminiprov.BuiltinTools{
-		GoogleSearch:  bt.WebSearchOn(),
-		URLContext:    bt.URLContextOn(),
-		CodeExecution: bt.CodeExecutionOn(),
-	}
-}
-
-// anthropicBuiltins maps the neutral block onto Anthropic's toggles.
-// Only web_search has an equivalent; url_context and code_execution
-// land nowhere, which is fail-safe by construction — a tool this
-// provider cannot send is a tool it cannot leave on. BuiltinToolsSummary
-// is how that gap becomes visible instead of assumed.
-func anthropicBuiltins(bt workload.BuiltinTools) anthropic.BuiltinTools {
-	return anthropic.BuiltinTools{WebSearch: bt.WebSearchOn()}
-}
-
 // BuiltinToolsReporter is the optional extension a backend implements
 // when it injects the provider's own server-side tools into every
 // request. It reports the effective set under the provider-neutral
 // names the bundle uses.
 //
 // Owned here, at the consumer, rather than in a provider package:
-// internal/providers/gemini and internal/providers/anthropic satisfy it
-// structurally and import nothing to do so, and the two backends stay
-// unable to see each other. Backends with no such concept (echo,
+// core-models' Gemini and Anthropic models satisfy it structurally and
+// import nothing to do so; vendors.go keeps it visible through the ADK
+// bridge. Backends with no such concept (echo,
 // scripted, toolactor) simply do not implement it.
 type BuiltinToolsReporter interface {
 	BuiltinToolNames() []string

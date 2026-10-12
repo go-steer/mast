@@ -47,11 +47,11 @@ import (
 // A model the binary supplies (cli.WithModels) wins over mast's own
 // providers, and is used as given: no retry decorator, because the
 // binary owns that client.
-func buildModel(ctx context.Context, ext Options, provider, name string, bt workload.BuiltinTools) (model.LLM, error) {
+func buildModel(ctx context.Context, ext Options, provider, name string, mo compose.ModelOptions) (model.LLM, error) {
 	if m, ok := ext.lookupModel(name); ok {
 		return m, nil
 	}
-	return compose.NewRuntimeModel(ctx, provider, name, bt)
+	return compose.NewRuntimeModel(ctx, provider, name, mo)
 }
 
 // loadedWorkload is a roster resolved before the root agent is built.
@@ -69,13 +69,14 @@ type loadedWorkload struct {
 	cfgDir string
 }
 
-// builtinTools is nil-safe: no --workload means no bundle to read, and
-// mast's baseline is every server-side tool off.
-func (w *loadedWorkload) builtinTools() workload.BuiltinTools {
+// modelOptions is nil-safe: no --workload means no bundle to read, and
+// the baseline applies — every server-side tool off, Claude prompt
+// caching on with the 5-minute TTL.
+func (w *loadedWorkload) modelOptions() compose.ModelOptions {
 	if w == nil {
-		return workload.BuiltinTools{}
+		return compose.ModelOptions{}
 	}
-	return w.bundle.BuiltinTools
+	return compose.ModelOptionsFor(&w.bundle)
 }
 
 // resolveWorkload turns the --workload flag value into a loaded bundle

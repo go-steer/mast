@@ -166,6 +166,28 @@ func ClassifyTurnError(err error) TurnError {
 			Retryable: false,
 		}
 	}
+	// core-models' header timeout (retry.ErrNoResponse): the provider
+	// sent no response headers in time, on every attempt the library's
+	// retry policy allowed. A timeout, so the DeadlineExceeded answer.
+	// After the cancel check, not before: since core-models v0.6.4 the
+	// timeout carries "context canceled" only as text, so it never
+	// matches errors.Is above, while a turn an operator or the watchdog
+	// cancelled stays canceled even when the error it ends on also
+	// quotes a timeout. Matched as text, like every external error here,
+	// so a wrapper layer cannot hide it.
+	if strings.Contains(strings.ToLower(err.Error()), "no response headers within the header timeout") {
+		return TurnError{
+			Kind:    TurnErrorTransientNet,
+			Code:    "HEADER_TIMEOUT",
+			Message: "model call got no response within the header timeout",
+			// Retryable, like DEADLINE_EXCEEDED: nobody asked for this
+			// stop, and a provider that stopped answering may answer a
+			// later turn. The hint says what was already spent, so a
+			// client does not offer an immediate re-run blind.
+			Retryable: true,
+			Hint:      "The provider sent no response headers on any attempt (core-models retries twice: up to three attempts of 10 minutes each for an unstreamed call, 5 for a stream). Check the provider's status before re-running.",
+		}
+	}
 
 	msg := err.Error()
 	lower := strings.ToLower(msg)
@@ -225,7 +247,8 @@ func ClassifyTurnError(err error) TurnError {
 	// latter after the lowercase pass.
 	case containsAny(lower, "permission_denied", "permissiondenied", "unauthenticated",
 		"permission denied", "unauthorized", "invalid credentials",
-		"could not find default credentials", "forbidden") || code == "401" || code == "403":
+		"could not find default credentials", "no google application default credentials",
+		"forbidden") || code == "401" || code == "403":
 		return TurnError{
 			Kind:      TurnErrorAuth,
 			Code:      coalesce(code, "PERMISSION_DENIED"),

@@ -316,7 +316,7 @@ func (d *daemon) buildModel() error {
 		}
 	}
 
-	d.llm, err = buildModel(d.turnCtx, d.ext, d.mdl.provider, d.mdl.name, d.roster.builtinTools())
+	d.llm, err = buildModel(d.turnCtx, d.ext, d.mdl.provider, d.mdl.name, d.roster.modelOptions())
 	if err != nil {
 		d.logger.Error("failed to construct model", "model", d.mdl.name, "error", err.Error())
 		return err

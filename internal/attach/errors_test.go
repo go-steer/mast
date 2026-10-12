@@ -64,6 +64,32 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 			wantRetry: false,
 		},
 		{
+			// core-models' retry.ErrNoResponse: a timeout, not an
+			// operator cancel, though its text quotes the cancel its own
+			// timer caused.
+			name:      "transient from core-models' header timeout",
+			err:       errors.New("gemini: retry: no response headers within the header timeout (10m0s): context canceled"),
+			wantKind:  TurnErrorTransientNet,
+			wantRetry: true,
+		},
+		{
+			// A cancelled turn whose error also quotes a header timeout
+			// (both in flight when the operator stopped it) is a cancel:
+			// re-driving it undoes the stop.
+			name:      "canceled wins over a header timeout",
+			err:       fmt.Errorf("turn: %w; gemini: retry: no response headers within the header timeout (10m0s): context canceled", context.Canceled),
+			wantKind:  TurnErrorCanceled,
+			wantRetry: false,
+		},
+		{
+			// core-models' auth.ErrNoADC, wrapping a detector error that
+			// carries none of the older phrases.
+			name:      "auth_error from core-models' missing ADC",
+			err:       errors.New("profile \"vertex\": auth: no Google Application Default Credentials: metadata server unreachable"),
+			wantKind:  TurnErrorAuth,
+			wantRetry: false,
+		},
+		{
 			name:      "rate_limited from 429",
 			err:       errors.New("Error 429: Rate exceeded."),
 			wantKind:  TurnErrorRateLimited,
