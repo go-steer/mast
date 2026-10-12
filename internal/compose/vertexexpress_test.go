@@ -15,8 +15,10 @@
 package compose
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,13 +33,32 @@ import (
 
 // TestVertexExpressModeStillWorks: GOOGLE_GENAI_USE_VERTEXAI plus an API
 // key and no project is Vertex AI express mode, which genai's env
-// selection gave mast before core-models. The request that reaches the
-// server has express mode's shape: the publishers/ path with no project
-// prefix, the key in x-goog-api-key, and no bearer token.
+// selection gave mast before core-models, and which core-models'
+// vertex-express profile now serves. The request that reaches the server
+// has express mode's shape: the publishers/ path with no project prefix,
+// the key in x-goog-api-key, and no bearer token. Both keys genai
+// accepted work, GOOGLE_API_KEY first; and genai logs no "will take
+// precedence" warning, which a placeholder project used to provoke.
 func TestVertexExpressModeStillWorks(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"GOOGLE_API_KEY":     {"GOOGLE_API_KEY": "express-key"},
+		"GEMINI_API_KEY":     {"GEMINI_API_KEY": "express-key"},
+		"both, GOOGLE first": {"GOOGLE_API_KEY": "express-key", "GEMINI_API_KEY": "other-key"},
+	} {
+		t.Run(name, func(t *testing.T) { expressRequest(t, env) })
+	}
+}
+
+func expressRequest(t *testing.T, env map[string]string) {
 	clearVertexEnv(t)
 	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
-	t.Setenv("GOOGLE_API_KEY", "express-key")
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	var logged bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prevOut) })
 
 	var mu sync.Mutex
 	var path, key, authz string
@@ -71,6 +92,9 @@ func TestVertexExpressModeStillWorks(t *testing.T) {
 	if key != "express-key" || authz != "" {
 		t.Errorf("x-goog-api-key = %q, Authorization = %q; want the key and no bearer token", key, authz)
 	}
+	if strings.Contains(logged.String(), "take precedence") {
+		t.Errorf("genai logged a precedence warning in express mode: %q", logged.String())
+	}
 }
 
 // TestVertexExpressNeedsNoProject: a project or location in the
@@ -80,14 +104,14 @@ func TestVertexExpressNeedsNoProject(t *testing.T) {
 	clearVertexEnv(t)
 	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
 	t.Setenv("GOOGLE_API_KEY", "k")
-	if _, ok := vertexExpressKey(""); !ok {
+	if !vertexExpress("") {
 		t.Fatal("no project, a key: want express mode")
 	}
-	if _, ok := vertexExpressKey(ProviderVertex); ok {
+	if vertexExpress(ProviderVertex) {
 		t.Error("the vertex alias took express mode; it is ADC by design")
 	}
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "p")
-	if _, ok := vertexExpressKey(""); ok {
+	if vertexExpress("") {
 		t.Error("a project in the environment still took express mode")
 	}
 }

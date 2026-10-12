@@ -148,6 +148,21 @@ func ClassifyTurnError(err error) TurnError {
 			Retryable: true,
 		}
 	}
+	// core-models' header timeout (retry.ErrNoResponse): the provider
+	// sent no response headers in time, and the library's retries are
+	// spent. A timeout, so the DeadlineExceeded answer — and it must be
+	// matched before the cancel check below, because the error's text
+	// carries the "context canceled" its own timer caused. Matched as
+	// text, like every external error here, so a wrapper layer cannot
+	// hide it.
+	if strings.Contains(strings.ToLower(err.Error()), "no response headers within the header timeout") {
+		return TurnError{
+			Kind:      TurnErrorTransientNet,
+			Code:      "HEADER_TIMEOUT",
+			Message:   "model call got no response within the header timeout",
+			Retryable: true,
+		}
+	}
 	// A cancel is a deliberate stop, never a failure to retry. In an
 	// unattended daemon it has two live producers and both mean the
 	// opposite of "the network hiccuped": an operator interrupt over
@@ -225,7 +240,8 @@ func ClassifyTurnError(err error) TurnError {
 	// latter after the lowercase pass.
 	case containsAny(lower, "permission_denied", "permissiondenied", "unauthenticated",
 		"permission denied", "unauthorized", "invalid credentials",
-		"could not find default credentials", "forbidden") || code == "401" || code == "403":
+		"could not find default credentials", "no google application default credentials",
+		"forbidden") || code == "401" || code == "403":
 		return TurnError{
 			Kind:      TurnErrorAuth,
 			Code:      coalesce(code, "PERMISSION_DENIED"),

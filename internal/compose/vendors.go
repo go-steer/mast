@@ -77,6 +77,20 @@ func openVendor(ctx context.Context, builtin, name string, opts coremodels.Optio
 	if !ok {
 		return nil, fmt.Errorf("core-models has no built-in profile %q", builtin)
 	}
+	return openVendorProfile(ctx, p, name, opts)
+}
+
+// openVendorProfile is openVendor for a built-in profile the caller has
+// already adjusted (Builtin returns a copy).
+//
+// opts.Retry is left nil on purpose, which is core-models' retry.Default():
+// 429/503 retried at the HTTP layer, and a response-header wait of 5
+// minutes for a stream or 10 for an unstreamed call. mast sends every
+// model call unstreamed, so the 10-minute bound is the one in force, and
+// it is the right one — an unstreamed call receives no headers until the
+// whole answer exists. mast's own retry (internal/modelretry) wraps the
+// model above this, on ADK errors, and sets no header timeout of its own.
+func openVendorProfile(ctx context.Context, p profile.Profile, name string, opts coremodels.Options) (model.LLM, error) {
 	if vendorBaseURL != "" {
 		p.BaseURL = vendorBaseURL
 	}
@@ -102,8 +116,12 @@ func buildGemini(ctx context.Context, provider, name string, bt workload.Builtin
 	if !geminiOnVertex(provider) {
 		return openVendor(ctx, ProviderGemini, name, opts)
 	}
-	if key, ok := vertexExpressKey(provider); ok {
-		return buildGeminiVertexExpress(ctx, name, key, opts)
+	if vertexExpress(provider) {
+		p, _ := profile.Builtin(ProviderVertexExpress)
+		// genai's express-mode key set and order: GOOGLE_API_KEY, then
+		// GEMINI_API_KEY. The profile reads only the first.
+		p.Auth.AltEnv = []string{"GEMINI_API_KEY"}
+		return openVendorProfile(ctx, p, name, opts)
 	}
 	// Checked here for its error, which names the variable to set; the
 	// built-in vertex profile resolves the same project and location
@@ -160,6 +178,29 @@ var vendorLogf = func(family string) func(format string, args ...any) {
 	return func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "mast: "+family+": "+format+"\n", args...)
 	}
+}
+
+// ProviderVertexExpress is core-models' built-in profile for Vertex AI
+// express mode: Gemini on Vertex with an API key and no project.
+const ProviderVertexExpress = "vertex-express"
+
+// vertexExpress reports whether a gemini-* model runs in Vertex AI
+// express mode — exactly when genai's own env selection chose it before
+// mast moved to core-models: no alias naming the backend outright (the
+// `vertex` alias is ADC by design), GOOGLE_GENAI_USE_VERTEXAI set, an API
+// key, and no project or location in the environment. genai lets an
+// implicit project or location win over an implicit key, and so does
+// this.
+func vertexExpress(provider string) bool {
+	if provider == ProviderVertex || !geminiOnVertex(provider) {
+		return false
+	}
+	for _, v := range []string{"GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"} {
+		if os.Getenv(v) != "" {
+			return false
+		}
+	}
+	return os.Getenv("GOOGLE_API_KEY") != "" || os.Getenv("GEMINI_API_KEY") != ""
 }
 
 // claudeCache maps the bundle's prompt_cache block onto the adapter's

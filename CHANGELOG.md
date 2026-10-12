@@ -2,15 +2,17 @@
 
 ## Unreleased
 
-**A silent breaking change to read before upgrading.** Claude prompt
-caching is now on by default: a Claude workload's bill changes shape on
-upgrade, cheaper on the judged corpus, and nothing errors.
-`prompt_cache: {enabled: false}` turns it off.
+**Defaults that change what a workload does — read before upgrading.**
+Two are silent: Claude prompt caching is now on by default, so a Claude
+workload's bill changes shape (cheaper on the judged corpus) and nothing
+errors; and a turn now stops at 100 model calls unless the bundle sets
+`budget.max_model_calls_per_turn`. Each entry marked **Breaking,
+deliberately** says how to keep the old behaviour.
 
 ### API Change
 
-- **Claude prompt caching is on by default.** Breaking, and deliberately
-  so: before this release mast sent no cache breakpoints, and on upgrade
+- **Claude prompt caching is on by default.** **Breaking, deliberately:**
+  before this release mast sent no cache breakpoints, and on upgrade
   every `claude-*` model — and every Anthropic-dialect provider profile —
   starts sending them, with no bundle change. Claude then bills cache
   writes at 1.25x input and cache reads at 0.1x. On the judged corpus
@@ -745,6 +747,14 @@ upgrade, cheaper on the judged corpus, and nothing errors.
   and a call whose result changes, such as a poll, never counts. This
   applies to the daemon, one-shot mode, `mast.RunWorkload` and the judged
   eval tier, where a stopped row is still scored.
+
+- **A Gemini or Claude call that gets no response no longer hangs a turn.**
+  Moving to core-models gives both families the header timeout profile
+  models already had: an unstreamed call (every call mast makes) waits up
+  to ten minutes for the provider's response headers, a streamed one five,
+  and the library retries before giving up. A turn that does give up now
+  reports `transient_network` / `HEADER_TIMEOUT`, retryable, rather than
+  hanging until the turn's own deadline.
 
 - **A provider-profile model that never answers no longer hangs a turn.**
   core-models v0.3.0 abandons an attempt that gets no response headers

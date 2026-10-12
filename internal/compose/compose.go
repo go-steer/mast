@@ -715,9 +715,9 @@ func geminiOnVertex(provider string) bool {
 //
 // buildGemini asks it whenever geminiOnVertex holds, whether the
 // `vertex` alias named the backend or GOOGLE_GENAI_USE_VERTEXAI selected
-// it — except in Vertex express mode (an API key and no project; see
-// vertexexpress.go), which needs no project. The core-models vertex
-// profile then resolves the same chain itself: GOOGLE_CLOUD_PROJECT, and
+// it — except in Vertex express mode (an API key and no project; the
+// vertex-express profile), which needs no project. The core-models
+// vertex profile then resolves the same chain itself: GOOGLE_CLOUD_PROJECT, and
 // GOOGLE_CLOUD_LOCATION, then GOOGLE_CLOUD_REGION, then
 // DefaultVertexLocation. Under any other alias the config is empty: the
 // Developer API takes no project.
