@@ -19,7 +19,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -34,113 +34,71 @@ import (
 // a case declares its whole environment rather than inheriting the
 // developer's. t.Setenv also fails the test if it ever runs in
 // parallel, which is what we want around process-global state.
+//
+// Unset, not blanked: genai's selection treats a variable set to the
+// empty string differently from one that is absent (an empty
+// GOOGLE_GENAI_USE_ENTERPRISE selects the Developer API; an empty
+// GOOGLE_CLOUD_LOCATION hides GOOGLE_CLOUD_REGION), and mast mirrors it.
+// t.Setenv first registers the restore.
 func clearVertexEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"GOOGLE_GENAI_USE_VERTEXAI",
+		"GOOGLE_GENAI_USE_ENTERPRISE",
 		"GOOGLE_CLOUD_PROJECT",
 		"GOOGLE_CLOUD_LOCATION",
 		"GOOGLE_CLOUD_REGION",
+		"GOOGLE_API_KEY",
+		"GEMINI_API_KEY",
 	} {
 		t.Setenv(k, "")
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
-// TestGeminiClientConfig_VertexAlias covers the point of the alias: the
-// backend is named in the config rather than inferred from the
-// environment, so a deployment whose credential is the service
-// account's ADC needs no GOOGLE_GENAI_USE_VERTEXAI.
-func TestGeminiClientConfig_VertexAlias(t *testing.T) {
-	clearVertexEnv(t)
-	t.Setenv("GOOGLE_CLOUD_PROJECT", "demo-project")
-	t.Setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-
-	cfg, err := geminiClientConfig(ProviderVertex)
-	if err != nil {
-		t.Fatalf("geminiClientConfig(vertex) = err %v, want a config", err)
-	}
-	if cfg.Backend != genai.BackendVertexAI {
-		t.Errorf("Backend = %v, want %v (the alias must not depend on GOOGLE_GENAI_USE_VERTEXAI)", cfg.Backend, genai.BackendVertexAI)
-	}
-	if cfg.Project != "demo-project" {
-		t.Errorf("Project = %q, want %q", cfg.Project, "demo-project")
-	}
-	if cfg.Location != "us-central1" {
-		t.Errorf("Location = %q, want %q", cfg.Location, "us-central1")
-	}
-}
-
-// TestGeminiClientConfig_LocationFallbacks pins the order: the genai
-// name first, then the older regional name genai also accepts, then
-// genai's own default. Mast resolves it rather than leaving it empty so
-// that the location a run used is a value it passed, not one filled in
-// inside the SDK.
-func TestGeminiClientConfig_LocationFallbacks(t *testing.T) {
-	tests := []struct {
-		name     string
-		location string
-		region   string
-		want     string
+// TestRequireVertexProject: Gemini on Vertex AI needs a project, and
+// the refusal names GOOGLE_CLOUD_PROJECT whichever way Vertex was
+// selected — and, when an API key was set but a location in the
+// environment ruled out express mode, which variable did it.
+func TestRequireVertexProject(t *testing.T) {
+	for name, tc := range map[string]struct {
+		provider string
+		env      map[string]string
+		want     []string // substrings; nil = no error
 	}{
-		{"location wins", "europe-west4", "us-east5", "europe-west4"},
-		{"region when location is unset", "", "us-east5", "us-east5"},
-		{"default when neither is set", "", "", DefaultVertexLocation},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		"project set":                {ProviderVertex, map[string]string{"GOOGLE_CLOUD_PROJECT": "p"}, nil},
+		"vertex alias, no project":   {ProviderVertex, nil, []string{"--provider=vertex", "GOOGLE_CLOUD_PROJECT"}},
+		"environment, no project":    {"", map[string]string{"GOOGLE_GENAI_USE_VERTEXAI": "true"}, []string{"the environment", "GOOGLE_CLOUD_PROJECT"}},
+		"key, but a region":          {"", map[string]string{"GOOGLE_GENAI_USE_VERTEXAI": "true", "GOOGLE_API_KEY": "k", "GOOGLE_CLOUD_REGION": "us-east5"}, []string{"GOOGLE_CLOUD_REGION is too", "express mode"}},
+		"key, but a location":        {"", map[string]string{"GOOGLE_GENAI_USE_VERTEXAI": "true", "GEMINI_API_KEY": "k", "GOOGLE_CLOUD_LOCATION": "us-east5"}, []string{"GOOGLE_CLOUD_LOCATION is too"}},
+		"alias ignores express hint": {ProviderVertex, map[string]string{"GOOGLE_API_KEY": "k", "GOOGLE_CLOUD_REGION": "us-east5"}, []string{"--provider=vertex"}},
+	} {
+		t.Run(name, func(t *testing.T) {
 			clearVertexEnv(t)
-			t.Setenv("GOOGLE_CLOUD_PROJECT", "demo-project")
-			t.Setenv("GOOGLE_CLOUD_LOCATION", tt.location)
-			t.Setenv("GOOGLE_CLOUD_REGION", tt.region)
-
-			cfg, err := geminiClientConfig(ProviderVertex)
-			if err != nil {
-				t.Fatalf("geminiClientConfig(vertex) = err %v, want a config", err)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
 			}
-			if cfg.Location != tt.want {
-				t.Errorf("Location = %q, want %q", cfg.Location, tt.want)
+			err := requireVertexProject(tc.provider)
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("err = %v, want none", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("no error, want a refusal")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("err = %q, want it to mention %q", err, w)
+				}
+			}
+			if tc.provider == ProviderVertex && strings.Contains(err.Error(), "express mode") {
+				t.Errorf("the vertex alias is ADC by design, but the error offers express mode: %q", err)
 			}
 		})
-	}
-}
-
-// TestGeminiClientConfig_MissingProject is the error this alias exists
-// to replace. Without it the run reaches genai, which fails the Vertex
-// path by dumping a ClientConfig struct — or, worse, never gets there
-// because the empty config sent it to the API-key backend to ask for a
-// key the deployment deliberately does not have.
-func TestGeminiClientConfig_MissingProject(t *testing.T) {
-	clearVertexEnv(t)
-
-	_, err := geminiClientConfig(ProviderVertex)
-	if err == nil {
-		t.Fatal("geminiClientConfig(vertex) with no project = nil error, want a refusal")
-	}
-	for _, want := range []string{"GOOGLE_CLOUD_PROJECT", "Application Default Credentials"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
-		}
-	}
-}
-
-// TestGeminiClientConfig_EnvPathUnchanged is the compatibility half:
-// every invocation that worked before the alias existed must still hand
-// genai an empty config and let it decide. A populated config here
-// would change the backend selection of every deployment that sets the
-// env var, which is the one thing this change must not do.
-func TestGeminiClientConfig_EnvPathUnchanged(t *testing.T) {
-	for _, provider := range []string{"", ProviderGemini, "anthropic-vertex"} {
-		clearVertexEnv(t)
-		t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
-		t.Setenv("GOOGLE_CLOUD_PROJECT", "demo-project")
-
-		cfg, err := geminiClientConfig(provider)
-		if err != nil {
-			t.Fatalf("geminiClientConfig(%q) = err %v, want a config", provider, err)
-		}
-		if !reflect.DeepEqual(*cfg, genai.ClientConfig{}) {
-			t.Errorf("geminiClientConfig(%q) = %+v, want an empty config (the Developer API takes no project)", provider, *cfg)
-		}
 	}
 }
 

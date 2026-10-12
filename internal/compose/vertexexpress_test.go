@@ -21,6 +21,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -152,5 +153,82 @@ func TestAdapterNoticesReachTheLog(t *testing.T) {
 	defer mu.Unlock()
 	if len(lines) == 0 || !strings.HasPrefix(lines[0], "gemini: ") {
 		t.Fatalf("logged %q, want the adapter's pre-3.0 built-in notice under the gemini family", lines)
+	}
+}
+
+// TestVertexExpressFollowsGenaiLocationRules pins the location half of
+// genai v1.72's precedence: GOOGLE_CLOUD_REGION counts as a location —
+// so it disables express mode, as in genai — unless GOOGLE_CLOUD_LOCATION
+// is set, even to the empty string, which hides it.
+func TestVertexExpressFollowsGenaiLocationRules(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		want bool
+	}{
+		"region alone disables":           {map[string]string{"GOOGLE_CLOUD_REGION": "us-east5"}, false},
+		"location disables":               {map[string]string{"GOOGLE_CLOUD_LOCATION": "us-east5"}, false},
+		"empty location hides the region": {map[string]string{"GOOGLE_CLOUD_LOCATION": "", "GOOGLE_CLOUD_REGION": "us-east5"}, true},
+		"neither":                         {map[string]string{}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearVertexEnv(t)
+			t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+			t.Setenv("GOOGLE_API_KEY", "k")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := vertexExpress(""); got != tc.want {
+				t.Errorf("vertexExpress = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGeminiOnVertexFollowsGenaiBackendRules: GOOGLE_GENAI_USE_ENTERPRISE,
+// when set, decides the backend whatever GOOGLE_GENAI_USE_VERTEXAI says,
+// as in genai v1.72 — which is what mast's no-alias path did before it
+// moved to core-models.
+func TestGeminiOnVertexFollowsGenaiBackendRules(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		want bool
+	}{
+		"vertexai true":                {map[string]string{"GOOGLE_GENAI_USE_VERTEXAI": "true"}, true},
+		"vertexai TRUE":                {map[string]string{"GOOGLE_GENAI_USE_VERTEXAI": "TRUE"}, true},
+		"enterprise true":              {map[string]string{"GOOGLE_GENAI_USE_ENTERPRISE": "1"}, true},
+		"enterprise false wins":        {map[string]string{"GOOGLE_GENAI_USE_ENTERPRISE": "false", "GOOGLE_GENAI_USE_VERTEXAI": "true"}, false},
+		"enterprise empty wins":        {map[string]string{"GOOGLE_GENAI_USE_ENTERPRISE": "", "GOOGLE_GENAI_USE_VERTEXAI": "true"}, false},
+		"nothing set is the Developer": {map[string]string{}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearVertexEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := geminiOnVertex(""); got != tc.want {
+				t.Errorf("geminiOnVertex = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if !geminiOnVertex(ProviderVertex) {
+		t.Error("the vertex alias is Vertex whatever the environment says")
+	}
+}
+
+// TestVendorLogfKeepsTheFamilyOutOfTheFormat: a profile name is operator
+// text, so a % in it must reach the line as written.
+func TestVendorLogfKeepsTheFamilyOutOfTheFormat(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stderr
+	os.Stderr = w
+	vendorLogf("lab-100%")("cache %s evicted", "c1")
+	os.Stderr = prev
+	_ = w.Close()
+	got, _ := io.ReadAll(r)
+	if string(got) != "mast: lab-100%: cache c1 evicted\n" {
+		t.Errorf("logged %q", got)
 	}
 }

@@ -84,12 +84,16 @@ func openVendor(ctx context.Context, builtin, name string, opts coremodels.Optio
 // already adjusted (Builtin returns a copy).
 //
 // opts.Retry is left nil on purpose, which is core-models' retry.Default():
-// 429/503 retried at the HTTP layer, and a response-header wait of 5
-// minutes for a stream or 10 for an unstreamed call. mast sends every
-// model call unstreamed, so the 10-minute bound is the one in force, and
-// it is the right one — an unstreamed call receives no headers until the
-// whole answer exists. mast's own retry (internal/modelretry) wraps the
-// model above this, on ADK errors, and sets no header timeout of its own.
+// up to three attempts (two retries, 1s then 2s backoff), each with a
+// response-header wait of 10 minutes for an unstreamed call or 5 for a
+// stream, and a header timeout is one of the outcomes it retries. mast
+// sends its Gemini calls unstreamed, so a provider that never answers
+// holds a call about 30 minutes before the error surfaces (the Anthropic
+// adapter streams on the wire: about 15). The 10-minute wait is the
+// right per-attempt bound — an unstreamed call receives no headers until
+// the whole answer exists. mast's own retry (internal/modelretry) wraps
+// the model above this, retries only HTTP 429 and 503, and so does not
+// multiply the bound.
 func openVendorProfile(ctx context.Context, p profile.Profile, name string, opts coremodels.Options) (model.LLM, error) {
 	if vendorBaseURL != "" {
 		p.BaseURL = vendorBaseURL
@@ -123,11 +127,7 @@ func buildGemini(ctx context.Context, provider, name string, bt workload.Builtin
 		p.Auth.AltEnv = []string{"GEMINI_API_KEY"}
 		return openVendorProfile(ctx, p, name, opts)
 	}
-	// Checked here for its error, which names the variable to set; the
-	// built-in vertex profile resolves the same project and location
-	// chain (GOOGLE_CLOUD_LOCATION, then GOOGLE_CLOUD_REGION, then
-	// global) itself.
-	if _, err := geminiClientConfig(ProviderVertex); err != nil {
+	if err := requireVertexProject(provider); err != nil {
 		return nil, err
 	}
 	return openVendor(ctx, ProviderVertex, name, opts)
@@ -176,7 +176,9 @@ func anthropicBuiltins(bt workload.BuiltinTools) []string {
 // ..."). Package-level so a test can intercept it.
 var vendorLogf = func(family string) func(format string, args ...any) {
 	return func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "mast: "+family+": "+format+"\n", args...)
+		// The family is an argument, never part of the format: a profile
+		// name is operator text, and a % in it would corrupt the line.
+		fmt.Fprintf(os.Stderr, "mast: %s: %s\n", family, fmt.Sprintf(format, args...))
 	}
 }
 
@@ -186,19 +188,19 @@ const ProviderVertexExpress = "vertex-express"
 
 // vertexExpress reports whether a gemini-* model runs in Vertex AI
 // express mode — exactly when genai's own env selection chose it before
-// mast moved to core-models: no alias naming the backend outright (the
-// `vertex` alias is ADC by design), GOOGLE_GENAI_USE_VERTEXAI set, an API
-// key, and no project or location in the environment. genai lets an
-// implicit project or location win over an implicit key, and so does
-// this.
+// mast moved to core-models (google.golang.org/genai v1.72.0, client.go):
+// no alias naming the backend outright (the `vertex` alias is ADC by
+// design), the environment selecting Vertex (geminiOnVertex), an API key
+// (GOOGLE_API_KEY or GEMINI_API_KEY), and neither a project
+// (GOOGLE_CLOUD_PROJECT) nor a location (envLocation) in the
+// environment. genai lets an implicit project or location win over an
+// implicit key, and so does this.
 func vertexExpress(provider string) bool {
 	if provider == ProviderVertex || !geminiOnVertex(provider) {
 		return false
 	}
-	for _, v := range []string{"GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"} {
-		if os.Getenv(v) != "" {
-			return false
-		}
+	if os.Getenv("GOOGLE_CLOUD_PROJECT") != "" || envLocation() != "" {
+		return false
 	}
 	return os.Getenv("GOOGLE_API_KEY") != "" || os.Getenv("GEMINI_API_KEY") != ""
 }

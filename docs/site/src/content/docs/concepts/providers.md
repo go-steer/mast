@@ -25,6 +25,7 @@ of the six paths the [v1.0 promise](/reference/stability/) covers.
 |---|---|---|
 | **Gemini** | a model id like `gemini-3.5-flash`, or `--provider=gemini` | Google Search and URL-context builtins are available through the provider |
 | **Gemini on Vertex** | `--provider=vertex`, or `GOOGLE_GENAI_USE_VERTEXAI=true` | same models, ADC instead of a key |
+| **Gemini on Vertex, express mode** | `GOOGLE_GENAI_USE_VERTEXAI=true` with an API key and no project or location | Vertex AI with an API key instead of ADC; see [Vertex AI express mode](#vertex-ai-express-mode) |
 | **Claude, first-party** | `claude-*` with `ANTHROPIC_API_KEY` set | |
 | **Claude on Vertex** | `claude-*` with a Vertex project, or `--provider=anthropic-vertex` | context caching supported |
 | **A provider profile** | `--provider=<profile>` with `--model`, or the profile's tier | Vertex AI partner models (`vertex-maas`), Ollama (`ollama`), vLLM, SGLang, or any OpenAI-compatible endpoint. See [Provider profiles](#provider-profiles) |
@@ -37,7 +38,8 @@ Switching is a config change, not a code change. `--model` picks the model;
 family. Each family has two aliases for the same model ids — `gemini` /
 `vertex` and `anthropic` / `anthropic-vertex` — because a backend is not a
 different model line. Without an alias the backend comes from the
-environment: `GOOGLE_GENAI_USE_VERTEXAI` for `gemini-*`, and for `claude-*`
+environment: `GOOGLE_GENAI_USE_VERTEXAI` (or `GOOGLE_GENAI_USE_ENTERPRISE`,
+which wins when set) for `gemini-*`, and for `claude-*`
 `ANTHROPIC_API_KEY` selecting the first-party API with a Vertex project
 selecting Vertex.
 
@@ -132,6 +134,30 @@ without it *or* `--provider=vertex` a project alone does nothing: the run goes
 to the API-key backend and fails asking for a key the deployment does not
 have. `--provider=vertex` names the backend outright and fails at startup
 naming the project variable if it is missing.
+
+### Vertex AI express mode
+
+Vertex AI also takes an API key instead of a project and ADC. mast runs a
+`gemini-*` model that way when, with no `--provider` alias:
+
+- `GOOGLE_GENAI_USE_VERTEXAI=true` (or `GOOGLE_GENAI_USE_ENTERPRISE=true`);
+- an API key is set: `GOOGLE_API_KEY`, or `GEMINI_API_KEY` (if both are
+  set, `GOOGLE_API_KEY` wins);
+- and neither a project nor a location is in the environment.
+
+This is the same rule the Google GenAI SDK applies, and the one mast
+followed before it moved to core-models (whose `vertex-express` profile now
+serves it). A project or location always wins over an API key:
+`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, or `GOOGLE_CLOUD_REGION`
+(which counts unless `GOOGLE_CLOUD_LOCATION` is set, even to the empty
+string) each turns express mode off, and the run then needs a project and
+ADC. If that happens with a key set, the startup error names the variable
+that ruled express mode out. `--provider=vertex` never uses express mode:
+it is ADC by design.
+
+The key has to be one Vertex AI accepts. A key restricted to the Gemini API
+(Generative Language) is refused by Vertex AI with
+`403 API_KEY_SERVICE_BLOCKED`.
 
 For `claude-*` there is no such switch — a resolvable project is enough. That
 asymmetry is worth remembering when one process runs both families.

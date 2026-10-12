@@ -124,13 +124,24 @@ func ProfileNames() []string {
 // credentials — so a missing key fails here, at construction, naming
 // the profile (R1).
 //
-// The cache is keyed on the posture as well as the name, because the
-// posture is baked into the opened provider: an anthropic-dialect
-// profile caches per its Options.PromptCache, and two bundles in one
-// process (a library embed) may ask for different ones.
+// For an anthropic-dialect profile the cache is keyed on the posture as
+// well as the name, because the posture is baked into the opened
+// provider (Options.PromptCache), and two bundles in one process (a
+// library embed) may ask for different ones.
 func openProfile(ctx context.Context, provider string, pc workload.PromptCache) (coremodels.Provider, error) {
+	profiles.mu.RLock()
+	declared := profiles.declared
+	profiles.mu.RUnlock()
+	prof, err := profile.Find(provider, declared)
+	if err != nil {
+		return nil, err
+	}
+	// The posture is part of the key only where it is part of the
+	// provider: the anthropic dialect bakes it in, every other dialect
+	// ignores it, and keying those on it would open one provider per
+	// posture for nothing.
 	key := provider
-	if pc.On() {
+	if expanded, err := profile.Expand(prof); err == nil && expanded.Dialect == profile.Anthropic && pc.On() {
 		key += "\x00cache=" + pc.EffectiveTTL()
 	}
 	profiles.mu.RLock()
@@ -138,13 +149,8 @@ func openProfile(ctx context.Context, provider string, pc workload.PromptCache) 
 		profiles.mu.RUnlock()
 		return p, nil
 	}
-	declared := profiles.declared
 	profiles.mu.RUnlock()
 
-	prof, err := profile.Find(provider, declared)
-	if err != nil {
-		return nil, err
-	}
 	// PromptCache is passed explicitly, so the bundle's posture rather
 	// than the library's default decides — the two agree today (on, 5
 	// minutes), and a bundle that turns caching off must reach the

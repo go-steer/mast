@@ -748,13 +748,25 @@ deliberately** says how to keep the old behaviour.
   applies to the daemon, one-shot mode, `mast.RunWorkload` and the judged
   eval tier, where a stopped row is still scored.
 
+- **Vertex AI express mode is documented, and follows the GenAI SDK's rule
+  exactly.** With `GOOGLE_GENAI_USE_VERTEXAI=true` (or
+  `GOOGLE_GENAI_USE_ENTERPRISE=true`), an API key (`GOOGLE_API_KEY`, then
+  `GEMINI_API_KEY`) and no project or location in the environment, a
+  `gemini-*` model runs on Vertex AI with the key. mast did this before,
+  through genai's own environment selection; it now goes through
+  core-models' `vertex-express` profile, and `GOOGLE_GENAI_USE_ENTERPRISE`
+  is honoured as genai honours it. A missing-project error now says when a
+  location variable is what ruled express mode out. See the providers page.
+
 - **A Gemini or Claude call that gets no response no longer hangs a turn.**
   Moving to core-models gives both families the header timeout profile
-  models already had: an unstreamed call (every call mast makes) waits up
-  to ten minutes for the provider's response headers, a streamed one five,
-  and the library retries before giving up. A turn that does give up now
-  reports `transient_network` / `HEADER_TIMEOUT`, retryable, rather than
-  hanging until the turn's own deadline.
+  models already had. Each attempt waits up to ten minutes for the
+  provider's response headers on an unstreamed call (Gemini) or five on a
+  stream (Claude), and the library makes up to three attempts. So a
+  provider that never answers now ends the call after about 30 minutes
+  (15 for Claude), where before it hung until the turn's own deadline.
+  The turn reports `transient_network` / `HEADER_TIMEOUT`, retryable, with
+  a hint saying what was already tried.
 
 - **A provider-profile model that never answers no longer hangs a turn.**
   core-models v0.3.0 abandons an attempt that gets no response headers

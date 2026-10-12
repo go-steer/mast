@@ -73,6 +73,15 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 			wantRetry: true,
 		},
 		{
+			// A cancelled turn whose error also quotes a header timeout
+			// (both in flight when the operator stopped it) is a cancel:
+			// re-driving it undoes the stop.
+			name:      "canceled wins over a header timeout",
+			err:       fmt.Errorf("turn: %w; gemini: retry: no response headers within the header timeout (10m0s): context canceled", context.Canceled),
+			wantKind:  TurnErrorCanceled,
+			wantRetry: false,
+		},
+		{
 			// core-models' auth.ErrNoADC, wrapping a detector error that
 			// carries none of the older phrases.
 			name:      "auth_error from core-models' missing ADC",

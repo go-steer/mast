@@ -30,6 +30,7 @@ import (
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
 	"github.com/go-steer/mast/internal/modelretry"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 // JudgeSummary is the metered tier's board: the 31 ported LangChain
@@ -365,10 +366,10 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		// when unset), for the model under test only; the grader never
 		// caches.
 		build = func(ctx context.Context, provider, name string) (model.LLM, error) {
-			return compose.BuildModel(ctx, provider, name, compose.ModelOptions{})
+			return compose.BuildModel(ctx, provider, name, graderModelOptions())
 		}
 		buildUnder = func(ctx context.Context, provider, name string) (model.LLM, error) {
-			return compose.BuildModel(ctx, provider, name, compose.ModelOptions{PromptCache: cfg.PromptCache})
+			return compose.BuildModel(ctx, provider, name, underTestModelOptions(cfg))
 		}
 	}
 	rawUnder, err := buildUnder(ctx, cfg.Provider, modelName)
@@ -999,4 +1000,20 @@ func (j *JudgeSummary) writeUsage(p func(string, ...any)) {
 		p("tokens, %s: %d calls, %d prompt (%d cached, %d cache writes), %d output, %d thoughts",
 			u.who, u.u.Calls, u.u.PromptTokens, u.u.CachedTokens, u.u.CacheWriteTokens, u.u.OutputTokens, u.u.ThoughtsTokens)
 	}
+}
+
+// underTestModelOptions is what the model under test is built with: no
+// bundle, so built-ins at mast's default-off baseline, and the prompt
+// cache --prompt-cache asked for (the product default when unset).
+func underTestModelOptions(cfg Config) compose.ModelOptions {
+	return compose.ModelOptions{PromptCache: cfg.PromptCache}
+}
+
+// graderModelOptions is what the grader is built with. Caching is off
+// explicitly, because the zero block now means the product default (on):
+// a grader whose cost moved with --prompt-cache would muddy the A/B the
+// flag exists for.
+func graderModelOptions() compose.ModelOptions {
+	off := false
+	return compose.ModelOptions{PromptCache: workload.PromptCache{Enabled: &off}}
 }

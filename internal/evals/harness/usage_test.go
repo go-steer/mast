@@ -24,6 +24,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/mast/internal/evals"
+	"github.com/go-steer/mast/pkg/workload"
 )
 
 type usageModel struct{ responses []*model.LLMResponse }
@@ -71,5 +72,21 @@ func TestSelectRows(t *testing.T) {
 	}
 	if len(ds.Scenarios) != 3 {
 		t.Error("selectRows modified its input")
+	}
+}
+
+// TestTheGraderNeverCaches: the zero prompt-cache block is the product
+// default (on), so the grader has to turn caching off explicitly, while
+// the model under test follows --prompt-cache.
+func TestTheGraderNeverCaches(t *testing.T) {
+	if graderModelOptions().PromptCache.On() {
+		t.Error("the grader is built with prompt caching on")
+	}
+	if !underTestModelOptions(Config{}).PromptCache.On() {
+		t.Error("the model under test does not follow the product default (on) when --prompt-cache is unset")
+	}
+	off := false
+	if underTestModelOptions(Config{PromptCache: workload.PromptCache{Enabled: &off}}).PromptCache.On() {
+		t.Error("--prompt-cache=off did not reach the model under test")
 	}
 }

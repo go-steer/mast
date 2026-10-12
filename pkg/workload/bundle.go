@@ -374,10 +374,11 @@ func (b BuiltinTools) URLContextOn() bool    { return on(b.URLContext) }
 func (b BuiltinTools) CodeExecutionOn() bool { return on(b.CodeExecution) }
 
 // PromptCache is the workload's Claude prompt caching, on unless a
-// bundle turns it off. Anthropic only:
-// Gemini's caching is implicit, or the Vertex context cache, and
-// neither takes a breakpoint, so this block changes nothing on a
-// gemini-* or profile model.
+// bundle turns it off. It applies to claude-* models and to provider
+// profiles on the anthropic dialect. Gemini's caching is implicit, or
+// the Vertex context cache, and neither takes a breakpoint, so this
+// block changes nothing on a gemini-* model or on a profile of another
+// dialect.
 //
 // On, it places a breakpoint on the system prompt (which, rendered
 // after the tools, caches their schemas too) and rolling breakpoints

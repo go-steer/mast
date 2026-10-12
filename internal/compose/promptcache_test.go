@@ -245,3 +245,23 @@ func TestAnthropicProfileModelsFollowThePromptCache(t *testing.T) {
 		}
 	}
 }
+
+// TestOnlyAnthropicProfilesAreKeyedOnThePromptCache: an openai-chat
+// profile ignores the posture, so both postures share one opened
+// provider; the anthropic case is TestAnthropicProfileModelsFollowThePromptCache.
+func TestOnlyAnthropicProfilesAreKeyedOnThePromptCache(t *testing.T) {
+	s := newChatServer(t)
+	withLabProfile(t, s)
+	off := false
+	a, err := openProfile(t.Context(), "lab", workload.PromptCache{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := openProfile(t.Context(), "lab", workload.PromptCache{Enabled: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Error("an openai-chat profile was opened twice, once per prompt-cache posture it ignores")
+	}
+}

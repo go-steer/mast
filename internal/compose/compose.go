@@ -27,13 +27,12 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
-
-	"google.golang.org/genai"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -107,11 +106,10 @@ const (
 	ProviderVertex = "vertex"
 )
 
-// DefaultVertexLocation is the location a Vertex client falls back to
-// when neither GOOGLE_CLOUD_LOCATION nor GOOGLE_CLOUD_REGION is set.
-// It is genai's own default for the backend, restated here only so
-// that the value mast passes is explicit and loggable rather than
-// filled in somewhere inside the SDK.
+// DefaultVertexLocation is the location Gemini on Vertex AI falls back
+// to when neither GOOGLE_CLOUD_LOCATION nor GOOGLE_CLOUD_REGION is set:
+// the default of core-models' vertex profile, and genai's own for the
+// backend, restated here so it is named.
 const DefaultVertexLocation = "global"
 
 // Resolve returns the dispatch shape to build, given the caller's
@@ -529,7 +527,9 @@ func MutationPredicate(b workload.Bundle, logger *slog.Logger) effects.Predicate
 //     MAST_SCRIPT_STRICT=1 enables strict Contents matching.
 //   - "gemini-*": core-models' Gemini adapter (vendors.go).
 //     `--provider=vertex` names the Vertex backend outright; with no
-//     alias GOOGLE_GENAI_USE_VERTEXAI picks it. See geminiClientConfig.
+//     alias the environment picks it (geminiOnVertex), and an API key
+//     with no project or location is Vertex AI express mode
+//     (vertexExpress).
 //   - "claude-*": core-models' Anthropic adapter; see anthropicBackend
 //     for backend selection.
 //
@@ -694,53 +694,67 @@ func NewModelResolver(ctx context.Context, provider, rootName string, root model
 }
 
 // geminiOnVertex reports whether a gemini-* model will run against
-// Vertex: either the --provider=vertex alias says so outright, or
-// GOOGLE_GENAI_USE_VERTEXAI is truthy and genai's own env-driven
-// selection will pick Vertex. Vertex streaming interleaves
-// candidate-less heartbeat chunks, so the builtins wrapper's
-// empty-chunk tolerance follows the backend actually in use — which is
-// why this asks about the alias too, and not only the environment.
+// Vertex: either the --provider=vertex alias says so outright, or the
+// environment selects it the way genai's own env selection does (the
+// behaviour mast had before core-models): GOOGLE_GENAI_USE_ENTERPRISE
+// when it is set, whichever its value, otherwise
+// GOOGLE_GENAI_USE_VERTEXAI; "1" or "true", in any case, is Vertex.
 func geminiOnVertex(provider string) bool {
 	if provider == ProviderVertex {
 		return true
 	}
-	v := strings.ToLower(os.Getenv("GOOGLE_GENAI_USE_VERTEXAI"))
-	return v == "true" || v == "1"
+	if v, ok := os.LookupEnv("GOOGLE_GENAI_USE_ENTERPRISE"); ok {
+		return envTrue(v)
+	}
+	v, ok := os.LookupEnv("GOOGLE_GENAI_USE_VERTEXAI")
+	return ok && envTrue(v)
 }
 
-// geminiClientConfig resolves the Vertex AI project and location for a
-// gemini-* model under the given --provider alias, and refuses a missing
-// project with an error naming the variable to set rather than leaving
-// it to surface from deep inside the client.
-//
-// buildGemini asks it whenever geminiOnVertex holds, whether the
-// `vertex` alias named the backend or GOOGLE_GENAI_USE_VERTEXAI selected
-// it — except in Vertex express mode (an API key and no project; the
-// vertex-express profile), which needs no project. The core-models
-// vertex profile then resolves the same chain itself: GOOGLE_CLOUD_PROJECT, and
-// GOOGLE_CLOUD_LOCATION, then GOOGLE_CLOUD_REGION, then
-// DefaultVertexLocation. Under any other alias the config is empty: the
-// Developer API takes no project.
-func geminiClientConfig(provider string) (*genai.ClientConfig, error) {
+// envTrue is genai's reading of a boolean environment variable.
+func envTrue(v string) bool {
+	v = strings.ToLower(v)
+	return v == "1" || v == "true"
+}
+
+// envLocation is the location genai reads from the environment:
+// GOOGLE_CLOUD_LOCATION when it is set — even to the empty string, which
+// then hides GOOGLE_CLOUD_REGION — and GOOGLE_CLOUD_REGION otherwise.
+func envLocation() string {
+	if v, ok := os.LookupEnv("GOOGLE_CLOUD_LOCATION"); ok {
+		return v
+	}
+	return os.Getenv("GOOGLE_CLOUD_REGION")
+}
+
+// requireVertexProject refuses a gemini-* model selected onto Vertex AI
+// (by the `vertex` alias or by the environment) when there is no
+// project, with an error naming what to set, rather than leaving it to
+// surface from deep inside the client. buildGemini asks it on every
+// Vertex path except express mode, which needs no project. The project
+// and location themselves are resolved by core-models' vertex profile:
+// GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION, then
+// GOOGLE_CLOUD_REGION, then DefaultVertexLocation.
+func requireVertexProject(provider string) error {
+	if os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
+		return nil
+	}
+	how := "--provider=" + ProviderVertex
 	if provider != ProviderVertex {
-		return &genai.ClientConfig{}, nil
+		how = "the environment (GOOGLE_GENAI_USE_VERTEXAI or GOOGLE_GENAI_USE_ENTERPRISE)"
 	}
-	project := os.Getenv("GOOGLE_CLOUD_PROJECT")
-	if project == "" {
-		return nil, fmt.Errorf("--provider=%s needs a project: set GOOGLE_CLOUD_PROJECT (and authenticate with Application Default Credentials, e.g. `gcloud auth application-default login`)", ProviderVertex)
+	msg := how + " selects Vertex AI for a gemini-* model, which needs a project: set GOOGLE_CLOUD_PROJECT (and authenticate with Application Default Credentials, e.g. `gcloud auth application-default login`)"
+	// An API key with no project would be express mode, unless a location
+	// in the environment ruled it out (genai's rule, mirrored in
+	// vertexExpress). Say which variable did, or the key's presence makes
+	// the refusal look like a bug.
+	if provider != ProviderVertex && (os.Getenv("GOOGLE_API_KEY") != "" || os.Getenv("GEMINI_API_KEY") != "") && envLocation() != "" {
+		v := "GOOGLE_CLOUD_REGION"
+		if _, ok := os.LookupEnv("GOOGLE_CLOUD_LOCATION"); ok {
+			v = "GOOGLE_CLOUD_LOCATION"
+		}
+		msg += ". An API key is set, but " + v + " is too, and a location in the environment rules out Vertex AI express mode (an API key with no project or location); unset " + v + " to use express mode"
 	}
-	location := os.Getenv("GOOGLE_CLOUD_LOCATION")
-	if location == "" {
-		location = os.Getenv("GOOGLE_CLOUD_REGION")
-	}
-	if location == "" {
-		location = DefaultVertexLocation
-	}
-	return &genai.ClientConfig{
-		Backend:  genai.BackendVertexAI,
-		Project:  project,
-		Location: location,
-	}, nil
+	return errors.New(msg)
 }
 
 // anthropicBackend resolves a --provider alias plus the environment to
