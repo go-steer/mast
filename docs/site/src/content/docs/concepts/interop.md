@@ -188,6 +188,21 @@ fixtures:
 The fixtures' own [README](https://github.com/go-steer/mast/blob/main/internal/attach/testdata/conformance/README.md)
 lists which routes are pinned and, more usefully, which are not.
 
+### Opening a session
+
+`POST /sessions` opens an empty session and answers `201` with its id
+(`attach-<16 hex>`) and URL. The client then injects into it. Each one runs
+the daemon's workload, exactly like a session an inject created. That is the
+shape of a client that starts its own conversations, not one that reacts to
+events: k8s-lookout's sinks open one per incident, and switchboard opens one
+per chat thread. Before #524 every mast daemon answered `501` here: the
+route existed, but `mast serve` never configured the factory behind it.
+
+The daemon is still single-user. A session created here has no owner and
+no ACL, the same trust model as an inject-created one. Give each user or
+conversation its own daemon (or sandbox) when they must not see each
+other's sessions.
+
 ### What `turn_state` says
 
 Every `status-update` frame carries a `turn_state`, and a client that

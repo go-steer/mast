@@ -243,6 +243,14 @@ deliberately** says how to keep the old behaviour.
   replace, for Gemini on Vertex, Claude on Vertex, and MCP servers with
   `google_oauth` auth. Unset, nothing changes (#523).
 
+- **`POST /sessions` opens a session on the attach surface.** It answered
+  `501` on every daemon: the route was registered, but `mast serve` never
+  configured a `SessionFactory`. Each request now gets a fresh session
+  (`attach-<16 hex>`) running the daemon's workload, like an inject-created
+  one, so clients that open a session and then inject into it (k8s-lookout's
+  sinks, switchboard's agent picker) can drive mast. The daemon stays
+  single-user: no owner, no ACL (#524).
+
 - **A turn now has a model-call cap by default.**
   `budget.max_model_calls_per_turn` caps the model calls one turn may
   make. It defaults to 100; set it negative to remove it. When a turn
