@@ -148,7 +148,7 @@ jobs:
       # missing is still the baseline tomorrow's delta needs.
       - name: Upload the board
         if: always() && steps.config.outputs.configured == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: judge-board
           path: ${{ runner.temp }}/mast-evals/board.json
