@@ -21,11 +21,13 @@ import (
 
 	coremodels "github.com/go-steer/core-models"
 	"github.com/go-steer/core-models/adkv2"
+	"github.com/go-steer/core-models/auth"
 	"github.com/go-steer/core-models/dialect/anthropic"
 	"github.com/go-steer/core-models/llm"
 	"github.com/go-steer/core-models/profile"
 	"google.golang.org/adk/v2/model"
 
+	"github.com/go-steer/mast/internal/injectedauth"
 	"github.com/go-steer/mast/pkg/workload"
 )
 
@@ -100,6 +102,14 @@ func openVendorProfile(ctx context.Context, p profile.Profile, name string, opts
 	}
 	if vendorResolve != nil {
 		opts.Resolve = *vendorResolve
+	}
+	if injectedauth.Enabled() && opts.Resolve.Auth.DetectGoogle == nil {
+		// An egress gateway adds the real token (MAST_GOOGLE_AUTH=injected),
+		// so the Vertex profiles get the placeholder instead of looking for
+		// Application Default Credentials the sandbox doesn't have.
+		opts.Resolve.Auth.DetectGoogle = func(context.Context, []string) (auth.TokenSource, error) {
+			return injectedauth.Static{}, nil
+		}
 	}
 	prov, err := coremodels.Open(ctx, p, opts)
 	if err != nil {

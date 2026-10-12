@@ -235,6 +235,14 @@ deliberately** says how to keep the old behaviour.
 
 ### Feature
 
+- **`MAST_GOOGLE_AUTH=injected`: Google credentials added by an egress
+  gateway.** In a sandbox whose egress gateway injects the Google token
+  (Agent Substrate's egress credential injection), there are no
+  Application Default Credentials to find. With the variable set, mast
+  skips ADC and sends `Authorization: Bearer placeholder` for the gateway to
+  replace, for Gemini on Vertex, Claude on Vertex, and MCP servers with
+  `google_oauth` auth. Unset, nothing changes (#523).
+
 - **A turn now has a model-call cap by default.**
   `budget.max_model_calls_per_turn` caps the model calls one turn may
   make. It defaults to 100; set it negative to remove it. When a turn
