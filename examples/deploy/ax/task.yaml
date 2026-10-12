@@ -1,0 +1,42 @@
+# A mast one-shot turn as an AX task. Apply with `ax apply -f task.yaml`,
+# then `ax resume mast-oneshot` (new tasks start Suspended).
+#
+# Replace spec.image with wherever you pushed the image built from
+# examples/deploy/ax/Dockerfile.
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: mast-oneshot
+  atespace: default
+spec:
+  image: "REGISTRY/mast-ax:dev"
+  command:
+    - /usr/local/bin/ax-mast-entry
+    # Keeps the turn out of Substrate's golden boot, where egress is denied.
+    # Point it at the endpoint your provider calls.
+    - --wait-for-egress=generativelanguage.googleapis.com:443
+    - --state-dir=/workspace/.mast
+    - --
+    - mast
+    - --task=research
+    # GEMINI_API_KEY is injected by AX when the atespace has a Gemini credential.
+    - --provider=gemini
+    # On /workspace so the session survives suspend and resume.
+    - --session-db=/workspace/.mast/sessions.db
+    - --timeout=30m
+    - "Summarize the trade-offs of running an agent harness inside a snapshotting sandbox."
+  env:
+    # Takes effect once the AX runner supports it (google/ax#446); until then
+    # the runner kills the command 10s after SIGTERM.
+    - name: AX_STOP_GRACE_PERIOD
+      value: 60s
+  workspaces:
+    - name: mast-workspace
+      path: /workspace/repo
+---
+apiVersion: ax.io/v1alpha1
+kind: Workspace
+metadata:
+  name: mast-workspace
+  atespace: default
+spec: {}

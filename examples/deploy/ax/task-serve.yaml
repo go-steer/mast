@@ -1,0 +1,61 @@
+# mast in serve mode as an AX task: a long-lived agent that suspends when
+# idle and wakes when a request reaches it through Substrate's router.
+#
+# spec.http.port, spec.idle and spec.egress are not in upstream AX yet
+# (see README.md, "Serve mode"). Without them the task runs, but nothing
+# can reach mast and it never suspends on its own.
+#
+# Replace spec.image, the project, and both tokens. Anything in spec.env
+# is stored in plain text in the actor template and its snapshots: use
+# test tokens, or tokens you can rotate.
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: mast-serve
+  atespace: default
+spec:
+  image: "REGISTRY/mast-ax:dev"
+  command:
+    - mast
+    - --workload=/opt/mast/workloads/gke-triage
+    - --provider=vertex
+    - --model=gemini-3.5-flash
+    # Inject endpoint, for event sources inside the sandbox only.
+    - --listen=127.0.0.1:7777
+    # The session API (POST /sessions, inject, wake, the event stream),
+    # reached through the runner's spec.http.port pass-through.
+    - --attach-listen=127.0.0.1:8484
+    # On /workspace, so sessions survive suspend, resume and restarts.
+    - --session-db=/workspace/.mast/sessions.db
+    # The workspace's AGENTS.md tells the agent what this deployment is for.
+    - --instructions=/workspace/repo
+  env:
+    # The egress gateway adds the real Google token (spec.egress below).
+    - name: MAST_GOOGLE_AUTH
+      value: injected
+    - name: GOOGLE_CLOUD_PROJECT
+      value: my-project
+    - name: MAST_ATTACH_TOKEN
+      value: "replace-with-a-random-token"
+    - name: MAST_INJECT_TOKEN
+      value: "replace-with-another-random-token"
+  egress:
+    - hosts: [aiplatform.googleapis.com, container.googleapis.com]
+      credentials:
+        - header: Authorization
+          prefix: "Bearer "
+          credentialUri: ate-secret://k8s.io/default/ate-credentials/google-token/token
+  http:
+    port: 8484
+  idle:
+    suspendAfter: 10m
+  workspaces:
+    - name: mast-serve-workspace
+      path: /workspace/repo
+---
+apiVersion: ax.io/v1alpha1
+kind: Workspace
+metadata:
+  name: mast-serve-workspace
+  atespace: default
+spec: {}

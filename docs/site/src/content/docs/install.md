@@ -218,6 +218,15 @@ cluster-scoped gains a write verb. See
 [cluster permissions](/reference/cluster-permissions/) for the full grant and
 for how to check it against a live cluster.
 
+## On Agent Substrate, through AX
+
+To give each agent its own sandbox that suspends when idle and wakes on the
+next request, run mast as an [AX](https://github.com/google/ax) task on
+[Agent Substrate](https://github.com/agent-substrate/substrate).
+[`examples/deploy/ax`](https://github.com/go-steer/mast/tree/main/examples/deploy/ax)
+has the image, a serve-mode task, and what AX and Substrate need (serve
+mode currently relies on three AX features that are only on a fork).
+
 ## Terraform
 
 Both halves of the install — the Google Cloud IAM and the chart — in one
