@@ -1,6 +1,16 @@
 // Copyright 2026 Google LLC
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
-// see LICENSE for details.
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // Command ax-mast-entry runs a one-shot mast turn as an AX task command.
 //
@@ -92,7 +102,7 @@ func waitForEgress(logger *slog.Logger, addr string) {
 	for {
 		conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: host})
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			logger.Info("egress available", "addr", addr, "waited", time.Since(start).Round(time.Second))
 			return
 		}
@@ -115,7 +125,7 @@ func run(logger *slog.Logger, args []string, resultPath string) (int, error) {
 	}
 	defer result.Close()
 
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.Command(args[0], args[1:]...) //nolint:gosec // runs the command this wrapper was given, by design
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = io.MultiWriter(os.Stdout, result)
 	cmd.Stderr = os.Stderr

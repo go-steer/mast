@@ -59,6 +59,8 @@ LABEL org.opencontainers.image.source="https://github.com/go-steer/mast" \
 
 COPY --from=ax-runner /out/ax-task-runner /usr/local/bin/ax-task-runner
 COPY --from=builder /out/mast /out/ax-mast-entry /usr/local/bin/
+# The workload task-serve.yaml runs.
+COPY --from=builder /src/examples/workloads/gke-triage /opt/mast/workloads/gke-triage
 
 # Matches what AX sets; useful for a plain `docker run`.
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]

@@ -1316,6 +1316,13 @@ deliberately** says how to keep the old behaviour.
 
 ### Documentation
 
+- **`examples/deploy/ax`: mast as an AX task on Agent Substrate.** An image
+  with AX's runner, mast and the gke-triage workload. It has a serve-mode
+  task (`task-serve.yaml`: the session API through the router, idle suspend,
+  injected Google credentials, project instructions) and a one-shot task,
+  and covers networking, credentials, and Substrate v0.4.0's snapshot types
+  and wake budget (#526).
+
 - **The install page can no longer name a release asset that does not exist.**
   `dev/release/check-install-page.sh` compares the asset list, the download
   URLs and the tarball-contents sentence in `install.md` against what the

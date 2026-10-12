@@ -1,14 +1,22 @@
-# AX — prototype
+# AX
 
-Runs a mast one-shot turn as an [AX](https://github.com/google/ax) task.
-AX runs each task in an Agent Substrate sandbox that can be suspended and
-resumed. On suspend, Substrate snapshots `/workspace`; on resume, it
-restores those files into a fresh container. mast keeps its session in
-SQLite under `/workspace`, so a resumed task carries on the same
-conversation.
+Runs mast as an [AX](https://github.com/google/ax) task. AX runs each task
+in an [Agent Substrate](https://github.com/agent-substrate/substrate)
+sandbox that can be suspended and resumed. mast keeps its sessions in SQLite
+under `/workspace`, which survives every suspend, so a resumed task carries
+on the same conversations.
 
-This is a prototype. It proves the lifecycle works; it is not yet a useful
-deployment shape (see [Limits](#limits)).
+Two shapes:
+
+- **[Serve mode](#serve-mode)** ([`task-serve.yaml`](task-serve.yaml)): a
+  long-lived agent with a workload. Clients open sessions and talk to it
+  through Substrate's router. It suspends when idle and wakes on the next
+  request. This is the useful shape, and it needs three AX features that
+  are only on a fork today.
+- **One-shot** ([`task.yaml`](task.yaml)): a single turn with no workload,
+  which runs on upstream AX. It's mainly a way to see the lifecycle.
+
+Tested on Agent Substrate v0.3.0 and v0.4.0.
 
 ## How it fits together
 
@@ -55,7 +63,7 @@ docker push REGISTRY/mast-ax:dev
 `AX_REF` pins the AX commit the runner is built from. AX's API is
 `v1alpha1`, so bump it deliberately.
 
-## Run on AX
+## Run the one-shot on AX
 
 Edit `spec.image` in [`task.yaml`](task.yaml), then:
 
@@ -65,10 +73,50 @@ ax resume mast-oneshot      # new tasks start Suspended
 ax watch mast-oneshot
 ```
 
-### Network and credentials
+## Serve mode
+
+[`task-serve.yaml`](task-serve.yaml) runs `mast` directly, without the
+wrapper, with:
+
+- `--attach-listen=127.0.0.1:8484`: the session API (`POST /sessions`,
+  `POST /sessions/<app>/<sid>/inject`, `/wake`, the event stream);
+- `--session-db=/workspace/.mast/sessions.db`: sessions survive suspend,
+  resume and restarts;
+- `--instructions=/workspace/repo`: the workspace's `AGENTS.md` tells the
+  agent what this deployment is for (which cluster it serves, for example);
+- `MAST_GOOGLE_AUTH=injected`: the egress gateway adds the Google token.
+
+A client reaches mast through Substrate's router, with the actor named in a
+header and mast's attach token as the bearer:
+
+```sh
+ROUTER=http://atenet-router.ate-system.svc.cluster.local
+curl -X POST -H "ate-target-actor: default/mast-serve" \
+  -H "Authorization: Bearer $MAST_ATTACH_TOKEN" -d '{}' $ROUTER/sessions
+```
+
+If the task is suspended, the router resumes it and holds the request until
+it's running. The task suspends again after `spec.idle.suspendAfter`
+without requests.
+
+Three task fields aren't in upstream AX yet. They're on a fork
+([mastersingh24/ax](https://github.com/mastersingh24/ax)), and the runner in
+the image has to come from it too:
+
+| Field | Does |
+|---|---|
+| `spec.http.port` | the runner forwards requests that reach port 80 to this port, so the router can reach mast |
+| `spec.idle.suspendAfter` | AX suspends the task after this long without requests (an open request, such as an event stream, counts as activity) |
+| `spec.egress` | the actor's egress policy, with credentials the gateway adds |
+
+Without them the task runs, but nothing can reach mast and it never
+suspends on its own.
+
+## Network and credentials
 
 On Agent Substrate v0.2.0 and later an actor has no outbound network until it
 has an egress policy, and upstream AX doesn't create one (google/ax#449).
+`spec.egress` (above) creates it.
 
 Keep credentials out of the task. AX's built-in `GEMINI_API_KEY` injection,
 and anything in `spec.env`, ends up in plain text in the actor template and
@@ -83,8 +131,30 @@ requests instead, so the sandbox never holds them:
   makes it send `Authorization: Bearer placeholder` instead of looking for
   Application Default Credentials.
 
-Both need Substrate's credential injection (`sdsmint` egress gateway with a
-credential provider) and the gateway's CA bundle in the sandbox.
+Both need Substrate's credential injection: on v0.4.0, the egress gateway
+plus the Kubernetes credential provider (`ATE_CREDENTIAL_PROVIDER`). The
+sandbox also needs the gateway's CA. AX projects it as a trust bundle named
+`egress-mitm.ate.dev` together with `system-roots.ate.dev`, so one file
+holds both.
+
+## On Agent Substrate v0.4.0
+
+- **Snapshot type.** A template's snapshots are either full (process
+  memory, root filesystem and `/workspace`) or data-only (`/workspace`
+  only). With full snapshots a woken mast is the same process, mid-thought.
+  With data-only snapshots it restarts from the image and reloads each
+  session from the session store the first time the session is used.
+  Either way the conversation survives. Full snapshots also tie the task to
+  the image it was taken with and to the **CPU platform**: gVisor won't
+  restore onto a host missing any CPU feature recorded in the snapshot
+  (`incompatible FeatureSet`), so keep a worker pool on one CPU platform
+  (N4 and C4 share one; GKE's E2 mixes AMD and Intel). Prefer data-only
+  snapshots for agents you keep for a long time.
+- **Waking takes time.** The router holds a request while its actor resumes
+  for at most `--parked-request-budget`, 5 s by default, and a resume after
+  a long suspend can take longer. A client then gets a `504` although the
+  wake succeeds. Raise the budget on `atenet-router` (we use `60s`) or have
+  clients retry.
 
 ## Try it locally
 
@@ -105,21 +175,19 @@ drop `--wait-for-egress`, which has no meaning outside Substrate.
 
 ## Limits
 
-- **One-shot only, so no tools.** A one-shot turn has no workload bundle,
-  so no MCP servers or specialists. Running a real workload means serve
-  mode, where turns arrive over HTTP. Substrate's router reaches the sandbox
+- **Serve mode needs an AX fork.** Substrate's router reaches the sandbox
   only on port 80, which AX's runner owns, so upstream AX gives callers no
-  way in. A runner pass-through (`spec.http.port`, currently on a fork of
-  AX) forwards those requests to mast's attach listener; with it, mast's
-  session API (`POST /sessions`, `POST /sessions/<sid>/inject`, the event
-  stream) works through the router, and a request wakes a suspended task.
+  way in. See [Serve mode](#serve-mode).
+- **One-shot has no tools.** A one-shot turn has no workload bundle, so no
+  MCP servers or specialists.
 - **Repeated prompt after an interruption.** Each re-run appends the
   prompt to the session again, so after N interruptions the model sees it
   N+1 times. One-shot mode has no way to continue a session without a new
   message.
 - **Suspend gives no warning.** Suspend checkpoints and freezes the sandbox
-  without sending SIGTERM (google/ax#451); only `/workspace` survives, and
-  on Substrate v0.3.0 the command starts again on resume. A turn cut short
+  without sending SIGTERM (google/ax#451). On Substrate v0.3.0, and on
+  v0.4.0 with data-only snapshots, the command starts again on resume, so
+  only `/workspace` survives. A turn cut short
   re-runs, and mutating tools are at-least-once, as everywhere in mast.
 - **No status back to AX.** AX doesn't read exit codes, usage, or pending
   approvals from the task. Check `result.txt` and `mast sessions` inside
