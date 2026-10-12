@@ -105,7 +105,7 @@ jobs:
         run: dev/release/notes.sh "${GITHUB_REF_NAME}" > /tmp/release-notes.md && cat /tmp/release-notes.md
       - name: GoReleaser (publish)
         if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean --release-notes /tmp/release-notes.md
@@ -186,7 +186,7 @@ jobs:
         run: dev/release/check-install-page.sh --release "${GITHUB_REF_NAME}"
       - name: GoReleaser (dry run)
         if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean --skip=publish --snapshot
