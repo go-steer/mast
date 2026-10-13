@@ -54,9 +54,9 @@ var profiles struct {
 	mu       sync.RWMutex
 	declared []profile.Profile
 	opened   map[string]coremodels.Provider
-	// catalog is the pricing catalog built from the profiles in force
-	// (pricingCatalog); nil until first use and after RegisterProfiles.
-	catalog *pricing.Catalog
+	// prices is the price table built from the profiles in force
+	// (pricingTable); nil until first use and after RegisterProfiles.
+	prices *priceTable
 }
 
 // RegisterProfiles sets the declared provider profiles, replacing any
@@ -66,50 +66,117 @@ func RegisterProfiles(ps []profile.Profile) {
 	defer profiles.mu.Unlock()
 	profiles.declared = slices.Clone(ps)
 	profiles.opened = nil
-	profiles.catalog = nil
+	profiles.prices = nil
 }
 
-// pricingCatalog is mast's pricing catalog: core-models' compiled-in
-// builtin layer, plus the rates provider profiles declare
-// (models[].rates) as the lowest layer, keyed "<backend>/<model>". No
-// config override or pricing.json file is wired into mast yet, so those
-// layers stay empty. A catalog row always beats a declared one, so a
-// model a published catalog prices is never billed at an operator's
-// guess, and a declaration only prices its own profile's backend.
+// priceTable is what mast prices a call from: core-models' catalog with
+// the declared rates as its lowest layer, plus those declared rates on
+// their own for the one case the catalog's precedence gets wrong for a
+// meter. LiteLLM carries free and preview rows priced at zero, and the
+// catalog returns such a row ahead of a lower layer; mast reads a zero
+// row as unpriced (catalogPricer.PriceCall says why), so a profile that
+// declares a price for that model must still be heard.
+type priceTable struct {
+	cat *pricing.Catalog
+	// declared is the declared layer keyed by the lower-cased
+	// "<backend>/<model>", as the catalog keys it.
+	declared map[string]pricing.Rates
+}
+
+// lookup returns the rates a call to modelID on backend is billed at: a
+// catalog row with a price, else the backend's declared row for the
+// model, else a miss. A zero row is never returned.
+func (t *priceTable) lookup(backend, modelID string) (pricing.Rates, bool) {
+	if r, ok := t.cat.LookupFor(backend, modelID); ok && !r.IsZero() {
+		return r, true
+	}
+	if backend != "" {
+		if r, ok := t.declared[strings.ToLower(backend+"/"+modelID)]; ok && !r.IsZero() {
+			return r, true
+		}
+	}
+	return pricing.Rates{}, false
+}
+
+// pricingTable is mast's price table: core-models' compiled-in builtin
+// layer, plus the rates provider profiles declare (models[].rates) as
+// the lowest layer, keyed "<backend>/<model>". No config override or
+// pricing.json file is wired into mast yet, so those layers stay empty.
+// A priced catalog row always beats a declared one, so a model a
+// published catalog prices is never billed at an operator's guess, and a
+// declaration only prices its own profile's backend.
+//
+// When two profiles declare the same model on the same backend, the
+// first wins, in the order profile lookup walks them: built-in profiles
+// first, then declared ones in registration order. A declared profile
+// that overrides a built-in name takes the built-in's place in that
+// order and is counted once. DeclaredFromProfiles keeps the last of
+// duplicates, so it is handed the list reversed.
 //
 // Rebuilt after RegisterProfiles, since declared rates come from the
 // profiles registered at startup. Catalog construction with no file
 // layers reads nothing, so it cannot fail.
-func pricingCatalog() *pricing.Catalog {
+func pricingTable() *priceTable {
 	profiles.mu.RLock()
-	c := profiles.catalog
+	t := profiles.prices
 	profiles.mu.RUnlock()
-	if c != nil {
-		return c
+	if t != nil {
+		return t
 	}
 	profiles.mu.Lock()
 	defer profiles.mu.Unlock()
-	if profiles.catalog != nil {
-		return profiles.catalog
+	if profiles.prices != nil {
+		return profiles.prices
 	}
-	var expanded []profile.Profile
-	for _, name := range append(profile.BuiltinNames(), names(profiles.declared)...) {
-		p, err := profile.Find(name, profiles.declared)
-		if err != nil {
-			continue
-		}
-		if p, err = profile.Expand(p); err == nil {
-			expanded = append(expanded, p)
-		}
-	}
-	c, err := pricing.NewCatalog(pricing.Options{Declared: pricing.DeclaredFromProfiles(expanded)})
+	t, err := newPriceTable(pricing.Options{Declared: pricing.DeclaredFromProfiles(declaringProfiles(profiles.declared))})
 	if err != nil {
 		// Unreachable with no file layers, kept explicit so wiring one
 		// later can't silently swallow a load error here.
 		panic(fmt.Sprintf("compose: pricing catalog: %v", err))
 	}
-	profiles.catalog = c
-	return c
+	profiles.prices = t
+	return t
+}
+
+// newPriceTable builds the catalog for opts and indexes its declared
+// layer for priceTable.lookup.
+func newPriceTable(opts pricing.Options) (*priceTable, error) {
+	c, err := pricing.NewCatalog(opts)
+	if err != nil {
+		return nil, err
+	}
+	t := &priceTable{cat: c, declared: make(map[string]pricing.Rates, len(opts.Declared))}
+	for k, r := range opts.Declared {
+		t.declared[strings.ToLower(k)] = r.Rates()
+	}
+	return t, nil
+}
+
+// pricingCatalog is the catalog half of pricingTable.
+func pricingCatalog() *pricing.Catalog { return pricingTable().cat }
+
+// declaringProfiles is every profile that can declare rates, expanded,
+// in reverse lookup order (see pricingTable): built-ins first, then
+// declared, each name once, with a declared override standing in for
+// the built-in it shadows.
+func declaringProfiles(declared []profile.Profile) []profile.Profile {
+	var out []profile.Profile
+	seen := map[string]bool{}
+	for _, name := range append(profile.BuiltinNames(), names(declared)...) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		p, err := profile.Find(name, declared)
+		if err != nil {
+			continue
+		}
+		if p, err = profile.Expand(p); err == nil {
+			out = append(out, p)
+		}
+	}
+	slices.Reverse(out)
+	return out
 }
 
 // mastProvider reports whether provider is one of mast's own aliases

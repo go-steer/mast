@@ -140,10 +140,25 @@ to bill 1-hour writes below 5-minute ones.
 A model the table has never heard of — a self-hosted one, say — is priced
 from its [provider profile](/concepts/providers/) when the profile
 declares rates. Declared rates are the catalog's **lowest** layer: they
-price a model only where no catalog row does, so a profile cannot
-under-bill a model the vendor publishes a price for. A model with no row
-anywhere is counted as unpriced rather than billed at zero, and a
-`max_cost_usd` ceiling on one is refused at startup.
+price a model only where no catalog row does (a row priced at zero, as
+LiteLLM lists some free and preview models, counts as no row), so a
+profile cannot under-bill a model the vendor publishes a price for. If
+two profiles declare the same model on the same backend, the first one
+mast finds wins: built-in profiles first, then yours in the order they
+load.
+
+A call with no price anywhere is metered at a flat fallback rate, and
+which one depends on the model:
+
+- `gemini-*` falls back to $0.0006 per 1K tokens and `claude-*` to
+  $0.003, and the call is counted as unpriced. A `max_cost_usd` ceiling
+  still trips on it, just less precisely.
+- A model served through a provider profile has no fallback. It is
+  metered at $0, shows as `$—`, and is counted as unpriced. Since a
+  ceiling could never trip on it, a `max_cost_usd` on such a model is
+  **refused at startup**. Declare rates in the profile, or bound the run
+  with `max_turns` or `max_tokens`.
+- Any other model id falls back to $0.001 per 1K tokens.
 
 Above a model's long-context threshold (200K prompt tokens for
 `gemini-2.5-pro`, 100K for `claude-haiku-5-5`) the whole call is billed

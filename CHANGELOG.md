@@ -794,6 +794,15 @@ deliberately** says how to keep the old behaviour.
   over a built-in row matched only by prefix. Models on the `openai`
   backend, unpriced before, are now priced from core-models' table.
 
+  Two safeguards stay mast-side. The introductory-rate expiry test
+  (`gemini-3.6/3.7/3.8-flash` double on 2027-01-01) runs in mast's CI
+  against the pin mast ships, on every backend each model is served on,
+  so a lapse reds mast's build whatever core-models has released. And
+  since a core-models bump can now reprice every call, Dependabot gives
+  core-models its own group, `dependabot-automerge` refuses it, and a new
+  `pricing-diff` workflow prints the rates a PR's pin change adds,
+  removes or reprices (`dev/ci/pricing-diff.sh` locally).
+
 - **A model looping inside one turn is now told, and then stopped.**
   Under `--watchdog=feedback`, mast's default, the watchdog's advice
   waited for the session's next turn. A self-hosted Gemma 4 called one

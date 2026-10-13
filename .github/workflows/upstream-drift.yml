@@ -41,10 +41,10 @@ name: upstream-drift
 # wolf — and the edit-in-place means it does not re-notify subscribers
 # on a week where nothing moved.
 #
-# ## Why GITHUB_TOKEN here and an App token in pricing-regen
+# ## Why GITHUB_TOKEN here rather than the go-steer-bot App token
 #
-# The org restriction that forces pricing-regen onto a go-steer-bot App
-# token is specifically about *creating pull requests*, and the
+# The org restriction that forces a bot onto a go-steer-bot App token
+# is specifically about *creating or merging pull requests*, and the
 # push-doesn't-trigger-checks loop guard is about *pushes*. This job
 # does neither: it opens and edits an issue, which GITHUB_TOKEN is
 # allowed to do. Using it keeps this workflow free of any dependency
@@ -52,9 +52,8 @@ name: upstream-drift
 
 on:
   schedule:
-    # Mondays at 09:23 UTC. Same morning as pricing-regen but a
-    # separate slot — they share a runner pool and there is no reason
-    # to have them contend.
+    # Mondays at 09:23 UTC: after Dependabot's 05:30 slot, so the two
+    # are not contending for the same runner pool.
     - cron: '23 9 * * 1'
   workflow_dispatch:
 

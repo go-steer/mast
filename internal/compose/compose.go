@@ -38,8 +38,6 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-models/pricing"
-
 	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/graph"
@@ -863,7 +861,21 @@ func Backend(provider, modelName string) string {
 //
 // A struct rather than a closure so budget.Limits stays comparable in
 // practice — see budget.Limits.IsZero.
-type catalogPricer struct{ cat *pricing.Catalog }
+//
+// The zero value prices against mast's current table (pricingTable),
+// read on every call rather than captured when the pricer was made: a
+// meter built before RegisterProfiles ran again would otherwise keep
+// the old declared rates while RatePer1K and CheckCeilingPriced saw the
+// new ones, and the meter and the ceiling check would disagree about
+// whether a model is priced. A non-nil table is for tests.
+type catalogPricer struct{ table *priceTable }
+
+func (p catalogPricer) prices() *priceTable {
+	if p.table != nil {
+		return p.table
+	}
+	return pricingTable()
+}
 
 // PriceCall reports the catalog's exact price for the call.
 //
@@ -883,21 +895,21 @@ type catalogPricer struct{ cat *pricing.Catalog }
 // call whose prompt is above a model's threshold (Gemini's 200K,
 // OpenAI's 272K) bills every token at the above-threshold rates.
 //
-// Declared rates need no fallback here: they are the catalog's lowest
-// layer (pricingCatalog), so a catalog row still wins and a declared one
-// fills the gap.
+// Declared rates are the catalog's lowest layer (pricingTable), so a
+// priced catalog row still wins and a declared one fills the gap,
+// including the gap a zero-rate catalog row leaves.
 func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float64, bool) {
-	r, ok := p.cat.LookupFor(backend, modelID)
-	if !ok || r.IsZero() {
+	r, ok := p.prices().lookup(backend, modelID)
+	if !ok {
 		return 0, false
 	}
 	return r.CostUSDWithCacheTTLs(c.UncachedInputTokens, c.CachedInputTokens, c.CacheWriteTokens, c.CacheWrite1hTokens, c.OutputTokens), true
 }
 
-// builtinPricer prices against mast's catalog (pricingCatalog). LookupFor
-// falls back from the backend-qualified key to the bare one, so an empty
-// backend and an unqualified model both still price.
-func builtinPricer() budget.Pricer { return catalogPricer{cat: pricingCatalog()} }
+// builtinPricer prices against mast's current table (pricingTable).
+// LookupFor falls back from the backend-qualified key to the bare one, so
+// an empty backend and an unqualified model both still price.
+func builtinPricer() budget.Pricer { return catalogPricer{} }
 
 // RatePer1K derives pkg/budget's flat USD-per-1K-total-tokens rate for
 // a model as served under a given --provider alias
@@ -922,23 +934,35 @@ func builtinPricer() budget.Pricer { return catalogPricer{cat: pricingCatalog()}
 // API. Gemini IDs the catalog doesn't know keep the old flat spike
 // rate so cost metering never silently drops to zero.
 //
+// The blend is of the base rates, never the long-context ones, and that
+// is by design rather than an omission: the flat rate is quoted before
+// any call, from a model name alone, so there is no prompt size to apply
+// a threshold to. It is used where no exact price exists — the meter's
+// fallback when the pricer misses (and then this lookup has missed too,
+// so a flat constant or zero is what applies), a Limits a library caller
+// builds without a Pricer, and the rate column the cost board prints.
+// Every exact figure, J-cost-tier's want and got included, comes from
+// catalogPricer, which does apply long context; J-cost-tier compares
+// a scope's billed cost to the same pricer's price for the same tokens,
+// so the two sides cannot disagree about the threshold.
+//
 // The echo fake keeps its inflated rate: offline smoke tests
 // (scripts/demo-spike2.sh scenario 3) trip small caps with it. The
 // scripted replay and toolactor share it — all offline test doubles.
 func RatePer1K(provider, modelName string) float64 {
-	return ratePer1K(pricingCatalog(), provider, modelName)
+	return ratePer1K(pricingTable(), provider, modelName)
 }
 
-// ratePer1K is RatePer1K against an explicit catalog. The catalog is a
+// ratePer1K is RatePer1K against an explicit table. The table is a
 // parameter only so tests can price the same model differently on two
 // backends: every rate mast ships agrees across the backends serving it,
 // so nothing built from the real table can tell whether the pair or the
 // bare id was read.
-func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
+func ratePer1K(t *priceTable, provider, modelName string) float64 {
 	backend := Backend(provider, modelName)
 	blend := func() (float64, bool) {
-		r, ok := c.LookupFor(backend, modelName)
-		if !ok || r.IsZero() {
+		r, ok := t.lookup(backend, modelName)
+		if !ok {
 			return 0, false
 		}
 		return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000, true

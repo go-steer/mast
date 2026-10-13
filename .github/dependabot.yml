@@ -27,9 +27,14 @@
 # unmerged: one PR each, for a human. See that workflow for why the split
 # is drawn at major rather than somewhere else.
 #
-# Schedule note: Monday 05:30 UTC, deliberately ahead of pricing-regen's
-# 09:07 so the two bots are not contending for the same CI capacity, and
-# early enough that a week's dependency PRs have merged or failed before
+# go-steer/core-models is the other exception. Its bumps carry mast's
+# price table (pricing.Builtin), so a patch can change what a workload is
+# billed and what a max_cost_usd buys. They get their own group, which the
+# automerge workflow refuses, and the pricing-diff workflow prints which
+# rates moved between the old and new pin for the human reviewing it.
+#
+# Schedule note: Monday 05:30 UTC, ahead of upstream-drift's 09:23 so the
+# two are not contending for the same CI capacity, and early enough that a week's dependency PRs have merged or failed before
 # anyone starts reading them.
 
 version: 2
@@ -49,11 +54,21 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
+      # First, so it claims core-models and its adapter module (adkv2)
+      # before go-minor-patch can: a dependency joins the first group
+      # that matches it.
+      core-models:
+        patterns:
+          - "github.com/go-steer/core-models"
+          - "github.com/go-steer/core-models/*"
       go-minor-patch:
         applies-to: version-updates
         update-types:
           - minor
           - patch
+        exclude-patterns:
+          - "github.com/go-steer/core-models"
+          - "github.com/go-steer/core-models/*"
       go-security:
         applies-to: security-updates
         update-types:

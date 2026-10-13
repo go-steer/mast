@@ -16,7 +16,8 @@ name: dependabot-automerge
 
 # Merges Dependabot's minor and patch bumps once every check on the PR is
 # green. Majors are never merged here — they get a comment and wait for a
-# human.
+# human. Neither is a go-steer/core-models bump, whatever its size: see
+# "Refuse core-models" below.
 #
 # WHERE THE LINE IS DRAWN, AND WHY IT IS DRAWN AT MAJOR. Under semver a
 # major is the only bump whose publisher is *telling you* it breaks
@@ -78,7 +79,7 @@ on:
         type: string
 
 # GITHUB_TOKEN is used only to read check state. The merge goes through
-# the go-steer-bot App token minted below, matching pricing-regen.yml.
+# the go-steer-bot App token minted below (see the step for why).
 permissions:
   contents: read
   pull-requests: read
@@ -150,6 +151,31 @@ jobs:
           echo "major bump (${DEPS}) — leaving for a human"
           echo "::notice::PR #${PR} is a major bump and will not be auto-merged"
 
+      # go-steer/core-models carries mast's price table, so a patch bump
+      # can reprice every call a workload makes and change what its
+      # max_cost_usd buys. CI checks that the code still works; it cannot
+      # judge whether a new rate is right. That is a human's call, made
+      # with the pricing-diff workflow's report of which rates moved.
+      # dependabot.yml gives these bumps their own group; this refuses
+      # them even if one arrives grouped with something else.
+      - name: Refuse core-models
+        id: coremodels
+        env:
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          # A here-string, not a pipe into grep -q: under pipefail an
+          # early-exiting grep can SIGPIPE the writer and turn a match
+          # into a miss, which here would mean a merge.
+          if grep -Eq '(^|[ ,])github\.com/go-steer/core-models(/|,|$| )' <<<"$DEPS"; then
+            echo "core-models bump (${DEPS}) — leaving for a human"
+            echo "::notice::PR #${PR} bumps go-steer/core-models and will not be auto-merged; review the pricing-diff report"
+            echo "refused=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "refused=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Poll until nothing on the PR is still running, then require every
       # completed check to have passed. SKIPPED and NEUTRAL count as pass:
       # a path-filtered workflow that correctly did not run (ci-docs on a
@@ -195,7 +221,9 @@ jobs:
       # excludes precisely this run rather than anything sharing a name.
       - name: Wait for every check, and require all of them
         id: checks
-        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        if: >-
+          steps.meta.outputs.update-type != 'version-update:semver-major' &&
+          steps.coremodels.outputs.refused != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}
@@ -254,8 +282,8 @@ jobs:
           fi
           echo "all checks green (excluding: ${WAIVED})"
 
-      # Same App-token rationale as pricing-regen.yml: the org forbids
-      # GITHUB_TOKEN from acting as a PR author, and an App installation
+      # Why an App token: the org forbids GITHUB_TOKEN from acting as
+      # a PR author, and an App installation
       # token is a distinct identity that expires in ~1h. Minted only once
       # the checks have actually passed, so a failed run never holds a
       # credential it has no use for.
