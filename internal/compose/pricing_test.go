@@ -19,7 +19,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/internal/pricing"
+	"github.com/go-steer/core-models/pricing"
+	"github.com/go-steer/core-models/profile"
+
 	"github.com/go-steer/mast/pkg/budget"
 )
 
@@ -46,7 +48,7 @@ func TestRatePer1K(t *testing.T) {
 	// gemini-3.5-flash is in the builtin catalog; the flat rate is
 	// the blended average, computed from the catalog rather than
 	// hard-coded so a builtin regen doesn't break this test.
-	r, ok := builtinCatalog().Lookup("gemini-3.5-flash")
+	r, ok := pricingCatalog().Lookup("gemini-3.5-flash")
 	if !ok || r.IsZero() {
 		t.Fatal("builtin catalog lost gemini-3.5-flash; pick another catalog-known model for this test")
 	}
@@ -70,7 +72,7 @@ func TestRatePer1K(t *testing.T) {
 	}
 
 	// Claude models price from the same catalog blend (P1.3b).
-	cr, ok := builtinCatalog().Lookup("claude-opus-4-7")
+	cr, ok := pricingCatalog().Lookup("claude-opus-4-7")
 	if !ok || cr.IsZero() {
 		t.Fatal("builtin catalog lost claude-opus-4-7; pick another catalog-known model for this test")
 	}
@@ -190,7 +192,7 @@ func TestRatePer1K_FollowsTheResolvedBackend(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			if got := ratePer1K(c, tc.provider, tc.model); math.Abs(got-tc.want) > 1e-12 {
+			if got := ratePer1K(&priceTable{cat: c}, tc.provider, tc.model); math.Abs(got-tc.want) > 1e-12 {
 				t.Errorf("ratePer1K(%q, %q) = %v, want %v", tc.provider, tc.model, got, tc.want)
 			}
 		})
@@ -230,9 +232,9 @@ func TestRatePer1KPricesThePair(t *testing.T) {
 	}
 	for _, p := range pairs {
 		t.Run(p.key, func(t *testing.T) {
-			r, ok := builtinCatalog().Lookup(p.key)
+			r, ok := pricingCatalog().Lookup(p.key)
 			if !ok || r.IsZero() {
-				t.Fatalf("builtin catalog has no %q row; regenerate with `go run ./dev/regen-builtin-pricing`", p.key)
+				t.Fatalf("builtin catalog has no %q row; core-models must carry it (go-steer/core-models dev/regen-builtin-pricing)", p.key)
 			}
 			if got := RatePer1K(p.provider, p.model); math.Abs(got-blend(r)) > 1e-12 {
 				t.Errorf("RatePer1K(%q, %q) = %v, want %v (the %q row)",
@@ -245,10 +247,10 @@ func TestRatePer1KPricesThePair(t *testing.T) {
 	// than to a zero or to the flat miss rate. Vertex does not serve
 	// claude-mythos-5, so there is no anthropic-vertex row for it — and
 	// a workload that asks for one must still get a real number.
-	if _, ok := builtinCatalog().Lookup("anthropic-vertex/claude-mythos-5"); ok {
+	if _, ok := pricingCatalog().Lookup("anthropic-vertex/claude-mythos-5"); ok {
 		t.Skip("upstream now prices claude-mythos-5 on Vertex; pick another unserved pair")
 	}
-	bare, ok := builtinCatalog().Lookup("claude-mythos-5")
+	bare, ok := pricingCatalog().Lookup("claude-mythos-5")
 	if !ok || bare.IsZero() {
 		t.Fatal("builtin catalog lost claude-mythos-5")
 	}
@@ -343,7 +345,7 @@ var probeCall = budget.Call{UncachedInputTokens: 1_000_000}
 // against literals so a vendor's price change is not a test failure.
 func TestCatalogPricer_PricesEachBucketAtItsOwnRate(t *testing.T) {
 	const name = "claude-sonnet-5"
-	r, ok := builtinCatalog().Lookup(name)
+	r, ok := pricingCatalog().Lookup(name)
 	if !ok || r.IsZero() {
 		t.Fatalf("builtin catalog lost %q; pick another catalog-known model", name)
 	}
@@ -378,7 +380,7 @@ func TestCatalogPricer_PricesEachBucketAtItsOwnRate(t *testing.T) {
 // higher-than-input number and that the adapter routes the bucket to it.
 func TestCatalogPricer_PricesCacheWritesAtTheirPremiumRate(t *testing.T) {
 	const name = "claude-sonnet-5"
-	r, ok := builtinCatalog().Lookup(name)
+	r, ok := pricingCatalog().Lookup(name)
 	if !ok || r.IsZero() {
 		t.Fatalf("builtin catalog lost %q; pick another catalog-known model", name)
 	}
@@ -419,7 +421,7 @@ func TestCatalogPricer_AMissingCacheWriteRateFallsBackToInput(t *testing.T) {
 	cat := mustCatalog(t, map[string]pricing.ModelRates{
 		"half-priced-model": {InputPerMTok: 2, CachedInputPerMTok: 0.2, OutputPerMTok: 10},
 	})
-	p := catalogPricer{cat: cat}
+	p := catalogPricer{table: &priceTable{cat: cat}}
 	got, ok := p.PriceCall("", "half-priced-model", budget.Call{CacheWriteTokens: 1_000_000})
 	if !ok {
 		t.Fatalf("PriceCall(row with rates) = (%v, false), want a price", got)
@@ -446,7 +448,7 @@ func TestCatalogPricer_AZeroRatedRowIsAMiss(t *testing.T) {
 	cat := mustCatalog(t, map[string]pricing.ModelRates{
 		"placeholder-model": {},
 	})
-	if usd, ok := (catalogPricer{cat: cat}).PriceCall("", "placeholder-model", probeCall); ok {
+	if usd, ok := (catalogPricer{table: &priceTable{cat: cat}}).PriceCall("", "placeholder-model", probeCall); ok {
 		t.Errorf("PriceCall(zero-rated row) = ($%v, true), want a miss", usd)
 	}
 }
@@ -460,7 +462,7 @@ func TestCatalogPricer_BackendQualifiedRowWinsOverTheBareOne(t *testing.T) {
 		"claude-sonnet-5":                  {InputPerMTok: 2},
 		"anthropic-vertex/claude-sonnet-5": {InputPerMTok: 20},
 	})
-	p := catalogPricer{cat: cat}
+	p := catalogPricer{table: &priceTable{cat: cat}}
 	for _, tc := range []struct {
 		backend string
 		want    float64
@@ -477,5 +479,175 @@ func TestCatalogPricer_BackendQualifiedRowWinsOverTheBareOne(t *testing.T) {
 		if math.Abs(got-tc.want) > 1e-9 {
 			t.Errorf("backend %q: PriceCall = $%v, want $%v", tc.backend, got, tc.want)
 		}
+	}
+}
+
+// TestPriceCall_LongContextAboveThreshold: the meter's pricer hands the
+// whole prompt to core-models' Cost* methods, so a call above a model's
+// long-context threshold bills every token at the above-threshold rates
+// (gemini-2.5-pro: 200K) and one below it at the base rates.
+func TestPriceCall_LongContextAboveThreshold(t *testing.T) {
+	const model = "gemini-2.5-pro"
+	r, ok := pricingCatalog().LookupFor("vertex", model)
+	if !ok || r.LongContext == nil || r.LongContext.ThresholdTokens != 200_000 {
+		t.Fatalf("%s rates = %+v, want a 200K long-context row", model, r)
+	}
+	p := builtinPricer()
+	price := func(prompt int) float64 {
+		got, ok := p.PriceCall("vertex", model, budget.Call{UncachedInputTokens: prompt, OutputTokens: 1000})
+		if !ok {
+			t.Fatalf("%s unpriced", model)
+		}
+		return got
+	}
+	if got, want := price(100_000), 0.1*r.InputPerMTok+0.001*r.OutputPerMTok; math.Abs(got-want) > 1e-9 {
+		t.Errorf("100K prompt = $%.6f, want base rates $%.6f", got, want)
+	}
+	lc := r.LongContext
+	if got, want := price(300_000), 0.3*lc.InputPerMTok+0.001*lc.OutputPerMTok; math.Abs(got-want) > 1e-9 {
+		t.Errorf("300K prompt = $%.6f, want long-context rates $%.6f", got, want)
+	}
+}
+
+// TestDeclaredRatesAreTheCatalogsLowestLayer: a profile's models[].rates
+// reach the meter through the catalog, scoped to that profile's backend
+// and attributed to "profile-declared".
+func TestDeclaredRatesAreTheCatalogsLowestLayer(t *testing.T) {
+	RegisterProfiles([]profile.Profile{
+		{Name: "house", Extends: "vllm", BaseURL: "http://127.0.0.1:1/v1", Models: []profile.Model{
+			{ID: "google/gemma-4-26B-A4B-it", Rates: &profile.Rates{InputPerMTok: 0.10, OutputPerMTok: 0.40}},
+		}},
+	})
+	t.Cleanup(func() { RegisterProfiles(nil) })
+
+	r, src, ok := pricingCatalog().LookupForWithSource("house", "google/gemma-4-26B-A4B-it")
+	if !ok || r.InputPerMTok != 0.10 || r.OutputPerMTok != 0.40 || src != pricing.SourceDeclared {
+		t.Errorf("declared row = %+v from %q, %v; want 0.10/0.40 from %q", r, src, ok, pricing.SourceDeclared)
+	}
+	if _, ok := pricingCatalog().LookupFor("vertex-maas", "google/gemma-4-26B-A4B-it"); ok {
+		t.Error("a declaration priced the same id on another backend")
+	}
+	if got := RatePer1K("house", "google/gemma-4-26B-A4B-it"); math.Abs(got-0.00025) > 1e-12 {
+		t.Errorf("RatePer1K = %v, want the declared blend 0.00025", got)
+	}
+}
+
+// TestDeclaredClaudeRatesOnAProfile pins what a profile's declared
+// rates for a claude-* model do, on the path production takes. A
+// claude-* model under a profile alias is served by Anthropic, not by
+// the profile (Backend routes it through anthropicBackend, which reads
+// the environment), so the declaration is keyed on the profile's backend
+// name and is reached only when that name happens to equal the Anthropic
+// backend mast resolved — and even then a published Claude price beats
+// it. Such declarations are close to dead config. main had the same gap
+// with its compose-side declared fallback; making them meaningful would
+// mean routing claude-* to a profile, which is a product decision, not
+// a pricing one.
+func TestDeclaredClaudeRatesOnAProfile(t *testing.T) {
+	t.Setenv(EnvAnthropicAPIKey, "test-key")
+	RegisterProfiles([]profile.Profile{
+		{Name: "claudegw", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: ProviderAnthropic, Models: []profile.Model{
+			{ID: "claude-sonnet-5", Rates: &profile.Rates{InputPerMTok: 999, OutputPerMTok: 999}},
+		}},
+	})
+	t.Cleanup(func() { RegisterProfiles(nil) })
+
+	const model = "claude-sonnet-5"
+	backend := Backend("claudegw", model)
+	if backend != ProviderAnthropic {
+		t.Fatalf("Backend(claudegw, %s) = %q, want %q: claude-* under a profile is served by Anthropic", model, backend, ProviderAnthropic)
+	}
+	published, ok := pricing.Builtin()[model]
+	if !ok {
+		t.Fatalf("pricing.Builtin() has no %s row", model)
+	}
+	call := budget.Call{UncachedInputTokens: 1000, OutputTokens: 1000}
+	got, ok := builtinPricer().PriceCall(backend, model, call)
+	if want := published.CostUSDWithCacheTTLs(1000, 0, 0, 0, 1000); !ok || math.Abs(got-want) > 1e-12 {
+		t.Errorf("PriceCall = $%v, %v; want the published $%v, not the declared 999", got, ok, want)
+	}
+	if got, want := RatePer1K("claudegw", model), (published.InputPerMTok+published.OutputPerMTok)/2/1000; math.Abs(got-want) > 1e-12 {
+		t.Errorf("RatePer1K = %v, want the published blend %v", got, want)
+	}
+}
+
+// TestDeclaredRatesFillAZeroRateRow: LiteLLM prices some free and
+// preview models at zero. mast reads a zero row as unpriced, so the
+// catalog returning it ahead of the declared layer must not hide a
+// profile's declared price for the model.
+func TestDeclaredRatesFillAZeroRateRow(t *testing.T) {
+	tbl, err := newPriceTable(pricing.Options{
+		CfgOverride: map[string]pricing.ModelRates{"lab/free-preview": {}},
+		Declared:    map[string]pricing.ModelRates{"lab/free-preview": {InputPerMTok: 1, OutputPerMTok: 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _, ok := tbl.cat.LookupForWithSource("lab", "free-preview"); !ok || !r.IsZero() {
+		t.Fatalf("setup: catalog returned %+v, %v; want the zero row", r, ok)
+	}
+	got, ok := (catalogPricer{table: tbl}).PriceCall("lab", "free-preview", budget.Call{UncachedInputTokens: 1_000_000, OutputTokens: 1_000_000})
+	if !ok || math.Abs(got-4) > 1e-9 {
+		t.Errorf("PriceCall = $%v, %v; want the declared $4", got, ok)
+	}
+	if got := ratePer1K(tbl, "", "free-preview"); got != 0.001 {
+		t.Errorf("ratePer1K with no backend = %v, want the flat 0.001: a declaration prices only its own backend", got)
+	}
+}
+
+// TestDeclaredRatesFirstProfileWins: two profiles declaring the same
+// model on the same backend resolve to the first in profile lookup
+// order — built-ins, then declared in registration order — and a
+// declared profile that overrides a built-in name holds the built-in's
+// place and is counted once.
+func TestDeclaredRatesFirstProfileWins(t *testing.T) {
+	const model = "acme/coder-7b"
+	rates := func(in float64) *profile.Rates { return &profile.Rates{InputPerMTok: in, OutputPerMTok: in} }
+	RegisterProfiles([]profile.Profile{
+		{Name: "lab-a", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "lab", Models: []profile.Model{{ID: model, Rates: rates(1)}}},
+		{Name: "lab-b", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "lab", Models: []profile.Model{{ID: model, Rates: rates(2)}}},
+		{Name: "house", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "vllm", Models: []profile.Model{{ID: model, Rates: rates(3)}}},
+		{Name: "vllm", BaseURL: "http://127.0.0.1:1/v1", Models: []profile.Model{{ID: model, Rates: rates(4)}}},
+	})
+	t.Cleanup(func() { RegisterProfiles(nil) })
+
+	for _, tc := range []struct {
+		backend string
+		want    float64
+		why     string
+	}{
+		{"lab", 1, "lab-a is registered before lab-b"},
+		{"vllm", 4, "the vllm override holds the built-in's place, ahead of every declared profile"},
+	} {
+		r, ok := pricingTable().lookup(tc.backend, model)
+		if !ok || r.InputPerMTok != tc.want {
+			t.Errorf("%s/%s = %+v, %v; want %v (%s)", tc.backend, model, r, ok, tc.want, tc.why)
+		}
+	}
+}
+
+// TestPricerSeesProfilesRegisteredLater: a meter's pricer reads the
+// table in force, so declared rates registered after it was made price
+// its calls, as they do RatePer1K's.
+func TestPricerSeesProfilesRegisteredLater(t *testing.T) {
+	RegisterProfiles(nil)
+	t.Cleanup(func() { RegisterProfiles(nil) })
+	p := MeterLimits("house", "acme/late-model").Pricer
+	call := budget.Call{UncachedInputTokens: 1_000_000, OutputTokens: 1_000_000}
+	if usd, ok := p.PriceCall("house", "acme/late-model", call); ok {
+		t.Fatalf("setup: priced at $%v before any profile declared it", usd)
+	}
+
+	RegisterProfiles([]profile.Profile{
+		{Name: "house", Extends: "vllm", BaseURL: "http://127.0.0.1:1/v1", Models: []profile.Model{
+			{ID: "acme/late-model", Rates: &profile.Rates{InputPerMTok: 2, OutputPerMTok: 6}},
+		}},
+	})
+	usd, ok := p.PriceCall("house", "acme/late-model", call)
+	if !ok || math.Abs(usd-8) > 1e-9 {
+		t.Errorf("PriceCall after RegisterProfiles = $%v, %v; want the declared $8", usd, ok)
+	}
+	if got := RatePer1K("house", "acme/late-model"); math.Abs(got-0.004) > 1e-12 {
+		t.Errorf("RatePer1K = %v, want the declared blend 0.004", got)
 	}
 }

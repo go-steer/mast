@@ -19,8 +19,6 @@ profile.cov
 /cmd/mast/mast
 
 # The dev tools, as `go build ./dev/<tool>` leaves them in the repo root.
-# A 10 MB regen-builtin-pricing binary was committed by accident in #516.
-/regen-builtin-pricing
 /upstream-drift
 
 # AI assistant working state — never committed to this repo.

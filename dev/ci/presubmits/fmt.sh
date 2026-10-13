@@ -23,7 +23,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
 # dev is in the list because dev/ now holds real Go programs
-# (regen-builtin-pricing, upstream-drift), not just shell. vet, lint
+# (upstream-drift), not just shell. vet, lint
 # and test already reach them via ./...; gofmt takes paths, so it has
 # to be told.
 offenders="$(gofmt -l ./*.go cmd internal pkg examples dev)"

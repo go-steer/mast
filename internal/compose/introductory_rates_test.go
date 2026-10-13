@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package pricing_test
+package compose
 
 import (
 	"testing"
 	"time"
-
-	"github.com/go-steer/mast/internal/pricing"
 )
 
 // A rate can be current in its source and still be wrong.
@@ -43,10 +41,17 @@ import (
 // entry, it cannot be forgotten, and it converts a date in someone's head
 // into a build failure.
 //
-// This runs inside pricing-regen.yml as well as ordinary CI — the
-// workflow's verify step calls dev/ci/presubmits/test.sh before opening
-// the auto-PR — so an expiry that LiteLLM has not caught up with stops
-// the regen rather than being rubber-stamped by it.
+// # Why mast keeps its own copy (2026-10-13)
+//
+// The table moved to go-steer/core-models (v0.11.0), and core-models
+// carries the same assertion — but that one fails core-models' CI, and
+// only when core-models' tests run. mast pins a version, and a pinned
+// table does not change on 2027-01-01 just because the rate did. This
+// copy runs in mast's CI every day against the pin mast actually ships,
+// so a lapse reds mast's build whatever core-models has or has not
+// released. It checks each row the way mast's meter reads it: the
+// backend-qualified row for every backend the model is served on, not
+// only the bare one, since a call on Vertex prices from the vertex row.
 //
 // # The 2026-08-20 enumeration (#188)
 //
@@ -82,6 +87,10 @@ import (
 // and neither is derivable from the source of truth.
 type introductoryRate struct {
 	model string
+
+	// backends are the backends mast serves the model on; each one's row
+	// is checked as the meter would look it up.
+	backends []string
 
 	// notBefore is when this assertion starts biting: the first instant
 	// at which the introductory rate still being present is a defect.
@@ -123,6 +132,7 @@ type introductoryRate struct {
 var introductoryRates = []introductoryRate{
 	{
 		model:       "claude-sonnet-5",
+		backends:    []string{ProviderAnthropic, ProviderAnthropicVertex},
 		notBefore:   time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
 		introInput:  2,
 		introOutput: 10,
@@ -140,6 +150,7 @@ var introductoryRates = []introductoryRate{
 	},
 	{
 		model:       "gemini-3.7-flash",
+		backends:    []string{ProviderGemini, ProviderVertex},
 		notBefore:   time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC),
 		introInput:  0.75,
 		introOutput: 3.75,
@@ -153,6 +164,7 @@ var introductoryRates = []introductoryRate{
 	},
 	{
 		model:       "gemini-3.8-flash",
+		backends:    []string{ProviderGemini, ProviderVertex},
 		notBefore:   time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC),
 		introInput:  0.75,
 		introOutput: 3.75,
@@ -170,6 +182,7 @@ var introductoryRates = []introductoryRate{
 	},
 	{
 		model:       "gemini-3.6-flash",
+		backends:    []string{ProviderGemini, ProviderVertex},
 		notBefore:   time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC),
 		introInput:  0.75,
 		introOutput: 3.75,
@@ -183,11 +196,11 @@ var introductoryRates = []introductoryRate{
 }
 
 // TestIntroductoryRatesHaveNotOutlivedTheirExpiry fails once a known
-// promotional rate is past its end date and the builtin table still
-// carries it.
+// promotional rate is past its end date and the table mast ships still
+// carries it, on any backend mast serves the model on.
 //
 // The test is time-dependent, which is normally a defect and here is the
-// entire mechanism. It has four outcomes:
+// entire mechanism. It has four outcomes per row:
 //
 //   - resolved (the increase was cancelled): the assertion inverts and
 //     pins the rate at the former promotional number. Time stops
@@ -195,71 +208,75 @@ var introductoryRates = []introductoryRate{
 //   - before notBefore: nothing to say, the rate is correct.
 //   - after notBefore, rate moved: the entry is spent; the test says so
 //     and passes. Delete the entry.
-//   - after notBefore, rate unchanged: fail. Either LiteLLM has not
-//     caught up (override the row, or wait for the next regen and accept
-//     the exposure knowingly) or the expiry was wrong (fix the entry).
+//   - after notBefore, rate unchanged: fail. Either core-models has not
+//     shipped the new rate (bump the pin once it has, or have it fixed
+//     there first — fixes to the table land in core-models, not here) or
+//     the expiry was wrong (fix the entry).
 func TestIntroductoryRatesHaveNotOutlivedTheirExpiry(t *testing.T) {
-	builtin := pricing.Builtin()
 	now := time.Now().UTC()
-
 	for _, ir := range introductoryRates {
-		t.Run(ir.model, func(t *testing.T) {
-			r, ok := builtin[ir.model]
-			if !ok {
-				// The row left the table entirely — eligible() no longer
-				// matches it, or LiteLLM dropped it. Nothing to assert
-				// against, and the entry here is now noise.
-				t.Skipf("%s is no longer in pricing.Builtin(); drop its introductoryRates entry", ir.model)
-			}
-
-			stillIntroductory := r.InputPerMTok == ir.introInput && r.OutputPerMTok == ir.introOutput
-
-			// A cancelled increase inverts the assertion: the former
-			// promotional number IS the rate, so drift away from it is
-			// what's suspicious now. notBefore no longer applies —
-			// leaving it in force would have turned a correct table red
-			// on the date the increase was scheduled and then didn't
-			// happen, which is a guard failing in the direction that
-			// gets guards deleted.
-			if ir.resolved != "" {
-				if !stillIntroductory {
-					t.Errorf("%s prices at $%g in / $%g out, but this entry records $%g / $%g "+
-						"as permanent.\nWhat was checked: %s.\n"+
-						"Either the provider repriced again — confirm on the public pricing page "+
-						"and update or drop this entry — or the builtin table is wrong.",
-						ir.model, r.InputPerMTok, r.OutputPerMTok, ir.introInput, ir.introOutput,
-						ir.resolved)
-				}
-				return
-			}
-
-			if now.Before(ir.notBefore) {
-				if !stillIntroductory {
-					t.Logf("%s moved off its introductory rate early (now $%g in / $%g out); "+
-						"the introductoryRates entry can be dropped",
-						ir.model, r.InputPerMTok, r.OutputPerMTok)
-				}
-				return
-			}
-
-			if !stillIntroductory {
-				t.Logf("%s is past %s and off its introductory rate ($%g in / $%g out); "+
-					"this entry has done its job and can be dropped",
-					ir.model, ir.notBefore.Format("2006-01-02"), r.InputPerMTok, r.OutputPerMTok)
-				return
-			}
-
-			t.Errorf("%s still prices at its introductory rate ($%g in / $%g out) on %s, "+
-				"past the %s expiry — expected %s.\n"+
-				"UpdatedAt says %s, which is why nothing else caught this: the row is "+
-				"freshly read from LiteLLM and still wrong.\n"+
-				"Why it matters: %s.\n"+
-				"To resolve: confirm the published rate, then either wait for LiteLLM "+
-				"(next regen is the following Monday) or override the row via "+
-				"pricing.json / .agents/config.json model.pricing. Update this entry once it moves.",
-				ir.model, r.InputPerMTok, r.OutputPerMTok,
-				now.Format("2006-01-02"), ir.notBefore.Format("2006-01-02"), ir.standard,
-				r.UpdatedAt.Format("2006-01-02"), ir.why)
-		})
+		for _, backend := range ir.backends {
+			t.Run(backend+"/"+ir.model, func(t *testing.T) {
+				checkIntroductoryRate(t, ir, backend, now)
+			})
+		}
 	}
+}
+
+func checkIntroductoryRate(t *testing.T, ir introductoryRate, backend string, now time.Time) {
+	t.Helper()
+	r, ok := pricingTable().lookup(backend, ir.model)
+	if !ok {
+		// The row left the table entirely. Nothing to assert against,
+		// and the entry here is now noise.
+		t.Skipf("%s has no price on %s; drop its introductoryRates entry", ir.model, backend)
+	}
+
+	stillIntroductory := r.InputPerMTok == ir.introInput && r.OutputPerMTok == ir.introOutput
+
+	// A cancelled increase inverts the assertion: the former promotional
+	// number IS the rate, so drift away from it is what's suspicious now.
+	// notBefore no longer applies — leaving it in force would have turned
+	// a correct table red on the date the increase was scheduled and then
+	// didn't happen, which is a guard failing in the direction that gets
+	// guards deleted.
+	if ir.resolved != "" {
+		if !stillIntroductory {
+			t.Errorf("%s on %s prices at $%g in / $%g out, but this entry records $%g / $%g "+
+				"as permanent.\nWhat was checked: %s.\n"+
+				"Either the provider repriced again — confirm on the public pricing page "+
+				"and update or drop this entry — or the table in core-models is wrong.",
+				ir.model, backend, r.InputPerMTok, r.OutputPerMTok, ir.introInput, ir.introOutput,
+				ir.resolved)
+		}
+		return
+	}
+
+	if now.Before(ir.notBefore) {
+		if !stillIntroductory {
+			t.Logf("%s on %s moved off its introductory rate early (now $%g in / $%g out); "+
+				"the introductoryRates entry can be dropped",
+				ir.model, backend, r.InputPerMTok, r.OutputPerMTok)
+		}
+		return
+	}
+
+	if !stillIntroductory {
+		t.Logf("%s on %s is past %s and off its introductory rate ($%g in / $%g out); "+
+			"this entry has done its job and can be dropped",
+			ir.model, backend, ir.notBefore.Format("2006-01-02"), r.InputPerMTok, r.OutputPerMTok)
+		return
+	}
+
+	t.Errorf("%s on %s still prices at its introductory rate ($%g in / $%g out) on %s, "+
+		"past the %s expiry — expected %s.\n"+
+		"UpdatedAt says %s, which is why nothing else caught this: the row was "+
+		"freshly read from LiteLLM and is still wrong.\n"+
+		"Why it matters: %s.\n"+
+		"To resolve: confirm the published rate, get it into go-steer/core-models' "+
+		"pricing table (a regen once LiteLLM has it, or a fix there), and bump mast's "+
+		"core-models pin. Update this entry once it moves.",
+		ir.model, backend, r.InputPerMTok, r.OutputPerMTok,
+		now.Format("2006-01-02"), ir.notBefore.Format("2006-01-02"), ir.standard,
+		r.UpdatedAt.Format("2006-01-02"), ir.why)
 }

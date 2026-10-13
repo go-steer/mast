@@ -86,8 +86,11 @@ already does.
 
 Tokens are counted from what the provider reports; the price per token
 comes from a built-in rate table generated from
-[LiteLLM's catalog](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
-and refreshed weekly by an automated pull request, so a `max_cost_usd`
+[LiteLLM's catalog](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json).
+Since v1.0 that table lives in
+[core-models' `pricing` package](https://go-steer.github.io/core-models/),
+shared with core-agent, and arrives in mast as a version bump; it is
+pinned rather than refreshed underneath a running release, so a `max_cost_usd`
 does not slowly become a different number of dollars as vendors move
 their prices. Prompt-caching is priced with the three buckets Anthropic
 bills separately — uncached input, cache reads at a tenth of it, and
@@ -134,13 +137,39 @@ not at base input, as core-agent does: a model that publishes one write
 rate and not the other is far likelier to be missing a catalog field than
 to bill 1-hour writes below 5-minute ones.
 
-Rates are overridable, which is what you want for negotiated enterprise
-pricing or a model mast has never heard of: an operator can drop a
-`pricing.json` next to the workload in `.agents/`, and a library embedder
-can pass rows directly (`pricing.Options.CfgOverride`, highest
-precedence). A model with no row anywhere is metered at a flat fallback
-rate and counted as unpriced rather than billed at zero — a ceiling still
-trips on it, just less precisely.
+A model the table has never heard of — a self-hosted one, say — is priced
+from its [provider profile](/concepts/providers/) when the profile
+declares rates. Declared rates are the catalog's **lowest** layer: they
+price a model only where no catalog row does (a row priced at zero, as
+LiteLLM lists some free and preview models, counts as no row), so a
+profile cannot under-bill a model the vendor publishes a price for. If
+two profiles declare the same model on the same backend, the first one
+mast finds wins: built-in profiles first, then yours in the order they
+load.
+
+A call with no price anywhere is metered at a flat fallback rate, and
+which one depends on the model:
+
+- `gemini-*` falls back to $0.0006 per 1K tokens and `claude-*` to
+  $0.003, and the call is counted as unpriced. A `max_cost_usd` ceiling
+  still trips on it, just less precisely.
+- A model served through a provider profile has no fallback. It is
+  metered at $0, shows as `$—`, and is counted as unpriced. Since a
+  ceiling could never trip on it, a `max_cost_usd` on such a model is
+  **refused at startup**. Declare rates in the profile, or bound the run
+  with `max_turns` or `max_tokens`.
+- Any other model id falls back to $0.001 per 1K tokens.
+
+Above a model's long-context threshold (200K prompt tokens for
+`gemini-2.5-pro`, 100K for `claude-haiku-5-5`) the whole call is billed
+at the long-context rate, as the vendors bill it. The threshold is read
+against the full prompt — uncached, cache-read and cache-write tokens
+together. Before v1.0 mast billed every prompt at the base rate.
+
+mast reads no pricing override file today: the catalog is core-models'
+built-in table plus profile-declared rates. A library embedder building
+its own `pricing.Catalog` can layer rows over the table with
+`pricing.Options.CfgOverride`.
 
 ### Which name gets looked up
 
@@ -180,24 +209,11 @@ set and Vertex when only a GCP project is. mast resolves the backend once,
 with the same code that builds the client, so the row that prices a call is
 the row for the backend that will bill it.
 
-For an override this means you can price one backend without touching the
-other. A negotiated first-party rate goes in as `anthropic/claude-opus-5`
-and leaves your Vertex spend on the catalog rate; a bare `claude-opus-5` row
-still applies to both, which is usually what you want:
-
-```json
-{
-  "version": 1,
-  "models": {
-    "anthropic/claude-opus-5": { "input_per_mtok": 12.0, "output_per_mtok": 60.0 },
-    "claude-haiku-4-5":        { "input_per_mtok":  0.8, "output_per_mtok":  4.0 }
-  }
-}
-```
-
-Precedence and prefix matching work the same on qualified keys, so
+Prefix matching works the same on qualified keys, so
 `anthropic-vertex/claude-opus-4-5@20251101` finds an
-`anthropic-vertex/claude-opus-4-5` row.
+`anthropic-vertex/claude-opus-4-5` row. A profile's declared rates are
+keyed the same way, on the profile's backend and the model, so rates
+declared for your vLLM do not price the same model id on Vertex.
 
 ### Some rates have an expiry date, and the catalog cannot say so
 
@@ -205,7 +221,7 @@ A launch price is often introductory, and a `max_cost_usd` sized against
 one buys fewer tokens once it lapses — without anything looking wrong,
 because the number in the table is still the number the vendor is
 currently charging. LiteLLM's catalog carries no expiry field on any row,
-so mast records the known ones itself and fails its own build if a lapsed
+so core-models records the known ones itself and fails its own build if a lapsed
 rate is still in the table.
 
 The three that matter as of 2026-09-09:
