@@ -1368,6 +1368,14 @@ deliberately** says how to keep the old behaviour.
 
 ### Documentation
 
+- **mast's introductory-rate check reads core-models' list.** The dates
+  and the judgment come from `pricing.IntroductoryRates()` and
+  `IntroductoryRate.Check` (core-models v0.12.0), not a copy kept here.
+  mast still runs the check over the backends it serves each model on, so
+  its own build goes red when a rate it bills from lapses. A new entry in
+  core-models for a model family mast doesn't map fails the test, so it
+  can't be skipped silently.
+
 - **The last provider copy is gone.** `internal/providers/gemini` held
   only the grounding projection, and nothing wired it. The shared version
   is `adkv2.GroundingProjection` in core-models v0.7.0, which mast now
