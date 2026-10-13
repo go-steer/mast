@@ -777,6 +777,14 @@ deliberately** says how to keep the old behaviour.
 
 ### Bug or Regression
 
+- **An xAI reasoning reply's answer tokens are counted.** xAI reports
+  reasoning tokens beside completion/output tokens, where OpenAI reports
+  them inside. core-models' usage mapping assumed OpenAI's convention, so
+  on an `xai` profile, or one extending it, a reasoning reply's answer
+  tokens came out as zero or short, and its cost came out low.
+  core-models v0.11.1 picks the convention from `total_tokens`. Found by
+  core-models' first live xAI run.
+
 - **The price catalog is core-models' (v0.11.0), shared with core-agent.**
   `internal/pricing` and `dev/regen-builtin-pricing` are gone, and so is the
   weekly regen workflow: the rate table now arrives as a core-models version
