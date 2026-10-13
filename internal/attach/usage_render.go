@@ -118,7 +118,51 @@ func RenderUsage(info UsageInfo) string {
 		}
 	}
 
+	// Section 4: the model server's KV cache, when a profile declares a
+	// metrics endpoint. Labelled fleet-level on the heading, because it
+	// is the server's whole traffic, not this session's.
+	if kv := info.KVCache; kv != nil && (kv.LastTurn != nil || kv.Session != nil) {
+		sb.WriteString("\nModel server KV cache (fleet-level: the server's whole traffic, not this session's)\n")
+		if w := kv.Session; w != nil {
+			fmt.Fprintf(&sb, "  session: %s\n", kvLine(w))
+		}
+		if w := kv.LastTurn; w != nil {
+			fmt.Fprintf(&sb, "  last turn: %s\n", kvLine(w))
+		}
+	}
+
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// kvLine renders one KVWindow, leaving out what the server did not
+// report rather than printing a zero for it.
+func kvLine(w *KVWindow) string {
+	var parts []string
+	if w.Turns > 0 {
+		parts = append(parts, fmt.Sprintf("%d turn(s)", w.Turns))
+	}
+	switch {
+	case w.HitRate != nil:
+		parts = append(parts, fmt.Sprintf("prefix hit rate %.1f%%", *w.HitRate*100))
+	case w.HitRateGauge != nil:
+		parts = append(parts, fmt.Sprintf("hit-rate gauge %.1f%%", *w.HitRateGauge*100))
+	}
+	if w.Hits != nil && w.Queries != nil {
+		parts = append(parts, fmt.Sprintf("%s of %s tokens hit", commas(int64(*w.Hits)), commas(int64(*w.Queries))))
+	}
+	if w.PeakKVUsage != nil {
+		parts = append(parts, fmt.Sprintf("peak KV %.0f%%", *w.PeakKVUsage*100))
+	}
+	if w.Reset {
+		parts = append(parts, "server restarted")
+	}
+	if w.EndFailed {
+		parts = append(parts, "closing scrape failed")
+	}
+	if len(parts) == 0 {
+		return "nothing reported"
+	}
+	return strings.Join(parts, " · ")
 }
 
 // commas renders an int64 with thousands separators. Small helper

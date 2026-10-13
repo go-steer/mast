@@ -353,6 +353,43 @@ type UsageInfo struct {
 	PerModel      map[string]UsageTotals `json:"per_model,omitempty"`
 	PerTurn       []UsageTurn            `json:"per_turn,omitempty"`
 	DigestMethods *DigestMethodsInfo     `json:"digest_methods,omitempty"`
+	KVCache       *KVCacheInfo           `json:"kv_cache,omitempty"`
+}
+
+// KVCacheInfo reports what a self-hosted model server's KV cache did
+// around this session's turns, read from its Prometheus endpoint
+// (core-models kvmetrics). Present only when the session's model comes
+// from a provider profile that declares a metrics endpoint (metrics:
+// vllm, sglang or llamacpp, plus metrics_url) and at least one turn has
+// been sampled.
+//
+// Fleet-level and time-correlated, and labelled so (Fleet is always
+// true): the server's prefix cache across all of its traffic while this
+// session's turns ran, not this session's share of it. It never enters
+// cost, token totals or a budget. Counts are tokens, as the servers
+// report them; a field the server did not expose is omitted ("not
+// reported"), never zero.
+type KVCacheInfo struct {
+	Fleet    bool      `json:"fleet"`
+	LastTurn *KVWindow `json:"last_turn,omitempty"`
+	Session  *KVWindow `json:"session,omitempty"`
+}
+
+// KVWindow is one window of KV-cache activity. In KVCacheInfo.Session it
+// folds every sampled turn: counts summed, the peak the highest any turn
+// saw, Reset if any turn's did, and Turns how many were sampled.
+type KVWindow struct {
+	Start        time.Time `json:"start"`
+	End          time.Time `json:"end"`
+	Queries      *float64  `json:"queries_tokens,omitempty"`
+	Hits         *float64  `json:"hits_tokens,omitempty"`
+	HitRate      *float64  `json:"hit_rate,omitempty"`
+	HitRateGauge *float64  `json:"hit_rate_gauge,omitempty"`
+	PeakKVUsage  *float64  `json:"peak_kv_usage,omitempty"`
+	Readings     int       `json:"readings"`
+	Reset        bool      `json:"reset,omitempty"`
+	EndFailed    bool      `json:"end_failed,omitempty"`
+	Turns        int       `json:"turns,omitempty"`
 }
 
 // DigestMethodsInfo carries the internal/digest telemetry snapshot in the

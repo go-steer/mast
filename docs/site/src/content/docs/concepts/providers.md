@@ -103,6 +103,11 @@ What mast does with a profile:
   - A `max_cost_usd` ceiling on an unpriced model is **refused at startup**,
     because it could never trip. Declare rates, or bound the run with
     `max_tokens` or `max_turns`.
+- **KV-cache statistics, opt-in by profile.** A self-hosted profile with a
+  `metrics_url` (vLLM, SGLang, llama.cpp) makes `/usage` carry the server's
+  prefix-cache hit rate and peak KV utilization around each turn, labelled
+  fleet-level, because it is the server's whole traffic. See [the model
+  server's KV cache](/concepts/interop/#the-model-servers-kv-cache-for-a-self-hosted-model).
 - **No server-side built-ins.** A bundle that turns on `builtin_tools`
   under a profile is refused rather than run without them.
 - **Which models are worth it.** Five Vertex AI partner models have been

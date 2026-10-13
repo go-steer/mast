@@ -39,6 +39,7 @@ import (
 
 	"github.com/go-steer/mast/internal/a2a"
 	"github.com/go-steer/mast/internal/agui"
+	"github.com/go-steer/mast/internal/attach"
 	"github.com/go-steer/mast/internal/auth"
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/effects"
@@ -752,8 +753,29 @@ func (d *daemon) buildMetering() error {
 		tracker:      d.tracker,
 		turnLocks:    d.turnLocks,
 		workloadName: d.workloadName,
+		kv:           d.kvPool(context.Background()),
 	}
 	return nil
+}
+
+// kvPool builds the KV-cache sampler pool when the daemon's model is a
+// provider profile whose server publishes KV-cache metrics, and returns
+// nil (sampling nothing) otherwise. A sampler that cannot be built is a
+// warning, not a startup failure: the statistics are optional and
+// fleet-level, and a model that resolved can still serve.
+func (d *daemon) kvPool(ctx context.Context) *kvPool {
+	s, err := compose.KVSampler(ctx, d.mdl.provider, d.mdl.name)
+	if err != nil {
+		d.logger.Warn("kv-cache metrics: sampler unavailable; /usage will carry no kv_cache block",
+			"provider", d.mdl.provider, "error", err.Error())
+		return nil
+	}
+	if s == nil {
+		return nil
+	}
+	d.logger.Info("kv-cache metrics: sampling the model server around each turn (fleet-level)",
+		"provider", d.mdl.provider, "poll", kvPollInterval.String())
+	return newKVPool(s, d.logger)
 }
 
 // buildOperatorSurfaces builds and binds the attach, A2A and AG-UI
@@ -824,7 +846,11 @@ func (d *daemon) buildOperatorSurfaces() error {
 			// existed (#356). The counts come off the same OnSpend hook
 			// the durable ledger does, so what an operator reads is the
 			// split the money was computed from.
-			usage: d.meters.usageInfo,
+			usage: func(sid string) attach.UsageInfo {
+				info := d.meters.usageInfo(sid)
+				info.KVCache = d.deps.kv.info(sid)
+				return info
+			},
 			// GET /guardrails + POST /guardrails/reset: which backstop
 			// stopped this session, and the only thing that unsticks
 			// it. A budget trip is otherwise permanent — the meter

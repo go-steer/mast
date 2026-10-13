@@ -236,6 +236,21 @@ deliberately** says how to keep the old behaviour.
 
 ### Feature
 
+- **`/usage` reports a self-hosted model server's KV cache** (core-models
+  v0.10.0's `kvmetrics`, L3). When the session's model comes from a
+  provider profile with a `metrics_url` and a server kind (vLLM, SGLang,
+  llama.cpp), mast samples the server's Prometheus endpoint around every
+  turn, at the start, the end and every 5 seconds between. A new
+  `kv_cache` block in `GET /sessions/{id}/usage` carries the last turn's
+  and the session's windows: prefix-cache tokens queried and hit, hit
+  rate, and peak KV utilization. It's labelled fleet-level (`"fleet":
+  true`) because it is the server's whole traffic, and it never enters
+  cost or tokens. Sampling never delays a turn: a dead endpoint is logged
+  once per session. The judged eval tier reports the same window per
+  incident and for the corpus; on our vLLM, two incidents hit 91% of
+  their prefix tokens. Opt-in by profile; nothing changes for any other
+  model.
+
 - **`MAST_GOOGLE_AUTH=injected`: Google credentials added by an egress
   gateway.** In a sandbox whose egress gateway injects the Google token
   ([Agent Substrate](https://github.com/agent-substrate/substrate)'s egress credential injection), there are no
