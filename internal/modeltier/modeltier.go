@@ -167,6 +167,14 @@ func Classify(modelID string) string {
 		return TierFrontier
 	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro"):
 		return TierFrontier
+	// Gemini 4 Argon, priced by core-models v0.13.1 at $2/$10 per MTok
+	// (pro-class rates) with a 1M window; "gemini-4-argon" also covers
+	// its access-gated cyber-permissive variant. Classified so a pinned
+	// --model gets frontier's compaction threshold; it is NOT a
+	// ModelForTier default, since nothing has run it through the judged
+	// corpus.
+	case containsAny(m, "gemini-4-argon"):
+		return TierFrontier
 	// gemini-3.5-flash was Google's headline agentic release at I/O
 	// 2026 (May 20, 2026). Beats gemini-3.1-pro on agent + coding
 	// benchmarks per Google's own scorecards; pitched as the default
