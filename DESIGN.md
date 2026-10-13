@@ -150,9 +150,7 @@ no registry; dispatch is an explicit switch in `internal/compose`)
 
 | Package | Role |
 |---|---|
-| `internal/providers/gemini` | Built-in-tool wrapper (search grounding, URL context), Vertex context-cache stamping, per-request built-in gating for models that reject mixed tools. |
-| `internal/providers/anthropic` | First-party + Vertex backends; thinking-block round-trip, prompt-cache usage fold, draft-2020-12 schema normalization. |
-| `internal/providers/vertexcache` | Vertex context-cache manager — Create / TTL-refresh / evict / Delete around one explicit cache. **Wired by nothing.** It was public so an embedder could construct a `Manager` and pass the two hooks, because `internal/compose` sets neither `ContextCacheName` nor `ContextCacheInvalidate` and `cmd/mast` runs uncached. Moving it under `internal/` (#301) removed that caller too; it comes back as a custom-`main.go` option when a workload names the need, not before. The eviction verdict it shares with `internal/providers/gemini` lives in `internal/vertexcacheerr`, because the two have to agree and neither imports the other ([#325](https://github.com/go-steer/mast/issues/325)). |
+| core-models `dialect/gemini`, `dialect/anthropic`, `dialect/openaichat` (via `adkv2`) | The Gemini, Claude and OpenAI-compatible adapters, shared with core-agent ([go-steer/core-models](https://github.com/go-steer/core-models); switched in #521). `internal/compose` maps mast's providers, bundle settings and profiles onto them; provider fixes land in core-models and arrive as a version bump. Gemini's Google Search grounding can be projected into session events with `adkv2.GroundingProjection`; mast does not wire it. |
 | `internal/providers/mock` | Scripted JSONL replay for tests and offline demos. |
 | `internal/providers/usage` | The normalized usage record adapters attach beside ADK's, under `budget.DetailKey`. Exists because mast reads usage through `genai.GenerateContentResponseUsageMetadata`, which has a cache-*read* bucket and no cache-*write* one — so Anthropic's `cache_creation_input_tokens` was folded into fresh input and billed at 1x instead of 1.25x for eight releases ([#352](https://github.com/go-steer/mast/issues/352)). Every count is a pointer: nil is "the provider did not say", which is not zero. |
 | `internal/taskclass` / `internal/modeltier` / `internal/pricing` | Task-class profiles → model-tier defaults → catalog pricing for the budget meter. |
@@ -386,10 +384,9 @@ when somebody reads their chat.
   off, so inheriting them would make an unattended agent's reach a
   function of `--provider`. The corollary is the point — the paths
   with no bundle (`mast run`, `mast.Run`, the eval rigs) are safe by
-  construction, not by remembering a key. `internal/providers/gemini`'s own
-  `DefaultBuiltinTools()` is still on and is a recommendation to a
-  library caller wrapping a Gemini model directly; `internal/compose`
-  does not pass it. The gate is per bundle: a specialist's `model:`
+  construction, not by remembering a key. The adapters in core-models
+  have no built-ins on by default either; `internal/compose` passes only
+  what the bundle turns on. The gate is per bundle: a specialist's `model:`
   override resolves through it, and there is no per-specialist axis to
   hand a tool back with.
 - **Nothing mutating runs in a parallel branch.** Fan-out branches all

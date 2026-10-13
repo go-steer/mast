@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+
 **Defaults that change what a workload does — read before upgrading.**
 Two are silent: Claude prompt caching is now on by default, so a Claude
 workload's bill changes shape (cheaper on the judged corpus) and nothing
@@ -1315,6 +1316,11 @@ deliberately** says how to keep the old behaviour.
   and 90 days ([#328](https://github.com/go-steer/mast/issues/328)).
 
 ### Documentation
+
+- **The last provider copy is gone.** `internal/providers/gemini` held
+  only the grounding projection, and nothing wired it. The shared version
+  is `adkv2.GroundingProjection` in core-models v0.7.0, which mast now
+  requires. `DESIGN.md`'s package table points at core-models' adapters.
 
 - **`examples/deploy/ax`: mast as an [AX](https://github.com/google/ax) task on
   [Agent Substrate](https://github.com/agent-substrate/substrate).** An image
