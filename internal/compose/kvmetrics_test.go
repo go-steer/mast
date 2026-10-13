@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/go-steer/core-models/auth"
 	"github.com/go-steer/core-models/profile"
 )
 
@@ -66,5 +67,34 @@ func TestKVSamplerOnlyForProfilesThatPublishMetrics(t *testing.T) {
 		if s, err := KVSampler(ctx, prov, "m"); s != nil || err != nil {
 			t.Errorf("KVSampler(%s) = %v, %v; want nil, nil", prov, s, err)
 		}
+	}
+}
+
+// TestKVSamplerResolvesLikeTheModel: the sampler's profile is resolved
+// with the same options as the model's (resolveOptions), so under
+// MAST_GOOGLE_AUTH=injected a google_adc profile resolves without
+// Application Default Credentials, as its model does. The http metrics
+// endpoint gets no Google token (same-origin rule), and the scrape works.
+func TestKVSamplerResolvesLikeTheModel(t *testing.T) {
+	srv := vllmMetrics(t)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/nonexistent/adc.json")
+	RegisterProfiles([]profile.Profile{{
+		Name: "gw", Extends: "vllm", BaseURL: srv.URL + "/v1", MetricsURL: srv.URL + "/metrics",
+		Auth: auth.Config{Kind: auth.GoogleADC},
+	}})
+	t.Cleanup(func() { RegisterProfiles(nil) })
+	ctx := context.Background()
+
+	t.Setenv("MAST_GOOGLE_AUTH", "")
+	if _, err := KVSampler(ctx, "gw", "m"); err == nil {
+		t.Fatal("a google_adc profile resolved with no ADC and no injected auth; the test proves nothing")
+	}
+	t.Setenv("MAST_GOOGLE_AUTH", "injected")
+	s, err := KVSampler(ctx, "gw", "m")
+	if err != nil || s == nil {
+		t.Fatalf("KVSampler under injected auth = %v, %v; want a sampler", s, err)
+	}
+	if _, err := s.Snapshot(ctx); err != nil {
+		t.Errorf("Snapshot: %v", err)
 	}
 }

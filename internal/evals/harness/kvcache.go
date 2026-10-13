@@ -20,121 +20,83 @@ import (
 	"time"
 
 	"github.com/go-steer/core-models/kvmetrics"
+
+	"github.com/go-steer/mast/internal/kvwindow"
 )
 
 // kvPollInterval spaces the readings inside one incident's run, so the
 // peak KV utilization has more than the two endpoints to come from.
 const kvPollInterval = 5 * time.Second
 
-// KVWindow is the model server's KV-cache activity while one incident
-// ran (JudgeScenario.KVCache), or folded over the corpus
-// (JudgeSummary.KVCache): prefix-cache tokens queried and hit, the hit
-// rate, and the peak KV utilization.
-//
-// Fleet-level and time-correlated: the server's whole traffic in the
-// window, which in an eval run is normally just this run's. It is
-// reported beside usage and never priced. Absent fields were not
-// reported by the server.
-type KVWindow struct {
-	Fleet       bool     `json:"fleet"`
-	Queries     *float64 `json:"queries_tokens,omitempty"`
-	Hits        *float64 `json:"hits_tokens,omitempty"`
-	HitRate     *float64 `json:"hit_rate,omitempty"`
-	PeakKVUsage *float64 `json:"peak_kv_usage,omitempty"`
-	Readings    int      `json:"readings"`
-	Reset       bool     `json:"reset,omitempty"`
-	Incidents   int      `json:"incidents,omitempty"`
+// kvSampling brackets each incident's run with the model server's
+// KV-cache sampler, when the model under test publishes metrics. The
+// first failed opening scrape turns it off for the rest of the run, so a
+// dead endpoint costs one scrape timeout, not one per incident.
+type kvSampling struct {
+	s    *kvmetrics.Sampler
+	note func(string, ...any)
 }
 
-func kvWindowOf(w kvmetrics.Window) *KVWindow {
-	return &KVWindow{Fleet: true, Queries: w.Queries, Hits: w.Hits, HitRate: w.HitRate,
-		PeakKVUsage: w.PeakKVUsage, Readings: w.Readings, Reset: w.Reset}
-}
-
-// fold adds one incident's window to the corpus total.
-func (k *KVWindow) fold(w *KVWindow) {
-	if w == nil {
-		return
-	}
-	k.Fleet = true
-	k.Incidents++
-	k.Queries = addKV(k.Queries, w.Queries)
-	k.Hits = addKV(k.Hits, w.Hits)
-	k.HitRate = nil
-	if k.Queries != nil && k.Hits != nil && *k.Queries > 0 {
-		r := *k.Hits / *k.Queries
-		k.HitRate = &r
-	}
-	if w.PeakKVUsage != nil && (k.PeakKVUsage == nil || *w.PeakKVUsage > *k.PeakKVUsage) {
-		v := *w.PeakKVUsage
-		k.PeakKVUsage = &v
-	}
-	k.Readings += w.Readings
-	k.Reset = k.Reset || w.Reset
-}
-
-func addKV(a, b *float64) *float64 {
-	switch {
-	case b == nil:
-		return a
-	case a == nil:
-		v := *b
-		return &v
-	default:
-		v := *a + *b
-		return &v
-	}
-}
-
-// kvRun brackets one incident. A sampler that is nil, or a scrape that
-// fails, yields no window and never fails the incident.
-type kvRun struct {
-	run *kvmetrics.Run
-}
-
-func startKV(ctx context.Context, s *kvmetrics.Sampler, note func(string, ...any), warned *bool) kvRun {
-	if s == nil {
-		return kvRun{}
-	}
-	run, err := s.Start(ctx, kvPollInterval)
-	if err != nil {
-		if !*warned {
-			*warned = true
-			note("[kv] metrics scrape failed, the board will carry no KV-cache figures for the incidents it fails on: %v", err)
-		}
-		return kvRun{}
-	}
-	return kvRun{run: run}
-}
-
-func (k kvRun) stop(ctx context.Context) *KVWindow {
-	if k.run == nil {
+func (k *kvSampling) start(ctx context.Context) *kvmetrics.Run {
+	if k == nil || k.s == nil {
 		return nil
 	}
-	w, err := k.run.Stop(ctx)
+	run, err := k.s.Start(ctx, kvPollInterval)
+	if err != nil {
+		k.note("[kv] metrics scrape failed; KV-cache sampling is off for the rest of the run: %v", err)
+		k.s = nil
+		return nil
+	}
+	return run
+}
+
+// stop closes an incident's window. A window that lost its closing
+// reading is kept, with EndFailed set; one with no usable readings is
+// dropped.
+func (k *kvSampling) stop(ctx context.Context, run *kvmetrics.Run) *kvwindow.Window {
+	if run == nil {
+		return nil
+	}
+	w, err := run.Stop(ctx)
 	if err != nil && w.Readings == 0 {
 		return nil
 	}
-	return kvWindowOf(w)
+	return kvwindow.From(w)
 }
 
-// kvCell renders an incident's hit rate for the board, or "-".
-func kvCell(w *KVWindow) string {
-	if w == nil || w.HitRate == nil {
+// kvCell renders an incident's window for the board: the counter hit
+// rate, else the server's gauge, flagged when the window was cut short.
+func kvCell(w *kvwindow.Window) string {
+	if w == nil {
 		return "-"
 	}
-	return fmt.Sprintf("%.0f%%", *w.HitRate*100)
+	var cell string
+	switch {
+	case w.HitRate != nil:
+		cell = fmt.Sprintf("%.0f%%", *w.HitRate*100)
+	case w.HitRateGauge != nil:
+		cell = fmt.Sprintf("gauge %.0f%%", *w.HitRateGauge*100)
+	default:
+		cell = "-"
+	}
+	if w.PeakKVUsage != nil {
+		cell += fmt.Sprintf(" · peak KV %.1f%%", *w.PeakKVUsage*100)
+	}
+	if w.EndFailed {
+		cell += " (closing scrape failed)"
+	}
+	return cell
 }
 
 // writeKVCache prints the corpus KV-cache line and each incident's. It
 // prints nothing when the model under test publishes no metrics.
 func (j *JudgeSummary) writeKVCache(p func(string, ...any)) {
 	k := j.KVCache
-	if k == nil || k.Incidents == 0 {
+	if k == nil || k.Windows == 0 {
 		return
 	}
 	p("")
-	p("model server KV cache (fleet-level: the server's whole traffic while each incident ran) — %d incident(s) sampled", k.Incidents)
+	p("model server KV cache (fleet-level: the server's whole traffic while each incident ran) — %d incident(s) sampled", k.Windows)
 	line := "  corpus:"
 	if k.HitRate != nil {
 		line += fmt.Sprintf(" prefix hit rate %.1f%%", *k.HitRate*100)
@@ -143,10 +105,13 @@ func (j *JudgeSummary) writeKVCache(p func(string, ...any)) {
 		line += fmt.Sprintf(" (%.0f of %.0f tokens)", *k.Hits, *k.Queries)
 	}
 	if k.PeakKVUsage != nil {
-		line += fmt.Sprintf(", peak KV %.0f%%", *k.PeakKVUsage*100)
+		line += fmt.Sprintf(", peak KV %.1f%%", *k.PeakKVUsage*100)
 	}
 	if k.Reset {
 		line += ", server restarted mid-run"
+	}
+	if k.EndFailed {
+		line += ", some windows cut short"
 	}
 	p("%s", line)
 	for _, s := range j.Scenes {

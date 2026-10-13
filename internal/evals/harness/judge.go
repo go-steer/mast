@@ -29,6 +29,7 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
+	"github.com/go-steer/mast/internal/kvwindow"
 	"github.com/go-steer/mast/internal/modelretry"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -114,7 +115,7 @@ type JudgeSummary struct {
 	// KVCache is the model server's KV-cache activity folded over every
 	// incident, when the model under test is a provider profile that
 	// publishes KV-cache metrics. Fleet-level; never priced.
-	KVCache *KVWindow `json:"kv_cache,omitempty"`
+	KVCache *kvwindow.Window `json:"kv_cache,omitempty"`
 }
 
 // JudgeScenario is one corpus row's run.
@@ -133,7 +134,7 @@ type JudgeScenario struct {
 	LoopStop string `json:"loop_stop,omitempty"`
 	// KVCache is the model server's KV-cache activity while this row's
 	// incident ran; see JudgeSummary.KVCache.
-	KVCache *KVWindow `json:"kv_cache,omitempty"`
+	KVCache *kvwindow.Window `json:"kv_cache,omitempty"`
 
 	// Calls are the row's tool calls with their arguments and a digest
 	// of each result, and Violations what was wrong with them. Both are
@@ -467,11 +468,12 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 	// test served by a self-hosted server whose profile publishes
 	// metrics. Nil for every other model; a sampler that cannot be built
 	// is a note, not a failure.
-	kv, kvErr := compose.KVSampler(ctx, cfg.Provider, modelName)
+	kvs, kvErr := compose.KVSampler(ctx, cfg.Provider, modelName)
 	if kvErr != nil {
 		note("[kv] no KV-cache sampler for %s: %v", cfg.Provider, kvErr)
 	}
-	kvWarned := false
+	kv := &kvSampling{s: kvs, note: note}
+	var kvFold kvwindow.Fold
 
 	for i, sc := range ds.Scenarios {
 		if err := ctx.Err(); err != nil {
@@ -479,15 +481,11 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		}
 		note("[%2d/%2d] %s", i+1, len(ds.Scenarios), sc.ID)
 		row := JudgeScenario{ID: sc.ID, Category: sc.Category}
-		kvr := startKV(ctx, kv, note, &kvWarned)
+		kvRun := kv.start(ctx)
 		out, err := rig.Run(ctx, sc)
-		row.KVCache = kvr.stop(ctx)
-		if row.KVCache != nil {
-			if board.KVCache == nil {
-				board.KVCache = &KVWindow{}
-			}
-			board.KVCache.fold(row.KVCache)
-		}
+		row.KVCache = kv.stop(ctx, kvRun)
+		kvFold.Add(row.KVCache)
+		board.KVCache = kvFold.Window()
 		if err != nil {
 			// The run never happened, so this row is not a score. Saying
 			// so is a Problem: an incomplete board read as a complete one

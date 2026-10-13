@@ -753,29 +753,25 @@ func (d *daemon) buildMetering() error {
 		tracker:      d.tracker,
 		turnLocks:    d.turnLocks,
 		workloadName: d.workloadName,
-		kv:           d.kvPool(context.Background()),
+		kv:           d.kvPool(),
 	}
 	return nil
 }
 
-// kvPool builds the KV-cache sampler pool when the daemon's model is a
-// provider profile whose server publishes KV-cache metrics, and returns
-// nil (sampling nothing) otherwise. A sampler that cannot be built is a
-// warning, not a startup failure: the statistics are optional and
-// fleet-level, and a model that resolved can still serve.
-func (d *daemon) kvPool(ctx context.Context) *kvPool {
-	s, err := compose.KVSampler(ctx, d.mdl.provider, d.mdl.name)
-	if err != nil {
-		d.logger.Warn("kv-cache metrics: sampler unavailable; /usage will carry no kv_cache block",
-			"provider", d.mdl.provider, "error", err.Error())
-		return nil
+// kvPool builds the KV-cache sampler pool. It samples only when the
+// daemon's model is a provider profile whose server publishes KV-cache
+// metrics, and resolves that lazily on the first turn, under the
+// daemon's context, so startup never waits on it.
+//
+// turnCtx, not ctx: ctx ends when a shutdown signal arrives, while turns
+// keep draining; the pool has to outlive them. serveUntilShutdown stops
+// it once the drain is done.
+func (d *daemon) kvPool() *kvPool {
+	ctx := d.turnCtx
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if s == nil {
-		return nil
-	}
-	d.logger.Info("kv-cache metrics: sampling the model server around each turn (fleet-level)",
-		"provider", d.mdl.provider, "poll", kvPollInterval.String())
-	return newKVPool(s, d.logger)
+	return newKVPool(ctx, d.mdl.provider, d.mdl.name, d.logger)
 }
 
 // buildOperatorSurfaces builds and binds the attach, A2A and AG-UI
@@ -1546,6 +1542,8 @@ func (d *daemon) serveUntilShutdown() error {
 	// the drain (and its marker bookkeeping) completes in the shutdown
 	// goroutine. Returning before it finishes was #38.
 	<-shutdownDone
+	// No turn is left to sample: stop the KV-cache poller.
+	d.deps.kv.stop()
 	// The drain is done; only the teardown (OTel flush, eventlog and
 	// attach Close, context cancels) remains as serve() unwinds. Arm
 	// a watchdog so a wedged Close or an unkillable goroutine surfaces a

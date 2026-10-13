@@ -371,9 +371,12 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	meter := d.meters.meter(sessionID)
 
 	// KV-cache sampling for a self-hosted model server (core-models
-	// kvmetrics): opened here, in the background, and closed after the
-	// turn returns, so it brackets the turn without ever delaying it.
-	kvt := d.kv.begin(ctx)
+	// kvmetrics): the start edge is taken here, before the first model
+	// call, and the end edge as the turn returns, still under the
+	// session's turn lock, so a session's windows are recorded in order.
+	// Each edge costs at most kvEdgeTimeout, once per backoff on a dead
+	// endpoint.
+	kvt := d.kv.begin()
 	defer d.kv.end(sessionID, kvt)
 
 	// The pre-call half of the same ceiling (W10.2). Observe below is

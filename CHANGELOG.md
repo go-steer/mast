@@ -239,14 +239,16 @@ deliberately** says how to keep the old behaviour.
 - **`/usage` reports a self-hosted model server's KV cache** (core-models
   v0.10.0's `kvmetrics`, L3). When the session's model comes from a
   provider profile with a `metrics_url` and a server kind (vLLM, SGLang,
-  llama.cpp), mast samples the server's Prometheus endpoint around every
-  turn, at the start, the end and every 5 seconds between. A new
+  llama.cpp), one poller reads the server's Prometheus endpoint every 5
+  seconds and each turn brackets itself with a reading at its start, before
+  its first model call, and one at its end. A new
   `kv_cache` block in `GET /sessions/{id}/usage` carries the last turn's
   and the session's windows: prefix-cache tokens queried and hit, hit
   rate, and peak KV utilization. It's labelled fleet-level (`"fleet":
   true`) because it is the server's whole traffic, and it never enters
-  cost or tokens. Sampling never delays a turn: a dead endpoint is logged
-  once per session. The judged eval tier reports the same window per
+  cost or tokens. A turn's edges cost it at most 300 ms each, and nothing
+  while a failed endpoint is backed off; a dead endpoint is logged once.
+  The judged eval tier reports the same window per
   incident and for the corpus; on our vLLM, two incidents hit 91% of
   their prefix tokens. Opt-in by profile; nothing changes for any other
   model.

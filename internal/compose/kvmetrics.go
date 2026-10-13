@@ -41,7 +41,11 @@ func KVSampler(ctx context.Context, provider, modelName string) (*kvmetrics.Samp
 	if p.MetricsURL == "" || p.Metrics == "" || p.Metrics == profile.MetricsNone {
 		return nil, nil
 	}
-	r, err := profile.Resolve(ctx, p, profile.Options{})
+	// Resolved exactly as openProfile resolves the model's own profile,
+	// so the same-origin check in kvmetrics.FromProfile compares against
+	// the base_url the model actually calls, and an injected-auth sandbox
+	// resolves without ADC.
+	r, err := profile.Resolve(ctx, p, resolveOptions(profile.Options{}))
 	if err != nil {
 		return nil, err
 	}

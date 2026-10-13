@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/go-steer/mast/internal/kvwindow"
 )
 
 // ErrCapabilityNotRegistered is returned by mutation-capability
@@ -366,30 +368,14 @@ type UsageInfo struct {
 // Fleet-level and time-correlated, and labelled so (Fleet is always
 // true): the server's prefix cache across all of its traffic while this
 // session's turns ran, not this session's share of it. It never enters
-// cost, token totals or a budget. Counts are tokens, as the servers
-// report them; a field the server did not expose is omitted ("not
-// reported"), never zero.
+// cost, token totals or a budget. LastTurn is the most recent turn's
+// window; Session folds every sampled turn (kvwindow.Fold: counts
+// summed, the highest peak, Windows the number of turns, and no
+// instantaneous gauge, which is not a sum).
 type KVCacheInfo struct {
-	Fleet    bool      `json:"fleet"`
-	LastTurn *KVWindow `json:"last_turn,omitempty"`
-	Session  *KVWindow `json:"session,omitempty"`
-}
-
-// KVWindow is one window of KV-cache activity. In KVCacheInfo.Session it
-// folds every sampled turn: counts summed, the peak the highest any turn
-// saw, Reset if any turn's did, and Turns how many were sampled.
-type KVWindow struct {
-	Start        time.Time `json:"start"`
-	End          time.Time `json:"end"`
-	Queries      *float64  `json:"queries_tokens,omitempty"`
-	Hits         *float64  `json:"hits_tokens,omitempty"`
-	HitRate      *float64  `json:"hit_rate,omitempty"`
-	HitRateGauge *float64  `json:"hit_rate_gauge,omitempty"`
-	PeakKVUsage  *float64  `json:"peak_kv_usage,omitempty"`
-	Readings     int       `json:"readings"`
-	Reset        bool      `json:"reset,omitempty"`
-	EndFailed    bool      `json:"end_failed,omitempty"`
-	Turns        int       `json:"turns,omitempty"`
+	Fleet    bool             `json:"fleet"`
+	LastTurn *kvwindow.Window `json:"last_turn,omitempty"`
+	Session  *kvwindow.Window `json:"session,omitempty"`
 }
 
 // DigestMethodsInfo carries the internal/digest telemetry snapshot in the

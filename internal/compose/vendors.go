@@ -61,6 +61,22 @@ const (
 	DefaultAnthropicSmallModel = "claude-haiku-4-5"
 )
 
+// resolveOptions is how every profile mast opens is resolved against the
+// environment: the vendor built-ins (openVendorProfile), declared
+// profiles (openProfile) and a profile's KV-cache sampler (KVSampler).
+// Under MAST_GOOGLE_AUTH=injected an egress gateway adds the real Google
+// token, so a google_adc profile gets the placeholder instead of looking
+// for Application Default Credentials the sandbox doesn't have. A hook a
+// caller already set (a test's) wins.
+func resolveOptions(o profile.Options) profile.Options {
+	if injectedauth.Enabled() && o.Auth.DetectGoogle == nil {
+		o.Auth.DetectGoogle = func(context.Context, []string) (auth.TokenSource, error) {
+			return injectedauth.Static{}, nil
+		}
+	}
+	return o
+}
+
 // vendorBaseURL, when set, replaces a built-in profile's endpoint. A
 // test seam: it is how a test points the Gemini and Claude paths at a
 // recorder and reads back what mast actually puts on the wire.
@@ -103,14 +119,7 @@ func openVendorProfile(ctx context.Context, p profile.Profile, name string, opts
 	if vendorResolve != nil {
 		opts.Resolve = *vendorResolve
 	}
-	if injectedauth.Enabled() && opts.Resolve.Auth.DetectGoogle == nil {
-		// An egress gateway adds the real token (MAST_GOOGLE_AUTH=injected),
-		// so the Vertex profiles get the placeholder instead of looking for
-		// Application Default Credentials the sandbox doesn't have.
-		opts.Resolve.Auth.DetectGoogle = func(context.Context, []string) (auth.TokenSource, error) {
-			return injectedauth.Static{}, nil
-		}
-	}
+	opts.Resolve = resolveOptions(opts.Resolve)
 	prov, err := coremodels.Open(ctx, p, opts)
 	if err != nil {
 		return nil, err

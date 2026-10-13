@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/go-steer/mast/internal/kvwindow"
 )
 
 // RenderUsage projects a UsageInfo into the plain-text block the TUI's
@@ -134,30 +136,33 @@ func RenderUsage(info UsageInfo) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// kvLine renders one KVWindow, leaving out what the server did not
-// report rather than printing a zero for it.
-func kvLine(w *KVWindow) string {
+// kvLine renders one window, leaving out what the server did not report
+// rather than printing a zero for it.
+func kvLine(w *kvwindow.Window) string {
 	var parts []string
-	if w.Turns > 0 {
-		parts = append(parts, fmt.Sprintf("%d turn(s)", w.Turns))
+	if w.Windows > 0 {
+		parts = append(parts, fmt.Sprintf("%d turn(s)", w.Windows))
 	}
 	switch {
 	case w.HitRate != nil:
 		parts = append(parts, fmt.Sprintf("prefix hit rate %.1f%%", *w.HitRate*100))
 	case w.HitRateGauge != nil:
-		parts = append(parts, fmt.Sprintf("hit-rate gauge %.1f%%", *w.HitRateGauge*100))
+		parts = append(parts, fmt.Sprintf("latest hit-rate gauge %.1f%%", *w.HitRateGauge*100))
 	}
 	if w.Hits != nil && w.Queries != nil {
 		parts = append(parts, fmt.Sprintf("%s of %s tokens hit", commas(int64(*w.Hits)), commas(int64(*w.Queries))))
 	}
 	if w.PeakKVUsage != nil {
-		parts = append(parts, fmt.Sprintf("peak KV %.0f%%", *w.PeakKVUsage*100))
+		parts = append(parts, fmt.Sprintf("peak KV %.1f%%", *w.PeakKVUsage*100))
 	}
 	if w.Reset {
 		parts = append(parts, "server restarted")
 	}
 	if w.EndFailed {
 		parts = append(parts, "closing scrape failed")
+	}
+	if w.Approximate {
+		parts = append(parts, "edges approximate")
 	}
 	if len(parts) == 0 {
 		return "nothing reported"
