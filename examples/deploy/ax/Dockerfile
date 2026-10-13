@@ -4,7 +4,10 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # see LICENSE for details.
 #
-# mast as an AX task image. Build from the repo root:
+# mast as an AX task image. AX: https://github.com/google/ax
+# Agent Substrate: https://github.com/agent-substrate/substrate
+#
+# Build from the repo root:
 #
 #   docker build -f examples/deploy/ax/Dockerfile -t mast-ax .
 #

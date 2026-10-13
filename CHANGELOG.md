@@ -237,7 +237,7 @@ deliberately** says how to keep the old behaviour.
 
 - **`MAST_GOOGLE_AUTH=injected`: Google credentials added by an egress
   gateway.** In a sandbox whose egress gateway injects the Google token
-  (Agent Substrate's egress credential injection), there are no
+  ([Agent Substrate](https://github.com/agent-substrate/substrate)'s egress credential injection), there are no
   Application Default Credentials to find. With the variable set, mast
   skips ADC and sends `Authorization: Bearer placeholder` for the gateway to
   replace, for Gemini on Vertex, Claude on Vertex, and MCP servers with
@@ -1316,7 +1316,8 @@ deliberately** says how to keep the old behaviour.
 
 ### Documentation
 
-- **`examples/deploy/ax`: mast as an AX task on Agent Substrate.** An image
+- **`examples/deploy/ax`: mast as an [AX](https://github.com/google/ax) task on
+  [Agent Substrate](https://github.com/agent-substrate/substrate).** An image
   with AX's runner, mast and the gke-triage workload. It has a serve-mode
   task (`task-serve.yaml`: the session API through the router, idle suspend,
   injected Google credentials, project instructions) and a one-shot task,
