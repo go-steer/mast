@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/go-steer/mast/internal/kvwindow"
 )
 
 // ErrCapabilityNotRegistered is returned by mutation-capability
@@ -353,6 +355,27 @@ type UsageInfo struct {
 	PerModel      map[string]UsageTotals `json:"per_model,omitempty"`
 	PerTurn       []UsageTurn            `json:"per_turn,omitempty"`
 	DigestMethods *DigestMethodsInfo     `json:"digest_methods,omitempty"`
+	KVCache       *KVCacheInfo           `json:"kv_cache,omitempty"`
+}
+
+// KVCacheInfo reports what a self-hosted model server's KV cache did
+// around this session's turns, read from its Prometheus endpoint
+// (core-models kvmetrics). Present only when the session's model comes
+// from a provider profile that declares a metrics endpoint (metrics:
+// vllm, sglang or llamacpp, plus metrics_url) and at least one turn has
+// been sampled.
+//
+// Fleet-level and time-correlated, and labelled so (Fleet is always
+// true): the server's prefix cache across all of its traffic while this
+// session's turns ran, not this session's share of it. It never enters
+// cost, token totals or a budget. LastTurn is the most recent turn's
+// window; Session folds every sampled turn (kvwindow.Fold: counts
+// summed, the highest peak, Windows the number of turns, and no
+// instantaneous gauge, which is not a sum).
+type KVCacheInfo struct {
+	Fleet    bool             `json:"fleet"`
+	LastTurn *kvwindow.Window `json:"last_turn,omitempty"`
+	Session  *kvwindow.Window `json:"session,omitempty"`
 }
 
 // DigestMethodsInfo carries the internal/digest telemetry snapshot in the

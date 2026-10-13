@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/go-steer/mast/internal/kvwindow"
 )
 
 // RenderUsage projects a UsageInfo into the plain-text block the TUI's
@@ -118,7 +120,54 @@ func RenderUsage(info UsageInfo) string {
 		}
 	}
 
+	// Section 4: the model server's KV cache, when a profile declares a
+	// metrics endpoint. Labelled fleet-level on the heading, because it
+	// is the server's whole traffic, not this session's.
+	if kv := info.KVCache; kv != nil && (kv.LastTurn != nil || kv.Session != nil) {
+		sb.WriteString("\nModel server KV cache (fleet-level: the server's whole traffic, not this session's)\n")
+		if w := kv.Session; w != nil {
+			fmt.Fprintf(&sb, "  session: %s\n", kvLine(w))
+		}
+		if w := kv.LastTurn; w != nil {
+			fmt.Fprintf(&sb, "  last turn: %s\n", kvLine(w))
+		}
+	}
+
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// kvLine renders one window, leaving out what the server did not report
+// rather than printing a zero for it.
+func kvLine(w *kvwindow.Window) string {
+	var parts []string
+	if w.Windows > 0 {
+		parts = append(parts, fmt.Sprintf("%d turn(s)", w.Windows))
+	}
+	switch {
+	case w.HitRate != nil:
+		parts = append(parts, fmt.Sprintf("prefix hit rate %.1f%%", *w.HitRate*100))
+	case w.HitRateGauge != nil:
+		parts = append(parts, fmt.Sprintf("latest hit-rate gauge %.1f%%", *w.HitRateGauge*100))
+	}
+	if w.Hits != nil && w.Queries != nil {
+		parts = append(parts, fmt.Sprintf("%s of %s tokens hit", commas(int64(*w.Hits)), commas(int64(*w.Queries))))
+	}
+	if w.PeakKVUsage != nil {
+		parts = append(parts, fmt.Sprintf("peak KV %.1f%%", *w.PeakKVUsage*100))
+	}
+	if w.Reset {
+		parts = append(parts, "server restarted")
+	}
+	if w.EndFailed {
+		parts = append(parts, "closing scrape failed")
+	}
+	if w.Approximate {
+		parts = append(parts, "edges approximate")
+	}
+	if len(parts) == 0 {
+		return "nothing reported"
+	}
+	return strings.Join(parts, " · ")
 }
 
 // commas renders an int64 with thousands separators. Small helper

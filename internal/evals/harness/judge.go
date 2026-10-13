@@ -29,6 +29,7 @@ import (
 	"github.com/go-steer/mast/internal/compose"
 	"github.com/go-steer/mast/internal/evals"
 	"github.com/go-steer/mast/internal/evals/judge"
+	"github.com/go-steer/mast/internal/kvwindow"
 	"github.com/go-steer/mast/internal/modelretry"
 	"github.com/go-steer/mast/pkg/workload"
 )
@@ -110,6 +111,11 @@ type JudgeSummary struct {
 	// model the catalog has no rate for — and what a nightly costs after.
 	UnderTestUsage *TokenUsage `json:"under_test_usage,omitempty"`
 	GraderUsage    *TokenUsage `json:"grader_usage,omitempty"`
+
+	// KVCache is the model server's KV-cache activity folded over every
+	// incident, when the model under test is a provider profile that
+	// publishes KV-cache metrics. Fleet-level; never priced.
+	KVCache *kvwindow.Window `json:"kv_cache,omitempty"`
 }
 
 // JudgeScenario is one corpus row's run.
@@ -126,6 +132,9 @@ type JudgeScenario struct {
 	// LoopStop is why the in-turn loop guard ended this row's run (#514),
 	// empty when it did not. The row is scored all the same.
 	LoopStop string `json:"loop_stop,omitempty"`
+	// KVCache is the model server's KV-cache activity while this row's
+	// incident ran; see JudgeSummary.KVCache.
+	KVCache *kvwindow.Window `json:"kv_cache,omitempty"`
 
 	// Calls are the row's tool calls with their arguments and a digest
 	// of each result, and Violations what was wrong with them. Both are
@@ -455,13 +464,28 @@ func runJudge(ctx context.Context, cfg Config) (Summary, error) {
 		sum.Problems = append(sum.Problems, cost.Findings...)
 	}
 
+	// KV-cache sampling around each incident's run, for a model under
+	// test served by a self-hosted server whose profile publishes
+	// metrics. Nil for every other model; a sampler that cannot be built
+	// is a note, not a failure.
+	kvs, kvErr := compose.KVSampler(ctx, cfg.Provider, modelName)
+	if kvErr != nil {
+		note("[kv] no KV-cache sampler for %s: %v", cfg.Provider, kvErr)
+	}
+	kv := &kvSampling{s: kvs, note: note}
+	var kvFold kvwindow.Fold
+
 	for i, sc := range ds.Scenarios {
 		if err := ctx.Err(); err != nil {
 			return Summary{}, err
 		}
 		note("[%2d/%2d] %s", i+1, len(ds.Scenarios), sc.ID)
 		row := JudgeScenario{ID: sc.ID, Category: sc.Category}
+		kvRun := kv.start(ctx)
 		out, err := rig.Run(ctx, sc)
+		row.KVCache = kv.stop(ctx, kvRun)
+		kvFold.Add(row.KVCache)
+		board.KVCache = kvFold.Window()
 		if err != nil {
 			// The run never happened, so this row is not a score. Saying
 			// so is a Problem: an incomplete board read as a complete one
@@ -814,6 +838,7 @@ func (j *JudgeSummary) write(p func(string, ...any)) {
 		}
 	}
 	j.writeLoopStops(p)
+	j.writeKVCache(p)
 	j.writeCost(p)
 	j.writeUsage(p)
 

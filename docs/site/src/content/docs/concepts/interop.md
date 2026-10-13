@@ -716,6 +716,55 @@ Four things about those numbers are worth knowing before you act on them:
   absolute, so a first row numbered higher than 1 is how you know rows
   were dropped.
 
+#### The model server's KV cache, for a self-hosted model
+
+When the session's model comes from a [provider
+profile](/concepts/providers/#provider-profiles) whose server publishes
+KV-cache metrics (vLLM, SGLang or llama.cpp: a `metrics_url`, and
+`metrics: vllm | sglang | llamacpp`, which a profile extending the built-in
+`vllm` or `sglang` inherits), `/usage` also carries a `kv_cache` block. One
+poller per daemon reads the server's Prometheus endpoint every five seconds,
+and each turn brackets itself with a reading at its start, taken before its
+first model call, and one at its end. mast reports the last turn's window
+and the session's:
+
+```json
+"kv_cache": {
+  "fleet": true,
+  "last_turn": {"queries_tokens": 3843, "hits_tokens": 2112, "hit_rate": 0.55,
+                "peak_kv_usage": 0.0055, "readings": 3, "start": "…", "end": "…"},
+  "session":   {"queries_tokens": 3843, "hits_tokens": 2112, "hit_rate": 0.55,
+                "peak_kv_usage": 0.0055, "readings": 3, "windows": 1, "start": "…", "end": "…"}
+}
+```
+
+- **It is fleet-level, and says so.** `"fleet": true` is always set: these
+  are the server's prefix-cache counters across *all* of its traffic while
+  this session's turns ran, not this session's share. On a server only
+  this session uses they match its input tokens; on a shared one they
+  don't, and nothing here pretends otherwise. It never enters cost, the
+  token totals or a budget.
+- **Counts are tokens, as the server reports them.** A field the server
+  doesn't expose is left out, never shown as zero. `reset` means an
+  engine restarted inside the window, and `end_failed` that the closing
+  reading failed, so the window ends at the last good one. `session` folds
+  every sampled turn (`windows` is how many) and carries no instantaneous
+  gauge; `last_turn` may carry the server's `hit_rate_gauge`.
+- **A session's windows don't overlap.** The end reading is taken before
+  the turn returns, under the session's turn lock, so the next turn starts
+  where the last one ended and no token is counted twice.
+- **Sampling costs a turn at most a fraction of a second.** An edge uses
+  the poller's latest reading when it is under a second old, and
+  otherwise takes one scrape capped at 300 ms. After a failed scrape the
+  edges stop scraping for 30 seconds and use the latest reading instead,
+  marking the window `approximate` (an edge up to one poll interval off
+  the turn's). A dead endpoint is logged once, and leaves the block out.
+- **The profile's credential is sent only to its own origin:** same scheme
+  and host as `base_url`, and a Google token only over https.
+
+The judged eval tier reports the same window around each incident's run,
+and for the whole corpus, when the model under test is such a profile.
+
 The breakdown is folded from the same reading of the provider's counters
 that priced the call, rather than derived a second time from the event
 stream, so the split you read is the split the money came from.

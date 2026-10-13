@@ -159,8 +159,8 @@ func TestResolveModelSelection(t *testing.T) {
 		{name: "vertex rejects a claude model", provider: "vertex", model: "claude-sonnet-5", modelSet: true, wantErr: "want a gemini-* model id"},
 		{name: "scripted provider defaults model", provider: "scripted", model: "echo", want: "scripted"},
 		{name: "scripted provider rejects other model", provider: "scripted", model: "gemini-2.5-flash", modelSet: true, wantErr: "conflicts"},
-		{name: "unknown provider errors", provider: "openai", model: "echo", wantErr: "unknown --provider"},
-		{name: "the unknown-provider error enumerates vertex", provider: "openai", model: "echo", wantErr: "`vertex`"},
+		{name: "unknown provider errors", provider: "no-such-provider", model: "echo", wantErr: "unknown --provider"},
+		{name: "the unknown-provider error enumerates vertex", provider: "no-such-provider", model: "echo", wantErr: "`vertex`"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

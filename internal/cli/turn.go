@@ -128,6 +128,9 @@ type turnDeps struct {
 	tracker      *turnTracker
 	turnLocks    *sessionTurnLocks
 	workloadName string
+	// kv samples the model server's KV cache around each turn when the
+	// model is a provider profile with a metrics endpoint; nil otherwise.
+	kv *kvPool
 }
 
 func dispatch(ctx context.Context, d turnDeps, bundle *workload.Bundle, p envelope.InjectPayload) error {
@@ -366,6 +369,15 @@ func runTurnPre(ctx context.Context, d turnDeps, sessionID string, msg *genai.Co
 	// each streamed event; crossing a ceiling cancels the run context,
 	// aborting any in-flight model/tool work.
 	meter := d.meters.meter(sessionID)
+
+	// KV-cache sampling for a self-hosted model server (core-models
+	// kvmetrics): the start edge is taken here, before the first model
+	// call, and the end edge as the turn returns, still under the
+	// session's turn lock, so a session's windows are recorded in order.
+	// Each edge costs at most kvEdgeTimeout, once per backoff on a dead
+	// endpoint.
+	kvt := d.kv.begin()
+	defer d.kv.end(sessionID, kvt)
 
 	// The pre-call half of the same ceiling (W10.2). Observe below is
 	// the durable ledger and stays exactly as it is — a call that

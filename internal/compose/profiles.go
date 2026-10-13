@@ -158,6 +158,7 @@ func openProfile(ctx context.Context, provider string, pc workload.PromptCache) 
 	p, err := coremodels.Open(ctx, prof, coremodels.Options{
 		PromptCache: claudeCache(pc),
 		Logf:        vendorLogf(provider),
+		Resolve:     resolveOptions(profile.Options{}),
 	})
 	if err != nil {
 		return nil, err
