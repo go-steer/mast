@@ -24,11 +24,11 @@ import (
 
 	coremodels "github.com/go-steer/core-models"
 	"github.com/go-steer/core-models/adkv2"
+	"github.com/go-steer/core-models/pricing"
 	"github.com/go-steer/core-models/profile"
 	coreusage "github.com/go-steer/core-models/usage"
 	"google.golang.org/adk/v2/model"
 
-	"github.com/go-steer/mast/internal/pricing"
 	mastusage "github.com/go-steer/mast/internal/providers/usage"
 	"github.com/go-steer/mast/internal/taskclass"
 	"github.com/go-steer/mast/pkg/budget"
@@ -54,6 +54,9 @@ var profiles struct {
 	mu       sync.RWMutex
 	declared []profile.Profile
 	opened   map[string]coremodels.Provider
+	// catalog is the pricing catalog built from the profiles in force
+	// (pricingCatalog); nil until first use and after RegisterProfiles.
+	catalog *pricing.Catalog
 }
 
 // RegisterProfiles sets the declared provider profiles, replacing any
@@ -63,6 +66,50 @@ func RegisterProfiles(ps []profile.Profile) {
 	defer profiles.mu.Unlock()
 	profiles.declared = slices.Clone(ps)
 	profiles.opened = nil
+	profiles.catalog = nil
+}
+
+// pricingCatalog is mast's pricing catalog: core-models' compiled-in
+// builtin layer, plus the rates provider profiles declare
+// (models[].rates) as the lowest layer, keyed "<backend>/<model>". No
+// config override or pricing.json file is wired into mast yet, so those
+// layers stay empty. A catalog row always beats a declared one, so a
+// model a published catalog prices is never billed at an operator's
+// guess, and a declaration only prices its own profile's backend.
+//
+// Rebuilt after RegisterProfiles, since declared rates come from the
+// profiles registered at startup. Catalog construction with no file
+// layers reads nothing, so it cannot fail.
+func pricingCatalog() *pricing.Catalog {
+	profiles.mu.RLock()
+	c := profiles.catalog
+	profiles.mu.RUnlock()
+	if c != nil {
+		return c
+	}
+	profiles.mu.Lock()
+	defer profiles.mu.Unlock()
+	if profiles.catalog != nil {
+		return profiles.catalog
+	}
+	var expanded []profile.Profile
+	for _, name := range append(profile.BuiltinNames(), names(profiles.declared)...) {
+		p, err := profile.Find(name, profiles.declared)
+		if err != nil {
+			continue
+		}
+		if p, err = profile.Expand(p); err == nil {
+			expanded = append(expanded, p)
+		}
+	}
+	c, err := pricing.NewCatalog(pricing.Options{Declared: pricing.DeclaredFromProfiles(expanded)})
+	if err != nil {
+		// Unreachable with no file layers, kept explicit so wiring one
+		// later can't silently swallow a load error here.
+		panic(fmt.Sprintf("compose: pricing catalog: %v", err))
+	}
+	profiles.catalog = c
+	return c
 }
 
 // mastProvider reports whether provider is one of mast's own aliases
@@ -268,33 +315,6 @@ func ProfileDefaultModel(p profile.Profile, tier string) (string, error) {
 func priced(backend, modelName string) bool {
 	_, ok := builtinPricer().PriceCall(backend, modelName, budget.Call{UncachedInputTokens: 1000, OutputTokens: 1000})
 	return ok
-}
-
-// declaredRates returns the rates a provider profile declares for
-// modelName, where the profile is the one whose backend is backend:
-// the operator's price for a model no published catalog covers.
-func declaredRates(backend, modelName string) (pricing.Rates, bool) {
-	profiles.mu.RLock()
-	declared := profiles.declared
-	profiles.mu.RUnlock()
-	for _, name := range append(profile.BuiltinNames(), names(declared)...) {
-		p, err := profile.Find(name, declared)
-		if err != nil {
-			continue
-		}
-		if p, err = profile.Expand(p); err != nil || p.BackendName() != backend {
-			continue
-		}
-		if r, ok := p.RatesFor(modelName); ok {
-			return pricing.Rates{
-				InputPerMTok:              r.InputPerMTok,
-				CachedInputPerMTok:        r.CachedInputPerMTok,
-				CacheCreationInputPerMTok: r.CacheWritePerMTok,
-				OutputPerMTok:             r.OutputPerMTok,
-			}, true
-		}
-	}
-	return pricing.Rates{}, false
 }
 
 func names(ps []profile.Profile) []string {

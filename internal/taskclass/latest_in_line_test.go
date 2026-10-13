@@ -21,7 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/internal/pricing"
+	"github.com/go-steer/core-models/pricing"
+
 	"github.com/go-steer/mast/internal/taskclass"
 )
 

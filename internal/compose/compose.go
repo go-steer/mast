@@ -38,12 +38,13 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/core-models/pricing"
+
 	mastagent "github.com/go-steer/mast/internal/agent"
 	"github.com/go-steer/mast/internal/effects"
 	"github.com/go-steer/mast/internal/graph"
 	"github.com/go-steer/mast/internal/modelretry"
 	"github.com/go-steer/mast/internal/planner"
-	"github.com/go-steer/mast/internal/pricing"
 	"github.com/go-steer/mast/internal/providers/mock"
 	"github.com/go-steer/mast/internal/router"
 	"github.com/go-steer/mast/pkg/budget"
@@ -851,23 +852,8 @@ func Backend(provider, modelName string) string {
 	}
 }
 
-// builtinCatalog is the compiled-in pricing catalog (internal/pricing's
-// builtin layer only — no config overrides or pricing.json files are
-// wired into the daemon yet). Built once; catalog construction with
-// empty Options cannot fail.
-var builtinCatalog = sync.OnceValue(func() *pricing.Catalog {
-	c, err := pricing.NewCatalog(pricing.Options{})
-	if err != nil {
-		// Unreachable with empty Options (no files are read), kept
-		// explicit so a future wiring of file layers can't silently
-		// swallow a load error here.
-		panic(fmt.Sprintf("compose: builtin pricing catalog: %v", err))
-	}
-	return c
-})
-
-// catalogPricer adapts a internal/pricing catalog to budget.Pricer, and is
-// the only place the two meet.
+// catalogPricer adapts a core-models pricing catalog to budget.Pricer,
+// and is the only place the two meet.
 //
 // The seam is one-directional on purpose: pkg/budget names no rate type,
 // so pricing may re-key its lookup (docs/model-support-design.md M2
@@ -891,23 +877,27 @@ type catalogPricer struct{ cat *pricing.Catalog }
 // right call only while nothing could count cache writes. The sidecar
 // counts them now (#352), including the 1-hour share, and a row whose
 // write rates are zero still degrades inside pricing rather than here.
+//
+// The three input buckets sum to the prompt, which is what
+// CostUSDWithCacheTTLs decides long-context pricing on (Rates.At): a
+// call whose prompt is above a model's threshold (Gemini's 200K,
+// OpenAI's 272K) bills every token at the above-threshold rates.
+//
+// Declared rates need no fallback here: they are the catalog's lowest
+// layer (pricingCatalog), so a catalog row still wins and a declared one
+// fills the gap.
 func (p catalogPricer) PriceCall(backend, modelID string, c budget.Call) (float64, bool) {
 	r, ok := p.cat.LookupFor(backend, modelID)
 	if !ok || r.IsZero() {
-		// A provider profile may declare what a model costs where no
-		// published catalog does (a self-hosted server). The catalog
-		// wins when it has a row; declared rates fill the gap.
-		if r, ok = declaredRates(backend, modelID); !ok {
-			return 0, false
-		}
+		return 0, false
 	}
 	return r.CostUSDWithCacheTTLs(c.UncachedInputTokens, c.CachedInputTokens, c.CacheWriteTokens, c.CacheWrite1hTokens, c.OutputTokens), true
 }
 
-// builtinPricer prices against the compiled-in catalog. LookupFor
-// already falls back from the backend-qualified key to the bare one, so
-// an empty backend and an unqualified model both still price.
-func builtinPricer() budget.Pricer { return catalogPricer{cat: builtinCatalog()} }
+// builtinPricer prices against mast's catalog (pricingCatalog). LookupFor
+// falls back from the backend-qualified key to the bare one, so an empty
+// backend and an unqualified model both still price.
+func builtinPricer() budget.Pricer { return catalogPricer{cat: pricingCatalog()} }
 
 // RatePer1K derives pkg/budget's flat USD-per-1K-total-tokens rate for
 // a model as served under a given --provider alias
@@ -922,7 +912,7 @@ func builtinPricer() budget.Pricer { return catalogPricer{cat: builtinCatalog()}
 // re-deriving the backend, and Backend is shared with the code that
 // builds the client so the two cannot drift.
 //
-// Gemini and Claude rates come from internal/pricing's builtin catalog
+// Gemini and Claude rates come from core-models' builtin catalog
 // (longest-prefix lookup, so dated/suffixed IDs land). The catalog prices
 // input and output tokens separately, but the budget meter only sees
 // UsageMetadata.TotalTokenCount, so the flat rate is the plain
@@ -936,7 +926,7 @@ func builtinPricer() budget.Pricer { return catalogPricer{cat: builtinCatalog()}
 // (scripts/demo-spike2.sh scenario 3) trip small caps with it. The
 // scripted replay and toolactor share it — all offline test doubles.
 func RatePer1K(provider, modelName string) float64 {
-	return ratePer1K(builtinCatalog(), provider, modelName)
+	return ratePer1K(pricingCatalog(), provider, modelName)
 }
 
 // ratePer1K is RatePer1K against an explicit catalog. The catalog is a
@@ -975,9 +965,6 @@ func ratePer1K(c *pricing.Catalog, provider, modelName string) float64 {
 			// price is refused at startup (CheckCeilingPriced).
 			if rate, ok := blend(); ok {
 				return rate
-			}
-			if r, ok := declaredRates(backend, modelName); ok {
-				return (r.InputPerMTok + r.OutputPerMTok) / 2 / 1000
 			}
 			return 0
 		}

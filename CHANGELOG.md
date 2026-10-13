@@ -777,6 +777,23 @@ deliberately** says how to keep the old behaviour.
 
 ### Bug or Regression
 
+- **The price catalog is core-models' (v0.11.0), shared with core-agent.**
+  `internal/pricing` and `dev/regen-builtin-pricing` are gone, and so is the
+  weekly regen workflow: the rate table now arrives as a core-models version
+  bump. Profile-declared rates go in as the catalog's lowest layer
+  (`pricing.DeclaredFromProfiles`) rather than through a compose-side
+  fallback, so a model with a published price is still billed at it. No
+  existing model's price changed on a prompt under its long-context
+  threshold; a judged A/B on `claude-haiku-4-5` (`anthropic-vertex`) and
+  `gemini-3.5-flash` (`vertex`) matched origin/main to the cent. Two
+  changes: a prompt **above** a model's long-context threshold
+  (`gemini-2.5-pro` and `claude-sonnet-4-5` above 200K, `claude-haiku-5-5`
+  above 100K, the GPT-5.4/5.5 family above 272K) is now billed at the
+  long-context rate the vendor charges, where mast had billed the base rate;
+  and a profile-declared row keyed exactly on `<backend>/<model>` now wins
+  over a built-in row matched only by prefix. Models on the `openai`
+  backend, unpriced before, are now priced from core-models' table.
+
 - **A model looping inside one turn is now told, and then stopped.**
   Under `--watchdog=feedback`, mast's default, the watchdog's advice
   waited for the session's next turn. A self-hosted Gemma 4 called one

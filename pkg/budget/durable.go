@@ -46,7 +46,7 @@
 //     A restored ceiling that wrong is worse than none, because it looks
 //     right.
 //   - Replay prices history at today's rates. The catalog moves weekly
-//     (dev/regen-builtin-pricing), so a rate change would retroactively
+//     (core-models regenerates it from LiteLLM), so a rate change would retroactively
 //     rewrite what a session already spent. Spend is a claim about money
 //     that has left the account; it is a fact of the moment the call was
 //     made, and the ledger records it then.

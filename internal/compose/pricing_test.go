@@ -19,7 +19,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/mast/internal/pricing"
+	"github.com/go-steer/core-models/pricing"
+	"github.com/go-steer/core-models/profile"
+
 	"github.com/go-steer/mast/pkg/budget"
 )
 
@@ -46,7 +48,7 @@ func TestRatePer1K(t *testing.T) {
 	// gemini-3.5-flash is in the builtin catalog; the flat rate is
 	// the blended average, computed from the catalog rather than
 	// hard-coded so a builtin regen doesn't break this test.
-	r, ok := builtinCatalog().Lookup("gemini-3.5-flash")
+	r, ok := pricingCatalog().Lookup("gemini-3.5-flash")
 	if !ok || r.IsZero() {
 		t.Fatal("builtin catalog lost gemini-3.5-flash; pick another catalog-known model for this test")
 	}
@@ -70,7 +72,7 @@ func TestRatePer1K(t *testing.T) {
 	}
 
 	// Claude models price from the same catalog blend (P1.3b).
-	cr, ok := builtinCatalog().Lookup("claude-opus-4-7")
+	cr, ok := pricingCatalog().Lookup("claude-opus-4-7")
 	if !ok || cr.IsZero() {
 		t.Fatal("builtin catalog lost claude-opus-4-7; pick another catalog-known model for this test")
 	}
@@ -230,9 +232,9 @@ func TestRatePer1KPricesThePair(t *testing.T) {
 	}
 	for _, p := range pairs {
 		t.Run(p.key, func(t *testing.T) {
-			r, ok := builtinCatalog().Lookup(p.key)
+			r, ok := pricingCatalog().Lookup(p.key)
 			if !ok || r.IsZero() {
-				t.Fatalf("builtin catalog has no %q row; regenerate with `go run ./dev/regen-builtin-pricing`", p.key)
+				t.Fatalf("builtin catalog has no %q row; core-models must carry it (go-steer/core-models dev/regen-builtin-pricing)", p.key)
 			}
 			if got := RatePer1K(p.provider, p.model); math.Abs(got-blend(r)) > 1e-12 {
 				t.Errorf("RatePer1K(%q, %q) = %v, want %v (the %q row)",
@@ -245,10 +247,10 @@ func TestRatePer1KPricesThePair(t *testing.T) {
 	// than to a zero or to the flat miss rate. Vertex does not serve
 	// claude-mythos-5, so there is no anthropic-vertex row for it — and
 	// a workload that asks for one must still get a real number.
-	if _, ok := builtinCatalog().Lookup("anthropic-vertex/claude-mythos-5"); ok {
+	if _, ok := pricingCatalog().Lookup("anthropic-vertex/claude-mythos-5"); ok {
 		t.Skip("upstream now prices claude-mythos-5 on Vertex; pick another unserved pair")
 	}
-	bare, ok := builtinCatalog().Lookup("claude-mythos-5")
+	bare, ok := pricingCatalog().Lookup("claude-mythos-5")
 	if !ok || bare.IsZero() {
 		t.Fatal("builtin catalog lost claude-mythos-5")
 	}
@@ -343,7 +345,7 @@ var probeCall = budget.Call{UncachedInputTokens: 1_000_000}
 // against literals so a vendor's price change is not a test failure.
 func TestCatalogPricer_PricesEachBucketAtItsOwnRate(t *testing.T) {
 	const name = "claude-sonnet-5"
-	r, ok := builtinCatalog().Lookup(name)
+	r, ok := pricingCatalog().Lookup(name)
 	if !ok || r.IsZero() {
 		t.Fatalf("builtin catalog lost %q; pick another catalog-known model", name)
 	}
@@ -378,7 +380,7 @@ func TestCatalogPricer_PricesEachBucketAtItsOwnRate(t *testing.T) {
 // higher-than-input number and that the adapter routes the bucket to it.
 func TestCatalogPricer_PricesCacheWritesAtTheirPremiumRate(t *testing.T) {
 	const name = "claude-sonnet-5"
-	r, ok := builtinCatalog().Lookup(name)
+	r, ok := pricingCatalog().Lookup(name)
 	if !ok || r.IsZero() {
 		t.Fatalf("builtin catalog lost %q; pick another catalog-known model", name)
 	}
@@ -477,5 +479,63 @@ func TestCatalogPricer_BackendQualifiedRowWinsOverTheBareOne(t *testing.T) {
 		if math.Abs(got-tc.want) > 1e-9 {
 			t.Errorf("backend %q: PriceCall = $%v, want $%v", tc.backend, got, tc.want)
 		}
+	}
+}
+
+// TestPriceCall_LongContextAboveThreshold: the meter's pricer hands the
+// whole prompt to core-models' Cost* methods, so a call above a model's
+// long-context threshold bills every token at the above-threshold rates
+// (gemini-2.5-pro: 200K) and one below it at the base rates.
+func TestPriceCall_LongContextAboveThreshold(t *testing.T) {
+	const model = "gemini-2.5-pro"
+	r, ok := pricingCatalog().LookupFor("vertex", model)
+	if !ok || r.LongContext == nil || r.LongContext.ThresholdTokens != 200_000 {
+		t.Fatalf("%s rates = %+v, want a 200K long-context row", model, r)
+	}
+	p := builtinPricer()
+	price := func(prompt int) float64 {
+		got, ok := p.PriceCall("vertex", model, budget.Call{UncachedInputTokens: prompt, OutputTokens: 1000})
+		if !ok {
+			t.Fatalf("%s unpriced", model)
+		}
+		return got
+	}
+	if got, want := price(100_000), 0.1*r.InputPerMTok+0.001*r.OutputPerMTok; math.Abs(got-want) > 1e-9 {
+		t.Errorf("100K prompt = $%.6f, want base rates $%.6f", got, want)
+	}
+	lc := r.LongContext
+	if got, want := price(300_000), 0.3*lc.InputPerMTok+0.001*lc.OutputPerMTok; math.Abs(got-want) > 1e-9 {
+		t.Errorf("300K prompt = $%.6f, want long-context rates $%.6f", got, want)
+	}
+}
+
+// TestDeclaredRatesAreTheCatalogsLowestLayer: a profile's models[].rates
+// reach the meter through the catalog, scoped to that profile's backend
+// and attributed to "profile-declared"; a model the builtin prices keeps
+// its published rate even if a profile declares another.
+func TestDeclaredRatesAreTheCatalogsLowestLayer(t *testing.T) {
+	RegisterProfiles([]profile.Profile{
+		{Name: "house", Extends: "vllm", BaseURL: "http://127.0.0.1:1/v1", Models: []profile.Model{
+			{ID: "google/gemma-4-26B-A4B-it", Rates: &profile.Rates{InputPerMTok: 0.10, OutputPerMTok: 0.40}},
+		}},
+		{Name: "claudegw", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "anthropic", Models: []profile.Model{
+			{ID: "claude-sonnet-5", Rates: &profile.Rates{InputPerMTok: 999, OutputPerMTok: 999}},
+		}},
+	})
+	t.Cleanup(func() { RegisterProfiles(nil) })
+
+	r, src, ok := pricingCatalog().LookupForWithSource("house", "google/gemma-4-26B-A4B-it")
+	if !ok || r.InputPerMTok != 0.10 || r.OutputPerMTok != 0.40 || src != pricing.SourceDeclared {
+		t.Errorf("declared row = %+v from %q, %v; want 0.10/0.40 from %q", r, src, ok, pricing.SourceDeclared)
+	}
+	if _, ok := pricingCatalog().LookupFor("vertex-maas", "google/gemma-4-26B-A4B-it"); ok {
+		t.Error("a declaration priced the same id on another backend")
+	}
+	if got := RatePer1K("house", "google/gemma-4-26B-A4B-it"); math.Abs(got-0.00025) > 1e-12 {
+		t.Errorf("RatePer1K = %v, want the declared blend 0.00025", got)
+	}
+	r, src, _ = pricingCatalog().LookupForWithSource("anthropic", "claude-sonnet-5")
+	if r.InputPerMTok == 999 || src == pricing.SourceDeclared {
+		t.Errorf("claude-sonnet-5 priced at the declared %+v from %q; the builtin row must win", r, src)
 	}
 }

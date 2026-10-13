@@ -95,8 +95,8 @@ What mast does with a profile:
   reports input and output tokens. Cached and reasoning tokens are reported
   when the server sends them, and shown as not reported (never as zero) when
   it doesn't.
-  - **Vertex AI partner models** are priced from mast's catalog (published
-    rates, refreshed weekly).
+  - **Vertex AI partner models** are priced from the shared catalog in
+    core-models (published rates, regenerated from LiteLLM).
   - **A self-hosted model** is priced only if its profile declares what it
     costs you, under `models[].rates` (USD per million tokens). Otherwise
     cost shows as `$—` and the meter counts the call as unpriced.
@@ -297,9 +297,9 @@ pricing catalog. `gemini-3.8-flash` was priced on 2026-09-09 and became
 the `frontier` default on 2026-10-06, once it had passed both runs below.
 `claude-opus-5-5` and `claude-sonnet-5-5` are priced as of 2026-10-06, and
 `claude-haiku-5-5` as of 2026-10-07; none is a default yet. Pin one with
-`model:` if you want it today. Mast's catalog bills `claude-haiku-5-5` at its
-up-to-100K-token price throughout, so a call with a longer prompt costs more
-than mast reports; Anthropic charges five times as much above that line.
+`model:` if you want it today. Above 100K prompt tokens Anthropic charges
+five times as much for `claude-haiku-5-5`, and since v1.0 the meter bills
+that call at the higher rate too.
 
 "Has been run" is a weekly job, not a judgement call: a candidate model
 runs the same 31-scenario judged corpus the incumbent default runs every
