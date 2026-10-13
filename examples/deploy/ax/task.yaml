@@ -1,4 +1,5 @@
-# A mast one-shot turn as an AX task. Apply with `ax apply -f task.yaml`,
+# A mast one-shot turn as an AX task (https://github.com/google/ax).
+# Apply with `ax apply -f task.yaml`,
 # then `ax resume mast-oneshot` (new tasks start Suspended).
 #
 # Replace spec.image with wherever you pushed the image built from
