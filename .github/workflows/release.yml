@@ -242,7 +242,7 @@ jobs:
           echo "dry run: provenance stored and findable for dist/checksums.txt"
       - name: Upload dist (dry run)
         if: ${{ inputs.dry_run || !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
