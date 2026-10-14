@@ -12,6 +12,17 @@ deliberately** says how to keep the old behaviour.
 
 ### API Change
 
+- **An `openai-chat` provider refuses generation settings Chat Completions
+  can't send** (core-models v0.13.0). **Breaking, deliberately:** before,
+  a request carrying `top_k`, logprobs, safety settings, a cached-content
+  reference, non-text modalities, labels, routing, a service tier or a
+  non-JSON response MIME type went out without it, and the model answered a
+  different question than the one asked. Now the call fails with an error
+  naming the setting. mast itself sets none of these on its own calls (the
+  eval judge sets only `temperature`); a Go caller of `mast.Run` that passes
+  one to an `openai-chat` profile gets the error. To keep the call working,
+  drop the setting from that request.
+
 - **Claude prompt caching is on by default.** **Breaking, deliberately:**
   before this release mast sent no cache breakpoints, and on upgrade
   every `claude-*` model — and every Anthropic-dialect provider profile —
@@ -235,6 +246,16 @@ deliberately** says how to keep the old behaviour.
   other side of v1.0 ([#384](https://github.com/go-steer/mast/issues/384)).
 
 ### Feature
+
+- **Gemini 4 Argon is priced and tiered.** core-models v0.13.1 prices
+  `gemini-4-argon` at $2/$10 per MTok ($0.10 cached input) with a
+  1,048,576-token context window, on the `gemini` and `vertex` backends;
+  before, LiteLLM listed it only under provider prefixes, the shared table
+  missed it, and a budget read it as free. The access-gated
+  `gemini-4-argon-cyber-permissive` is priced too ($4/$20). `modeltier`
+  classifies both as frontier, so a pinned `--model` gets frontier's
+  compaction threshold. Neither is a tier default. On Vertex AI, Argon
+  answers in `global`, not `us-central1`.
 
 - **`/usage` reports a self-hosted model server's KV cache** (core-models
   v0.10.0's `kvmetrics`, L3). When the session's model comes from a
