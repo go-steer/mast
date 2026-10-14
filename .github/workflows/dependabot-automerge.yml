@@ -43,10 +43,9 @@ name: dependabot-automerge
 # (`ci-docs / build`) is not among them, and it is precisely the check
 # that an Astro or sharp bump can break — so `--auto` would merge the one
 # class of upgrade it is least able to judge. This job instead waits for
-# every check the PR actually has and requires all of them to pass — with
-# one named exception, argued for at the step itself, which is not one of
-# the four contexts branch protection requires. So this remains strictly
-# stricter than the branch, and needs no change to it.
+# every check the PR actually has and requires all of them to pass. So
+# this remains strictly stricter than the branch, and needs no change to
+# it.
 # The cost is a runner sitting in a poll loop for the length of CI; at
 # roughly three grouped PRs a week that is a rounding error.
 #
@@ -186,32 +185,11 @@ jobs:
       # above rather than by this loop, which is deliberate — a hung check
       # should look like a hung workflow, not like a silent pass.
       #
-      # THE ONE WAIVED CHECK, AND THE ARGUMENT FOR IT. `outcome` is the
-      # metered gating eval tier. It authenticates to Vertex through
-      # secrets (MAST_EVALS_WIF_PROVIDER, MAST_EVALS_SERVICE_ACCOUNT), and
-      # GitHub withholds secrets from workflows triggered by Dependabot.
-      # The tier's recorded decision is that unconfigured is RED rather
-      # than skipped — deliberately, so a gate can never pass by failing
-      # to run — so on every Dependabot PR it fails with `load default
-      # credentials`. Without this waiver the gate below can never be
-      # satisfied, which is not a conservative default: it is a gate that
-      # is off, because nothing merges and the alerts stay open.
-      #
-      # This waiver is admissible because of three facts together, and a
-      # future addition to the list needs all three:
-      #   1. The failure is STRUCTURAL, not a verdict. The tier did not
-      #      judge the change and find it wanting; it could not start.
-      #   2. The check is NOT REQUIRED by branch protection on main
-      #      (docs-lint, hygiene, lint, test are), so waiving it here
-      #      leaves this job still strictly stricter than the branch.
-      #   3. The tier ALSO RUNS ON `push: main`, so a bump that really
-      #      does red the board reds it within minutes of the merge, on
-      #      main, where it is visible — rather than never being judged.
-      #
-      # It is waived by NAME, not by conclusion: if `outcome` somehow
-      # passes we are glad, and if some other check fails we still refuse.
-      # The log prints what was waived and what state it was in, so this
-      # never becomes a silent hole.
+      # There is no waiver list. `outcome` — the metered tier, which cannot
+      # get credentials on a Dependabot run — skips itself on these PRs
+      # (see "The one exception" in outcome.yml) and lands here as
+      # SKIPPED. Before that it was waived here by name; skipping at the
+      # source means this step has no exceptions to argue for.
       #
       # AND IT DOES NOT WAIT FOR ITSELF. This job is a check on the same
       # PR, so it appears in the rollup as IN_PROGRESS for exactly as long
@@ -227,7 +205,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}
-          WAIVED: outcome
           SELF_RUN: ${{ github.run_id }}
           EVENT: ${{ github.event_name }}
         run: |
@@ -260,18 +237,8 @@ jobs:
           echo "--- final check state ---"
           jq -r '.[] | "\(.name // .context): \(.conclusion // .state // "?")"' /tmp/rollup.json
 
-          echo "--- waived (see the comment above this step) ---"
-          jq -r --arg waived "$WAIVED" '
-            ($waived | split(",")) as $w
-            | .[]
-            | select((.name // .context) as $n | $w | index($n))
-            | "\(.name // .context): \(.conclusion // .state // "?") — not counted"
-          ' /tmp/rollup.json
-
-          bad="$(jq -r --arg waived "$WAIVED" '
-            ($waived | split(",")) as $w
-            | [ .[]
-                | select((.name // .context) as $n | ($w | index($n)) | not)
+          bad="$(jq -r '
+            [ .[]
                 | (.conclusion // .state // "PENDING")
                 | ascii_upcase
                 | select(. != "SUCCESS" and . != "SKIPPED" and . != "NEUTRAL")
@@ -280,7 +247,7 @@ jobs:
             echo "::error::${bad} check(s) did not pass — not merging"
             exit 1
           fi
-          echo "all checks green (excluding: ${WAIVED})"
+          echo "all checks green"
 
       # Why an App token: the org forbids GITHUB_TOKEN from acting as
       # a PR author, and an App installation

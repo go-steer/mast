@@ -59,6 +59,24 @@
 # workflows. A maintainer runs the tier on a branch in this repo before
 # merging such a PR. That is a real cost of gating on a metered tier and
 # there is no version of it that is both credentialed and fork-safe.
+#
+# ## The one exception: Dependabot pull requests SKIP
+#
+# GitHub withholds secrets from every run Dependabot triggers — a
+# maintainer's re-run included, because the run keeps Dependabot as its
+# actor. So on a Dependabot PR this job could only ever red with "no
+# Google Application Default Credentials": not a verdict, a structural
+# can't-start that no one can act on, on every bump, forever. It skips
+# instead, for three reasons that hold together:
+#   1. Skipped is not green where green is load-bearing. release.yml
+#      refuses a tag whose commit has no `success` outcome run, and a
+#      skip is not one.
+#   2. The bump is still judged. The squash-merge lands a new commit on
+#      main, and `push: main` runs the tier on it with credentials.
+#   3. `outcome` is not a required check, so the skip loosens nothing
+#      branch protection enforces.
+# A maintainer who wants the board before merging dispatches this
+# workflow on the Dependabot branch; that run is theirs, and has secrets.
 
 name: outcome
 
@@ -91,6 +109,8 @@ concurrency:
 
 jobs:
   outcome:
+    # See "The one exception" above.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     # 20 for the pass's own ceiling (outcome.DefaultCeiling), the rest
     # for cluster create, the lookout install and teardown. If this
