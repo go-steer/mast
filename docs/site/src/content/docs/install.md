@@ -183,18 +183,14 @@ and that is the string to paste.
 The supported path is the Helm chart, published as an OCI artifact beside
 the image. You do not need to clone this repository.
 
-First create the bearer-token Secrets. The chart doesn't create them,
-because a chart-authored secret lands in Helm release state and in
-whatever stores your values. The daemon and the event watcher wait for
-them, and both must carry the **same** token, since the watcher posts to
-the daemon with it:
+First create the daemon's bearer-token Secret. The chart doesn't create
+it, because a chart-authored secret lands in Helm release state and in
+whatever stores your values, and the daemon waits until it exists:
 
 ```sh
 kubectl create namespace mast-triage
 TOKEN=$(openssl rand -hex 32)
 kubectl -n mast-triage create secret generic mast-inject-token \
-  --from-literal=token="$TOKEN"
-kubectl -n mast-triage create secret generic k8s-event-watcher-token \
   --from-literal=token="$TOKEN"
 ```
 
@@ -206,9 +202,18 @@ helm install mast oci://ghcr.io/go-steer/charts/mast \
   --set gcp.projectID=my-project
 ```
 
-Without the Secrets the pods sit in `CreateContainerConfigError`. The
-chart's post-install notes say so, but `helm install --wait` times out
-before Helm prints them, so create the Secrets first.
+Without the Secret the daemon's pod sits in `CreateContainerConfigError`.
+The chart's post-install notes say so, but `helm install --wait` times out
+before Helm prints them, so create the Secret first.
+
+**The chart installs no event watcher.** A Kubernetes event watcher that
+turns cluster events into incidents ships beside the chart as
+`watcher.enabled`, and it is off because it does not work against mast
+yet: it has never started from a packaged install
+([#550](https://github.com/go-steer/mast/issues/550)). Until it does,
+send incidents to the daemon's `POST /inject` from whatever already sees
+your cluster's events, or let a [`scheduled:`](/reference/workload-bundle/#scheduled--a-workload-that-wakes-itself)
+workload sweep on a cadence.
 
 On GKE, run
 [`scripts/setup-wif.sh`](https://github.com/go-steer/mast/blob/main/scripts/setup-wif.sh)

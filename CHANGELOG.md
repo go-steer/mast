@@ -798,6 +798,20 @@ deliberately** says how to keep the old behaviour.
 
 ### Bug or Regression
 
+- **The chart and the Terraform module no longer install the Kubernetes event
+  watcher by default, because it has never worked against mast.** Image
+  `k8s-event-watcher:2.6.0` refuses to start in per-incident mode without
+  `--owner`, and that mode speaks core-agent's `POST /sessions` API, which
+  mast's inject listener doesn't serve. Every packaged install since July (the
+  kustomize tree, then the chart) deployed it to crash-loop. Nothing caught
+  it, because CI rendered the chart and never ran the watcher; installing
+  v1.0.0-rc.3 on a real cluster did. `watcher.enabled` (chart) and
+  `watcher_enabled` (Terraform) now default to `false`. Only the daemon's
+  `mast-inject-token` Secret is required, and the install page says to send
+  incidents to `POST /inject` meanwhile. Turning the watcher on still renders
+  it, so the real fix can land as a value change
+  ([#550](https://github.com/go-steer/mast/issues/550)).
+
 - **An xAI reasoning reply's answer tokens are counted.** xAI reports
   reasoning tokens beside completion/output tokens, where OpenAI reports
   them inside. core-models' usage mapping assumed OpenAI's convention, so
