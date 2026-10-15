@@ -83,8 +83,8 @@ run "the_bearer_secrets_are_named_and_not_created" {
   command = apply
 
   assert {
-    condition     = output.required_secrets == tolist(["mast-inject-token", "k8s-event-watcher-token"])
-    error_message = "the two Secrets an operator must create are not what this module tells them to create: ${jsonencode(output.required_secrets)}"
+    condition     = output.required_secrets == tolist(["mast-inject-token"])
+    error_message = "the Secret an operator must create by default is not what this module tells them to create: ${jsonencode(output.required_secrets)}"
   }
 
   assert {
@@ -93,16 +93,18 @@ run "the_bearer_secrets_are_named_and_not_created" {
   }
 }
 
-run "disabling_the_watcher_drops_its_secret_from_the_list" {
+# The watcher is off by default (#550). Switching it on must still name its
+# token, so the fix can land as a variable change.
+run "enabling_the_watcher_adds_its_secret_to_the_list" {
   command = apply
 
   variables {
-    watcher_enabled = false
+    watcher_enabled = true
   }
 
   assert {
-    condition     = output.required_secrets == tolist(["mast-inject-token"])
-    error_message = "an operator with no watcher should not be told to create the watcher's token: ${jsonencode(output.required_secrets)}"
+    condition     = output.required_secrets == tolist(["mast-inject-token", "k8s-event-watcher-token"])
+    error_message = "an operator who enables the watcher should be told to create its token too: ${jsonencode(output.required_secrets)}"
   }
 }
 

@@ -162,28 +162,49 @@ func TestWorkloadProjectionCoversTheBundle(t *testing.T) {
 // So the set is pinned, and adding an object to the chart means saying
 // so here.
 func TestChartRendersEveryObject(t *testing.T) {
+	// No k8s-event-watcher objects: the watcher is off by default until
+	// it can work against mast (#550). A default install that rendered
+	// a Deployment which can only crash-loop is the failure that issue
+	// found.
 	want := []string{
-		"ClusterRole/k8s-event-watcher",
 		"ClusterRole/mast-daemon-read",
-		"ClusterRoleBinding/k8s-event-watcher",
 		"ClusterRoleBinding/mast-daemon-read",
 		"ConfigMap/mast-gcp-env",
 		"ConfigMap/mast-workload",
-		"Deployment/k8s-event-watcher",
 		"Service/mast",
-		"ServiceAccount/k8s-event-watcher",
 		"ServiceAccount/mast-daemon",
 		"StatefulSet/mast",
 	}
-
-	var got []string
-	for _, d := range defaultRender(t) {
-		got = append(got, d.Kind+"/"+d.Metadata.Name)
-	}
-	sort.Strings(got)
-
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := renderedObjects(defaultRender(t)); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("a default install renders:\n  %s\nwant:\n  %s",
 			strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
+}
+
+// TestWatcherStillRendersWhenEnabled keeps the switch honest while the
+// watcher is off: the fix for #550 should be a value change, so the
+// objects behind watcher.enabled must keep rendering, and a template
+// that silently stopped rendering would hide until the day it is
+// switched back on.
+func TestWatcherStillRendersWhenEnabled(t *testing.T) {
+	got := strings.Join(renderedObjects(render(t, "--set", "gcp.projectID="+projectID, "--set", "watcher.enabled=true")), "\n")
+	for _, want := range []string{
+		"ClusterRole/k8s-event-watcher",
+		"ClusterRoleBinding/k8s-event-watcher",
+		"Deployment/k8s-event-watcher",
+		"ServiceAccount/k8s-event-watcher",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("watcher.enabled=true does not render %s", want)
+		}
+	}
+}
+
+func renderedObjects(docs []doc) []string {
+	var got []string
+	for _, d := range docs {
+		got = append(got, d.Kind+"/"+d.Metadata.Name)
+	}
+	sort.Strings(got)
+	return got
 }

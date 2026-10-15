@@ -137,8 +137,10 @@ run "the_apply_ends_by_naming_what_it_did_not_do" {
   command = apply
 
   assert {
-    condition     = length(output.required_secrets) == 2
-    error_message = "expected both bearer Secrets to be named as manual steps, got ${jsonencode(output.required_secrets)}"
+    # One, not two: the event watcher is off by default (#550), so its
+    # token is not a manual step until someone turns it on.
+    condition     = output.required_secrets == tolist(["mast-inject-token"])
+    error_message = "expected the daemon's bearer Secret to be named as the manual step, got ${jsonencode(output.required_secrets)}"
   }
 
   assert {

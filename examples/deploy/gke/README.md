@@ -2,11 +2,13 @@
 
 The GKE starter is not duplicated here: the canonical, working GKE
 recipe is the Helm chart at the repo root under
-[`charts/mast/`](../../../charts/mast/) — service accounts, watcher
-RBAC, the daemon StatefulSet, the event-watcher Deployment and the
-Service, running the [`gke-triage`](../../workloads/gke-triage/)
-workload. Install it from the published OCI artifact, without cloning
-this repo:
+[`charts/mast/`](../../../charts/mast/) — the daemon's service account
+and RBAC, the daemon StatefulSet and its Service, running the
+[`gke-triage`](../../workloads/gke-triage/) workload. (The event-watcher
+Deployment is off by default: it doesn't work against mast yet, see
+[#550](https://github.com/go-steer/mast/issues/550).) Create the
+`mast-inject-token` Secret first (see the install page), then install
+from the published OCI artifact, without cloning this repo:
 
 ```sh
 helm install mast oci://ghcr.io/go-steer/charts/mast \

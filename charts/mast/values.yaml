@@ -112,9 +112,15 @@ auth:
     proxyIdentities: ""
 
 watcher:
-  # The k8s-event-watcher sidecar that turns cluster events into
-  # injects. Disable it to drive the daemon from something else.
-  enabled: true
+  # The k8s-event-watcher sidecar that would turn cluster events into
+  # incidents. OFF by default because it does not work against mast yet
+  # (#550): image 2.6.0 refuses to start in per-incident mode without
+  # --owner, and that mode speaks core-agent's POST /sessions API, which
+  # the daemon's inject listener does not serve. It has never started
+  # from a packaged install. Enabling it renders the objects and the pod
+  # crash-loops; it is kept switchable only so the fix can land as a
+  # value change. Drive the daemon through POST /inject meanwhile.
+  enabled: false
   image:
     repository: ghcr.io/go-steer/k8s-event-watcher
     tag: "2.6.0"

@@ -116,9 +116,9 @@ variable "inject_token_secret" {
 }
 
 variable "watcher_enabled" {
-  description = "Install the k8s-event-watcher sidecar that turns cluster events into injects."
+  description = "Install the k8s-event-watcher sidecar. Off by default: it does not work against mast yet and has never started from a packaged install (#550)."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "watcher_token_secret" {
