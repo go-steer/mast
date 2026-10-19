@@ -129,7 +129,7 @@ jobs:
       # rather than skips when the binary is absent, so installing it
       # here is what keeps the local opt-out from ever being why a run
       # was green.
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_wrapper: false
       - name: terraform fmt / validate / test
