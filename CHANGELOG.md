@@ -798,6 +798,16 @@ deliberately** says how to keep the old behaviour.
 
 ### Bug or Regression
 
+- **mast builds on Go 1.26.10, which fixes GO-2026-6809 in `crypto/x509`.**
+  govulncheck found it reachable through the attach listener
+  (`attach.Server.Serve` → `http.Server.Serve` → `x509.Certificate.Verify`)
+  and began failing every PR. The release binaries, the container image and
+  the AX example image all move to the new toolchain. A new presubmit,
+  `go-toolchain`, fails when a Dockerfile's `GO_VERSION` differs from go.mod's
+  `toolchain` line. The golang images set `GOTOOLCHAIN=local`, so before, a
+  lower pin still built and silently shipped the old stdlib. Ported from
+  go-steer/core-agent#1346. ([#568](https://github.com/go-steer/mast/issues/568))
+
 - **The chart and the Terraform module no longer install the Kubernetes event
   watcher by default, because it has never worked against mast.** Image
   `k8s-event-watcher:2.6.0` refuses to start in per-incident mode without

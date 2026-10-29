@@ -22,7 +22,7 @@
 
 # AX's go.mod needs a newer toolchain than mast's, hence separate stages.
 ARG AX_GO_VERSION=1.27.1
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.26.10
 
 # ---- AX runner ----
 FROM --platform=$BUILDPLATFORM golang:${AX_GO_VERSION}-alpine AS ax-runner

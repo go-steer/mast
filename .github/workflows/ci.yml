@@ -88,6 +88,8 @@ jobs:
           key: ${{ runner.os }}-govulncheck
       - name: go mod tidy is clean
         run: dev/ci/presubmits/mod-tidy.sh
+      - name: Dockerfile GO_VERSION pins match the go.mod toolchain
+        run: dev/ci/presubmits/go-toolchain.sh
       - name: govulncheck
         run: dev/ci/presubmits/vuln.sh
       - name: slim-deps guarantee
