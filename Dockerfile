@@ -26,7 +26,7 @@
 # this file stopped building: go.mod moved to 1.26.6 and the pin stayed
 # at 1.26.3, with nothing in CI compiling the image to notice.
 # `.github/workflows/ci-image.yml` now builds it on every PR.
-ARG GO_VERSION=1.26.9
+ARG GO_VERSION=1.26.10
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
 WORKDIR /src
