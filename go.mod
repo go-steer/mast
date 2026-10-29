@@ -5,7 +5,7 @@ go 1.26.6
 toolchain go1.26.10
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.82.0
+	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-steer/core-models v0.13.1
 	github.com/go-steer/core-models/adkv2 v0.13.1
@@ -21,7 +21,7 @@ require (
 	golang.org/x/sync v0.24.0
 	golang.org/x/time v0.16.0
 	google.golang.org/adk/v2 v2.6.0
-	google.golang.org/genai v1.74.0
+	google.golang.org/genai v1.76.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
