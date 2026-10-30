@@ -4,7 +4,7 @@
 
 The agent-infrastructure substrate for **unattended, library-embedded, multi-provider, durable** agent workloads — built for platform and SRE teams deploying agents into Cloud Run, Kubernetes, and their own Go services. Lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent), native to [ADK v2](https://google.golang.org/adk/v2).
 
-**Current release: v0.9.0** (v1.0.0-rc.4 is the latest tag; v0.10.0 will be the last). Install, quickstarts, concepts, and the full reference live on the **[docs site](https://go-steer.github.io/mast/)**. What changed: [CHANGELOG](./CHANGELOG.md). What's next: [roadmap](https://go-steer.github.io/mast/roadmap/) — which now points at core-agent.
+**Current release: v0.10.0** — the terminal feature release; nothing but security fixes follows it. Install, quickstarts, concepts, and the full reference live on the **[docs site](https://go-steer.github.io/mast/)**. What changed: [CHANGELOG](./CHANGELOG.md). What's next: [roadmap](https://go-steer.github.io/mast/roadmap/) — which now points at core-agent.
 
 ## Is mast for you?
 

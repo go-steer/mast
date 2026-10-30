@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Security fixes only from here, on v0.10.x — see the notice under v0.10.0.
+
+## v0.10.0 (2026-10-30)
+
+**The terminal feature release.** Everything accumulated through
+v1.0.0-rc.1 to rc.4 ships here once, under a real heading, and no 1.0
+follows it.
+
 ### Notice
 
 - **mast is folding into core-agent and is frozen (2026-10-30).** go-steer
@@ -9,7 +17,7 @@
   [core-agent](https://github.com/go-steer/core-agent) as features, tracked
   by [go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411).
   Decision and evidence: [#596](https://github.com/go-steer/mast/issues/596).
-  This section ships once more, as **v0.10.0**, the terminal feature release;
+  This is **v0.10.0**, the terminal feature release;
   after it, security fixes only on v0.10.x, plus whatever
   [go-steer/shipmind](https://github.com/go-steer/shipmind) still runs until
   [its cutover](https://github.com/go-steer/shipmind/issues/48). There is no
