@@ -3,40 +3,41 @@ title: Install
 description: Install the mast binary from release tarballs or with go install.
 ---
 
-Current release: **v0.9.0** — the surfaces stop answering a question nobody
-asked. `GET /perms` refuses rather than returning an empty 200, a session
-parked on a human approval says so on the wire instead of reporting `idle`, an
-out-of-process caller can read the change it is asking someone to approve, and
-`/agui/agents.json` states what each workload will actually publish. **Upgrading
-from v0.8.0 has one breaking change and two behaviour changes** — `.tmpl`
-specialist files stop loading (the window v0.8 opened), authenticated AG-UI
-threads opened before this release are not reachable after it, and a client
-disconnect no longer cancels the run it was watching. Start with
-[what changed](https://github.com/go-steer/mast/blob/main/CHANGELOG.md). On the
-v0.8.0 correctness pass, the v0.7.0 route-back-from-a-change pass, the
-v0.6.0 enforcement pass, the v0.5.0 monitoring cycle, the v0.4.0 change set,
-the v0.3.0 write gate and the v0.2.0 durable-execution spine (see the
+Current release: **v0.10.0** — the terminal feature release. mast is folding
+into [core-agent](https://github.com/go-steer/core-agent) and is frozen
+([#596](https://github.com/go-steer/mast/issues/596),
+[go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411));
+this release ships everything accumulated through the v1.0.0 release
+candidates once, under a real heading, and no 1.0 follows it. After it,
+security fixes only on v0.10.x. **New installs should start with
+core-agent.** Start with
+[what changed](https://github.com/go-steer/mast/blob/main/CHANGELOG.md),
+whose notice at the top says what the freeze covers; the v0.9.0 and earlier
+history is below it (the surfaces that stopped answering a question nobody
+asked, the v0.8.0 correctness pass, the v0.7.0 route-back-from-a-change pass,
+the v0.6.0 enforcement pass, the v0.5.0 monitoring cycle, the v0.4.0 change
+set, the v0.3.0 write gate and the v0.2.0 durable-execution spine — see the
 [roadmap](/roadmap/)).
 
 ## Release tarballs
 
 Each release ships cross-compiled tarballs plus a `checksums.txt`
-(SHA-256). Assets for v0.9.0:
+(SHA-256). Assets for v0.10.0:
 
-- `mast_0.9.0_linux_amd64.tar.gz`
-- `mast_0.9.0_linux_arm64.tar.gz`
-- `mast_0.9.0_darwin_amd64.tar.gz`
-- `mast_0.9.0_darwin_arm64.tar.gz`
+- `mast_0.10.0_linux_amd64.tar.gz`
+- `mast_0.10.0_linux_arm64.tar.gz`
+- `mast_0.10.0_darwin_amd64.tar.gz`
+- `mast_0.10.0_darwin_arm64.tar.gz`
 - `checksums.txt`
 
 Download, verify, unpack (Linux amd64 shown — swap the asset name for your
 platform):
 
 ```sh
-curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.9.0/mast_0.9.0_linux_amd64.tar.gz
-curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.9.0/checksums.txt
+curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.10.0/mast_0.10.0_linux_amd64.tar.gz
+curl -fsSLO https://github.com/go-steer/mast/releases/download/v0.10.0/checksums.txt
 sha256sum --check --ignore-missing checksums.txt
-tar -xzf mast_0.9.0_linux_amd64.tar.gz
+tar -xzf mast_0.10.0_linux_amd64.tar.gz
 sudo install -m 0755 mast /usr/local/bin/mast
 ```
 
@@ -64,11 +65,11 @@ Prints the release version (plus commit and date for tarball builds;
 produced. The signature beside it proves that something was mast's release
 workflow.
 
-**v0.9.0, the current release, is not signed.** Signing landed with
-[#342](https://github.com/go-steer/mast/issues/342) after it was cut, so v0.9.0
-and everything before it ship `checksums.txt` alone and the rest of this
-section does not apply to them. Every release from the next one onward also
-ships `checksums.txt.sig` and `checksums.txt.pem`.
+**v0.10.0 is signed; v0.9.0 and everything before it are not.** Signing
+landed with [#342](https://github.com/go-steer/mast/issues/342) after v0.9.0
+was cut, so v0.9.0 and earlier ship `checksums.txt` alone and the rest of
+this section does not apply to them. Every tag from v1.0.0-rc.1 onward,
+v0.10.0 included, also ships `checksums.txt.sig` and `checksums.txt.pem`.
 
 Those are a Sigstore **keyless** signature: there
 is no mast public key to fetch and trust, because there is no mast private

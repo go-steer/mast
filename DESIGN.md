@@ -1,6 +1,11 @@
-# mast — architecture (v0.9)
+# mast — architecture (v0.10)
 
-**Status:** current as of v0.9.0 (2026-09-17). This is the map of what
+**Status:** current as of v0.10.0 (2026-10-30), the terminal feature
+release — mast is folding into core-agent
+([#596](https://github.com/go-steer/mast/issues/596),
+[go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411)),
+and this document is now the reference a port reads rather than a map that
+will keep moving. This is the map of what
 actually ships — the working architecture for contributors and
 embedders. The *why* behind each subsystem lives in the design corpus
 under [`docs/`](./docs/README.md) (start with
