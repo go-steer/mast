@@ -1,17 +1,21 @@
 # mast
 
+> **mast is folding into [core-agent](https://github.com/go-steer/core-agent) and is frozen (2026-10-30).** go-steer now has one agent harness. mast's distinctive capabilities — the durable write gate and effect outbox, the per-call spend ledger, the scheduling lease, workload bundles and specialists, A2A, the monitoring cycle, the AX task-runner deployment — are landing in core-agent as features, tracked by [go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411) and designed in its [`docs/mast-fold-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/mast-fold-design.md). The decision and its evidence are on [#596](https://github.com/go-steer/mast/issues/596). This repository takes security fixes, plus what [go-steer/shipmind](https://github.com/go-steer/shipmind) still runs until [it cuts over](https://github.com/go-steer/shipmind/issues/48); **v0.10.0** is the terminal feature release; there is no 1.0; the repository will be archived afterwards. **New work starts in core-agent.**
+
 The agent-infrastructure substrate for **unattended, library-embedded, multi-provider, durable** agent workloads — built for platform and SRE teams deploying agents into Cloud Run, Kubernetes, and their own Go services. Lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent), native to [ADK v2](https://google.golang.org/adk/v2).
 
-**Current release: v0.9.0.** Install, quickstarts, concepts, and the full reference live on the **[docs site](https://go-steer.github.io/mast/)**. What changed: [CHANGELOG](./CHANGELOG.md). What's next: [roadmap](https://go-steer.github.io/mast/roadmap/).
+**Current release: v0.9.0** (v1.0.0-rc.4 is the latest tag; v0.10.0 will be the last). Install, quickstarts, concepts, and the full reference live on the **[docs site](https://go-steer.github.io/mast/)**. What changed: [CHANGELOG](./CHANGELOG.md). What's next: [roadmap](https://go-steer.github.io/mast/roadmap/) — which now points at core-agent.
 
 ## Is mast for you?
 
-Thirty seconds of honesty — the long version is [Why mast](https://go-steer.github.io/mast/why-mast/):
+**Short answer, as of 2026-10-30: use [core-agent](https://github.com/go-steer/core-agent).** It is the one harness go-steer maintains, it already runs unattended on a cluster with approval gates, budgets, durable sessions and remote attach, and everything that made mast different is on its way there ([#1411](https://github.com/go-steer/core-agent/issues/1411)). Pick mast only if you are already running it and are waiting on a specific port; say so on the tracking issue so the port is sequenced for you.
+
+The thirty seconds of honesty that used to be here — the long version is [Why mast](https://go-steer.github.io/mast/why-mast/) — is kept as the record of the job mast was built for, which is now core-agent's job:
 
 - **Yes**, if you're a platform / SRE team putting agents where no human is watching: incident triage in a Cloud Run pod, a scheduled drift monitor, runbook automation behind a webhook, an agent compiled into your own service.
 - **No**, if you want one simple agent loop in Go with no governance, durability, or operator surface. Use [raw ADK v2](https://google.golang.org/adk/v2); mast would be overhead. Come back when the loop must survive restarts, needs budget or permission governance, needs to switch providers without a rewrite, or stops having a human watching it.
 - **No**, if you're after an interactive coding tool for your laptop. Different product shape: mast runs agents in your infrastructure, not in your editor — no LSP integration, no AST tooling, no syntax-aware diff UI. A scope decision, not a gap.
-- **Not the successor to core-agent**, either. Sibling products with different jobs: `mast` is the platform-agent runtime, [`core-agent`](https://github.com/go-steer/core-agent) stays the experimentation + integration substrate, and both are maintained.
+- **Not the successor to core-agent**, either. *(2026-10-30: nor its sibling any longer — see the banner above. core-agent is the one harness.)*
 
 ### What installing it looks like today
 

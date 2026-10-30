@@ -5,7 +5,7 @@ template: doc
 tableOfContents: false
 banner:
   content: |
-    v0.9.0 — the surfaces stop answering a question nobody asked. v1.0.0, the API freeze, is in release candidate as v1.0.0-rc.2: a small promised Go surface, and a cli package for building your own mast with your own models and tools. See <a href="/mast/reference/stability/">stability and versioning</a> and the <a href="/mast/roadmap/">roadmap</a>.
+    <strong>mast is folding into core-agent and is frozen (2026-10-30).</strong> The current release is v0.9.0; v0.10.0 will be the last feature release, and there is no 1.0. go-steer now has one agent harness; mast's capabilities are landing in <a href="https://github.com/go-steer/core-agent">core-agent</a> as features (<a href="https://github.com/go-steer/core-agent/issues/1411">tracking</a>). Decision: <a href="https://github.com/go-steer/mast/issues/596">#596</a>. New work starts in core-agent. See the <a href="/mast/roadmap/">roadmap</a>.
 hero:
   title: mast
   tagline: Agent infrastructure for unattended, library-embedded, multi-provider, durable workloads — built for platform and SRE teams.
@@ -27,6 +27,8 @@ hero:
 import { CardGrid, LinkCard, Card } from '@astrojs/starlight/components';
 
 ## Is mast for you? Thirty seconds of honesty
+
+**As of 2026-10-30, the answer is: use [core-agent](https://github.com/go-steer/core-agent).** It is the one harness go-steer maintains; it already runs unattended on a cluster with approval gates, budgets, durable sessions and remote attach; and everything that made mast different — the durable write gate and outbox, the spend ledger, the scheduling lease, workload bundles and specialists, A2A, the monitoring cycle, the AX task-runner deployment — is landing there ([go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411)). Pick mast only if you already run it and are waiting on a specific port. The cards below describe the job mast was built for, which is now core-agent's job.
 
 <CardGrid>
   <Card title="You're a platform team" icon="rocket">

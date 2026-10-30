@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Notice
+
+- **mast is folding into core-agent and is frozen (2026-10-30).** go-steer
+  now has one agent harness; mast's distinctive capabilities land in
+  [core-agent](https://github.com/go-steer/core-agent) as features, tracked
+  by [go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411).
+  Decision and evidence: [#596](https://github.com/go-steer/mast/issues/596).
+  This section ships once more, as **v0.10.0**, the terminal feature release;
+  after it, security fixes only on v0.10.x, plus whatever
+  [go-steer/shipmind](https://github.com/go-steer/shipmind) still runs until
+  [its cutover](https://github.com/go-steer/shipmind/issues/48). There is no
+  1.0. The `v1.0` milestone is retitled *Fold into core-agent*; the issues it
+  held are closed with the port that absorbs each
+  ([#561](https://github.com/go-steer/mast/issues/561),
+  [#562](https://github.com/go-steer/mast/issues/562) and
+  [#502](https://github.com/go-steer/mast/issues/502) travel to
+  go-steer/core-agent#1400; the 1.0-promise and sibling-sync issues are
+  closed as superseded).
+
 
 **Defaults that change what a workload does — read before upgrading.**
 Two are silent: Claude prompt caching is now on by default, so a Claude

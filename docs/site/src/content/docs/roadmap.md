@@ -1,7 +1,17 @@
 ---
 title: Roadmap
-description: What v0.9 ships, and what lands after it — honestly.
+description: mast is folding into core-agent. What that means for the releases, and where the work continues.
 ---
+
+:::caution[mast is folding into core-agent (2026-10-30)]
+go-steer now has one agent harness, [core-agent](https://github.com/go-steer/core-agent). mast's distinctive capabilities are landing there as features — the durable write gate and effect outbox, the per-call spend ledger, the scheduling lease, the apidiff discipline, workload bundles and specialists (the `.specialist.md` template survives as core-agent's `.agents/subagents/<name>.md`), A2A, the `monitor.collect` cycle, and the AX task-runner deployment. The decision and its evidence are on [#596](https://github.com/go-steer/mast/issues/596); the phases, exit criteria and tracking issues are on [go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411) and in core-agent's [`docs/mast-fold-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/mast-fold-design.md).
+
+**What this means for releases.** There will be no v1.0. **v0.10.0** will be tagged as the terminal feature release — the work accumulated through the v1.0.0 release candidates, shipped once under a real heading. After that, security fixes only, on v0.10.x, plus whatever [go-steer/shipmind](https://github.com/go-steer/shipmind) still runs until [its cutover to core-agent](https://github.com/go-steer/shipmind/issues/48). The repository is archived afterwards.
+
+**If you depend on mast today**, the path is core-agent, and the order the ports land in is set by what its consumers need. Say so on the tracking issue and the port you need is sequenced for you.
+
+Everything below this notice is the roadmap as it stood before the decision, kept as the record of what shipped and why.
+:::
 
 mast is at **v0.9.0** — the surfaces stop answering a question nobody asked.
 On the v0.8.0 correctness pass, the v0.7.0 route-back pass, the v0.6.0

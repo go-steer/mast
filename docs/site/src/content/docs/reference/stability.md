@@ -1,13 +1,17 @@
 ---
 title: Stability and versioning
-description: What mast promises to keep working, what it does not, and what the v1.0 number will and will not mean.
+description: What mast promises to keep working, what it does not, and why the v1.0 promise will not be made.
 sidebar:
   order: 8
 ---
 
+:::caution[There will be no v1.0 (2026-10-30)]
+mast is folding into [core-agent](https://github.com/go-steer/core-agent) ([#596](https://github.com/go-steer/mast/issues/596), [go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411)). The v1.0 promise described on this page will not be made here; the discipline behind it — the apidiff gate, a small promised surface, the compatibility policy — moves to core-agent with everything else ([go-steer/core-agent#1368](https://github.com/go-steer/core-agent/issues/1368), [#1398](https://github.com/go-steer/core-agent/issues/1398)). **v0.10.0** is the terminal feature release; it carries the same pre-1.0 terms as every release before it. What follows is kept as the record of the promise that was designed.
+:::
+
 mast is **pre-1.0**. Nothing on this page is a promise yet — it is the
-promise mast will make at v1.0, published now so you can decide what to
-depend on today.
+promise mast would have made at v1.0, published so you could decide what to
+depend on.
 
 This page is the *what*. [Compatibility and
 deprecations](/reference/compatibility/) is the *how*: what counts as

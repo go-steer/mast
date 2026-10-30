@@ -8,9 +8,25 @@ This file is mirrored verbatim to [`CLAUDE.md`](./CLAUDE.md) so tools that look 
 
 ## What this repo is
 
+> **Frozen, folding into core-agent (2026-10-30).** Read this first. On
+> [#596](https://github.com/go-steer/mast/issues/596) go-steer decided that
+> [core-agent](https://github.com/go-steer/core-agent) is its single agent
+> harness; mast's distinctive capabilities move there as features
+> ([go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411),
+> design in core-agent's `docs/mast-fold-design.md`). **New work does not
+> start here.** What an agent may still do in this repo: security fixes on
+> v0.10.x; whatever [go-steer/shipmind](https://github.com/go-steer/shipmind)
+> needs until its cutover ([go-steer/shipmind#48](https://github.com/go-steer/shipmind/issues/48))
+> — the AX deployment under `examples/deploy/ax`, the daemon paths it
+> exercises, the bundle loader, the write gate; and the port work itself,
+> which means *reading* this tree as the reference while writing in
+> core-agent. If you are porting, mast's tests are the acceptance criteria
+> and travel with the mechanism. The (E) sibling-products framing in the
+> paragraphs below is retired; they are kept so the port has its context.
+
 **`mast`** is the agent-infrastructure substrate for unattended, library-embedded, multi-provider workloads — the platform-agent product built as a lean fork of [`go-steer/core-agent`](https://github.com/go-steer/core-agent).
 
-**This repo holds the code.** The fork executed 2026-07-26 (Phase 1, under the revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)), the adapter ports from core-agent landed 2026-07-29, and seven releases have shipped — **v0.7.0** (2026-09-06) is current. The design corpus under [`docs/`](./docs/) stays live alongside the code; [`DESIGN.md`](./DESIGN.md) is the architecture map of what actually ships.
+**This repo holds the code.** The fork executed 2026-07-26 (Phase 1, under the revised trigger in [`docs/fork-design.md`](./docs/fork-design.md)), the adapter ports from core-agent landed 2026-07-29, and nine releases have shipped — **v0.9.0** (2026-09-17) is current, with v1.0.0-rc.4 the latest tag and **v0.10.0** to be the last. The design corpus under [`docs/`](./docs/) stays live alongside the code; [`DESIGN.md`](./DESIGN.md) is the architecture map of what actually ships.
 
 See [`docs/fork-design.md`](./docs/fork-design.md) for the rebuild-lean-core mechanics, naming, sync discipline, and resolved decisions.
 

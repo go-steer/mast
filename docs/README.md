@@ -49,9 +49,24 @@ Each doc has a Resolved-decisions section at the bottom listing what's been sett
 - **[`./assessments/langchain-sre-agent.md`](./assessments/langchain-sre-agent.md)** (2026-08-12) — LangChain's autonomous Kubernetes SRE agent vs. mast v0.2.0. Their subagents map ~1:1 onto specialists and mast leads on durability, cost metering, multi-provider, and read-path depth (`k8s-lookout`); the gaps are the designed-but-unwired parts — structural read/write split + per-mutating-tool gate (`hitl_policy.on_mutation`), fan-out, cross-run finding state, chat egress + Slack interactivity, typed report contract, per-specialist model tier, eval harness. Includes a six-slice MVP plan across mast / switchboard / k8s-lookout.
 - **[`./assessments/2026-10-29-mast-assessment.md`](./assessments/2026-10-29-mast-assessment.md)** (2026-10-29) — mast at v1.0.0-rc.4: where it stands, what to take from core-agent (and the reverse), and which core-agent v3.1 issues apply. Five read-only agents plus a verifying synthesizer. Headline: the engineering is ahead of the release process. A reproduced double execution of an approved mutation on auto-resume (#561), three 1.0 blockers at the promise's edge (#563, #564, #565), overdue security ports (#568–#574), and a strategic question to settle before tagging: mast's boundary with core-agent. Issues #561–#592 were filed from it.
 
-## Status (2026-09-14)
+## Status (2026-10-30)
 
-This repo holds mast's design corpus **and, since 2026-07-26, the mast code** (Phase 1 of the fork executed under the revised trigger). Eight releases have shipped since; **v0.8.0** is current. The thesis (E) — *sibling products with divergent agendas* — remains the resolved framing: mast = platform-agent product; core-agent = experimentation/integration substrate for embedded consumers. Both maintained indefinitely.
+> **mast is folding into core-agent and is frozen.** Decided 2026-10-30 on
+> [#596](https://github.com/go-steer/mast/issues/596): core-agent is
+> go-steer's single agent harness; mast's distinctive capabilities land there
+> as features, tracked by
+> [go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411)
+> and designed in core-agent's
+> [`docs/mast-fold-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/mast-fold-design.md).
+> This repo takes security fixes, plus whatever
+> [go-steer/shipmind](https://github.com/go-steer/shipmind) still runs, until
+> shipmind has cut over ([go-steer/shipmind#48](https://github.com/go-steer/shipmind/issues/48));
+> **v0.10.0** is the terminal feature release; there is no 1.0; the repo is
+> archived afterwards. The (E) *sibling products* framing below is retired —
+> the sections that describe it are kept as the record of why the fork
+> happened and what it built.
+
+*(Superseded text, 2026-09-14, kept for the record.)* This repo holds mast's design corpus **and, since 2026-07-26, the mast code** (Phase 1 of the fork executed under the revised trigger). Eight releases have shipped since; **v0.8.0** is current. The thesis (E) — *sibling products with divergent agendas* — remains the resolved framing: mast = platform-agent product; core-agent = experimentation/integration substrate for embedded consumers. Both maintained indefinitely.
 
 Current state:
 
@@ -71,6 +86,7 @@ A consolidated view (each doc's local resolved section is authoritative for its 
 
 | Decision | Where it's resolved |
 |---|---|
+| **mast folds into core-agent; the (E) sibling-products motivation is retired** (2026-10-30, [#596](https://github.com/go-steer/mast/issues/596)). core-agent is go-steer's single agent harness. Both reasons for the fork expired — core-agent is on ADK v2 and core-models, and its v3.0 theme was the same unattended GKE autonomy — while mast had one maintainer, no external adopters, 15 overlapping packages and a lapsed sync ledger. Of the four options (invest and tag 1.0; stay on 0.x; fold; rebase on core-agent as a library) the fold is the one whose costs are one-off; "mast as a core library" was also considered and declined for want of a consumer, with an extraction trigger recorded upstream. Capabilities move as core-agent features, not files; the ported copies are discarded; the specialist Markdown template survives as core-agent's `.agents/subagents/<name>.md`; Helm is retired; AG-UI deferred. mast is frozen (security-only plus what shipmind runs), tags **v0.10.0** as its terminal feature release, and is archived after shipmind's cutover | [#596](https://github.com/go-steer/mast/issues/596); core-agent [`docs/mast-fold-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/mast-fold-design.md) + [#1411](https://github.com/go-steer/core-agent/issues/1411); [`./positioning.md`](./positioning.md), [`./fork-design.md`](./fork-design.md) (status lines) |
 | **Model support beyond Gemini and Claude is built once, in a third repo** (2026-10-08, answering [`./model-support-design.md`](./model-support-design.md) §9 and the open question below). Multi-dialect provider support is shared infrastructure, and the sync discipline's usual answer — land it in core-agent, port it here — is the cherry-pick §9 warned against: the two repos' Gemini/Anthropic copies had already drifted both ways (core-agent ahead on rolling/1h prompt caching and Gemini retry, mast ahead on `usage.Detail` and the option-struct shape), and [#312](https://github.com/go-steer/mast/issues/312)'s OpenAI-compatible backend would have been a third copy. [`go-steer/core-models`](https://github.com/go-steer/core-models) owns adapters, profiles, the usage record and later the price catalog; mast imports it through an `adkv2` shim, core-agent through `adkv1`, because the repos are on different ADK majors. Order: `openai-chat` (Vertex MaaS, xAI, vLLM, SGLang, Ollama), `openai-responses` (OpenAI), self-hosted KV metrics, then the Gemini/Anthropic extractions, then pricing. fantasy remains prior art (§10). model-support stays authoritative for requirements R1–R8 | [`./model-support-design.md`](./model-support-design.md) § Resolved decisions + [core-models `docs/design.md`](https://github.com/go-steer/core-models/blob/main/docs/design.md) |
 | Strategic motivation = (E) sibling products | [`./fork-design.md`](./fork-design.md) |
 | Project name = `mast`, repo = `github.com/go-steer/mast` | [`./fork-design.md`](./fork-design.md) |
