@@ -85,7 +85,11 @@ backlog item.
 - One process, one loop, one human watching — no durability or governance
   needed.
 
-## The sibling, not the successor
+## The sibling, not the successor — and now neither
+
+:::note[Settled 2026-10-30]
+The paragraph below described mast and core-agent as siblings with different jobs. That is no longer the arrangement: on [#596](https://github.com/go-steer/mast/issues/596) go-steer decided core-agent is its single harness and mast folds into it ([go-steer/core-agent#1411](https://github.com/go-steer/core-agent/issues/1411)). The thesis on this page — unattended, library-embedded, multi-provider, durable — is now core-agent's thesis; the mechanisms that carried it are moving there. mast is frozen, v0.10.0 is its last feature release, and new work starts in core-agent.
+:::
 
 mast is a lean fork of
 [core-agent](https://github.com/go-steer/core-agent), and both are
