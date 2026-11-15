@@ -270,13 +270,15 @@ func TestRunOneShot_TimeoutTripsLoudly(t *testing.T) {
 // .agents/providers/. The model comes from --model (checked against the
 // profile's list) or from the profile's tier for the task class.
 func TestResolveModelSelection_ProviderProfiles(t *testing.T) {
-	compose.RegisterProfiles([]profile.Profile{{
+	if err := compose.RegisterProfiles([]profile.Profile{{
 		Name: "house-vllm", Extends: "vllm", BaseURL: "http://vllm.infra.svc:8000/v1",
 		OpenModels: new(false),
 		Models:     []profile.Model{{ID: "Qwen/Qwen3-Coder-Next"}, {ID: "gpt-oss-20b"}},
 		Tiers:      map[profile.Tier]string{profile.Mid: "Qwen/Qwen3-Coder-Next", profile.Small: "gpt-oss-20b"},
-	}})
-	t.Cleanup(func() { compose.RegisterProfiles(nil) })
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = compose.RegisterProfiles(nil) })
 
 	for _, tc := range []struct {
 		name, provider, model string

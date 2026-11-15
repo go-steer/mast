@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -61,12 +62,22 @@ var profiles struct {
 
 // RegisterProfiles sets the declared provider profiles, replacing any
 // registered before. Built-in profiles need no registration.
-func RegisterProfiles(ps []profile.Profile) {
+//
+// It builds the price table from them at once, so a set the catalog
+// refuses fails here, at startup: two profiles on one backend that
+// disagree on pricing (isolated or shared) cannot both be honoured,
+// since the catalog prices by backend. Nothing is replaced on error.
+func RegisterProfiles(ps []profile.Profile) error {
+	t, err := newPriceTable(pricing.Options{Profiles: declaringProfiles(ps)})
+	if err != nil {
+		return err
+	}
 	profiles.mu.Lock()
 	defer profiles.mu.Unlock()
 	profiles.declared = slices.Clone(ps)
 	profiles.opened = nil
-	profiles.prices = nil
+	profiles.prices = t
+	return nil
 }
 
 // priceTable is what mast prices a call from: core-models' catalog with
@@ -106,6 +117,11 @@ func (t *priceTable) lookup(backend, modelID string) (pricing.Rates, bool) {
 // published catalog prices is never billed at an operator's guess, and a
 // declaration only prices its own profile's backend.
 //
+// The profiles also set each backend's pricing mode. A backend whose
+// profile says pricing "isolated" (the built-in sap-ai-core does: SAP
+// bills in its own units) is priced only from rows keyed with that
+// backend, never from a model's bare first-party row.
+//
 // When two profiles declare the same model on the same backend, the
 // first wins, in the order profile lookup walks them: built-in profiles
 // first, then declared ones in registration order. A declared profile
@@ -113,9 +129,8 @@ func (t *priceTable) lookup(backend, modelID string) (pricing.Rates, bool) {
 // order and is counted once. DeclaredFromProfiles keeps the last of
 // duplicates, so it is handed the list reversed.
 //
-// Rebuilt after RegisterProfiles, since declared rates come from the
-// profiles registered at startup. Catalog construction with no file
-// layers reads nothing, so it cannot fail.
+// RegisterProfiles builds it; before any registration it is built here
+// from the built-ins alone, which the catalog always accepts.
 func pricingTable() *priceTable {
 	profiles.mu.RLock()
 	t := profiles.prices
@@ -128,10 +143,11 @@ func pricingTable() *priceTable {
 	if profiles.prices != nil {
 		return profiles.prices
 	}
-	t, err := newPriceTable(pricing.Options{Declared: pricing.DeclaredFromProfiles(declaringProfiles(profiles.declared))})
+	t, err := newPriceTable(pricing.Options{Profiles: declaringProfiles(profiles.declared)})
 	if err != nil {
-		// Unreachable with no file layers, kept explicit so wiring one
-		// later can't silently swallow a load error here.
+		// Unreachable: RegisterProfiles refuses a set the catalog
+		// refuses, and the built-ins alone always agree. Kept explicit
+		// so wiring a file layer later can't silently swallow an error.
 		panic(fmt.Sprintf("compose: pricing catalog: %v", err))
 	}
 	profiles.prices = t
@@ -139,14 +155,21 @@ func pricingTable() *priceTable {
 }
 
 // newPriceTable builds the catalog for opts and indexes its declared
-// layer for priceTable.lookup.
+// layer for priceTable.lookup. mast passes its profiles as
+// opts.Profiles, from which the catalog reads both their declared rates
+// and each one's pricing mode; the index takes the same rates the same
+// way (DeclaredFromProfiles keeps the last of duplicates, as the catalog
+// does), and opts.Declared outranks them, as it does in the catalog.
 func newPriceTable(opts pricing.Options) (*priceTable, error) {
 	c, err := pricing.NewCatalog(opts)
 	if err != nil {
 		return nil, err
 	}
-	t := &priceTable{cat: c, declared: make(map[string]pricing.Rates, len(opts.Declared))}
-	for k, r := range opts.Declared {
+	declared := map[string]pricing.ModelRates{}
+	maps.Copy(declared, pricing.DeclaredFromProfiles(opts.Profiles))
+	maps.Copy(declared, opts.Declared)
+	t := &priceTable{cat: c, declared: make(map[string]pricing.Rates, len(declared))}
+	for k, r := range declared {
 		t.declared[strings.ToLower(k)] = r.Rates()
 	}
 	return t, nil

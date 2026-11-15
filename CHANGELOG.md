@@ -13,6 +13,43 @@ Security fixes only from here, on v0.10.x — see the notice under v0.10.0.
   on every PR. go.mod's `toolchain` line and both Dockerfile `GO_VERSION`
   pins move to 1.26.11; core-models moved for the same advisory in v0.15.3.
 
+### Changed
+
+- **core-models v0.15.3, from v0.13.1** — *outside the security-only
+  policy above; merged by maintainer decision.* What mast users see:
+  - **New priced models:** Gemini 4 Carbon ($2/$10 per MTok) and Gemini 4
+    Hydrogen ($1.50/$7.50), each with a 1M-token window, on `gemini` and
+    `vertex` (Vertex AI serves them in `global` only); Gemini 4 Carbon's
+    access-gated cyber-permissive variant; Claude Fable 5.2 and Claude
+    Mythos 5.2; new OpenAI rows. `modeltier` classifies Carbon and
+    Hydrogen as **frontier**, so a pinned `--model` gets frontier's
+    compaction threshold; neither is a tier default, since neither has run
+    through the judged corpus. The Claude 5.2 models and
+    `gemini-3.8-flash-cyber` were already classified frontier by the
+    existing rules.
+  - **No model drops off on its deprecation date.** core-models keeps a
+    deprecated model's rows for 90 days past LiteLLM's `deprecation_date`
+    (gemini-2.5-flash, -flash-lite and -pro are in that grace now), so a
+    model that still answers stays priced.
+  - **Vertex explicit caching stops retrying on models that don't support
+    it** (Gemini 4 Argon, Carbon, Hydrogen): one log line, then the session
+    runs uncached; implicit caching still discounts repeated prefixes.
+  - **Profiles gain features:** `headers` sent on every model request,
+    `auth.kind: oauth2_client_credentials` with token refresh for a model
+    behind an OAuth2 gateway, and the built-in `sap-ai-core` profile (SAP AI
+    Core orchestration; built from SAP's spec, not yet validated against a
+    real tenant).
+  - **Isolated pricing.** A profile can set `pricing: isolated` for a
+    gateway that bills in its own units: its backend is priced only from
+    rows keyed with it, never from a model's first-party list price.
+    `sap-ai-core` is isolated. mast now hands its profiles to the catalog
+    whole (`pricing.Options.Profiles`) so an operator profile's mode is
+    honoured too. **Behaviour change:** two profiles on one backend that
+    disagree on pricing are refused at startup (exit 2) instead of one
+    silently winning; `compose.RegisterProfiles` now returns that error.
+  - core-models' LiteLLM `Refresh` fixes (qualified keys, healing a stale
+    cache) don't apply: mast never refreshes prices at runtime.
+
 ## v0.10.0 (2026-10-30)
 
 **The terminal feature release.** Everything accumulated through

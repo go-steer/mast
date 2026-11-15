@@ -67,7 +67,7 @@ func newChatServer(t *testing.T) *chatServer {
 // process-wide, as the --provider alias it extends is.
 func withLabProfile(t *testing.T, s *chatServer) {
 	t.Helper()
-	RegisterProfiles([]profile.Profile{{
+	mustRegisterProfiles(t, []profile.Profile{{
 		Name:       "lab",
 		Extends:    "vllm",
 		BaseURL:    s.srv.URL + "/v1",
@@ -75,7 +75,7 @@ func withLabProfile(t *testing.T, s *chatServer) {
 		Models:     []profile.Model{{ID: "Qwen/Qwen3-Coder-Next", Tier: profile.Mid}, {ID: "qwen3:1.7b", Tier: profile.Small}},
 		Tiers:      map[profile.Tier]string{profile.Mid: "Qwen/Qwen3-Coder-Next", profile.Small: "qwen3:1.7b"},
 	}})
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 }
 
 func generate(t *testing.T, m adkmodel.LLM, req *adkmodel.LLMRequest) *adkmodel.LLMResponse {
@@ -271,14 +271,14 @@ func TestVertexMaaSModelsArePriced(t *testing.T) {
 // them: the ceiling is enforceable and the meter bills the call.
 func TestDeclaredRatesPriceASelfHostedModel(t *testing.T) {
 	s := newChatServer(t)
-	RegisterProfiles([]profile.Profile{{
+	mustRegisterProfiles(t, []profile.Profile{{
 		Name: "lab", Extends: "vllm", BaseURL: s.srv.URL + "/v1",
 		Models: []profile.Model{
 			{ID: "Qwen/Qwen3-Coder-Next", Rates: &profile.Rates{InputPerMTok: 0.5, CachedInputPerMTok: 0.05, OutputPerMTok: 2}},
 			{ID: "unpriced-model"},
 		},
 	}})
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 
 	if err := CheckCeilingPriced("workload triage", "lab", "Qwen/Qwen3-Coder-Next", 5); err != nil {
 		t.Errorf("CheckCeilingPriced with declared rates = %v", err)

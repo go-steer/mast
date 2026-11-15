@@ -47,12 +47,12 @@ func vllmMetrics(t *testing.T) *httptest.Server {
 // metrics: none all get nil, which callers read as "skip".
 func TestKVSamplerOnlyForProfilesThatPublishMetrics(t *testing.T) {
 	srv := vllmMetrics(t)
-	RegisterProfiles([]profile.Profile{
+	mustRegisterProfiles(t, []profile.Profile{
 		{Name: "lab", Extends: "vllm", BaseURL: srv.URL + "/v1", MetricsURL: srv.URL + "/metrics"},
 		{Name: "lab-nometrics", Extends: "vllm", BaseURL: srv.URL + "/v1"},
 		{Name: "lab-ollama", Extends: "ollama", MetricsURL: srv.URL + "/metrics"},
 	})
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 	ctx := context.Background()
 
 	s, err := KVSampler(ctx, "lab", "m")
@@ -78,11 +78,11 @@ func TestKVSamplerOnlyForProfilesThatPublishMetrics(t *testing.T) {
 func TestKVSamplerResolvesLikeTheModel(t *testing.T) {
 	srv := vllmMetrics(t)
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/nonexistent/adc.json")
-	RegisterProfiles([]profile.Profile{{
+	mustRegisterProfiles(t, []profile.Profile{{
 		Name: "gw", Extends: "vllm", BaseURL: srv.URL + "/v1", MetricsURL: srv.URL + "/metrics",
 		Auth: auth.Config{Kind: auth.GoogleADC},
 	}})
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 	ctx := context.Background()
 
 	t.Setenv("MAST_GOOGLE_AUTH", "")

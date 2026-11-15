@@ -217,14 +217,14 @@ func TestAnthropicProfileModelsFollowThePromptCache(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	open := true
-	RegisterProfiles([]profile.Profile{{
+	mustRegisterProfiles(t, []profile.Profile{{
 		Name:       "lab-claude",
 		Extends:    "anthropic",
 		BaseURL:    srv.URL,
 		Auth:       auth.Config{Kind: auth.APIKey, Env: "LAB_ANTHROPIC_KEY"},
 		OpenModels: &open,
 	}})
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 
 	off := false
 	for _, tc := range []struct {
