@@ -72,7 +72,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "evals:", err)
 		os.Exit(2)
 	}
-	compose.RegisterProfiles(declared)
+	if err := compose.RegisterProfiles(declared); err != nil {
+		fmt.Fprintln(os.Stderr, "evals:", err)
+		os.Exit(2)
+	}
 
 	pc, err := promptCache(*cache)
 	if err != nil {

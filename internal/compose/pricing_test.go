@@ -513,12 +513,12 @@ func TestPriceCall_LongContextAboveThreshold(t *testing.T) {
 // reach the meter through the catalog, scoped to that profile's backend
 // and attributed to "profile-declared".
 func TestDeclaredRatesAreTheCatalogsLowestLayer(t *testing.T) {
-	RegisterProfiles([]profile.Profile{
+	mustRegisterProfiles(t, []profile.Profile{
 		{Name: "house", Extends: "vllm", BaseURL: "http://127.0.0.1:1/v1", Models: []profile.Model{
 			{ID: "google/gemma-4-26B-A4B-it", Rates: &profile.Rates{InputPerMTok: 0.10, OutputPerMTok: 0.40}},
 		}},
 	})
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 
 	r, src, ok := pricingCatalog().LookupForWithSource("house", "google/gemma-4-26B-A4B-it")
 	if !ok || r.InputPerMTok != 0.10 || r.OutputPerMTok != 0.40 || src != pricing.SourceDeclared {
@@ -545,12 +545,12 @@ func TestDeclaredRatesAreTheCatalogsLowestLayer(t *testing.T) {
 // a pricing one.
 func TestDeclaredClaudeRatesOnAProfile(t *testing.T) {
 	t.Setenv(EnvAnthropicAPIKey, "test-key")
-	RegisterProfiles([]profile.Profile{
+	mustRegisterProfiles(t, []profile.Profile{
 		{Name: "claudegw", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: ProviderAnthropic, Models: []profile.Model{
 			{ID: "claude-sonnet-5", Rates: &profile.Rates{InputPerMTok: 999, OutputPerMTok: 999}},
 		}},
 	})
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 
 	const model = "claude-sonnet-5"
 	backend := Backend("claudegw", model)
@@ -603,13 +603,13 @@ func TestDeclaredRatesFillAZeroRateRow(t *testing.T) {
 func TestDeclaredRatesFirstProfileWins(t *testing.T) {
 	const model = "acme/coder-7b"
 	rates := func(in float64) *profile.Rates { return &profile.Rates{InputPerMTok: in, OutputPerMTok: in} }
-	RegisterProfiles([]profile.Profile{
+	mustRegisterProfiles(t, []profile.Profile{
 		{Name: "lab-a", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "lab", Models: []profile.Model{{ID: model, Rates: rates(1)}}},
 		{Name: "lab-b", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "lab", Models: []profile.Model{{ID: model, Rates: rates(2)}}},
 		{Name: "house", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "vllm", Models: []profile.Model{{ID: model, Rates: rates(3)}}},
 		{Name: "vllm", BaseURL: "http://127.0.0.1:1/v1", Models: []profile.Model{{ID: model, Rates: rates(4)}}},
 	})
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 
 	for _, tc := range []struct {
 		backend string
@@ -630,15 +630,15 @@ func TestDeclaredRatesFirstProfileWins(t *testing.T) {
 // table in force, so declared rates registered after it was made price
 // its calls, as they do RatePer1K's.
 func TestPricerSeesProfilesRegisteredLater(t *testing.T) {
-	RegisterProfiles(nil)
-	t.Cleanup(func() { RegisterProfiles(nil) })
+	mustRegisterProfiles(t, nil)
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
 	p := MeterLimits("house", "acme/late-model").Pricer
 	call := budget.Call{UncachedInputTokens: 1_000_000, OutputTokens: 1_000_000}
 	if usd, ok := p.PriceCall("house", "acme/late-model", call); ok {
 		t.Fatalf("setup: priced at $%v before any profile declared it", usd)
 	}
 
-	RegisterProfiles([]profile.Profile{
+	mustRegisterProfiles(t, []profile.Profile{
 		{Name: "house", Extends: "vllm", BaseURL: "http://127.0.0.1:1/v1", Models: []profile.Model{
 			{ID: "acme/late-model", Rates: &profile.Rates{InputPerMTok: 2, OutputPerMTok: 6}},
 		}},
@@ -649,5 +649,71 @@ func TestPricerSeesProfilesRegisteredLater(t *testing.T) {
 	}
 	if got := RatePer1K("house", "acme/late-model"); math.Abs(got-0.004) > 1e-12 {
 		t.Errorf("RatePer1K = %v, want the declared blend 0.004", got)
+	}
+}
+
+// mustRegisterProfiles registers ps for a test, failing it if the price
+// table refuses them.
+func mustRegisterProfiles(t testing.TB, ps []profile.Profile) {
+	t.Helper()
+	if err := RegisterProfiles(ps); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIsolatedPricing: a backend whose profile says pricing "isolated"
+// never bills at a model's bare first-party row. The built-in
+// sap-ai-core is isolated with nothing registered; an operator profile
+// that sets it is honoured (mast hands its profiles to the catalog as
+// pricing.Options.Profiles); and a declared rate on an isolated backend
+// still prices.
+func TestIsolatedPricing(t *testing.T) {
+	const model = "gemini-2.5-pro" // a model with a bare published row
+	if _, ok := pricing.Builtin()[model]; !ok {
+		t.Fatalf("test premise: builtin has no bare %q row", model)
+	}
+	mustRegisterProfiles(t, nil)
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
+	if r, ok := pricingTable().lookup("sap-ai-core", model); ok {
+		t.Errorf("sap-ai-core priced %s at the first-party row %+v; it is isolated", model, r)
+	}
+
+	mustRegisterProfiles(t, []profile.Profile{
+		{Name: "gw", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "house-gw",
+			Pricing: profile.PricingIsolated, Models: []profile.Model{
+				{ID: "declared-model", Rates: &profile.Rates{InputPerMTok: 1, OutputPerMTok: 2}},
+			}},
+		{Name: "open-gw", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "house-open"},
+	})
+	if r, ok := pricingTable().lookup("house-gw", model); ok {
+		t.Errorf("an isolated operator profile priced %s at %+v", model, r)
+	}
+	if r, ok := pricingTable().lookup("house-gw", "declared-model"); !ok || r.InputPerMTok != 1 || r.OutputPerMTok != 2 {
+		t.Errorf("declared rate on an isolated backend = %+v, %v; want 1/2", r, ok)
+	}
+	if _, ok := pricingTable().lookup("house-open", model); !ok {
+		t.Errorf("a shared operator profile lost %s's published row", model)
+	}
+}
+
+// TestRegisterProfiles_RefusesDisagreeingPricingModes: two profiles on
+// one backend, one isolated and one shared, cannot both be honoured, so
+// registration fails (mast exits 2 at startup) and the registry keeps
+// what it had.
+func TestRegisterProfiles_RefusesDisagreeingPricingModes(t *testing.T) {
+	mustRegisterProfiles(t, nil)
+	t.Cleanup(func() { _ = RegisterProfiles(nil) })
+	err := RegisterProfiles([]profile.Profile{
+		{Name: "a", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "same", Pricing: profile.PricingIsolated},
+		{Name: "b", Extends: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Backend: "same", Pricing: profile.PricingShared},
+	})
+	if err == nil {
+		t.Fatal("RegisterProfiles accepted two profiles that disagree on one backend's pricing")
+	}
+	profiles.mu.RLock()
+	n := len(profiles.declared)
+	profiles.mu.RUnlock()
+	if n != 0 {
+		t.Errorf("a refused registration replaced the registry (%d declared)", n)
 	}
 }

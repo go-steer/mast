@@ -160,7 +160,10 @@ func run(ctx context.Context, args []string, ext Options) int {
 		fmt.Fprintln(os.Stderr, "mast:", err)
 		return exitUsage
 	}
-	compose.RegisterProfiles(declared)
+	if err := compose.RegisterProfiles(declared); err != nil {
+		fmt.Fprintln(os.Stderr, "mast:", err)
+		return exitUsage
+	}
 	resolvedModel, err := resolveModelSelection(*providerFlag, *modelName, explicit["model"], *taskFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mast:", err)

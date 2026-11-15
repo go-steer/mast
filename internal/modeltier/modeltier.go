@@ -175,6 +175,16 @@ func Classify(modelID string) string {
 	// corpus.
 	case containsAny(m, "gemini-4-argon"):
 		return TierFrontier
+	// Gemini 4 Carbon and Gemini 4 Hydrogen, priced by core-models
+	// v0.15.3 (Carbon $2/$10 per MTok, Hydrogen $1.50/$7.50) with 1M
+	// windows; "gemini-4-carbon" also covers its access-gated
+	// cyber-permissive variant. Hydrogen is priced above
+	// gemini-3.8-flash, which is already frontier. Classified so a pinned
+	// --model gets frontier's compaction threshold; neither is a
+	// ModelForTier default, since nothing has run them through the judged
+	// corpus.
+	case containsAny(m, "gemini-4-carbon", "gemini-4-hydrogen"):
+		return TierFrontier
 	// gemini-3.5-flash was Google's headline agentic release at I/O
 	// 2026 (May 20, 2026). Beats gemini-3.1-pro on agent + coding
 	// benchmarks per Google's own scorecards; pitched as the default
