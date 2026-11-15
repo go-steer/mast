@@ -4,6 +4,15 @@
 
 Security fixes only from here, on v0.10.x — see the notice under v0.10.0.
 
+### Security
+
+- **mast builds on Go 1.26.11, which fixes GO-2026-6859 in `net/http`** (an
+  HTTP/1 server crash from a `MaxBytesReader` header race). govulncheck finds
+  it reachable through mast's HTTP servers and clients (the AG-UI and attach
+  listeners, the A2A client, MCP auth), so the required `hygiene` check failed
+  on every PR. go.mod's `toolchain` line and both Dockerfile `GO_VERSION`
+  pins move to 1.26.11; core-models moved for the same advisory in v0.15.3.
+
 ## v0.10.0 (2026-10-30)
 
 **The terminal feature release.** Everything accumulated through
