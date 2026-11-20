@@ -90,7 +90,7 @@ jobs:
       # installs it. It arrived with the Terraform module (#463) after
       # the last release was cut, so v1.0.0-rc.1 was the first tag to
       # meet it here — and stopped before publishing anything.
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_wrapper: false
       - name: Presubmits
