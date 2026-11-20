@@ -108,6 +108,7 @@ var scanExtensions = map[string]bool{
 var skipDirs = map[string]bool{
 	".git":         true,
 	".claude":      true,
+	".worktrees":   true,
 	".upstream":    true,
 	"vendor":       true,
 	"node_modules": true,

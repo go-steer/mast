@@ -908,11 +908,12 @@ func TestLoad_HomeAgentsRoot_AgentsDDirectoryScanned(t *testing.T) {
 
 func TestLoad_HomeAgentsRoot_MissingDirectorySilentlySkipped(t *testing.T) {
 	t.Parallel()
-	// Only project set; home-agents points at a nonexistent path.
+	// Only project set; home-agents points at a nonexistent path (under TempDir
+	// rather than /nonexistent, which exists with 0700 nobody on Debian/gLinux).
 	project := t.TempDir()
 	writeFile(t, project, "AGENTS.md", "PROJECT-ONLY")
 
-	loaded, err := Load(project, "", WithHomeAgentsRoot("/nonexistent/home/agents/path"))
+	loaded, err := Load(project, "", WithHomeAgentsRoot(filepath.Join(t.TempDir(), "missing", "agents")))
 	if err != nil {
 		t.Fatal(err)
 	}

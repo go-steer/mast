@@ -49,9 +49,20 @@ linters:
     # Security.
     - gosec          # OWASP-style checks (nosec via // #nosec)
 
+    # Complexity ratchet. Thresholds are pinned to today's measured in-tree
+    # maximum so existing code passes untouched and only functions worse than
+    # today's ceiling fail; cmd/mast/architecture_test.go additionally
+    # caps the count of non-test functions over 150 lines (4).
+    - funlen
+    - gocognit
+
   exclusions:
     # Generated code shouldn't fail the lint.
     generated: lax
+    # Git worktrees under .claude/ or .worktrees/ hold other branches' work in progress.
+    paths:
+      - (^|/)\.claude/
+      - (^|/)\.worktrees/
     presets:
       - common-false-positives
       - legacy
@@ -61,6 +72,8 @@ linters:
       - path: _test\.go
         linters:
           - errcheck
+          - funlen
+          - gocognit
           - gosec
           - unparam
       # These two files exist to prove that a misspelled key in a
@@ -94,6 +107,18 @@ linters:
         - fmt.Fprint
         - (*os.File).Close
         - os.Remove
+    # --- Complexity ratchet (measured 2026-11-20) -------------------
+    #   funlen lines       184   mast.go `runTurn`
+    #   funlen statements  116   internal/evals/harness/judge.go `runJudge`
+    #   gocognit            68   mast.go `runTurn`
+    #   funcs > 150 lines    4   capped in cmd/mast/architecture_test.go
+    # Ratchet DOWN as hotspots get refactored — never up.
+    funlen:
+      lines: 184
+      statements: 116
+      ignore-comments: true
+    gocognit:
+      min-complexity: 68
     gocritic:
       disabled-checks:
         # "ifElseChain" pushes us toward switch statements that aren't

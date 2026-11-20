@@ -132,7 +132,7 @@ func TestEveryRuntimeModelPathIsRetrying(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "node_modules", "testdata":
+			case ".git", ".claude", ".worktrees", "node_modules", "testdata":
 				return fs.SkipDir
 			}
 			return nil
