@@ -172,7 +172,7 @@ func TestNoCommentInstructsCallingARenamedOption(t *testing.T) {
 			switch d.Name() {
 			// testdata holds fixtures that are not this module's code;
 			// node_modules is the docs site's; dist is build output.
-			case ".git", "node_modules", "testdata", "dist":
+			case ".git", ".claude", ".worktrees", "node_modules", "testdata", "dist":
 				return fs.SkipDir
 			}
 			return nil

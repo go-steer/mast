@@ -291,7 +291,7 @@ func TestNoShippedCodePassesAPromptThroughADKsTemplateField(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", ".claude", "node_modules", "testdata":
+			case ".git", ".claude", ".worktrees", "node_modules", "testdata":
 				return fs.SkipDir
 			}
 			return nil

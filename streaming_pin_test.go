@@ -145,7 +145,7 @@ func TestEveryRunnerSiteIsNonStreaming(t *testing.T) {
 			switch d.Name() {
 			// testdata holds fixtures that are not this module's code;
 			// node_modules is the docs site's.
-			case ".git", "node_modules", "testdata":
+			case ".git", ".claude", ".worktrees", "node_modules", "testdata":
 				return fs.SkipDir
 			}
 			return nil
