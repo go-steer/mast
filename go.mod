@@ -7,7 +7,7 @@ toolchain go1.26.11
 require (
 	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/glebarez/sqlite v1.11.0
-	github.com/go-steer/core-models v0.15.3
+	github.com/go-steer/core-models v0.15.4
 	github.com/go-steer/core-models/adkv2 v0.15.3
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
